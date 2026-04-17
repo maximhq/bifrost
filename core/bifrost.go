@@ -89,12 +89,41 @@ type Bifrost struct {
 // ProviderQueue wraps a provider's request channel with lifecycle management
 // to prevent "send on closed channel" panics during provider removal/update.
 // Producers must check the closing flag or select on the done channel before sending.
+//
+// Why pq.queue is NEVER closed:
+//
+// Closing a channel in Go causes any concurrent send to that channel to panic
+// ("send on closed channel"). There is always a TOCTOU window between a
+// producer's isClosing() check and its select { case pq.queue <- msg: ... }:
+// the producer could pass isClosing() while the queue is open, get preempted,
+// and resume only after the queue is closed. Go's selectgo evaluates select
+// cases in a random order, so even having case <-pq.done: in the same select
+// does not protect against this — if selectgo evaluates the send case first on
+// a closed channel it panics immediately via goto sclose, before reaching done.
+//
+// To close pq.queue safely you would need a sender-side WaitGroup so that
+// signalClosing could wait for every in-flight producer to finish. That adds
+// non-trivial overhead on the hot request path.
+//
+// Instead, pq.done is the sole shutdown signal. Receiving from a closed channel
+// is always safe (returns the zero value immediately), so:
+//   - Workers exit via case <-pq.done: — safe
+//   - Producers bail via case <-pq.done: — safe
+//   - drainQueueWithErrors handles any messages that slip through the TOCTOU window
+//
+// pq.queue is garbage collected automatically:
+//   - RemoveProvider calls requestQueues.Delete, dropping the map's reference.
+//   - UpdateProvider calls requestQueues.Store with a new queue, dropping the
+//     map's reference to oldPq. Shutdown does not Delete at all — the whole
+//     Bifrost instance is torn down.
+//     In all cases, once no producer goroutine holds a reference to the
+//     ProviderQueue, both the struct and pq.queue are eligible for GC.
+//     No explicit close is needed.
 type ProviderQueue struct {
-	queue      chan *ChannelMessage // the actual request queue channel
-	done       chan struct{}        // closed to signal shutdown to producers
+	queue      chan *ChannelMessage // the actual request queue channel — never closed, see above
+	done       chan struct{}        // closed by signalClosing() to signal shutdown; never written to otherwise
 	closing    uint32               // atomic: 0 = open, 1 = closing
 	signalOnce sync.Once
-	closeOnce  sync.Once
 }
 
 func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
@@ -119,14 +148,6 @@ func (pq *ProviderQueue) signalClosing() {
 	pq.signalOnce.Do(func() {
 		atomic.StoreUint32(&pq.closing, 1)
 		close(pq.done)
-	})
-}
-
-// closeQueue closes the provider queue.
-// Protected by sync.Once to prevent double-close.
-func (pq *ProviderQueue) closeQueue() {
-	pq.closeOnce.Do(func() {
-		close(pq.queue)
 	})
 }
 
@@ -3109,57 +3130,36 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 	}
 	pq := pqValue.(*ProviderQueue)
 
-	// Step 2: Signal closing to producers (prevents new sends)
-	// This must happen before closing the queue to avoid "send on closed channel" panics
+	// Step 2: Signal closing. Blocks new producers (isClosing() returns true) and
+	// causes idle workers to drain remaining buffered requests with errors then exit.
 	pq.signalClosing()
 	bifrost.logger.Debug("signaled closing for provider %s", providerKey)
 
-	// Step 3: Now safe to close the queue (no new producers can send)
-	pq.closeQueue()
-	bifrost.logger.Debug("closed request queue for provider %s", providerKey)
-
-	// Step 4: Wait for all workers to finish processing in-flight requests
+	// Step 3: Wait for all workers to finish in-flight requests and exit.
 	waitGroup, exists := bifrost.waitGroups.Load(providerKey)
 	if exists {
 		waitGroup.(*sync.WaitGroup).Wait()
 		bifrost.logger.Debug("all workers for provider %s have stopped", providerKey)
 	}
 
-	// Step 5: Remove the provider from the request queues
+	// Step 3b: Final drain sweep — see drainQueueWithErrors for full explanation.
+	bifrost.drainQueueWithErrors(pq)
+
+	// Step 4: Remove the provider from the request queues.
 	bifrost.requestQueues.Delete(providerKey)
 
-	// Step 6: Remove the provider from the wait groups
+	// Step 5: Remove the provider from the wait groups.
 	bifrost.waitGroups.Delete(providerKey)
 
-	// Step 7: Remove the provider from the providers slice
-	replacementAttempts := 0
-	maxReplacementAttempts := 100 // Prevent infinite loops in high-contention scenarios
-	for {
-		replacementAttempts++
-		if replacementAttempts > maxReplacementAttempts {
-			return fmt.Errorf("failed to replace provider %s in providers slice after %d attempts", providerKey, maxReplacementAttempts)
-		}
-		oldPtr := bifrost.providers.Load()
-		var oldSlice []schemas.Provider
-		if oldPtr != nil {
-			oldSlice = *oldPtr
-		}
-		// Create new slice without the old provider of this key
-		// Use exact capacity to avoid allocations
-		if len(oldSlice) == 0 {
-			return fmt.Errorf("provider %s not found in providers slice", providerKey)
-		}
-		newSlice := make([]schemas.Provider, 0, len(oldSlice)-1)
-		for _, existingProvider := range oldSlice {
-			if existingProvider.GetProviderKey() != providerKey {
-				newSlice = append(newSlice, existingProvider)
-			}
-		}
-		if bifrost.providers.CompareAndSwap(oldPtr, &newSlice) {
-			bifrost.logger.Debug("successfully removed provider instance for %s in providers slice", providerKey)
-			break
-		}
-		// Retrying as swapping did not work (likely due to concurrent modification)
+	// Step 6: Remove the provider from the providers slice.
+	if err := bifrost.removeProviderFromSlice(providerKey); err != nil {
+		bifrost.logger.Error(
+			"provider %s was removed from queues but could not be removed from the providers slice — "+
+				"bifrost.providers is now inconsistent. "+
+				"To recover: retry RemoveProvider(%s), or restart Bifrost if that fails.",
+			providerKey, providerKey,
+		)
+		return err
 	}
 
 	bifrost.logger.Info("successfully removed provider %s", providerKey)
@@ -3181,6 +3181,15 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 // Note: This operation will temporarily pause request processing for the specified provider
 // while the transition occurs. In-flight requests will complete before workers are stopped.
 // Buffered requests in the old queue will be transferred to the new queue to prevent loss.
+//
+// Concurrency safety — no-worker window:
+// UpdateProvider holds a per-provider write lock (providerMutex.Lock) for its entire
+// duration. All producer paths (tryRequest, tryStreamRequest) acquire the corresponding
+// read lock inside getProviderQueue before they can look up or enqueue into any queue.
+// This means no producer can observe or enqueue into newPq until UpdateProvider returns
+// and releases the write lock — at which point new workers are already running and
+// consuming newPq. There is therefore no window where newPq is visible to producers
+// but has zero workers.
 func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error {
 	bifrost.logger.Info(fmt.Sprintf("Updating provider configuration for provider %s", providerKey))
 	// Get the updated configuration from the account
@@ -3213,23 +3222,23 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 		queue:      make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize),
 		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
-		closeOnce:  sync.Once{},
 	}
 
-	// Step 2: Atomically replace the queue FIRST (new producers immediately get the new queue)
-	// This minimizes the window where requests fail during the update
+	// Step 2: Atomically replace the queue so new producers immediately use newPq.
 	bifrost.requestQueues.Store(providerKey, newPq)
 	bifrost.logger.Debug("stored new queue for provider %s, new producers will use it", providerKey)
 
-	// Step 3: Signal old queue is closing to producers that already have a reference
-	// Only in-flight producers with the old reference will see this
-	oldPq.signalClosing()
-	bifrost.logger.Debug("signaled closing for old queue of provider %s", providerKey)
-
-	// Step 4: Transfer any buffered requests from old queue to new queue
-	// This prevents request loss during the transition
+	// Step 3: Transfer buffered requests from the old queue to the new queue BEFORE
+	// signalling workers to stop. This ensures buffered requests are processed by the
+	// new workers rather than being drained with errors.
+	// Old workers are still running and may consume some items concurrently — that is
+	// fine, they process them normally.
+	// If newPq is full during transfer, all remaining buffered requests are cancelled
+	// immediately rather than blocking — this avoids the deadlock where transfer goroutines
+	// wait for space that only opens once new workers start (which can't happen until
+	// the transfer completes).
 	transferredCount := 0
-	var transferWaitGroup sync.WaitGroup
+	cancelledCount := 0
 	for {
 		select {
 		case msg := <-oldPq.queue:
@@ -3237,37 +3246,33 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 			case newPq.queue <- msg:
 				transferredCount++
 			default:
-				// New queue is full, handle this request in a goroutine
-				// This is unlikely with proper buffer sizing but provides safety
-				transferWaitGroup.Add(1)
-				go func(m *ChannelMessage) {
-					defer transferWaitGroup.Done()
+				// newPq is full — cancel this message and all remaining in oldPq.
+				cancelMsg := func(r *ChannelMessage) {
+					prov, mod, _ := r.BifrostRequest.GetRequestFields()
 					select {
-					case newPq.queue <- m:
-						// Message successfully transferred
-					case <-time.After(5 * time.Second):
-						bifrost.logger.Warn("Failed to transfer buffered request to new queue within timeout")
-						// Send error response to avoid hanging the client
-						provider, model, _ := m.BifrostRequest.GetRequestFields()
-						select {
-						case m.Err <- schemas.BifrostError{
-							IsBifrostError: false,
-							Error: &schemas.ErrorField{
-								Message: "request failed during provider concurrency update",
-							},
-							ExtraFields: schemas.BifrostErrorExtraFields{
-								RequestType:    m.RequestType,
-								Provider:       provider,
-								ModelRequested: model,
-							},
-						}:
-						case <-time.After(1 * time.Second):
-							// If we can't send the error either, just log and continue
-							bifrost.logger.Warn("Failed to send error response during transfer timeout")
-						}
+					case r.Err <- schemas.BifrostError{
+						IsBifrostError: false,
+						Error:          &schemas.ErrorField{Message: "request failed during provider concurrency update: queue full"},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    r.RequestType,
+							Provider:       prov,
+							ModelRequested: mod,
+						},
+					}:
+					case <-r.Context.Done():
 					}
-				}(msg)
-				goto transferComplete
+				}
+				cancelMsg(msg)
+				cancelledCount++
+				for {
+					select {
+					case r := <-oldPq.queue:
+						cancelMsg(r)
+						cancelledCount++
+					default:
+						goto transferComplete
+					}
+				}
 			}
 		default:
 			// No more buffered messages
@@ -3276,33 +3281,59 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 	}
 
 transferComplete:
-	// Wait for all transfer goroutines to complete
-	transferWaitGroup.Wait()
 	if transferredCount > 0 {
 		bifrost.logger.Info("transferred %d buffered requests to new queue for provider %s", transferredCount, providerKey)
 	}
+	if cancelledCount > 0 {
+		bifrost.logger.Warn("cancelled %d buffered requests during transfer for provider %s: new queue was full", cancelledCount, providerKey)
+	}
 
-	// Step 5: Close the old queue to signal workers to stop
-	oldPq.closeQueue()
-	bifrost.logger.Debug("closed old request queue for provider %s", providerKey)
+	// Step 4: Signal the old queue is closing. Producers that still hold a reference to
+	// oldPq will detect this via isClosing() and transparently re-route to newPq.
+	// This happens after the transfer so the new queue is already populated before
+	// stale producers attempt their re-route.
+	oldPq.signalClosing()
+	bifrost.logger.Debug("signaled closing for old queue of provider %s", providerKey)
 
-	// Step 6: Wait for all existing workers to finish processing in-flight requests
+	// Step 5: Wait for all existing workers to finish processing in-flight requests.
+	// Workers exit via oldPq.done (signalled above).
 	waitGroup, exists := bifrost.waitGroups.Load(providerKey)
 	if exists {
 		waitGroup.(*sync.WaitGroup).Wait()
 		bifrost.logger.Debug("all workers for provider %s have stopped", providerKey)
 	}
 
-	// Step 7: Create new wait group for the updated workers
+	// Step 5b: Final drain sweep — see drainQueueWithErrors for full explanation.
+	bifrost.drainQueueWithErrors(oldPq)
+
+	// Step 6: Create new wait group for the updated workers.
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
 
-	// Step 8: Create provider instance
+	// Step 7: Create provider instance.
 	provider, err := bifrost.createBaseProvider(providerKey, providerConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create provider instance for %s: %v", providerKey, err)
+		// Roll back: signal closing, remove from map, then drain.
+		// Order matters: Delete before drainQueueWithErrors so that producers
+		// re-routing via requestQueues.Load find nothing and return "provider
+		// shutting down" immediately, narrowing the TOCTOU window before the sweep.
+		newPq.signalClosing()
+		bifrost.requestQueues.Delete(providerKey)
+		bifrost.waitGroups.Delete(providerKey)
+		bifrost.drainQueueWithErrors(newPq)
+		if sliceErr := bifrost.removeProviderFromSlice(providerKey); sliceErr != nil {
+			bifrost.logger.Error(
+				"UpdateProvider rollback for %s is incomplete — provider was removed from queues "+
+					"but could not be removed from the providers slice: %v. "+
+					"bifrost.providers is now inconsistent. "+
+					"To recover: call RemoveProvider(%s) then AddProvider to re-register it, "+
+					"or restart Bifrost if that fails.",
+				providerKey, sliceErr, providerKey,
+			)
+		}
+		return fmt.Errorf("provider update for %s failed during initialization; provider has been removed — re-add or retry UpdateProvider to restore it: %v", providerKey, err)
 	}
 
-	// Step 8.5: Atomically replace the provider in the providers slice
+	// Step 8: Atomically replace the provider in the providers slice.
 	// This must happen before starting new workers to prevent stale reads
 	bifrost.logger.Debug("atomically replacing provider instance in providers slice for %s", providerKey)
 
@@ -3312,7 +3343,21 @@ transferComplete:
 	for {
 		replacementAttempts++
 		if replacementAttempts > maxReplacementAttempts {
-			return fmt.Errorf("failed to replace provider %s in providers slice after %d attempts", providerKey, maxReplacementAttempts)
+			newPq.signalClosing()
+			bifrost.requestQueues.Delete(providerKey)
+			bifrost.waitGroups.Delete(providerKey)
+			bifrost.drainQueueWithErrors(newPq)
+			if sliceErr := bifrost.removeProviderFromSlice(providerKey); sliceErr != nil {
+				bifrost.logger.Error(
+					"UpdateProvider rollback for %s is incomplete — provider was removed from queues "+
+						"but could not be removed from the providers slice: %v. "+
+						"bifrost.providers is now inconsistent. "+
+						"To recover: call RemoveProvider(%s) then AddProvider to re-register it, "+
+						"or restart Bifrost if that fails.",
+					providerKey, sliceErr, providerKey,
+				)
+			}
+			return fmt.Errorf("failed to replace provider %s in providers slice after %d attempts; provider has been removed — re-add or retry UpdateProvider to restore it", providerKey, maxReplacementAttempts)
 		}
 
 		oldPtr := bifrost.providers.Load()
@@ -3348,7 +3393,7 @@ transferComplete:
 		// Retrying as swapping did not work (likely due to concurrent modification)
 	}
 
-	// Step 9: Start new workers with updated concurrency
+	// Step 9: Start new workers with updated concurrency.
 	bifrost.logger.Debug("starting %d new workers for provider %s with buffer size %d",
 		providerConfig.ConcurrencyAndBufferSize.Concurrency,
 		providerKey,
@@ -3382,6 +3427,33 @@ func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *sync.RWMutex {
 	mutexValue, _ := bifrost.providerMutexes.LoadOrStore(providerKey, &sync.RWMutex{})
 	return mutexValue.(*sync.RWMutex)
+}
+
+// removeProviderFromSlice atomically removes the provider with the given key
+// from bifrost.providers using a CAS retry loop. Callers hold the per-provider
+// write mutex so no concurrent goroutine can re-add this key — contention is
+// only from other providers' CAS operations, so the loop converges in at most
+// a few iterations under any concurrency level.
+// Returns an error if the limit is hit (state will be inconsistent).
+func (bifrost *Bifrost) removeProviderFromSlice(providerKey schemas.ModelProvider) error {
+	const maxAttempts = 100
+	for range maxAttempts {
+		oldPtr := bifrost.providers.Load()
+		if oldPtr == nil {
+			return nil
+		}
+		oldSlice := *oldPtr
+		newSlice := make([]schemas.Provider, 0, len(oldSlice))
+		for _, p := range oldSlice {
+			if p.GetProviderKey() != providerKey {
+				newSlice = append(newSlice, p)
+			}
+		}
+		if bifrost.providers.CompareAndSwap(oldPtr, &newSlice) {
+			return nil
+		}
+	}
+	return fmt.Errorf("failed to remove provider %s from providers slice after %d attempts", providerKey, maxAttempts)
 }
 
 // MCP PUBLIC API
@@ -3694,7 +3766,6 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
 		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
-		closeOnce:  sync.Once{},
 	}
 
 	bifrost.requestQueues.Store(providerKey, pq)
@@ -4382,17 +4453,31 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
 
-	// Check if provider is closing before attempting to send (lock-free atomic check)
-	// This prevents "send on closed channel" panics during provider removal/update
+	// If the queue is closing, check whether the provider was updated (new queue
+	// available) or removed. On update, transparently re-route to the new queue
+	// so in-flight producers don't get spurious errors. On removal, error out.
+	//
+	// Use a direct sync.Map lookup instead of getProviderQueue to avoid the
+	// lazy-creation path: getProviderQueue can resurrect a provider that was
+	// just removed by RemoveProvider if the account config still exists.
 	if pq.isClosing() {
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
+		var reroutedPq *ProviderQueue
+		if val, ok := bifrost.requestQueues.Load(provider); ok {
+			if candidate := val.(*ProviderQueue); candidate != pq && !candidate.isClosing() {
+				reroutedPq = candidate
+			}
 		}
-		return nil, bifrostErr
+		if reroutedPq == nil {
+			bifrost.releaseChannelMessage(msg)
+			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       provider,
+				ModelRequested: model,
+			}
+			return nil, bifrostErr
+		}
+		pq = reroutedPq
 	}
 
 	// Use select with done channel to detect shutdown during send
@@ -4492,7 +4577,13 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		return resp, nil
 	case <-ctx.Done():
-		bifrost.releaseChannelMessage(msg)
+		// Do NOT releaseChannelMessage here. The message is already enqueued and
+		// the worker still holds a reference to msg.Response and msg.Err. Returning
+		// those channels to the pool now would let the next request reuse them while
+		// the worker is still writing to them — stale data corruption. The worker
+		// never calls releaseChannelMessage itself, so this message leaks from the
+		// pool and is GC'd. That is intentional: a small pool leak on cancellation
+		// is far safer than corrupting another request's channels.
 		provider, model, _ := req.GetRequestFields()
 		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "waiting for provider response")
 	}
@@ -4629,17 +4720,31 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
 
-	// Check if provider is closing before attempting to send (lock-free atomic check)
-	// This prevents "send on closed channel" panics during provider removal/update
+	// If the queue is closing, check whether the provider was updated (new queue
+	// available) or removed. On update, transparently re-route to the new queue
+	// so in-flight producers don't get spurious errors. On removal, error out.
+	//
+	// Use a direct sync.Map lookup instead of getProviderQueue to avoid the
+	// lazy-creation path: getProviderQueue can resurrect a provider that was
+	// just removed by RemoveProvider if the account config still exists.
 	if pq.isClosing() {
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
+		var reroutedPq *ProviderQueue
+		if val, ok := bifrost.requestQueues.Load(provider); ok {
+			if candidate := val.(*ProviderQueue); candidate != pq && !candidate.isClosing() {
+				reroutedPq = candidate
+			}
 		}
-		return nil, bifrostErr
+		if reroutedPq == nil {
+			bifrost.releaseChannelMessage(msg)
+			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       provider,
+				ModelRequested: model,
+			}
+			return nil, bifrostErr
+		}
+		pq = reroutedPq
 	}
 
 	// Use select with done channel to detect shutdown during send
@@ -4721,6 +4826,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return newBifrostMessageChan(recoveredResp), nil
 		}
 		return nil, &bifrostErrVal
+	case <-ctx.Done():
+		// Do NOT releaseChannelMessage here — see the identical note in tryRequest.
+		// Worker still holds msg.ResponseStream/msg.Err; releasing now corrupts the
+		// next request that reuses those pooled channels.
+		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for stream response")
 	}
 }
 
@@ -4937,7 +5047,38 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 	}()
 
-	for req := range pq.queue {
+	for {
+		var req *ChannelMessage
+		select {
+		case r := <-pq.queue:
+			req = r
+		case <-pq.done:
+			// Provider is shutting down. Drain any buffered requests and send
+			// back errors so callers are not left blocked on their response channel.
+			for {
+				select {
+				case r := <-pq.queue:
+					provKey, mod, _ := r.GetRequestFields()
+					select {
+					case r.Err <- schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: "provider is shutting down",
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    r.RequestType,
+							Provider:       provKey,
+							ModelRequested: mod,
+						},
+					}:
+					case <-r.Context.Done():
+					}
+				default:
+					return
+				}
+			}
+		}
+
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 
 		var result *schemas.BifrostResponse
@@ -5984,6 +6125,47 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest) *ChannelMe
 	return msg
 }
 
+// drainQueueWithErrors drains all buffered messages from pq and sends each a
+// "provider is shutting down" error. It must be called after all workers for
+// the queue have exited (i.e. after wg.Wait()) to cover the TOCTOU window:
+// a producer that passed isClosing() just before signalClosing fired can still
+// win the `case pq.queue <- msg` branch in tryRequest, landing a message in
+// the queue after the last worker's drain loop already exited via `default:`.
+// Without this sweep, those callers block forever on <-msg.Response / <-msg.Err.
+//
+// Residual TOCTOU window (known limitation): this sweep runs exactly once via
+// a non-blocking `select { default: }`. A producer that deposits a message
+// after the sweep's `default:` branch exits has no worker and no sweep to drain
+// it — the caller will block until its own context is cancelled. Fully closing
+// this window requires a sender-side reference count (so the last producer can
+// signal "queue is fully idle"), which is intentionally not implemented because
+// it would add per-send atomic overhead on the hot path.
+func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
+	for {
+		select {
+		case r := <-pq.queue:
+			provKey, mod, _ := r.GetRequestFields()
+			select {
+			case r.Err <- schemas.BifrostError{
+				IsBifrostError: false,
+				Error:          &schemas.ErrorField{Message: "provider is shutting down"},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:    r.RequestType,
+					Provider:       provKey,
+					ModelRequested: mod,
+				},
+			}:
+			case <-r.Context.Done():
+				// No time.After needed: r.Err is a buffered channel of size 1 freshly
+				// allocated per request, so the send always completes immediately unless
+				// the caller already cancelled. ctx.Done() is the only valid escape.
+			}
+		default:
+			return
+		}
+	}
+}
+
 // releaseChannelMessage returns a ChannelMessage and its channels to their respective pools.
 func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	// Put channels back in pools
@@ -6491,15 +6673,12 @@ func (bifrost *Bifrost) Shutdown() {
 	if bifrost.ctx.Err() == nil && bifrost.cancel != nil {
 		bifrost.cancel()
 	}
-	// ALWAYS close all provider queues to signal workers to stop,
-	// even if context was already cancelled. This prevents goroutine leaks.
-	// Use the ProviderQueue lifecycle: signal closing, then close the queue
+	// Signal all provider queues to close. Workers exit via pq.done;
+	// we never close pq.queue to avoid "send on closed channel" panics in
+	// producers that are concurrently in tryRequest.
 	bifrost.requestQueues.Range(func(key, value interface{}) bool {
 		pq := value.(*ProviderQueue)
-		// Signal closing to producers (uses sync.Once internally)
 		pq.signalClosing()
-		// Close the queue to signal workers (uses sync.Once internally)
-		pq.closeQueue()
 		return true
 	})
 
@@ -6507,6 +6686,12 @@ func (bifrost *Bifrost) Shutdown() {
 	bifrost.waitGroups.Range(func(key, value interface{}) bool {
 		waitGroup := value.(*sync.WaitGroup)
 		waitGroup.Wait()
+		return true
+	})
+
+	// Final drain sweep — same reasoning as RemoveProvider's Step 3b.
+	bifrost.requestQueues.Range(func(key, value interface{}) bool {
+		bifrost.drainQueueWithErrors(value.(*ProviderQueue))
 		return true
 	})
 

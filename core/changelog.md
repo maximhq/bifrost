@@ -1,3 +1,4 @@
+- fix: OpenAI provider - flatten array-form tool_result output for Responses API (thanks [@martingiguere](https://github.com/martingiguere)!)
 - fix: Gemini provider - handle content block tool outputs in Responses API path (thanks [@tom-diacono](https://github.com/tom-diacono)!)
 - fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
 - fix: Bedrock provider - emit message_stop event for Anthropic invoke stream (thanks [@tefimov](https://github.com/tefimov)!)
@@ -7,3 +8,4 @@
 - fix: capture responses streaming API errors
 - fix: delete fallbacks from outgoing Anthropic requests
 - feat: claude-opus-4-7 compatibility
+- fix: token usage for vllm

@@ -186,6 +186,7 @@ type ChatParameters struct {
 	MaxCompletionTokens  *int                  `json:"max_completion_tokens,omitempty"` // Maximum number of tokens to generate
 	Metadata             *map[string]any       `json:"metadata,omitempty"`              // Metadata to be returned with the response
 	Modalities           []string              `json:"modalities,omitempty"`            // Modalities to be returned with the response
+	N                    *int                  `json:"n,omitempty"`                     // Number of chat completions to generate when supported
 	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
 	Prediction           *ChatPrediction       `json:"prediction,omitempty"`             // Predicted output content (OpenAI only)
 	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
@@ -315,10 +316,22 @@ const (
 
 // ChatTool represents a tool definition.
 type ChatTool struct {
-	Type         ChatToolType      `json:"type"`
-	Function     *ChatToolFunction `json:"function,omitempty"`      // Function definition
-	Custom       *ChatToolCustom   `json:"custom,omitempty"`        // Custom tool definition
-	CacheControl *CacheControl     `json:"cache_control,omitempty"` // Cache control for the tool
+	Type         ChatToolType        `json:"type"`
+	Function     *ChatToolFunction   `json:"function,omitempty"`      // Function definition
+	Custom       *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition
+	CacheControl *CacheControl       `json:"cache_control,omitempty"` // Cache control for the tool
+	Annotations  *MCPToolAnnotations `json:"-"`                       // MCP tool annotations (Bifrost-internal, never forwarded to providers)
+}
+
+// MCPToolAnnotations carries optional MCP spec hints describing tool behavior.
+// These are forwarded as-is from the MCP server and help agents make reasoning decisions
+// (e.g. distinguishing read-only vs. mutating tools).
+type MCPToolAnnotations struct {
+	Title           string `json:"title,omitempty"`           // Human-readable title for the tool
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`    // If true, the tool does not modify its environment
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"` // If true, the tool may perform destructive updates
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`  // If true, repeated calls with same args have no additional effect
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`   // If true, the tool interacts with external entities
 }
 
 // ChatToolFunction represents a function definition.

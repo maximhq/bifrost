@@ -523,3 +523,174 @@ func TestOpenAIResponsesRequest_MarshalJSON_RoundTrip(t *testing.T) {
 		}
 	})
 }
+
+// Regression test for multi-turn Anthropic tool_result with array-form content.
+// The OpenAI Responses API defines function_call_output.output as a string (see
+// https://platform.openai.com/docs/api-reference/responses/create). When an
+// Anthropic client sends a tool_result whose content is an array of text blocks,
+// Bifrost's Anthropic→Responses translator populates
+// ResponsesToolMessageOutputStruct.ResponsesFunctionToolCallOutputBlocks.
+// Historically, that array was marshaled verbatim onto the wire, which some
+// strict OpenAI-compat upstreams (e.g. Ollama Cloud) reject with an error like
+//
+//	json: cannot unmarshal array into Go struct field ResponsesFunctionCallOutput.output of type string
+//
+// The outgoing OpenAI Responses request must emit `output` as a string for
+// text-only tool outputs.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputFlattensTextBlocksToString(t *testing.T) {
+	outputText := "line1"
+	callID := "toolu_abc123"
+	functionName := "read_file"
+
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Read /tmp/test.txt and tell me what it contains."),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(callID),
+					Name:      schemas.Ptr(functionName),
+					Arguments: schemas.Ptr(`{"path":"/tmp/test.txt"}`),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: schemas.Ptr(outputText),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal OpenAIResponsesRequestInput: %v", err)
+	}
+
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal marshaled input as array: %v\nraw=%s", err, string(jsonBytes))
+	}
+
+	var fcoMsg map[string]interface{}
+	for _, m := range messages {
+		if t, ok := m["type"].(string); ok && t == string(schemas.ResponsesMessageTypeFunctionCallOutput) {
+			fcoMsg = m
+			break
+		}
+	}
+	if fcoMsg == nil {
+		t.Fatalf("did not find function_call_output message in marshaled JSON: %s", string(jsonBytes))
+	}
+
+	outputVal, ok := fcoMsg["output"]
+	if !ok {
+		t.Fatalf("function_call_output message has no `output` field: %s", string(jsonBytes))
+	}
+
+	outputStr, isString := outputVal.(string)
+	if !isString {
+		t.Fatalf("function_call_output.output must be a string (OpenAI Responses API spec); got %T: %v\nraw=%s", outputVal, outputVal, string(jsonBytes))
+	}
+	if outputStr != outputText {
+		t.Fatalf("function_call_output.output mismatch: want %q, got %q", outputText, outputStr)
+	}
+}
+
+// Flattening must concatenate multiple text blocks with newline separators so
+// every character from the upstream tool response reaches the model.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputConcatenatesMultipleTextBlocks(t *testing.T) {
+	callID := "toolu_multi"
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("line1")},
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("line2")},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	got, ok := messages[0]["output"].(string)
+	if !ok {
+		t.Fatalf("output must be string, got %T", messages[0]["output"])
+	}
+	if want := "line1\nline2"; got != want {
+		t.Fatalf("flattened output mismatch: want %q, got %q", want, got)
+	}
+}
+
+// When the tool result contains a non-text block (e.g. an image), flattening is
+// unsafe — preserve the array form and let the upstream handle it. This keeps
+// the fix scoped to the common text-only case without dropping rich content.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonTextBlocks(t *testing.T) {
+	callID := "toolu_with_image"
+	imageURL := "https://example.com/screenshot.png"
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("here is the screenshot:")},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: &imageURL,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+	}
+	if _, isString := messages[0]["output"].(string); isString {
+		t.Fatalf("non-text blocks must not be flattened to string; raw=%s", string(jsonBytes))
+	}
+}

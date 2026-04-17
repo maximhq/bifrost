@@ -546,7 +546,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	// Attempt model discovery
 	err = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
-
 	if err != nil {
 		logger.Warn("Model discovery failed for provider %s: %v", provider, err)
 	}
@@ -1282,7 +1281,6 @@ func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provid
 	defer cancel()
 
 	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
-
 	if err != nil {
 		return err
 	}

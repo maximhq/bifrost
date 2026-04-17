@@ -307,11 +307,24 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			inputSchema.Properties = make(map[string]any)
 		}
 
+		// Map Bifrost annotations back to MCP tool annotations
+		var toolAnnotation mcp.ToolAnnotation
+		if tool.Annotations != nil {
+			toolAnnotation = mcp.ToolAnnotation{
+				Title:           tool.Annotations.Title,
+				ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
+				DestructiveHint: tool.Annotations.DestructiveHint,
+				IdempotentHint:  tool.Annotations.IdempotentHint,
+				OpenWorldHint:   tool.Annotations.OpenWorldHint,
+			}
+		}
+
 		// Register tool with the server
 		server.AddTool(mcp.Tool{
 			Name:        toolName,
 			Description: description,
 			InputSchema: inputSchema,
+			Annotations: toolAnnotation,
 		}, handler)
 	}
 }
