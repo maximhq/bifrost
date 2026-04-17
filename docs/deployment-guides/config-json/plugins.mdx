@@ -1,0 +1,318 @@
+---
+title: "Plugins"
+description: "Configure Bifrost plugins in config.json — semantic cache, OpenTelemetry, Maxim, Datadog, and custom plugins"
+icon: "puzzle-piece"
+---
+
+<Note>
+**The `plugins` array only controls explicitly opt-in plugins**: `semantic_cache`, `otel`, `maxim`, `datadog` (enterprise), and custom plugins.
+
+**Telemetry, logging, and governance are auto-loaded built-ins** — they are always active and configured via the `client` block and dedicated top-level keys, not the `plugins` array.
+</Note>
+
+---
+
+## Auto-Loaded Built-ins
+
+These plugins start automatically. You do **not** add them to the `plugins` array.
+
+| Plugin | Always active? | How to configure |
+|--------|---------------|-----------------|
+| **Telemetry** (Prometheus `/metrics`) | Yes, always | `client.prometheus_labels` for custom labels; push gateway via `plugins` entry once DB-backed mode is running |
+| **Logging** | When `client.enable_logging: true` and `logs_store` is configured | `client.enable_logging`, `client.disable_content_logging`, `client.logging_headers` |
+| **Governance** | Yes, always (OSS) | `client.enforce_auth_on_inference` for VK enforcement; `governance.*` for virtual keys / budgets / routing rules |
+
+See [Client Configuration](/deployment-guides/config-json/client) and [Governance](/deployment-guides/config-json/governance) for full details.
+
+---
+
+## Plugin Array Structure
+
+Every entry in the `plugins` array supports these common fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Plugin name |
+| `enabled` | boolean | Yes | Enable or disable this plugin |
+| `config` | object | Varies | Plugin-specific configuration |
+| `path` | string | No | Path to a custom plugin binary or WASM file |
+| `version` | integer | No | 🛑 **DB-Backed Only.** Plugin metadata persisted on `TablePlugin` rather than `PluginConfig`. Ignored in `config.json`. Used in UI/DB workflows to force refresh/reload. |
+| `placement` | string | No | 🛑 **DB-Backed Only.** Execution metadata (`"pre_builtin"`, `"builtin"`, `"post_builtin"`) persisted on `TablePlugin`. Ignored in `config.json`. Relevant for dynamic plugin ordering in UI/DB mode. |
+| `order` | integer | No | 🛑 **DB-Backed Only.** Execution metadata persisted on `TablePlugin`. Ignored in `config.json`. Within a placement group, lower values run earlier. |
+
+<Note>
+`name`, `enabled`, `path`, and `config` are the core plugin config fields parsed from `config.json`. `version`, `placement`, and `order` are **not valid `config.json` keys**; they are DB-backed metadata persisted on `TablePlugin` and are only applicable when managing plugins dynamically via the UI or Database.
+</Note>
+
+---
+
+<Tabs>
+
+<Tab title="Semantic Cache">
+
+### Semantic Cache
+
+Caches LLM responses by semantic similarity. Returns a cached response when an incoming request is semantically close enough to a previous one.
+
+Requires a [vector store](/deployment-guides/config-json/storage#vector_store) to be configured.
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `config.dimension` | Yes | — | Embedding dimension. Use `1` for hash-based (exact) caching without an embedding provider |
+| `config.provider` | No | — | Provider for generating embeddings (required for semantic mode) |
+| `config.embedding_model` | No | — | Model for embeddings (required when `provider` is set) |
+| `config.threshold` | No | `0.8` | Cosine similarity threshold for a cache hit (0.0–1.0) |
+| `config.ttl` | No | `300` | Cache entry TTL in seconds (or a duration string like `"1h"`) |
+| `config.cache_by_model` | No | `true` | Include model in cache key |
+| `config.cache_by_provider` | No | `true` | Include provider in cache key |
+| `config.exclude_system_prompt` | No | `false` | Exclude system prompt from cache key |
+| `config.conversation_history_threshold` | No | `3` | Skip caching for requests with more messages than this |
+| `config.default_cache_key` | No | — | Default cache key when no `x-bf-cache-key` header is sent |
+
+**Semantic mode** (embedding-based similarity search):
+
+```json
+{
+  "plugins": [
+    {
+      "name": "semantic_cache",
+      "enabled": true,
+      "config": {
+        "provider": "openai",
+        "embedding_model": "text-embedding-3-small",
+        "dimension": 1536,
+        "threshold": 0.85,
+        "ttl": 300,
+        "cache_by_model": true,
+        "cache_by_provider": true
+      }
+    }
+  ]
+}
+```
+
+**Hash mode** (exact-match caching, no embedding provider needed):
+
+```json
+{
+  "plugins": [
+    {
+      "name": "semantic_cache",
+      "enabled": true,
+      "config": {
+        "dimension": 1,
+        "ttl": 1800
+      }
+    }
+  ]
+}
+```
+
+<Note>
+You must also configure a `vector_store` in `config.json`. See [Storage — vector_store](/deployment-guides/config-json/storage#vector_store).
+</Note>
+
+</Tab>
+
+<Tab title="OpenTelemetry">
+
+### OpenTelemetry (OTel)
+
+Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tempo, Datadog via OTLP, etc.).
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `config.collector_url` | Yes | — | OTLP collector endpoint |
+| `config.trace_type` | Yes | — | Trace format: `"genai_extension"`, `"vercel"`, or `"open_inference"` |
+| `config.protocol` | Yes | — | `"http"` or `"grpc"` |
+| `config.service_name` | No | `"bifrost"` | Service name reported to the collector |
+| `config.metrics_enabled` | No | `false` | Enable push-based OTLP metrics export |
+| `config.metrics_endpoint` | No | — | OTLP metrics endpoint URL |
+| `config.metrics_push_interval` | No | `15` | Metrics push interval in seconds |
+| `config.headers` | No | — | Custom headers for the collector (supports `env.` prefix) |
+| `config.insecure` | No | `false` | Skip TLS verification |
+| `config.tls_ca_cert` | No | — | Path to TLS CA certificate |
+
+```json
+{
+  "plugins": [
+    {
+      "name": "otel",
+      "enabled": true,
+      "config": {
+        "collector_url": "http://otel-collector:4318",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "service_name": "bifrost-gateway"
+      }
+    }
+  ]
+}
+```
+
+**With authentication headers:**
+
+```json
+{
+  "plugins": [
+    {
+      "name": "otel",
+      "enabled": true,
+      "config": {
+        "collector_url": "https://otel.example.com:4318",
+        "trace_type": "open_inference",
+        "protocol": "http",
+        "service_name": "bifrost",
+        "headers": {
+          "Authorization": "env.OTEL_AUTH_HEADER"
+        }
+      }
+    }
+  ]
+}
+```
+
+**With OTLP metrics export:**
+
+```json
+{
+  "plugins": [
+    {
+      "name": "otel",
+      "enabled": true,
+      "config": {
+        "collector_url": "http://otel-collector:4318",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "metrics_enabled": true,
+        "metrics_endpoint": "http://otel-collector:4318/v1/metrics",
+        "metrics_push_interval": 30
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+
+<Tab title="Maxim">
+
+### Maxim Observability
+
+Sends request traces to the [Maxim](https://www.getmaxim.ai) observability platform.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `config.api_key` | Yes | Maxim API key (use `env.` prefix) |
+| `config.log_repo_id` | No | Default Maxim logger repository ID |
+
+```json
+{
+  "plugins": [
+    {
+      "name": "maxim",
+      "enabled": true,
+      "config": {
+        "api_key": "env.MAXIM_API_KEY",
+        "log_repo_id": "your-log-repo-id"
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+
+<Tab title="Datadog">
+
+### Datadog
+
+<Note>
+Datadog is an **enterprise-only** plugin and is silently ignored in OSS builds.
+</Note>
+
+Sends APM traces and metrics to a Datadog Agent.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `config.agent_addr` | `"localhost:8126"` | Datadog Agent address for APM traces |
+| `config.service_name` | `"bifrost"` | Service name in Datadog |
+| `config.env` | — | Environment tag (e.g. `"production"`, `"staging"`) |
+| `config.version` | — | Service version tag |
+| `config.enable_traces` | `true` | Enable APM trace collection |
+| `config.custom_tags` | `{}` | Additional key/value tags for all traces and metrics |
+
+```json
+{
+  "plugins": [
+    {
+      "name": "datadog",
+      "enabled": true,
+      "config": {
+        "agent_addr": "datadog-agent:8126",
+        "service_name": "bifrost",
+        "env": "production",
+        "enable_traces": true,
+        "custom_tags": {
+          "team": "platform",
+          "region": "us-east-1"
+        }
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Custom / Dynamic Plugins
+
+Load a custom Go plugin binary or WASM plugin at startup using the `path` field. Custom plugins must implement one of the Bifrost plugin interfaces.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "my-custom-auth",
+      "enabled": true,
+      "path": "/app/plugins/my-custom-auth.so",
+      "config": {
+        "auth_endpoint": "env.AUTH_SERVICE_URL"
+      }
+    }
+  ]
+}
+```
+
+**WASM plugin:**
+
+```json
+{
+  "plugins": [
+    {
+      "name": "my-wasm-plugin",
+      "enabled": true,
+      "path": "/app/plugins/my-plugin.wasm",
+      "config": {}
+    }
+  ]
+}
+```
+
+See [Writing Go Plugins](/plugins/writing-go-plugin) and [Writing WASM Plugins](/plugins/writing-wasm-plugin) for implementation guides.
+
+**Placement and ordering (DB-backed only):**
+
+When creating plugins dynamically via the DB/UI (rather than `config.json`), you can specify their execution order:
+
+| `placement` | When it runs |
+|-------------|-------------|
+| `pre_builtin` | Before all built-in plugins |
+| `builtin` | Alongside built-in plugins (by `order`) |
+| `post_builtin` | After all built-in plugins (default) |
+
+Within a placement group, lower `order` values run earlier.

@@ -381,8 +381,23 @@
                   "deployment-guides/helm/storage",
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
+                  "deployment-guides/helm/guardrails",
                   "deployment-guides/helm/cluster",
                   "deployment-guides/helm/troubleshooting"
+                ]
+              },
+              {
+                "group": "config.json",
+                "icon": "file-code",
+                "pages": [
+                  "deployment-guides/config-json",
+                  "deployment-guides/config-json/schema-reference",
+                  "deployment-guides/config-json/client",
+                  "deployment-guides/config-json/providers",
+                  "deployment-guides/config-json/storage",
+                  "deployment-guides/config-json/plugins",
+                  "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/guardrails"
                 ]
               }
             ]

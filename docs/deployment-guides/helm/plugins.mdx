@@ -6,15 +6,15 @@ icon: "puzzle-piece"
 
 Plugins are configured under `bifrost.plugins`. Each plugin is independently enabled/disabled. Pre-hooks run in registration order; post-hooks run in reverse order.
 
+<Note>
+**Telemetry, logging, and governance are auto-loaded built-ins** — they are always active and do not need to be explicitly enabled. Their configuration lives in `bifrost.client.*` and `bifrost.governance.*`, not in the `plugins` block.
+
+The `plugins` block controls the opt-in plugins: `semanticCache`, `otel`, `datadog`, `maxim`, and custom plugins.
+</Note>
+
 ```yaml
 bifrost:
   plugins:
-    telemetry:
-      enabled: true
-    logging:
-      enabled: true
-    governance:
-      enabled: true
     semanticCache:
       enabled: false
     otel:
@@ -24,17 +24,15 @@ bifrost:
 ```
 
 ```bash
-# Enable plugins at install time
+# Enable an opt-in plugin at install time
 helm install bifrost bifrost/bifrost \
   --set image.tag=v1.4.11 \
-  --set bifrost.plugins.telemetry.enabled=true \
-  --set bifrost.plugins.logging.enabled=true \
-  --set bifrost.plugins.governance.enabled=true
+  --set bifrost.plugins.otel.enabled=true
 
 # Or upgrade to enable a plugin without touching other values
 helm upgrade bifrost bifrost/bifrost \
   --reuse-values \
-  --set bifrost.plugins.otel.enabled=true
+  --set bifrost.plugins.semanticCache.enabled=true
 ```
 
 ---
@@ -45,39 +43,21 @@ helm upgrade bifrost bifrost/bifrost \
 
 ### Telemetry (Prometheus)
 
-Exposes Prometheus metrics at `GET /metrics`.
+<Note>
+Telemetry is **always active** — it cannot be disabled. You do not need to set `bifrost.plugins.telemetry.enabled`.
+</Note>
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `bifrost.plugins.telemetry.enabled` | Enable Prometheus metrics | `false` |
-| `bifrost.plugins.telemetry.config.custom_labels` | Extra labels attached to every metric | `[]` |
-| `bifrost.plugins.telemetry.config.push_gateway.enabled` | Push metrics to a Prometheus Push Gateway | `false` |
-| `bifrost.plugins.telemetry.config.push_gateway.push_gateway_url` | Push Gateway URL | `""` |
-| `bifrost.plugins.telemetry.config.push_gateway.job_name` | Job label | `"bifrost"` |
-| `bifrost.plugins.telemetry.config.push_gateway.push_interval` | Push interval in seconds | `15` |
-
-**Basic setup:**
+Exposes Prometheus metrics at `GET /metrics`. Custom labels are set via `bifrost.client.prometheusLabels`:
 
 ```yaml
-# telemetry-values.yaml
-image:
-  tag: "v1.4.11"
-
 bifrost:
-  plugins:
-    telemetry:
-      enabled: true
-      config:
-        custom_labels:
-          - name: "environment"
-            value: "production"
-          - name: "region"
-            value: "us-east-1"
+  client:
+    prometheusLabels:
+      - "environment=production"
+      - "region=us-east-1"
 ```
 
 ```bash
-helm upgrade bifrost bifrost/bifrost --reuse-values -f telemetry-values.yaml
-
 # Verify metrics are exposed
 kubectl port-forward svc/bifrost 8080:8080 &
 curl http://localhost:8080/metrics | head -30
@@ -118,81 +98,60 @@ serviceMonitor:
 
 ### Request/Response Logging
 
-Persists full request and response data to the configured log store.
+<Note>
+Logging is **auto-loaded** when `bifrost.client.enableLogging: true` and a log store is configured. You do not need to set `bifrost.plugins.logging.enabled`.
+</Note>
+
+Configure logging via the `client` block:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `bifrost.plugins.logging.enabled` | Enable request/response logging | `false` |
-| `bifrost.plugins.logging.config.disable_content_logging` | Strip message body from logs | `false` |
-| `bifrost.plugins.logging.config.logging_headers` | HTTP headers to capture in log metadata | `[]` |
+| `bifrost.client.enableLogging` | Enable request/response logging | `true` |
+| `bifrost.client.disableContentLogging` | Strip message body from logs (HIPAA/PCI) | `false` |
+| `bifrost.client.loggingHeaders` | HTTP headers to capture in log metadata | `[]` |
 
 ```yaml
-# logging-values.yaml
-image:
-  tag: "v1.4.11"
-
 bifrost:
-  plugins:
-    logging:
-      enabled: true
-      config:
-        disable_content_logging: false   # set true for HIPAA/compliance
-        logging_headers:
-          - "x-request-id"
-          - "x-user-id"
-          - "x-team-id"
+  client:
+    enableLogging: true
+    disableContentLogging: false   # set true for HIPAA/compliance
+    loggingHeaders:
+      - "x-request-id"
+      - "x-user-id"
+      - "x-team-id"
 ```
 
 ```bash
-helm upgrade bifrost bifrost/bifrost --reuse-values -f logging-values.yaml
-```
-
-**Verify logs are being written:**
-
-```bash
+# Verify logs are being written
 kubectl port-forward svc/bifrost 8080:8080 &
-# Make a test request, then query logs
 curl -s "http://localhost:8080/api/logs?limit=5" | jq .
 ```
 
-<Note>
-`bifrost.plugins.logging` controls the *plugin* (which hooks into every request). `bifrost.client.enableLogging` / `disableContentLogging` controls the *client-level* defaults. Both must be configured consistently — see the [Client Configuration](/deployment-guides/helm/client) page.
-</Note>
+See [Client Configuration](/deployment-guides/helm/client) for the full reference.
 
 </Tab>
 
 <Tab title="Governance">
 
-### Governance Plugin
+### Governance
 
-Enforces budget caps, rate limits, and virtual key policies on every request. Must be enabled alongside `bifrost.governance` resource definitions.
+<Note>
+Governance is **always active** for OSS deployments. You do not need to set `bifrost.plugins.governance.enabled`.
+</Note>
+
+Virtual key enforcement is controlled by the `client` block:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `bifrost.plugins.governance.enabled` | Enable governance enforcement | `false` |
-| `bifrost.plugins.governance.config.is_vk_mandatory` | Reject requests without a virtual key | `false` |
-| `bifrost.plugins.governance.config.required_headers` | Additional headers required on every request | `[]` |
-| `bifrost.plugins.governance.config.is_enterprise` | Enable enterprise governance features | `false` |
+| `bifrost.client.enforceAuthOnInference` | Require a virtual key (`x-bf-vk`) on every inference request | `false` |
 
 ```yaml
-# governance-plugin-values.yaml
-image:
-  tag: "v1.4.11"
-
 bifrost:
-  plugins:
-    governance:
-      enabled: true
-      config:
-        is_vk_mandatory: true     # require virtual key on all inference requests
-        required_headers: []
+  client:
+    enforceAuthOnInference: true   # require virtual key on all inference requests
 ```
 
-```bash
-helm upgrade bifrost bifrost/bifrost --reuse-values -f governance-plugin-values.yaml
-```
-
-See the [Governance](/deployment-guides/helm/governance) page for defining budgets, rate limits, and virtual keys.
+Define virtual keys, budgets, rate limits, and routing rules in `bifrost.governance.*`. See the [Governance](/deployment-guides/helm/governance) page.
 
 </Tab>
 

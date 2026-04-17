@@ -1,0 +1,755 @@
+---
+title: "Provider Setup"
+description: "Configure LLM providers in config.json — API keys, cloud-native auth, per-provider network settings, and self-hosted endpoints"
+icon: "plug"
+---
+
+All providers are configured under `providers` in `config.json`. Each provider entry contains a `keys` array where every key has a `name`, `value`, `models`, and `weight`, plus optional provider-specific config objects.
+
+**Supplying credentials:**
+
+Use the `env.` prefix to reference environment variables — never put API keys directly in `config.json`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+## Common Provider Fields
+
+Every key object supports these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique name for this key (used in logs and virtual key pin) |
+| `value` | string | API key value or `env.VAR_NAME` reference |
+| `models` | array | Models this key serves. `["*"]` = all models |
+| `weight` | float | Load balancing weight. Higher = more traffic |
+| `aliases` | object | Map logical name → actual model name for this key |
+| `use_for_batch_api` | boolean | Mark key as eligible for batch API calls |
+
+Per-provider `network_config` options (applies to all standard providers):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `default_request_timeout_in_seconds` | integer | Per-request timeout |
+| `max_retries` | integer | Retry attempts on transient errors |
+| `retry_backoff_initial` | integer | Initial backoff in milliseconds |
+| `retry_backoff_max` | integer | Maximum backoff in milliseconds |
+| `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
+| `extra_headers` | object | Static headers added to every provider request |
+| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 60) |
+| `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
+| `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |
+
+Concurrency and buffering per provider:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `concurrency_and_buffer_size.concurrency` | integer | Max concurrent requests to this provider |
+| `concurrency_and_buffer_size.buffer_size` | integer | Request queue depth |
+
+---
+
+<Tabs>
+
+<Tab title="OpenAI">
+
+### OpenAI
+
+Supports multiple keys with weighted load balancing. Mark one key with `use_for_batch_api: true` to designate it for the Batch API.
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-primary",
+          "value": "env.OPENAI_KEY_1",
+          "models": ["*"],
+          "weight": 2.0
+        },
+        {
+          "name": "openai-secondary",
+          "value": "env.OPENAI_KEY_2",
+          "models": ["gpt-4o-mini"],
+          "weight": 1.0
+        },
+        {
+          "name": "openai-batch",
+          "value": "env.OPENAI_KEY_BATCH",
+          "models": ["*"],
+          "weight": 1.0,
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 120,
+        "max_retries": 3,
+        "retry_backoff_initial": 500,
+        "retry_backoff_max": 5000
+      }
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Anthropic">
+
+### Anthropic
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-primary",
+          "value": "env.ANTHROPIC_KEY_1",
+          "models": ["*"],
+          "weight": 1.0
+        },
+        {
+          "name": "anthropic-secondary",
+          "value": "env.ANTHROPIC_KEY_2",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 180
+      }
+    }
+  }
+}
+```
+
+**Override Anthropic beta headers** (optional):
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "keys": [
+        {
+          "name": "primary",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "beta_header_overrides": {
+          "redact-thinking-": true
+        }
+      }
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Azure OpenAI">
+
+### Azure OpenAI
+
+Azure requires `azure_key_config` on every key with `endpoint` and `api_version`. List your Azure deployment names in `models` — Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
+
+<Tabs>
+<Tab title="API Key">
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-primary",
+          "value": "env.AZURE_API_KEY",
+          "models": ["gpt-4o", "gpt-4o-mini"],
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "api_version": "env.AZURE_API_VERSION"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Set environment variables:
+
+```bash
+export AZURE_API_KEY="your-azure-api-key"
+export AZURE_ENDPOINT="https://your-resource.openai.azure.com"
+export AZURE_API_VERSION="2024-10-21"
+```
+
+</Tab>
+<Tab title="Managed Identity / DefaultAzureCredential">
+
+When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — which resolves credentials from Workload Identity, VM managed identity, or `az login`.
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-workload-identity",
+          "value": "",
+          "models": ["gpt-4o"],
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "api_version": "env.AZURE_API_VERSION"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+**Deployment name aliases** — when your Azure deployment names differ from the model names in requests, use `aliases`:
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-primary",
+          "value": "env.AZURE_API_KEY",
+          "models": ["gpt-4o"],
+          "weight": 1.0,
+          "aliases": {
+            "gpt-4o": "gpt-4o-prod-deployment"
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "api_version": "env.AZURE_API_VERSION"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+**Multi-region failover** (two keys, different regions):
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "eastus",
+          "value": "env.AZURE_KEY_EAST",
+          "models": ["gpt-4o"],
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT_EAST",
+            "api_version": "env.AZURE_API_VERSION"
+          }
+        },
+        {
+          "name": "westus",
+          "value": "env.AZURE_KEY_WEST",
+          "models": ["gpt-4o"],
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT_WEST",
+            "api_version": "env.AZURE_API_VERSION"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="AWS Bedrock">
+
+### AWS Bedrock
+
+Bedrock requires `bedrock_key_config` with at minimum a `region`. Three auth modes:
+
+<Tabs>
+<Tab title="Static Credentials">
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-static",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "region": "us-east-1",
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="IAM Role (instance profile / IRSA)">
+
+When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain — IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-iam",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="STS AssumeRole">
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-assumerole",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "region": "us-west-2",
+            "role_arn": "env.AWS_ROLE_ARN",
+            "external_id": "env.AWS_EXTERNAL_ID",
+            "session_name": "bifrost-session"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+**Model aliases** (map logical names to Bedrock inference profile IDs):
+
+```json
+{
+  "bedrock_key_config": {
+    "region": "us-east-1"
+  },
+  "aliases": {
+    "claude-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "claude-haiku":  "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+  }
+}
+```
+
+**Batch API — S3 configuration:**
+
+```json
+{
+  "bedrock_key_config": {
+    "region": "us-east-1",
+    "access_key": "env.AWS_ACCESS_KEY_ID",
+    "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+    "batch_s3_config": {
+      "buckets": [
+        {
+          "bucket_name": "my-bedrock-batch-bucket",
+          "prefix": "batch/",
+          "is_default": true
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Google Vertex AI">
+
+### Google Vertex AI
+
+Vertex requires `vertex_key_config` with `project_id` and `region`. Two auth modes:
+
+<Tabs>
+<Tab title="Service Account Key">
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-sa",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us-central1",
+            "auth_credentials": "env.VERTEX_AUTH_CREDENTIALS"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+`VERTEX_AUTH_CREDENTIALS` should contain the base64-encoded service account JSON.
+
+</Tab>
+<Tab title="GKE Workload Identity / ADC">
+
+When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` — which resolves to GKE Workload Identity, GCE metadata server, or `gcloud auth application-default login`.
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-workload-identity",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "my-gcp-project",
+            "region": "us-central1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+</Tab>
+
+<Tab title="Groq / Gemini / Mistral / Others">
+
+### Standard API-Key Providers
+
+These providers follow the same simple pattern — one or more keys with weights. Replace the provider name and env var name accordingly.
+
+```json
+{
+  "providers": {
+    "groq": {
+      "keys": [
+        {
+          "name": "groq-primary",
+          "value": "env.GROQ_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    },
+    "gemini": {
+      "keys": [
+        {
+          "name": "gemini-primary",
+          "value": "env.GEMINI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    },
+    "mistral": {
+      "keys": [
+        {
+          "name": "mistral-primary",
+          "value": "env.MISTRAL_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    },
+    "cohere": {
+      "keys": [{ "name": "cohere-main", "value": "env.COHERE_API_KEY", "models": ["*"], "weight": 1.0 }]
+    },
+    "perplexity": {
+      "keys": [{ "name": "perplexity-main", "value": "env.PERPLEXITY_API_KEY", "models": ["*"], "weight": 1.0 }]
+    },
+    "xai": {
+      "keys": [{ "name": "xai-main", "value": "env.XAI_API_KEY", "models": ["*"], "weight": 1.0 }]
+    },
+    "cerebras": {
+      "keys": [{ "name": "cerebras-main", "value": "env.CEREBRAS_API_KEY", "models": ["*"], "weight": 1.0 }]
+    },
+    "openrouter": {
+      "keys": [{ "name": "openrouter-main", "value": "env.OPENROUTER_API_KEY", "models": ["*"], "weight": 1.0 }]
+    },
+    "nebius": {
+      "keys": [{ "name": "nebius-main", "value": "env.NEBIUS_API_KEY", "models": ["*"], "weight": 1.0 }]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Self-Hosted">
+
+### Self-Hosted Providers
+
+Self-hosted providers point to a URL you operate. No API key is typically required (`"value": ""`).
+
+<Tabs>
+<Tab title="Ollama">
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "keys": [
+        {
+          "name": "ollama-local",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "ollama_key_config": {
+            "url": "http://localhost:11434"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Using an env var for the URL (useful across environments):
+
+```json
+{
+  "ollama_key_config": {
+    "url": "env.OLLAMA_URL"
+  }
+}
+```
+
+</Tab>
+<Tab title="vLLM">
+
+vLLM instances are model-specific — one key per served model:
+
+```json
+{
+  "providers": {
+    "vllm": {
+      "keys": [
+        {
+          "name": "vllm-llama3-70b",
+          "value": "",
+          "models": ["llama-3-70b"],
+          "weight": 1.0,
+          "vllm_key_config": {
+            "url": "http://vllm-server:8000",
+            "model_name": "meta-llama/Meta-Llama-3-70B-Instruct"
+          }
+        },
+        {
+          "name": "vllm-mistral",
+          "value": "",
+          "models": ["mistral-7b"],
+          "weight": 1.0,
+          "vllm_key_config": {
+            "url": "http://vllm-mistral:8000",
+            "model_name": "mistralai/Mistral-7B-Instruct-v0.3"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="SGLang">
+
+```json
+{
+  "providers": {
+    "sgl": {
+      "keys": [
+        {
+          "name": "sgl-main",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "sgl_key_config": {
+            "url": "http://sgl-router:30000"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="HuggingFace / Replicate">
+
+These providers use `aliases` to map logical model names to provider-specific IDs:
+
+```json
+{
+  "providers": {
+    "huggingface": {
+      "keys": [
+        {
+          "name": "hf-main",
+          "value": "env.HF_API_KEY",
+          "models": ["llama-3", "mixtral"],
+          "weight": 1.0,
+          "aliases": {
+            "llama-3": "meta-llama/Meta-Llama-3-8B-Instruct",
+            "mixtral": "mistralai/Mixtral-8x7B-Instruct-v0.1"
+          }
+        }
+      ]
+    },
+    "replicate": {
+      "keys": [
+        {
+          "name": "replicate-main",
+          "value": "env.REPLICATE_API_KEY",
+          "models": ["llama-3"],
+          "weight": 1.0,
+          "aliases": {
+            "llama-3": "meta/meta-llama-3-70b-instruct"
+          },
+          "replicate_key_config": {
+            "use_deployments_endpoint": false
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Proxy Configuration
+
+Route provider traffic through an HTTP or SOCKS5 proxy:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        { "name": "primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1.0 }
+      ],
+      "proxy_config": {
+        "type": "http",
+        "url": "http://proxy.corp.example.com:3128",
+        "username": "env.PROXY_USER",
+        "password": "env.PROXY_PASS"
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Options |
+|-------|------|---------|
+| `proxy_config.type` | string | `"none"`, `"http"`, `"socks5"`, `"environment"` |
+| `proxy_config.url` | string | Proxy server URL |
+| `proxy_config.username` | string | Proxy auth username |
+| `proxy_config.password` | string | Proxy auth password (`env.` supported) |
+| `proxy_config.ca_cert_pem` | string | PEM CA for TLS-intercepting proxies |
+
+Use `"type": "environment"` to pick up `HTTP_PROXY` / `HTTPS_PROXY` env vars automatically.
+
+---
+
+## Multi-Provider Example
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "providers": {
+    "openai": {
+      "keys": [
+        { "name": "openai-primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 2.0 }
+      ]
+    },
+    "anthropic": {
+      "keys": [
+        { "name": "anthropic-primary", "value": "env.ANTHROPIC_API_KEY", "models": ["*"], "weight": 1.0 }
+      ]
+    },
+    "groq": {
+      "keys": [
+        { "name": "groq-primary", "value": "env.GROQ_API_KEY", "models": ["*"], "weight": 1.0 }
+      ]
+    }
+  }
+}
+```
+
+With three providers and the weights above, traffic is distributed: 50% OpenAI, 25% Anthropic, 25% Groq. If any provider returns an error, Bifrost automatically retries on the next key or provider.

@@ -1045,20 +1045,20 @@
           "version": {
             "type": "integer",
             "minimum": 1,
-            "description": "Version of the plugin (default: 1). Increment in this number will force a reload of the plugin and DB update.",
+            "description": "DB-Backed Only. Version of the plugin (default: 1). Ignored in config.json. Increment in this number will force a reload of the plugin and DB update.",
             "optional": true,
             "default": 1
           },
           "placement": {
             "type": "string",
             "enum": ["pre_builtin", "post_builtin", "builtin"],
-            "description": "Whether this plugin runs before, after, or as a built-in. Default: post_builtin",
+            "description": "DB-Backed Only. Whether this plugin runs before, after, or as a built-in. Default: post_builtin. Ignored in config.json.",
             "optional": true,
             "default": "post_builtin"
           },
           "order": {
             "type": "integer",
-            "description": "Position within placement group. Lower values execute earlier. Default: 0",
+            "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Ignored in config.json.",
             "optional": true,
             "default": 0
           }
