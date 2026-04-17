@@ -7,3 +7,4 @@
 - fix: capture responses streaming API errors
 - fix: delete fallbacks from outgoing Anthropic requests
 - feat: claude-opus-4-7 compatibility
+- fix: token usage for vllm
