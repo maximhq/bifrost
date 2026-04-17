@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
+export GOTOOLCHAIN=auto
 
 # If go.work exists, skip
 if [ -f "go.work" ]; then
