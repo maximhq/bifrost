@@ -89,6 +89,7 @@ type OpenAIChatRequest struct {
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	MCPServers  []string               `json:"mcp_servers,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
 }
 
@@ -258,6 +259,7 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 		MaxTokens               *int            `json:"max_tokens,omitempty"`
 		PromptCacheIsolationKey *string         `json:"prompt_cache_isolation_key,omitempty"`
 		Fallbacks               []string        `json:"fallbacks,omitempty"`
+		MCPServers              []string        `json:"mcp_servers,omitempty"`
 	}
 	var base baseFields
 	if err := sonic.Unmarshal(data, &base); err != nil {
@@ -269,6 +271,7 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	req.MaxTokens = base.MaxTokens
 	req.PromptCacheIsolationKey = base.PromptCacheIsolationKey
 	req.Fallbacks = base.Fallbacks
+	req.MCPServers = base.MCPServers
 
 	// Unmarshal ChatParameters (which has its own custom unmarshaller)
 	var params schemas.ChatParameters
@@ -647,6 +650,7 @@ type OpenAIResponsesRequest struct {
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	MCPServers  []string               `json:"mcp_servers,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
 }
 

@@ -11,6 +11,10 @@ import (
 func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
 	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
 
+	if len(req.MCPServers) > 0 && ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKey("mcp-include-clients"), req.MCPServers)
+	}
+
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
 		Model:     model,
