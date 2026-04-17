@@ -654,6 +654,77 @@ func TestProviderBetaHeaderInjection(t *testing.T) {
 			},
 			expectHeaders: []string{"computer-use-2025-01-24"},
 		},
+
+		// ── Fine-grained tool streaming header (eager_input_streaming) ──
+		// Per cited citations (A overview table + B-header): EagerInputStreaming
+		// is supported on Anthropic, Bedrock, Vertex, and Azure — all four
+		// should auto-inject fine-grained-tool-streaming-2025-05-14 when a
+		// tool has eager_input_streaming: true.
+		{
+			name:     "Anthropic/eager_input_streaming_header_added",
+			provider: schemas.Anthropic,
+			setupReq: func() *anthropic.AnthropicMessageRequest {
+				eager := true
+				return &anthropic.AnthropicMessageRequest{
+					Tools: []anthropic.AnthropicTool{{Name: "t1", EagerInputStreaming: &eager}},
+				}
+			},
+			expectHeaders: []string{"fine-grained-tool-streaming-2025-05-14"},
+		},
+		{
+			name:     "Bedrock/eager_input_streaming_header_added",
+			provider: schemas.Bedrock,
+			setupReq: func() *anthropic.AnthropicMessageRequest {
+				eager := true
+				return &anthropic.AnthropicMessageRequest{
+					Tools: []anthropic.AnthropicTool{{Name: "t1", EagerInputStreaming: &eager}},
+				}
+			},
+			expectHeaders: []string{"fine-grained-tool-streaming-2025-05-14"},
+		},
+		{
+			name:     "Vertex/eager_input_streaming_header_added",
+			provider: schemas.Vertex,
+			setupReq: func() *anthropic.AnthropicMessageRequest {
+				eager := true
+				return &anthropic.AnthropicMessageRequest{
+					Tools: []anthropic.AnthropicTool{{Name: "t1", EagerInputStreaming: &eager}},
+				}
+			},
+			expectHeaders: []string{"fine-grained-tool-streaming-2025-05-14"},
+		},
+		{
+			name:     "Azure/eager_input_streaming_header_added",
+			provider: schemas.Azure,
+			setupReq: func() *anthropic.AnthropicMessageRequest {
+				eager := true
+				return &anthropic.AnthropicMessageRequest{
+					Tools: []anthropic.AnthropicTool{{Name: "t1", EagerInputStreaming: &eager}},
+				}
+			},
+			expectHeaders: []string{"fine-grained-tool-streaming-2025-05-14"},
+		},
+		{
+			name:     "eager_input_streaming_header_skipped_when_flag_false",
+			provider: schemas.Anthropic,
+			setupReq: func() *anthropic.AnthropicMessageRequest {
+				eager := false
+				return &anthropic.AnthropicMessageRequest{
+					Tools: []anthropic.AnthropicTool{{Name: "t1", EagerInputStreaming: &eager}},
+				}
+			},
+			unexpectHeaders: []string{"fine-grained-tool-streaming-2025-05-14"},
+		},
+		{
+			name:     "eager_input_streaming_header_skipped_when_unset",
+			provider: schemas.Anthropic,
+			setupReq: func() *anthropic.AnthropicMessageRequest {
+				return &anthropic.AnthropicMessageRequest{
+					Tools: []anthropic.AnthropicTool{{Name: "t1"}},
+				}
+			},
+			unexpectHeaders: []string{"fine-grained-tool-streaming-2025-05-14"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -88,7 +88,9 @@ type TestScenarios struct {
 	Realtime               bool // Realtime API (bidirectional audio/text)
 	Compaction          bool // Server-side compaction (context management)
 	InterleavedThinking bool // Interleaved thinking between tool calls (beta)
-	FastMode            bool // Fast mode for Opus 4.6 (beta: research preview)
+	FastMode                      bool // Fast mode for Opus 4.6 (beta: research preview)
+	EagerInputStreaming           bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
+	ServerToolsViaOpenAIEndpoint  bool // Anthropic server-tool shapes in tools[] via /v1/chat/completions (web_search / web_fetch / code_execution)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios

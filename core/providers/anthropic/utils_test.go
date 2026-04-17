@@ -797,6 +797,58 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			},
 			unexpectHeaders: []string{AnthropicFastModeBetaHeader},
 		},
+		// Fine-grained tool streaming (eager_input_streaming) — per Table 20:
+		// GA on Anthropic / Bedrock / Vertex, Beta on Azure. All four should
+		// auto-inject fine-grained-tool-streaming-2025-05-14 when a tool has
+		// eager_input_streaming: true.
+		{
+			name:     "Anthropic gets eager_input_streaming header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{Name: "t1", EagerInputStreaming: schemas.Ptr(true)}},
+			},
+			expectHeaders: []string{AnthropicEagerInputStreamingBetaHeader},
+		},
+		{
+			name:     "Bedrock gets eager_input_streaming header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{Name: "t1", EagerInputStreaming: schemas.Ptr(true)}},
+			},
+			expectHeaders: []string{AnthropicEagerInputStreamingBetaHeader},
+		},
+		{
+			name:     "Vertex gets eager_input_streaming header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{Name: "t1", EagerInputStreaming: schemas.Ptr(true)}},
+			},
+			expectHeaders: []string{AnthropicEagerInputStreamingBetaHeader},
+		},
+		{
+			name:     "Azure gets eager_input_streaming header",
+			provider: schemas.Azure,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{Name: "t1", EagerInputStreaming: schemas.Ptr(true)}},
+			},
+			expectHeaders: []string{AnthropicEagerInputStreamingBetaHeader},
+		},
+		{
+			name:     "eager_input_streaming header absent when flag is false",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{Name: "t1", EagerInputStreaming: schemas.Ptr(false)}},
+			},
+			unexpectHeaders: []string{AnthropicEagerInputStreamingBetaHeader},
+		},
+		{
+			name:     "eager_input_streaming header absent when unset",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{Name: "t1"}},
+			},
+			unexpectHeaders: []string{AnthropicEagerInputStreamingBetaHeader},
+		},
 	}
 
 	for _, tt := range tests {
@@ -998,6 +1050,7 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicContextManagementBetaHeader,
 			AnthropicInterleavedThinkingBetaHeader,
 			AnthropicContext1MBetaHeader,
+			AnthropicEagerInputStreamingBetaHeader,
 		}
 		result := FilterBetaHeadersForProvider(supported, schemas.Vertex)
 		if len(result) != len(supported) {
@@ -1049,6 +1102,7 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicSkillsBetaHeader,
 			AnthropicContext1MBetaHeader,
 			AnthropicRedactThinkingBetaHeader,
+			AnthropicEagerInputStreamingBetaHeader,
 		}
 		result := FilterBetaHeadersForProvider(supported, schemas.Azure)
 		if len(result) != len(supported) {
@@ -1064,6 +1118,7 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicContextManagementBetaHeader,
 			AnthropicInterleavedThinkingBetaHeader,
 			AnthropicContext1MBetaHeader,
+			AnthropicEagerInputStreamingBetaHeader,
 		}
 		result := FilterBetaHeadersForProvider(supported, schemas.Bedrock)
 		if len(result) != len(supported) {

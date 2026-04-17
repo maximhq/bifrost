@@ -3437,7 +3437,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 
 		case AnthropicContentBlockTypeImage:
 			// Don't emit accumulated text or tool_use blocks for images
-			if block.Source != nil {
+			if block.Source != nil && block.Source.SourceObj != nil {
 				bifrostMsg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 					Role: role,
@@ -3453,7 +3453,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 
 		case AnthropicContentBlockTypeDocument:
 			// Handle document blocks similar to images
-			if block.Source != nil {
+			if block.Source != nil && block.Source.SourceObj != nil {
 				bifrostMsg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 					Role: role,
@@ -3543,7 +3543,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 									})
 								}
 							case AnthropicContentBlockTypeImage:
-								if contentBlock.Source != nil {
+								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
 								}
 							}
@@ -3756,7 +3756,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
 		case AnthropicContentBlockTypeImage:
-			if block.Source != nil {
+			if block.Source != nil && block.Source.SourceObj != nil {
 				bifrostMsg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 					Role: role,
@@ -3770,7 +3770,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
 		case AnthropicContentBlockTypeDocument:
-			if block.Source != nil {
+			if block.Source != nil && block.Source.SourceObj != nil {
 				bifrostMsg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 					Role: role,
@@ -3904,7 +3904,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 									})
 								}
 							case AnthropicContentBlockTypeImage:
-								if contentBlock.Source != nil {
+								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
 								}
 							}
@@ -5200,36 +5200,40 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		resultBlock.ResponsesInputMessageContentBlockFile.Filename = block.Title
 	}
 
-	if block.Source == nil {
+	if block.Source == nil || block.Source.SourceObj == nil {
+		// File-block rendering only applies to object-form sources
+		// (image / document). String-form sources (search_result) are
+		// handled elsewhere.
 		return resultBlock
 	}
+	src := block.Source.SourceObj
 
 	// Handle different source types
-	switch block.Source.Type {
+	switch src.Type {
 	case "url":
 		// URL source
-		if block.Source.URL != nil {
-			resultBlock.ResponsesInputMessageContentBlockFile.FileURL = block.Source.URL
+		if src.URL != nil {
+			resultBlock.ResponsesInputMessageContentBlockFile.FileURL = src.URL
 		}
 	case "base64":
 		// Base64 encoded data
-		if block.Source.Data != nil {
+		if src.Data != nil {
 			// Construct data URL with media type
 			mediaType := "application/pdf"
-			if block.Source.MediaType != nil {
-				mediaType = *block.Source.MediaType
+			if src.MediaType != nil {
+				mediaType = *src.MediaType
 			}
-			dataURL := *block.Source.Data
+			dataURL := *src.Data
 			if !strings.HasPrefix(dataURL, "data:") {
-				dataURL = "data:" + mediaType + ";base64," + *block.Source.Data
+				dataURL = "data:" + mediaType + ";base64," + *src.Data
 			}
 			resultBlock.ResponsesInputMessageContentBlockFile.FileData = &dataURL
 		}
 	case "text":
 		// Plain text source
-		if block.Source.Data != nil {
+		if src.Data != nil {
 			resultBlock.ResponsesInputMessageContentBlockFile.FileType = schemas.Ptr("text/plain")
-			resultBlock.ResponsesInputMessageContentBlockFile.FileData = block.Source.Data
+			resultBlock.ResponsesInputMessageContentBlockFile.FileData = src.Data
 		}
 	}
 

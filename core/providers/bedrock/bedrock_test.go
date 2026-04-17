@@ -228,6 +228,7 @@ func TestBedrock(t *testing.T) {
 			ImageVariation:        true,
 			StructuredOutputs:     true,
 			InterleavedThinking:  true,
+			EagerInputStreaming:  true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
 		},
 	}
 

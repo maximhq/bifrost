@@ -281,15 +281,38 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 					headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
 				}
 			}
-			// Check for advanced-tool-use features
+			// Advanced-tool-use features. defer_loading and allowed_callers
+			// are only in the advanced-tool-use-2025-11-20 bundle; emit the
+			// bundle header only when the target provider supports the full
+			// bundle (Anthropic/Azure).
 			if tool.DeferLoading != nil && *tool.DeferLoading {
-				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
-			}
-			if len(tool.InputExamples) > 0 {
-				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				if !hasProvider || features.AdvancedToolUse {
+					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				}
 			}
 			if len(tool.AllowedCallers) > 0 {
-				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				if !hasProvider || features.AdvancedToolUse {
+					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				}
+			}
+			// input_examples has both bundle coverage AND a standalone header.
+			// Prefer the bundle header when the provider accepts the bundle
+			// (covers input_examples transitively); fall back to the narrow
+			// standalone header (Bedrock) when only InputExamples is set.
+			if len(tool.InputExamples) > 0 {
+				if !hasProvider || features.AdvancedToolUse {
+					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				} else if features.InputExamples {
+					headers = appendUniqueHeader(headers, AnthropicToolExamplesBetaHeader)
+				}
+			}
+			// Check for fine-grained tool streaming (eager_input_streaming).
+			// Beta fine-grained-tool-streaming-2025-05-14 — required for
+			// input_json_delta streaming on custom tools.
+			if tool.EagerInputStreaming != nil && *tool.EagerInputStreaming {
+				if !hasProvider || features.EagerInputStreaming {
+					headers = appendUniqueHeader(headers, AnthropicEagerInputStreamingBetaHeader)
+				}
 			}
 			// Check for cache control with scope
 			if !hasCachingScope && tool.CacheControl != nil && tool.CacheControl.Scope != nil {
@@ -415,12 +438,14 @@ var betaHeaderPrefixKnown = []string{
 	"context-management-",
 	"files-api-",
 	AnthropicAdvancedToolUseBetaHeaderPrefix,
+	AnthropicToolExamplesBetaHeaderPrefix,
 	AnthropicInterleavedThinkingBetaHeaderPrefix,
 	AnthropicSkillsBetaHeaderPrefix,
 	AnthropicContext1MBetaHeaderPrefix,
 	AnthropicFastModeBetaHeaderPrefix,
 	AnthropicRedactThinkingBetaHeaderPrefix,
 	AnthropicTaskBudgetsBetaHeaderPrefix,
+	AnthropicEagerInputStreamingBetaHeaderPrefix,
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -610,12 +635,14 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	"context-management-":                        func(f ProviderFeatureSupport) bool { return f.ContextEditing },
 	"files-api-":                                 func(f ProviderFeatureSupport) bool { return f.FilesAPI },
 	AnthropicAdvancedToolUseBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
+	AnthropicToolExamplesBetaHeaderPrefix:        func(f ProviderFeatureSupport) bool { return f.InputExamples },
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },
 	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },
 	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode },
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
 	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
+	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -1104,7 +1131,7 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	imageBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeImage,
 		CacheControl: block.CacheControl,
-		Source:       &AnthropicSource{},
+		Source:       &AnthropicBlockSource{SourceObj: &AnthropicSource{}},
 	}
 
 	if block.ImageURLStruct == nil {
@@ -1115,8 +1142,8 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	sanitizedURL, err := schemas.SanitizeImageURL(block.ImageURLStruct.URL)
 	if err != nil {
 		// Best-effort: treat as a regular URL without sanitization
-		imageBlock.Source.Type = "url"
-		imageBlock.Source.URL = &block.ImageURLStruct.URL
+		imageBlock.Source.SourceObj.Type = "url"
+		imageBlock.Source.SourceObj.URL = &block.ImageURLStruct.URL
 		return imageBlock
 	}
 	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
@@ -1137,18 +1164,18 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 
 	// Convert to Anthropic source format
 	if formattedImgContent.Type == schemas.ImageContentTypeURL {
-		imageBlock.Source.Type = "url"
-		imageBlock.Source.URL = &formattedImgContent.URL
+		imageBlock.Source.SourceObj.Type = "url"
+		imageBlock.Source.SourceObj.URL = &formattedImgContent.URL
 	} else {
 		if formattedImgContent.MediaType != "" {
-			imageBlock.Source.MediaType = &formattedImgContent.MediaType
+			imageBlock.Source.SourceObj.MediaType = &formattedImgContent.MediaType
 		}
-		imageBlock.Source.Type = "base64"
+		imageBlock.Source.SourceObj.Type = "base64"
 		// Use the base64 data without the data URL prefix
 		if urlTypeInfo.DataURLWithoutPrefix != nil {
-			imageBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+			imageBlock.Source.SourceObj.Data = urlTypeInfo.DataURLWithoutPrefix
 		} else {
-			imageBlock.Source.Data = &formattedImgContent.URL
+			imageBlock.Source.SourceObj.Data = &formattedImgContent.URL
 		}
 	}
 
@@ -1160,7 +1187,7 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	documentBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeDocument,
 		CacheControl: block.CacheControl,
-		Source:       &AnthropicSource{},
+		Source:       &AnthropicBlockSource{SourceObj: &AnthropicSource{}},
 	}
 
 	if block.Citations != nil {
@@ -1180,8 +1207,8 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 
 	// Handle file URL
 	if file.FileURL != nil && *file.FileURL != "" {
-		documentBlock.Source.Type = "url"
-		documentBlock.Source.URL = file.FileURL
+		documentBlock.Source.SourceObj.Type = "url"
+		documentBlock.Source.SourceObj.URL = file.FileURL
 		return documentBlock
 	}
 
@@ -1191,8 +1218,8 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 
 		// Check if it's plain text based on file type
 		if file.FileType != nil && (*file.FileType == "text/plain" || *file.FileType == "txt") {
-			documentBlock.Source.Type = "text"
-			documentBlock.Source.Data = &fileData
+			documentBlock.Source.SourceObj.Type = "text"
+			documentBlock.Source.SourceObj.Data = &fileData
 			return documentBlock
 		}
 
@@ -1201,30 +1228,30 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 
 			if urlTypeInfo.DataURLWithoutPrefix != nil {
 				// It's a data URL, extract the base64 content
-				documentBlock.Source.Type = "base64"
-				documentBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+				documentBlock.Source.SourceObj.Type = "base64"
+				documentBlock.Source.SourceObj.Data = urlTypeInfo.DataURLWithoutPrefix
 
 				// Set media type from data URL or file type
 				if urlTypeInfo.MediaType != nil {
-					documentBlock.Source.MediaType = urlTypeInfo.MediaType
+					documentBlock.Source.SourceObj.MediaType = urlTypeInfo.MediaType
 				} else if file.FileType != nil {
-					documentBlock.Source.MediaType = file.FileType
+					documentBlock.Source.SourceObj.MediaType = file.FileType
 				}
 				return documentBlock
 			}
 		}
 
 		// Default to base64 for binary files
-		documentBlock.Source.Type = "base64"
-		documentBlock.Source.Data = &fileData
+		documentBlock.Source.SourceObj.Type = "base64"
+		documentBlock.Source.SourceObj.Data = &fileData
 
 		// Set media type
 		if file.FileType != nil {
-			documentBlock.Source.MediaType = file.FileType
+			documentBlock.Source.SourceObj.MediaType = file.FileType
 		} else {
 			// Default to PDF if not specified
 			mediaType := "application/pdf"
-			documentBlock.Source.MediaType = &mediaType
+			documentBlock.Source.SourceObj.MediaType = &mediaType
 		}
 		return documentBlock
 	}
@@ -1237,7 +1264,7 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	documentBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeDocument,
 		CacheControl: cacheControl,
-		Source:       &AnthropicSource{},
+		Source:       &AnthropicBlockSource{SourceObj: &AnthropicSource{}},
 	}
 
 	if citations != nil {
@@ -1259,9 +1286,9 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 
 		// Check if it's plain text based on file type
 		if fileBlock.FileType != nil && (*fileBlock.FileType == "text/plain" || *fileBlock.FileType == "txt") {
-			documentBlock.Source.Type = "text"
-			documentBlock.Source.Data = &fileData
-			documentBlock.Source.MediaType = schemas.Ptr("text/plain")
+			documentBlock.Source.SourceObj.Type = "text"
+			documentBlock.Source.SourceObj.Data = &fileData
+			documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
 			return documentBlock
 		}
 
@@ -1271,38 +1298,38 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 
 			if urlTypeInfo.DataURLWithoutPrefix != nil {
 				// It's a data URL, extract the base64 content
-				documentBlock.Source.Type = "base64"
-				documentBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+				documentBlock.Source.SourceObj.Type = "base64"
+				documentBlock.Source.SourceObj.Data = urlTypeInfo.DataURLWithoutPrefix
 
 				// Set media type from data URL or file type
 				if urlTypeInfo.MediaType != nil {
-					documentBlock.Source.MediaType = urlTypeInfo.MediaType
+					documentBlock.Source.SourceObj.MediaType = urlTypeInfo.MediaType
 				} else if fileBlock.FileType != nil {
-					documentBlock.Source.MediaType = fileBlock.FileType
+					documentBlock.Source.SourceObj.MediaType = fileBlock.FileType
 				}
 				return documentBlock
 			}
 		}
 
 		// Default to base64 for binary files (raw base64 without prefix)
-		documentBlock.Source.Type = "base64"
-		documentBlock.Source.Data = &fileData
+		documentBlock.Source.SourceObj.Type = "base64"
+		documentBlock.Source.SourceObj.Data = &fileData
 
 		// Set media type
 		if fileBlock.FileType != nil {
-			documentBlock.Source.MediaType = fileBlock.FileType
+			documentBlock.Source.SourceObj.MediaType = fileBlock.FileType
 		} else {
 			// Default to PDF if not specified
 			mediaType := "application/pdf"
-			documentBlock.Source.MediaType = &mediaType
+			documentBlock.Source.SourceObj.MediaType = &mediaType
 		}
 		return documentBlock
 	}
 
 	// Handle file URL
 	if fileBlock.FileURL != nil && *fileBlock.FileURL != "" {
-		documentBlock.Source.Type = "url"
-		documentBlock.Source.URL = fileBlock.FileURL
+		documentBlock.Source.SourceObj.Type = "url"
+		documentBlock.Source.SourceObj.URL = fileBlock.FileURL
 		return documentBlock
 	}
 
@@ -1319,22 +1346,24 @@ func (block AnthropicContentBlock) ToBifrostContentImageBlock() schemas.ChatCont
 }
 
 func getImageURLFromBlock(block AnthropicContentBlock) string {
-	if block.Source == nil {
+	// Image blocks always carry object-form sources (never string form).
+	if block.Source == nil || block.Source.SourceObj == nil {
 		return ""
 	}
+	src := block.Source.SourceObj
 
 	// Handle base64 data - convert to data URL
-	if block.Source.Data != nil {
+	if src.Data != nil {
 		mime := "image/png"
-		if block.Source.MediaType != nil && *block.Source.MediaType != "" {
-			mime = *block.Source.MediaType
+		if src.MediaType != nil && *src.MediaType != "" {
+			mime = *src.MediaType
 		}
-		return "data:" + mime + ";base64," + *block.Source.Data
+		return "data:" + mime + ";base64," + *src.Data
 	}
 
 	// Handle regular URLs
-	if block.Source.URL != nil {
-		return *block.Source.URL
+	if src.URL != nil {
+		return *src.URL
 	}
 
 	return ""

@@ -68,8 +68,10 @@ func TestVertex(t *testing.T) {
 			PromptCaching:         true,
 			ListModels:            false,
 			CountTokens:           true,
-			StructuredOutputs:     true,  // Structured outputs with nullable enum support
-			InterleavedThinking:  true,
+			StructuredOutputs:            true,  // Structured outputs with nullable enum support
+			InterleavedThinking:          true,
+			EagerInputStreaming:          true, // fine-grained-tool-streaming-2025-05-14 (GA on Vertex)
+			ServerToolsViaOpenAIEndpoint: true, // web_search only on Vertex per Table 20 (web_fetch/code_execution skip)
 		},
 	}
 

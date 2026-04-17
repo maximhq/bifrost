@@ -151,6 +151,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					anthropicTool.CacheControl = tool.CacheControl
 				}
 
+				// Fine-grained tool streaming — promoted neutral flag on ChatTool.
+				// Anthropic auto-injects beta header fine-grained-tool-streaming-2025-05-14
+				// via AddMissingBetaHeadersToContext when this is set.
+				if tool.EagerInputStreaming != nil {
+					anthropicTool.EagerInputStreaming = tool.EagerInputStreaming
+				}
+
 				tools = append(tools, anthropicTool)
 			}
 			if anthropicReq.Tools == nil {
