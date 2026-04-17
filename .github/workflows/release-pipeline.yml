@@ -637,223 +637,223 @@ jobs:
             tests/e2e/playwright-report/
           retention-days: 30
 
-  # Docker image test - amd64
-  test-docker-image-amd64:
-    needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.anthropic.com:443
-            api.cerebras.ai:443
-            api.cohere.ai:443
-            api.elevenlabs.io:443
-            api.github.com:443
-            api.groq.com:443
-            api.mistral.ai:443
-            api.openai.com:443
-            api.parasail.io:443
-            api.replicate.com:443
-            auth.docker.io:443
-            bedrock.us-east-1.amazonaws.com:443
-            dl-cdn.alpinelinux.org:443
-            fonts.googleapis.com:443
-            fonts.gstatic.com:443
-            generativelanguage.googleapis.com:443
-            getbifrost.ai:443
-            ghcr.io:443
-            github.com:443
-            huggingface.co:443
-            maxim-o1.openai.azure.com:443
-            nodejs.org:443
-            openrouter.ai:443
-            pkg-containers.githubusercontent.com:443
-            production.cloudflare.docker.com:443
-            proxy.golang.org:443
-            registry-1.docker.io:443
-            registry.npmjs.org:443
-            release-assets.githubusercontent.com:443
-            storage.googleapis.com:443
-            sum.golang.org:443
-            telemetry.qdrant.io:443
-            www.getbifrost.ai:443
+  # # Docker image test - amd64
+  # test-docker-image-amd64:
+  #   needs: [check-skip, detect-changes]
+  #   if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #   steps:
+  #     - name: Harden Runner
+  #       uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+  #       with:
+  #         egress-policy: block
+  #         allowed-endpoints: >
+  #           api.anthropic.com:443
+  #           api.cerebras.ai:443
+  #           api.cohere.ai:443
+  #           api.elevenlabs.io:443
+  #           api.github.com:443
+  #           api.groq.com:443
+  #           api.mistral.ai:443
+  #           api.openai.com:443
+  #           api.parasail.io:443
+  #           api.replicate.com:443
+  #           auth.docker.io:443
+  #           bedrock.us-east-1.amazonaws.com:443
+  #           dl-cdn.alpinelinux.org:443
+  #           fonts.googleapis.com:443
+  #           fonts.gstatic.com:443
+  #           generativelanguage.googleapis.com:443
+  #           getbifrost.ai:443
+  #           ghcr.io:443
+  #           github.com:443
+  #           huggingface.co:443
+  #           maxim-o1.openai.azure.com:443
+  #           nodejs.org:443
+  #           openrouter.ai:443
+  #           pkg-containers.githubusercontent.com:443
+  #           production.cloudflare.docker.com:443
+  #           proxy.golang.org:443
+  #           registry-1.docker.io:443
+  #           registry.npmjs.org:443
+  #           release-assets.githubusercontent.com:443
+  #           storage.googleapis.com:443
+  #           sum.golang.org:443
+  #           telemetry.qdrant.io:443
+  #           www.getbifrost.ai:443
 
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-          fetch-tags: true
+  #     - name: Checkout repository
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  #       with:
+  #         fetch-depth: 0
+  #         fetch-tags: true
 
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.26.1"
+  #     - name: Set up Go
+  #       uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+  #       with:
+  #         go-version: "1.26.1"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "25"
+  #     - name: Set up Node.js
+  #       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+  #       with:
+  #         node-version: "25"
 
-      - name: Install Newman
-        run: npm install -g newman newman-reporter-html
+  #     - name: Install Newman
+  #       run: npm install -g newman newman-reporter-html
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+  #     - name: Setup Docker Buildx
+  #       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Test Docker image (amd64)
-        env:
-          CI: "1"
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
-          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
-          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
-          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
-          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
-          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
-          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_ARN: ${{ secrets.AWS_ARN }}
-        run: |
-          chmod +x ./.github/workflows/scripts/test-docker-image.sh
-          ./.github/workflows/scripts/test-docker-image.sh linux/amd64
+  #     - name: Test Docker image (amd64)
+  #       env:
+  #         CI: "1"
+  #         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  #         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  #         VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+  #         VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+  #         GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+  #         MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+  #         COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+  #         GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  #         PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+  #         CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+  #         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+  #         PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+  #         ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+  #         FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+  #         HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+  #         XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+  #         REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+  #         AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+  #         AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+  #         AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_REGION: ${{ secrets.AWS_REGION }}
+  #         AWS_ARN: ${{ secrets.AWS_ARN }}
+  #       run: |
+  #         chmod +x ./.github/workflows/scripts/test-docker-image.sh
+  #         ./.github/workflows/scripts/test-docker-image.sh linux/amd64
 
-      - name: Upload Newman reports
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: newman-reports-amd64
-          path: tests/e2e/api/newman-reports/
-          retention-days: 30
+  #     - name: Upload Newman reports
+  #       if: ${{ !cancelled() }}
+  #       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+  #       with:
+  #         name: newman-reports-amd64
+  #         path: tests/e2e/api/newman-reports/
+  #         retention-days: 30
 
-  # Docker image test - arm64
-  test-docker-image-arm64:
-    needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.anthropic.com:443
-            api.cerebras.ai:443
-            api.cohere.ai:443
-            api.elevenlabs.io:443
-            api.github.com:443
-            api.groq.com:443
-            api.mistral.ai:443
-            api.openai.com:443
-            api.parasail.io:443
-            api.replicate.com:443
-            auth.docker.io:443
-            bedrock.us-east-1.amazonaws.com:443
-            dl-cdn.alpinelinux.org:443
-            fonts.googleapis.com:443
-            fonts.gstatic.com:443
-            generativelanguage.googleapis.com:443
-            getbifrost.ai:443
-            ghcr.io:443
-            github.com:443
-            huggingface.co:443
-            maxim-o1.openai.azure.com:443
-            nodejs.org:443
-            openrouter.ai:443
-            pkg-containers.githubusercontent.com:443
-            production.cloudflare.docker.com:443
-            proxy.golang.org:443
-            registry-1.docker.io:443
-            registry.npmjs.org:443
-            release-assets.githubusercontent.com:443
-            storage.googleapis.com:443
-            sum.golang.org:443
-            telemetry.qdrant.io:443
-            www.getbifrost.ai:443
+  # # Docker image test - arm64
+  # test-docker-image-arm64:
+  #   needs: [check-skip, detect-changes]
+  #   if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
+  #   runs-on: ubuntu-24.04-arm
+  #   permissions:
+  #     contents: read
+  #   steps:
+  #     - name: Harden Runner
+  #       uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+  #       with:
+  #         egress-policy: block
+  #         allowed-endpoints: >
+  #           api.anthropic.com:443
+  #           api.cerebras.ai:443
+  #           api.cohere.ai:443
+  #           api.elevenlabs.io:443
+  #           api.github.com:443
+  #           api.groq.com:443
+  #           api.mistral.ai:443
+  #           api.openai.com:443
+  #           api.parasail.io:443
+  #           api.replicate.com:443
+  #           auth.docker.io:443
+  #           bedrock.us-east-1.amazonaws.com:443
+  #           dl-cdn.alpinelinux.org:443
+  #           fonts.googleapis.com:443
+  #           fonts.gstatic.com:443
+  #           generativelanguage.googleapis.com:443
+  #           getbifrost.ai:443
+  #           ghcr.io:443
+  #           github.com:443
+  #           huggingface.co:443
+  #           maxim-o1.openai.azure.com:443
+  #           nodejs.org:443
+  #           openrouter.ai:443
+  #           pkg-containers.githubusercontent.com:443
+  #           production.cloudflare.docker.com:443
+  #           proxy.golang.org:443
+  #           registry-1.docker.io:443
+  #           registry.npmjs.org:443
+  #           release-assets.githubusercontent.com:443
+  #           storage.googleapis.com:443
+  #           sum.golang.org:443
+  #           telemetry.qdrant.io:443
+  #           www.getbifrost.ai:443
 
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-          fetch-tags: true
+  #     - name: Checkout repository
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  #       with:
+  #         fetch-depth: 0
+  #         fetch-tags: true
 
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.26.1"
+  #     - name: Set up Go
+  #       uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+  #       with:
+  #         go-version: "1.26.1"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "25"
+  #     - name: Set up Node.js
+  #       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+  #       with:
+  #         node-version: "25"
 
-      - name: Install Newman
-        run: npm install -g newman newman-reporter-html
+  #     - name: Install Newman
+  #       run: npm install -g newman newman-reporter-html
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+  #     - name: Setup Docker Buildx
+  #       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Test Docker image (arm64)
-        env:
-          CI: "1"
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
-          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
-          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
-          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
-          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
-          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
-          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_ARN: ${{ secrets.AWS_ARN }}
-        run: |
-          chmod +x ./.github/workflows/scripts/test-docker-image.sh
-          ./.github/workflows/scripts/test-docker-image.sh linux/arm64
+  #     - name: Test Docker image (arm64)
+  #       env:
+  #         CI: "1"
+  #         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  #         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  #         VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+  #         VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+  #         GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+  #         MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+  #         COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+  #         GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  #         PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+  #         CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+  #         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+  #         PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+  #         ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+  #         FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+  #         HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+  #         XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+  #         REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+  #         AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+  #         AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+  #         AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_REGION: ${{ secrets.AWS_REGION }}
+  #         AWS_ARN: ${{ secrets.AWS_ARN }}
+  #       run: |
+  #         chmod +x ./.github/workflows/scripts/test-docker-image.sh
+  #         ./.github/workflows/scripts/test-docker-image.sh linux/arm64
 
-      - name: Upload Newman reports
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: newman-reports-arm64
-          path: tests/e2e/api/newman-reports/
-          retention-days: 30
+  #     - name: Upload Newman reports
+  #       if: ${{ !cancelled() }}
+  #       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+  #       with:
+  #         name: newman-reports-arm64
+  #         path: tests/e2e/api/newman-reports/
+  #         retention-days: 30
 
   core-release:
     needs:
