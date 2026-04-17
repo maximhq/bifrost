@@ -2,12 +2,18 @@ package openai
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+// errChatGPTOAuthRequiresStreaming is returned when a non-streaming Responses
+// request is issued against a chatgpt_oauth-enabled provider. The ChatGPT
+// backend only accepts stream=true so the non-streaming path is unsupported.
+var errChatGPTOAuthRequiresStreaming = errors.New("chatgpt_oauth requires streaming /responses")
 
 // ChatGPTOAuthDefaultBaseURL is the default base URL for ChatGPT's backend API.
 // When chatgpt_oauth is enabled and no custom base URL is set, this is used.
@@ -43,11 +49,12 @@ const ChatGPTOAuthDefaultBaseURL = "https://chatgpt.com/backend-api/codex"
 //   - max_output_tokens: must be deleted
 //   - stream: must be true (backend only accepts streaming)
 
-// ChatGPTOAuthClientVersionFallback is the default Codex client_version used only
-// when no caller-supplied version is available. The ChatGPT backend requires the
-// param to exist on /models but is tolerant of the actual value. Callers (Codex CLI)
-// supply their own version in the query string via the /v1/models?client_version=
-// query param — we prefer that value and fall back to this constant only when absent.
+// ChatGPTOAuthClientVersionFallback is injected on outbound /models requests
+// when the inbound caller didn't supply a ?client_version= query param. The
+// ChatGPT backend requires the parameter to exist on /models but is tolerant of
+// the actual value. If the inbound /v1/models?client_version=... query string
+// IS forwarded by the transport (i.e. reaches chatGPTOAuthPath with a query),
+// the caller's value is preserved and the fallback is not used.
 // Matches the openai-oauth proxy fallback.
 const ChatGPTOAuthClientVersionFallback = "0.111.0"
 
@@ -85,18 +92,49 @@ func ExtractChatGPTOAuthBearerToken(headers map[string]string) string {
 // chatGPTOAuthPath maps a standard OpenAI /v1/... path to the ChatGPT backend path.
 // Strips the /v1 prefix and appends required query parameters for routes that need them
 // (e.g. /models requires ?client_version). Returns the path unchanged if it doesn't start with /v1.
+//
+// For /models: if the incoming path already carries a client_version (e.g. Codex sends
+// /v1/models?client_version=0.121.0), that value is preserved. Only when the param is
+// absent do we inject the fallback so the ChatGPT backend doesn't reject the request.
 func chatGPTOAuthPath(standardPath string) string {
-	mapped := standardPath
-	if standardPath == "/v1" {
+	// Split path and query so we can inspect and preserve caller-supplied query params.
+	pathOnly, query, hasQuery := strings.Cut(standardPath, "?")
+
+	mapped := pathOnly
+	if pathOnly == "/v1" {
 		mapped = "/"
-	} else if strings.HasPrefix(standardPath, "/v1/") {
-		mapped = standardPath[3:] // strip "/v1" prefix, keep the "/"
+	} else if strings.HasPrefix(pathOnly, "/v1/") {
+		mapped = pathOnly[3:] // strip "/v1" prefix, keep the "/"
 	}
-	// /models requires a client_version query parameter on the ChatGPT backend
+
+	// /models requires a client_version query parameter on the ChatGPT backend.
 	if mapped == "/models" {
-		return mapped + "?client_version=" + ChatGPTOAuthClientVersionFallback
+		if !hasQuery {
+			return mapped + "?client_version=" + ChatGPTOAuthClientVersionFallback
+		}
+		// Preserve caller query; inject fallback only if client_version is absent.
+		if !queryContainsKey(query, "client_version") {
+			return mapped + "?" + query + "&client_version=" + ChatGPTOAuthClientVersionFallback
+		}
+		return mapped + "?" + query
+	}
+
+	if hasQuery {
+		return mapped + "?" + query
 	}
 	return mapped
+}
+
+// queryContainsKey reports whether the given raw query string contains the named key.
+// Does not URL-decode — callers pass already-valid query strings.
+func queryContainsKey(rawQuery, key string) bool {
+	for _, pair := range strings.Split(rawQuery, "&") {
+		k, _, _ := strings.Cut(pair, "=")
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
 
 // chatGPTOAuthWebSocketURL builds the upstream WebSocket URL for the ChatGPT backend,
@@ -112,26 +150,19 @@ func chatGPTOAuthWebSocketURL(baseURL, standardPath string) string {
 // (extracted from JWT) + OpenAI-Beta, merged with any existing extra headers.
 // Extra headers with case-insensitive Authorization are skipped.
 func chatGPTOAuthWebSocketHeaders(key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) map[string]string {
-	headers := map[string]string{
-		"Authorization": "Bearer " + key.Value.GetValue(),
-	}
-	for k, v := range existingExtraHeaders {
-		if strings.EqualFold(k, "Authorization") {
-			continue
-		}
-		headers[k] = v
-	}
+	authHeaders := map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	accountID, err := extractChatGPTAccountID(key.Value.GetValue())
 	if err != nil {
 		if logger != nil {
 			logger.Warn("chatgpt_oauth: failed to extract account ID for WebSocket: %v", err)
 		}
-		return headers
+		// Still merge case-insensitively so caller's existing "authorization" header
+		// (any case) is deterministically overridden by our Bearer token.
+		return mergeHeadersCaseInsensitive(existingExtraHeaders, authHeaders)
 	}
-	for k, v := range chatGPTOAuthExtraHeaders(accountID) {
-		headers[k] = v
-	}
-	return headers
+	oauth := chatGPTOAuthExtraHeaders(accountID)
+	oauth["Authorization"] = authHeaders["Authorization"]
+	return mergeHeadersCaseInsensitive(existingExtraHeaders, oauth)
 }
 
 // extractChatGPTAccountID decodes the JWT access token payload and extracts
@@ -184,7 +215,7 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 
 // transformChatGPTResponsesBody modifies the JSON request body for the ChatGPT backend API:
 //   - ensures "instructions" field exists (defaults to "")
-//   - sets "store" to false if not already present
+//   - forces "store" to false (the backend rejects store=true for OAuth callers)
 //   - deletes "max_output_tokens"
 //   - forces "stream" to true (the ChatGPT backend API only accepts streaming requests)
 func transformChatGPTResponsesBody(body []byte) ([]byte, error) {

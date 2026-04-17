@@ -373,12 +373,20 @@ func TestChatGPTOAuthPath(t *testing.T) {
 		{"responses compact", "/v1/responses/compact", "/responses/compact"},
 		{"responses input_tokens", "/v1/responses/input_tokens", "/responses/input_tokens"},
 
-		// Models — appends required client_version query param
-		{"models listing", "/v1/models", "/models?client_version=" + ChatGPTOAuthClientVersionFallback},
+		// Models — appends required client_version query param when not present
+		{"models no query injects fallback", "/v1/models", "/models?client_version=" + ChatGPTOAuthClientVersionFallback},
+		// Models — preserves caller-supplied client_version
+		{"models preserves caller client_version", "/v1/models?client_version=1.2.3", "/models?client_version=1.2.3"},
+		// Models — injects fallback alongside other caller query params
+		{"models preserves other query, adds fallback", "/v1/models?foo=bar", "/models?foo=bar&client_version=" + ChatGPTOAuthClientVersionFallback},
+		// Models — preserves multiple params including caller's client_version
+		{"models preserves all when client_version present", "/v1/models?foo=bar&client_version=9.9.9", "/models?foo=bar&client_version=9.9.9"},
 
 		// Realtime/voice
 		{"realtime calls", "/v1/realtime/calls", "/realtime/calls"},
 		{"realtime session", "/v1/realtime", "/realtime"},
+		// Query-string preservation for non-/models routes
+		{"preserves query for non-models", "/v1/responses?foo=bar", "/responses?foo=bar"},
 
 		// Edge cases
 		{"bare /v1", "/v1", "/"},
@@ -723,4 +731,56 @@ func TestChatGPTOAuthMergeHeaders_LoggerBranch(t *testing.T) {
 		require.Len(t, logger.warns, 1)
 		assert.Contains(t, logger.warns[0], "failed to extract account ID")
 	})
+}
+
+// ---------------------------------------------------------------------------
+// OpenAIListModelsResponse.UnmarshalJSON — dual-shape handling
+// ---------------------------------------------------------------------------
+
+func TestOpenAIListModelsResponse_UnmarshalStandard(t *testing.T) {
+	body := []byte(`{"object":"list","data":[{"id":"gpt-4","object":"model","owned_by":"openai"}]}`)
+	var resp OpenAIListModelsResponse
+	require.NoError(t, json.Unmarshal(body, &resp))
+	assert.Equal(t, "list", resp.Object)
+	require.Len(t, resp.Data, 1)
+	assert.Equal(t, "gpt-4", resp.Data[0].ID)
+	assert.Equal(t, "openai", resp.Data[0].OwnedBy)
+}
+
+func TestOpenAIListModelsResponse_UnmarshalChatGPT(t *testing.T) {
+	body := []byte(`{"models":[{"slug":"gpt-5.3-codex"},{"slug":"gpt-5.4"}]}`)
+	var resp OpenAIListModelsResponse
+	require.NoError(t, json.Unmarshal(body, &resp))
+	assert.Equal(t, "list", resp.Object, "projected object must be list")
+	require.Len(t, resp.Data, 2)
+	assert.Equal(t, "gpt-5.3-codex", resp.Data[0].ID)
+	assert.Equal(t, "model", resp.Data[0].Object)
+	assert.Equal(t, "chatgpt-oauth", resp.Data[0].OwnedBy)
+	assert.Equal(t, "gpt-5.4", resp.Data[1].ID)
+}
+
+func TestOpenAIListModelsResponse_UnmarshalChatGPT_SkipsEmptySlug(t *testing.T) {
+	body := []byte(`{"models":[{"slug":"gpt-5.4"},{"slug":""},{"slug":"gpt-5.2"}]}`)
+	var resp OpenAIListModelsResponse
+	require.NoError(t, json.Unmarshal(body, &resp))
+	require.Len(t, resp.Data, 2)
+	assert.Equal(t, "gpt-5.4", resp.Data[0].ID)
+	assert.Equal(t, "gpt-5.2", resp.Data[1].ID)
+}
+
+func TestOpenAIListModelsResponse_UnmarshalEmpty(t *testing.T) {
+	body := []byte(`{}`)
+	var resp OpenAIListModelsResponse
+	require.NoError(t, json.Unmarshal(body, &resp))
+	assert.Empty(t, resp.Data)
+}
+
+// ---------------------------------------------------------------------------
+// Non-streaming Responses path rejects chatgpt_oauth cleanly via error sentinel
+// ---------------------------------------------------------------------------
+
+func TestChatGPTOAuthRequiresStreaming_Error(t *testing.T) {
+	// The sentinel must be exported within the package so Responses() can reference it.
+	assert.NotNil(t, errChatGPTOAuthRequiresStreaming)
+	assert.Contains(t, errChatGPTOAuthRequiresStreaming.Error(), "streaming")
 }

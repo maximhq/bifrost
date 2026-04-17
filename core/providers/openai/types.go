@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
-	"github.com/maximhq/bifrost/core/schemas"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const MinMaxCompletionTokens = 16
@@ -728,10 +728,57 @@ type OpenAIModel struct {
 	ContextWindow *int  `json:"context_window,omitempty"`
 }
 
-// OpenAIListModelsResponse represents an OpenAI list models response
+// OpenAIListModelsResponse represents an OpenAI list models response.
+// Supports two wire formats via a custom UnmarshalJSON:
+//   - Standard OpenAI: {"object":"list","data":[{"id":"...","object":"model",...}]}
+//   - ChatGPT backend: {"models":[{"slug":"..."}]} — only "slug" is significant;
+//     other OpenAIModel fields (object, owned_by, created) are populated with
+//     sensible defaults so downstream code treats it uniformly.
 type OpenAIListModelsResponse struct {
 	Object string        `json:"object"`
 	Data   []OpenAIModel `json:"data"`
+}
+
+// UnmarshalJSON accepts both the standard OpenAI shape ("data":[...]) and the
+// ChatGPT backend shape ("models":[{"slug"}]). When the payload looks like the
+// ChatGPT shape (no "data", has "models"), it is projected into Data with
+// OpenAIModel.ID=slug, Object="model", OwnedBy="chatgpt-oauth".
+func (r *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
+	// Raw inspection to decide which shape we're dealing with.
+	var raw struct {
+		Object string            `json:"object"`
+		Data   []OpenAIModel     `json:"data"`
+		Models []chatGPTRawModel `json:"models"`
+	}
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.Object = raw.Object
+	if len(raw.Data) > 0 {
+		r.Data = raw.Data
+		return nil
+	}
+	// ChatGPT backend shape: project slug → ID.
+	if len(raw.Models) > 0 {
+		r.Object = "list"
+		r.Data = make([]OpenAIModel, 0, len(raw.Models))
+		for _, m := range raw.Models {
+			if m.Slug == "" {
+				continue
+			}
+			r.Data = append(r.Data, OpenAIModel{
+				ID:      m.Slug,
+				Object:  "model",
+				OwnedBy: "chatgpt-oauth",
+			})
+		}
+	}
+	return nil
+}
+
+// chatGPTRawModel is the ChatGPT backend's model entry shape. Only Slug is used.
+type chatGPTRawModel struct {
+	Slug string `json:"slug"`
 }
 
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.

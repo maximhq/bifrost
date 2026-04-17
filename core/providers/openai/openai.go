@@ -1418,6 +1418,17 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
+	// ChatGPT OAuth rejects non-streaming /responses entirely — the upstream only
+	// accepts stream=true. Non-streaming callers would receive SSE that the standard
+	// handler can't parse. Surface a clear error instead of a confusing decode failure.
+	if provider.chatgptOAuth {
+		return nil, providerUtils.NewBifrostOperationError(
+			"non-streaming /responses is not supported when chatgpt_oauth is enabled; use ResponsesStream (stream=true) instead",
+			errChatGPTOAuthRequiresStreaming,
+			provider.GetProviderKey(),
+		)
+	}
+
 	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
@@ -1425,7 +1436,11 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	extraHeaders, bodyTransformer, oauthErr := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
+	// Pass raw ExtraHeaders (not effectiveExtraHeaders) to avoid double JWT decoding.
+	// chatGPTOAuthApplyRequest merges OAuth headers in itself; calling effectiveExtraHeaders
+	// here would extract the account ID, then chatGPTOAuthApplyRequest would extract it
+	// again — each extraction base64url-decodes and JSON-parses the JWT.
+	extraHeaders, bodyTransformer, oauthErr := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, provider.logger)
 	if oauthErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(oauthErr.Error(), oauthErr, provider.GetProviderKey())
 	}
@@ -1617,7 +1632,8 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	extraHeaders, streamBodyTransformer, oauthErr := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
+	// Pass raw ExtraHeaders (see comment in Responses above) to avoid double JWT decoding.
+	extraHeaders, streamBodyTransformer, oauthErr := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, provider.logger)
 	if oauthErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(oauthErr.Error(), oauthErr, provider.GetProviderKey())
 	}
