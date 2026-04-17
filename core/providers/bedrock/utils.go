@@ -1120,7 +1120,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 			bedrockTool := BedrockTool{
 				ToolSpec: &BedrockToolSpec{
 					Name:        tool.Function.Name,
-					Description: schemas.Ptr(description),
+					Description: new(description),
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes),
 					},

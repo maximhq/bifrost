@@ -3,12 +3,238 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// convertFunctionToolToAnthropic turns an OpenAI-style function tool
+// (schemas.ChatTool with non-nil Function) into an AnthropicTool.
+// Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
+// cleanly between function and server-tool shapes.
+func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
+	anthropicTool := AnthropicTool{
+		Name: tool.Function.Name,
+	}
+	if tool.Function.Description != nil {
+		anthropicTool.Description = tool.Function.Description
+	}
+
+	// Convert function parameters to input_schema
+	if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
+		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
+			Type:                 tool.Function.Parameters.Type,
+			Description:          tool.Function.Parameters.Description,
+			Properties:           tool.Function.Parameters.Properties,
+			Required:             tool.Function.Parameters.Required,
+			Enum:                 tool.Function.Parameters.Enum,
+			AdditionalProperties: tool.Function.Parameters.AdditionalProperties,
+			Defs:                 tool.Function.Parameters.Defs,
+			Definitions:          tool.Function.Parameters.Definitions,
+			Ref:                  tool.Function.Parameters.Ref,
+			Items:                tool.Function.Parameters.Items,
+			MinItems:             tool.Function.Parameters.MinItems,
+			MaxItems:             tool.Function.Parameters.MaxItems,
+			AnyOf:                tool.Function.Parameters.AnyOf,
+			OneOf:                tool.Function.Parameters.OneOf,
+			AllOf:                tool.Function.Parameters.AllOf,
+			Format:               tool.Function.Parameters.Format,
+			Pattern:              tool.Function.Parameters.Pattern,
+			MinLength:            tool.Function.Parameters.MinLength,
+			MaxLength:            tool.Function.Parameters.MaxLength,
+			Minimum:              tool.Function.Parameters.Minimum,
+			Maximum:              tool.Function.Parameters.Maximum,
+			Title:                tool.Function.Parameters.Title,
+			Default:              tool.Function.Parameters.Default,
+			Nullable:             tool.Function.Parameters.Nullable,
+		}
+	}
+
+	if anthropicTool.InputSchema != nil {
+		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
+	}
+
+	if tool.CacheControl != nil {
+		anthropicTool.CacheControl = tool.CacheControl
+	}
+	if tool.DeferLoading != nil {
+		anthropicTool.DeferLoading = tool.DeferLoading
+	}
+	if len(tool.AllowedCallers) > 0 {
+		anthropicTool.AllowedCallers = tool.AllowedCallers
+	}
+	if len(tool.InputExamples) > 0 {
+		anthropicTool.InputExamples = make([]AnthropicToolInputExample, len(tool.InputExamples))
+		for i, ex := range tool.InputExamples {
+			anthropicTool.InputExamples[i] = AnthropicToolInputExample{
+				Input:       ex.Input,
+				Description: ex.Description,
+			}
+		}
+	}
+	if tool.EagerInputStreaming != nil {
+		anthropicTool.EagerInputStreaming = tool.EagerInputStreaming
+	}
+	// ChatToolFunction.Strict is the canonical neutral slot for Anthropic's strict.
+	if tool.Function.Strict != nil {
+		anthropicTool.Strict = tool.Function.Strict
+	}
+	return anthropicTool
+}
+
+// convertServerToolToAnthropic reconstructs an AnthropicTool from the
+// server-tool shape of a schemas.ChatTool (Function=nil, Name+Type+variant
+// fields populated). Returns (tool, true) when Type looks like a known
+// server-tool; (zero, false) when it doesn't, so the caller can drop it
+// cleanly rather than forward a malformed tool.
+//
+// Supported type prefixes:
+//   - web_search_*    → AnthropicToolWebSearch
+//   - web_fetch_*     → AnthropicToolWebFetch
+//   - computer_*      → AnthropicToolComputerUse
+//   - text_editor_*   → AnthropicToolTextEditor
+//   - mcp_toolset     → AnthropicMCPToolsetTool (via MCPToolset pointer)
+//
+// bash_*, memory_*, code_execution_*, and tool_search_* carry no variant
+// config — their Type + Name alone are enough, handled in the default branch.
+func convertServerToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, bool) {
+	typeStr := string(tool.Type)
+	if typeStr == "" {
+		return AnthropicTool{}, false
+	}
+
+	// mcp_toolset is serialized via a dedicated embedded type (AnthropicMCPToolsetTool)
+	// and carries its identity in MCPServerName, not Name — handle before the
+	// generic Name guard below.
+	if typeStr == "mcp_toolset" {
+		if tool.MCPServerName == "" {
+			return AnthropicTool{}, false
+		}
+		toolset := &AnthropicMCPToolsetTool{
+			Type:          "mcp_toolset",
+			MCPServerName: tool.MCPServerName,
+			DefaultConfig: convertMCPToolsetConfig(tool.DefaultConfig),
+			Configs:       convertMCPToolsetConfigMap(tool.Configs),
+			CacheControl:  tool.CacheControl,
+		}
+		return AnthropicTool{MCPToolset: toolset}, true
+	}
+
+	// Remaining server tools (web_search, web_fetch, computer, text_editor, etc.)
+	// identify themselves via Name.
+	if tool.Name == "" {
+		return AnthropicTool{}, false
+	}
+
+	atype := AnthropicToolType(typeStr)
+	anthropicTool := AnthropicTool{
+		Name:                tool.Name,
+		Type:                &atype,
+		CacheControl:        tool.CacheControl,
+		DeferLoading:        tool.DeferLoading,
+		AllowedCallers:      tool.AllowedCallers,
+		EagerInputStreaming: tool.EagerInputStreaming,
+	}
+	if len(tool.InputExamples) > 0 {
+		anthropicTool.InputExamples = make([]AnthropicToolInputExample, len(tool.InputExamples))
+		for i, ex := range tool.InputExamples {
+			anthropicTool.InputExamples[i] = AnthropicToolInputExample{
+				Input:       ex.Input,
+				Description: ex.Description,
+			}
+		}
+	}
+
+	switch {
+	case strings.HasPrefix(typeStr, "web_search_"):
+		anthropicTool.AnthropicToolWebSearch = &AnthropicToolWebSearch{
+			MaxUses:        tool.MaxUses,
+			AllowedDomains: tool.AllowedDomains,
+			BlockedDomains: tool.BlockedDomains,
+			UserLocation:   convertUserLocation(tool.UserLocation),
+		}
+	case strings.HasPrefix(typeStr, "web_fetch_"):
+		anthropicTool.AnthropicToolWebFetch = &AnthropicToolWebFetch{
+			MaxUses:          tool.MaxUses,
+			AllowedDomains:   tool.AllowedDomains,
+			BlockedDomains:   tool.BlockedDomains,
+			MaxContentTokens: tool.MaxContentTokens,
+			Citations:        convertCitationsConfig(tool.Citations),
+			UseCache:         tool.UseCache,
+		}
+	case strings.HasPrefix(typeStr, "computer_"):
+		anthropicTool.AnthropicToolComputerUse = &AnthropicToolComputerUse{
+			DisplayWidthPx:  tool.DisplayWidthPx,
+			DisplayHeightPx: tool.DisplayHeightPx,
+			DisplayNumber:   tool.DisplayNumber,
+			EnableZoom:      tool.EnableZoom,
+		}
+	case strings.HasPrefix(typeStr, "text_editor_"):
+		anthropicTool.AnthropicToolTextEditor = &AnthropicToolTextEditor{
+			MaxCharacters: tool.MaxCharacters,
+		}
+	case strings.HasPrefix(typeStr, "bash_"),
+		strings.HasPrefix(typeStr, "memory_"),
+		strings.HasPrefix(typeStr, "code_execution_"),
+		strings.HasPrefix(typeStr, "tool_search_tool_"):
+		// No variant-specific config — Type + Name alone.
+	default:
+		// Unknown type — pass through Type + Name and let Anthropic reject
+		// if it's truly invalid. This keeps forward-compat for new tool
+		// versions that aren't yet known to Bifrost.
+	}
+	return anthropicTool, true
+}
+
+// convertUserLocation mirrors schemas.ChatToolUserLocation onto
+// AnthropicToolWebSearchUserLocation.
+func convertUserLocation(loc *schemas.ChatToolUserLocation) *AnthropicToolWebSearchUserLocation {
+	if loc == nil {
+		return nil
+	}
+	return &AnthropicToolWebSearchUserLocation{
+		Type:     loc.Type,
+		City:     loc.City,
+		Region:   loc.Region,
+		Country:  loc.Country,
+		Timezone: loc.Timezone,
+	}
+}
+
+// convertCitationsConfig mirrors the request-side citations config
+// ({"enabled": true/false}) onto AnthropicCitations' request form.
+func convertCitationsConfig(c *schemas.ChatToolCitationsConfig) *AnthropicCitations {
+	if c == nil {
+		return nil
+	}
+	return &AnthropicCitations{Config: &schemas.Citations{Enabled: c.Enabled}}
+}
+
+// convertMCPToolsetConfig mirrors a single mcp_toolset config.
+func convertMCPToolsetConfig(c *schemas.ChatMCPToolsetConfig) *AnthropicMCPToolsetConfig {
+	if c == nil {
+		return nil
+	}
+	return &AnthropicMCPToolsetConfig{
+		Enabled:      c.Enabled,
+		DeferLoading: c.DeferLoading,
+	}
+}
+
+// convertMCPToolsetConfigMap mirrors the per-tool mcp_toolset configs map.
+func convertMCPToolsetConfigMap(m map[string]*schemas.ChatMCPToolsetConfig) map[string]*AnthropicMCPToolsetConfig {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]*AnthropicMCPToolsetConfig, len(m))
+	for k, v := range m {
+		out[k] = convertMCPToolsetConfig(v)
+	}
+	return out
+}
 
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
@@ -41,24 +267,48 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
-		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
-		if ok {
+
+		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
+		// Opus 4.7+ rejects top_k with a 400 error.
+		if bifrostReq.Params.TopK != nil {
+			if !IsOpus47(bifrostReq.Model) {
+				anthropicReq.TopK = bifrostReq.Params.TopK
+			}
+		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			// Opus 4.7+ rejects top_k with a 400 error.
 			if !IsOpus47(bifrostReq.Model) {
 				anthropicReq.TopK = topK
 			}
 		}
-		if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
+
+		// Speed — prefer neutral field, then ExtraParams.
+		if bifrostReq.Params.Speed != nil {
+			anthropicReq.Speed = bifrostReq.Params.Speed
+		} else if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
 			delete(anthropicReq.ExtraParams, "speed")
 			anthropicReq.Speed = speed
 		}
-		// extract inference_geo and context management
-		if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
+
+		// InferenceGeo — prefer neutral field, then ExtraParams.
+		if bifrostReq.Params.InferenceGeo != nil {
+			anthropicReq.InferenceGeo = bifrostReq.Params.InferenceGeo
+		} else if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
 			delete(anthropicReq.ExtraParams, "inference_geo")
 			anthropicReq.InferenceGeo = inferenceGeo
 		}
-		if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
+
+		// ContextManagement — the neutral type is json.RawMessage; decode to
+		// the Anthropic-shape ContextManagement. Fall back to ExtraParams
+		// (legacy map-valued or typed-pointer paths) if the raw is empty.
+		// Surface decode errors on the typed path so callers get immediate
+		// feedback on malformed config instead of a silent drop.
+		if len(bifrostReq.Params.ContextManagement) > 0 {
+			var cm ContextManagement
+			if err := sonic.Unmarshal(bifrostReq.Params.ContextManagement, &cm); err != nil {
+				return nil, fmt.Errorf("context_management: failed to parse: %w", err)
+			}
+			anthropicReq.ContextManagement = &cm
+		} else if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
 			if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
 				delete(anthropicReq.ExtraParams, "context_management")
 				anthropicReq.ContextManagement = cm
@@ -69,6 +319,65 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					anthropicReq.ContextManagement = &cm
 				}
 			}
+		}
+
+		// Container — map the neutral ChatContainer union onto the Anthropic
+		// AnthropicContainer union. Both follow the string-or-object pattern.
+		if bifrostReq.Params.Container != nil {
+			c := &AnthropicContainer{}
+			if bifrostReq.Params.Container.ContainerStr != nil {
+				c.ContainerStr = bifrostReq.Params.Container.ContainerStr
+			} else if bifrostReq.Params.Container.ContainerObject != nil {
+				obj := &AnthropicContainerObject{
+					ID: bifrostReq.Params.Container.ContainerObject.ID,
+				}
+				if len(bifrostReq.Params.Container.ContainerObject.Skills) > 0 {
+					obj.Skills = make([]AnthropicContainerSkill, len(bifrostReq.Params.Container.ContainerObject.Skills))
+					for i, sk := range bifrostReq.Params.Container.ContainerObject.Skills {
+						obj.Skills[i] = AnthropicContainerSkill{
+							SkillID: sk.SkillID,
+							Type:    sk.Type,
+							Version: sk.Version,
+						}
+					}
+				}
+				c.ContainerObject = obj
+			}
+			anthropicReq.Container = c
+		}
+
+		// Top-level CacheControl on the request.
+		if bifrostReq.Params.CacheControl != nil {
+			anthropicReq.CacheControl = bifrostReq.Params.CacheControl
+		}
+
+		// TaskBudget — maps onto output_config.task_budget. If an OutputConfig
+		// already exists (e.g. from structured outputs), attach the budget to
+		// it; otherwise create one.
+		if bifrostReq.Params.TaskBudget != nil {
+			tb := &AnthropicTaskBudget{
+				Type:      bifrostReq.Params.TaskBudget.Type,
+				Total:     bifrostReq.Params.TaskBudget.Total,
+				Remaining: bifrostReq.Params.TaskBudget.Remaining,
+			}
+			if anthropicReq.OutputConfig == nil {
+				anthropicReq.OutputConfig = &AnthropicOutputConfig{}
+			}
+			anthropicReq.OutputConfig.TaskBudget = tb
+		}
+
+		// MCPServers — mirror the neutral ChatMCPServer[] to AnthropicMCPServerV2[].
+		if len(bifrostReq.Params.MCPServers) > 0 {
+			servers := make([]AnthropicMCPServerV2, len(bifrostReq.Params.MCPServers))
+			for i, s := range bifrostReq.Params.MCPServers {
+				servers[i] = AnthropicMCPServerV2{
+					Type:               s.Type,
+					URL:                s.URL,
+					Name:               s.Name,
+					AuthorizationToken: s.AuthorizationToken,
+				}
+			}
+			anthropicReq.MCPServers = servers
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Vertex doesn't support native structured outputs, so convert to tool
@@ -93,72 +402,24 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
-		// Convert tools
+		// Convert tools. Three neutral ChatTool shapes are supported:
+		//   (1) Function tool (tool.Function != nil) — existing path.
+		//   (2) Anthropic server tool (tool.Function == nil, Type is a
+		//       server-tool version string, Name populated at top level) —
+		//       new path handled by convertServerToolToAnthropic.
+		//   (3) Custom tool (tool.Custom != nil) — not currently forwarded
+		//       to Anthropic; skipped.
 		if bifrostReq.Params.Tools != nil {
 			tools := make([]AnthropicTool, 0, len(bifrostReq.Params.Tools))
 			for _, tool := range bifrostReq.Params.Tools {
-				if tool.Function == nil {
+				if tool.Function != nil {
+					tools = append(tools, convertFunctionToolToAnthropic(tool))
 					continue
 				}
-				anthropicTool := AnthropicTool{
-					Name: tool.Function.Name,
+				// Non-function tool: attempt server-tool reconstruction.
+				if converted, ok := convertServerToolToAnthropic(tool); ok {
+					tools = append(tools, converted)
 				}
-				if tool.Function.Description != nil {
-					anthropicTool.Description = tool.Function.Description
-				}
-
-				// Convert function parameters to input_schema
-				if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
-					anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
-						Type:                 tool.Function.Parameters.Type,
-						Description:          tool.Function.Parameters.Description,
-						Properties:           tool.Function.Parameters.Properties,
-						Required:             tool.Function.Parameters.Required,
-						Enum:                 tool.Function.Parameters.Enum,
-						AdditionalProperties: tool.Function.Parameters.AdditionalProperties,
-						// JSON Schema definition fields
-						Defs:        tool.Function.Parameters.Defs,
-						Definitions: tool.Function.Parameters.Definitions,
-						Ref:         tool.Function.Parameters.Ref,
-						// Array schema fields
-						Items:    tool.Function.Parameters.Items,
-						MinItems: tool.Function.Parameters.MinItems,
-						MaxItems: tool.Function.Parameters.MaxItems,
-						// Composition fields
-						AnyOf: tool.Function.Parameters.AnyOf,
-						OneOf: tool.Function.Parameters.OneOf,
-						AllOf: tool.Function.Parameters.AllOf,
-						// String validation fields
-						Format:    tool.Function.Parameters.Format,
-						Pattern:   tool.Function.Parameters.Pattern,
-						MinLength: tool.Function.Parameters.MinLength,
-						MaxLength: tool.Function.Parameters.MaxLength,
-						// Number validation fields
-						Minimum: tool.Function.Parameters.Minimum,
-						Maximum: tool.Function.Parameters.Maximum,
-						// Misc fields
-						Title:    tool.Function.Parameters.Title,
-						Default:  tool.Function.Parameters.Default,
-						Nullable: tool.Function.Parameters.Nullable,
-					}
-				}
-
-				if anthropicTool.InputSchema != nil {
-					anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
-				}
-
-				if tool.CacheControl != nil {
-					anthropicTool.CacheControl = tool.CacheControl
-				}
-
-				// Fine-grained tool streaming — promoted neutral flag on ChatTool.
-				// Anthropic auto-injects beta header fine-grained-tool-streaming-2025-05-14
-				// via AddMissingBetaHeadersToContext when this is set.
-				if tool.EagerInputStreaming != nil {
-					anthropicTool.EagerInputStreaming = tool.EagerInputStreaming
-				}
-
-				tools = append(tools, anthropicTool)
 			}
 			if anthropicReq.Tools == nil {
 				anthropicReq.Tools = tools
@@ -252,6 +513,18 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				anthropicReq.Thinking = &AnthropicThinking{
 					Type: "disabled",
 				}
+			}
+
+			// thinking.display — map the neutral ChatReasoning.Display onto
+			// AnthropicThinking.Display. Valid for "enabled" and "adaptive"
+			// modes only; Anthropic rejects display on "disabled" ("there is
+			// nothing to display", per the extended-thinking doc). We attach
+			// on non-disabled modes and let the upstream provider enforce
+			// model-level support.
+			if bifrostReq.Params.Reasoning.Display != nil &&
+				anthropicReq.Thinking != nil &&
+				anthropicReq.Thinking.Type != "disabled" {
+				anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
 			}
 		}
 
@@ -424,6 +697,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	anthropicReq.Messages = anthropicMessages
 	anthropicReq.System = systemContent
+
+	// Strip request- and tool-level fields the target Anthropic-family
+	// provider does not support. Fail-closed tool validation stays in
+	// ValidateToolsForProvider; this is strip-silently for additive fields.
+	stripUnsupportedAnthropicFields(anthropicReq, bifrostReq.Provider, bifrostReq.Model)
 
 	return anthropicReq, nil
 }

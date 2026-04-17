@@ -229,6 +229,8 @@ func TestBedrock(t *testing.T) {
 			StructuredOutputs:     true,
 			InterleavedThinking:  true,
 			EagerInputStreaming:  true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
+			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
+			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},
 	}
 

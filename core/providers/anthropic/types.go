@@ -1099,7 +1099,7 @@ func (ac *AnthropicCitations) MarshalJSON() ([]byte, error) {
 		ac.TextCitations = nil
 	}
 	if ac.Config != nil && ac.TextCitations != nil {
-		return nil, fmt.Errorf("AnthropicCitations: both Config and TextCitations are set; only one should be non-nil")
+		return nil, fmt.Errorf("both Config and TextCitations are set; only one should be non-nil")
 	}
 
 	if ac.Config != nil {

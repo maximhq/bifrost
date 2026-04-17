@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -209,6 +210,19 @@ type ChatParameters struct {
 	Verbosity            *string               `json:"verbosity,omitempty"`          // "low" | "medium" | "high"
 	WebSearchOptions     *ChatWebSearchOptions `json:"web_search_options,omitempty"` // Web search options (OpenAI only)
 
+	// Anthropic-native knobs promoted to the neutral layer. These pass through
+	// typed to Anthropic-family providers (honored/stripped per ProviderFeatures
+	// in core/providers/anthropic/types.go). Non-Anthropic providers (OpenAI
+	// etc.) silently ignore them.
+	TopK              *int            `json:"top_k,omitempty"`              // Anthropic top_k sampling
+	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 only)
+	InferenceGeo      *string         `json:"inference_geo,omitempty"`      // Anthropic inference_geo (Claude API only)
+	MCPServers        []ChatMCPServer `json:"mcp_servers,omitempty"`        // Anthropic MCP connector (mcp-client-2025-11-20)
+	Container         *ChatContainer  `json:"container,omitempty"`          // Anthropic container (string id, or object with skills[] — beta skills-2025-10-02)
+	CacheControl      *CacheControl   `json:"cache_control,omitempty"`      // Top-level request cache control (Anthropic family)
+	TaskBudget        *ChatTaskBudget `json:"task_budget,omitempty"`        // Anthropic output_config.task_budget (task-budgets-2026-03-13 beta)
+	ContextManagement json.RawMessage `json:"context_management,omitempty"` // Anthropic context_management — complex union, passed as raw JSON to the provider layer
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -270,6 +284,7 @@ type ChatReasoning struct {
 	Enabled   *bool   `json:"enabled,omitempty"`    // Explicitly enable or disable reasoning (required by OpenRouter to disable reasoning for some models)
 	Effort    *string `json:"effort,omitempty"`     // "none" |  "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
+	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).
@@ -323,18 +338,170 @@ type MCPToolAnnotations struct {
 }
 
 // ChatTool represents a tool definition.
+//
+// Three shapes coexist under this type:
+//  1. OpenAI function tool:   Type="function", Function non-nil.
+//  2. Custom tool:            Type="custom",   Custom non-nil.
+//  3. Anthropic server tool:  Type=server-tool version string (e.g.
+//     "web_search_20260209", "computer_20251124", "mcp_toolset"), Function/Custom
+//     nil, Name populated at top level, and the variant-specific fields
+//     (MaxUses, DisplayWidthPx, etc.) populated inline.
+//
+// JSON shape for (3) matches Anthropic's native tool format directly
+// (e.g. {"type":"web_search_20260209","name":"web_search","max_uses":5}).
+//
+// Custom MarshalJSON/UnmarshalJSON enforce the union invariant:
+//   - On marshal, fields that don't match Type are cleared on a copy so the
+//     wire format always carries exactly one variant. Mixed caller state
+//     (e.g. Type="web_search_20260209" with Function also set) gets
+//     canonicalized instead of being forwarded ambiguously to providers.
+//   - On unmarshal, tolerantly accept whatever JSON shape comes in, then
+//     normalize the decoded struct so downstream code sees a canonical shape.
 type ChatTool struct {
 	Type         ChatToolType        `json:"type"`
-	Function     *ChatToolFunction   `json:"function,omitempty"`      // Function definition
-	Custom       *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition
+	Function     *ChatToolFunction   `json:"function,omitempty"`      // Function definition (shape 1)
+	Custom       *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition (shape 2)
 	CacheControl *CacheControl       `json:"cache_control,omitempty"` // Cache control for the tool
 	Annotations  *MCPToolAnnotations `json:"-"`                       // MCP tool annotations (Bifrost-internal, never forwarded to providers)
 
-	// EagerInputStreaming enables fine-grained tool input streaming
-	// (Anthropic fine-grained-tool-streaming-2025-05-14). On Anthropic-family
-	// providers the model emits input_json_delta events before full arguments
-	// are determined. Silently ignored on providers that don't support it.
-	EagerInputStreaming *bool `json:"eager_input_streaming,omitempty"`
+	// Anthropic-native tool flags promoted to the neutral layer. All optional;
+	// ignored by providers that don't support them. Gating per ProviderFeatures
+	// in core/providers/anthropic/types.go.
+	DeferLoading        *bool                  `json:"defer_loading,omitempty"`         // Anthropic advanced-tool-use: defer loading of tool definition
+	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Anthropic advanced-tool-use: which callers can invoke this tool ("direct", "code_execution_20250825", "code_execution_20260120")
+	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
+	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14: stream input_json_delta before full args are determined (custom tools only)
+
+	// Anthropic server-tool fields (shape 3). All optional; only populated when
+	// Type is a server-tool version string. Function tools carry their name
+	// inside Function.Name — use omitempty here so Name doesn't double-emit.
+	Name string `json:"name,omitempty"`
+
+	// web_search_* and web_fetch_*:
+	MaxUses        *int                  `json:"max_uses,omitempty"`
+	AllowedDomains []string              `json:"allowed_domains,omitempty"`
+	BlockedDomains []string              `json:"blocked_domains,omitempty"`
+	UserLocation   *ChatToolUserLocation `json:"user_location,omitempty"`
+
+	// web_fetch_* only:
+	MaxContentTokens *int                     `json:"max_content_tokens,omitempty"`
+	Citations        *ChatToolCitationsConfig `json:"citations,omitempty"`
+	UseCache         *bool                    `json:"use_cache,omitempty"` // web_fetch_20260309+ only
+
+	// computer_*:
+	DisplayWidthPx  *int  `json:"display_width_px,omitempty"`
+	DisplayHeightPx *int  `json:"display_height_px,omitempty"`
+	DisplayNumber   *int  `json:"display_number,omitempty"`
+	EnableZoom      *bool `json:"enable_zoom,omitempty"` // computer_20251124 only
+
+	// text_editor_20250728+:
+	MaxCharacters *int `json:"max_characters,omitempty"`
+
+	// mcp_toolset:
+	MCPServerName string                           `json:"mcp_server_name,omitempty"`
+	DefaultConfig *ChatMCPToolsetConfig            `json:"default_config,omitempty"`
+	Configs       map[string]*ChatMCPToolsetConfig `json:"configs,omitempty"`
+}
+
+// normalizeShape clears fields that don't belong to the ChatTool's active
+// variant, encoding the three-way union invariant:
+//
+//  1. Type="function": keep Function; nil Custom, server-tool Name, and
+//     variant metadata (function tools carry their name inside Function.Name).
+//  2. Type="custom":   keep Custom and top-level Name; nil Function and
+//     server-tool variant metadata.
+//  3. Any other Type:  server-tool variant — keep Name and variant fields;
+//     nil Function and Custom.
+//
+// Called by both Marshal (strict wire format) and Unmarshal (canonicalize
+// after tolerant decode of potentially mixed input).
+func (t *ChatTool) normalizeShape() {
+	switch t.Type {
+	case ChatToolTypeFunction:
+		t.Custom = nil
+		t.Name = ""
+		t.clearServerToolVariantFields()
+	case ChatToolTypeCustom:
+		t.Function = nil
+		t.clearServerToolVariantFields()
+	default:
+		t.Function = nil
+		t.Custom = nil
+	}
+}
+
+func (t *ChatTool) clearServerToolVariantFields() {
+	t.MaxUses = nil
+	t.AllowedDomains = nil
+	t.BlockedDomains = nil
+	t.UserLocation = nil
+	t.MaxContentTokens = nil
+	t.Citations = nil
+	t.UseCache = nil
+	t.DisplayWidthPx = nil
+	t.DisplayHeightPx = nil
+	t.DisplayNumber = nil
+	t.EnableZoom = nil
+	t.MaxCharacters = nil
+	t.MCPServerName = ""
+	t.DefaultConfig = nil
+	t.Configs = nil
+}
+
+// MarshalJSON enforces the ChatTool union invariant: exactly one variant's
+// fields are emitted on the wire, matching Type. A mix-state tool
+// (e.g. Type="web_search_20260209" with Function also populated) would
+// otherwise serialize both, and downstream provider converters — which
+// dispatch on the top-level Type/Name shape — could misinterpret or
+// silently forward the stray fields.
+func (t ChatTool) MarshalJSON() ([]byte, error) {
+	normalized := t
+	normalized.normalizeShape()
+	type Alias ChatTool
+	return MarshalSorted((*Alias)(&normalized))
+}
+
+// UnmarshalJSON tolerantly decodes whatever JSON shape arrives, then
+// canonicalizes the struct via normalizeShape so downstream code sees a
+// single-variant result even if the input mixed multiple variants.
+// Resets the receiver before decoding so omitted optional fields from a
+// prior payload don't survive the new decode; mirrors ChatContainer.UnmarshalJSON.
+func (t *ChatTool) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*t = ChatTool{}
+		return nil
+	}
+
+	type Alias ChatTool
+	var temp Alias
+	if err := Unmarshal(data, &temp); err != nil {
+		return err
+	}
+	*t = ChatTool(temp)
+	t.normalizeShape()
+	return nil
+}
+
+// ChatToolUserLocation is the neutral user_location for web_search tools.
+type ChatToolUserLocation struct {
+	Type     *string `json:"type,omitempty"` // "approximate"
+	City     *string `json:"city,omitempty"`
+	Region   *string `json:"region,omitempty"`
+	Country  *string `json:"country,omitempty"`
+	Timezone *string `json:"timezone,omitempty"`
+}
+
+// ChatToolCitationsConfig is the request-side citations config on web_fetch
+// ({"enabled": true/false}). Distinct from response-side text citations.
+type ChatToolCitationsConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// ChatMCPToolsetConfig configures an MCP toolset entry (mcp_toolset tool).
+type ChatMCPToolsetConfig struct {
+	Enabled      *bool `json:"enabled,omitempty"`
+	DeferLoading *bool `json:"defer_loading,omitempty"`
 }
 
 // ChatToolFunction represents a function definition.
@@ -960,6 +1127,103 @@ type CacheControl struct {
 	Type  CacheControlType `json:"type"`
 	TTL   *string          `json:"ttl,omitempty"`   // "1m" | "1h"
 	Scope *string          `json:"scope,omitempty"` // "user" | "global"
+}
+
+// ---------------------------------------------------------------------------
+// Neutral mirror types for Anthropic-native knobs promoted onto ChatParameters
+// ---------------------------------------------------------------------------
+// These live in schemas/ (not provider-specific) so ChatParameters stays
+// import-free of provider packages. The anthropic provider reads them in
+// ToAnthropicChatRequest and maps them to AnthropicMessageRequest fields.
+
+// ChatContainerSkill describes one skill attached to a container.
+// Origin: Anthropic container.skills[] (beta skills-2025-10-02).
+type ChatContainerSkill struct {
+	SkillID string  `json:"skill_id"`
+	Type    string  `json:"type"`              // "anthropic" | "custom"
+	Version *string `json:"version,omitempty"` // Optional version pin
+}
+
+// ChatContainerObject is the object form of ChatContainer.
+// Both fields are optional — ID alone is a bare container reference;
+// adding Skills makes it beta-gated.
+type ChatContainerObject struct {
+	ID     *string              `json:"id,omitempty"`
+	Skills []ChatContainerSkill `json:"skills,omitempty"`
+}
+
+// ChatContainer is the union "container" field on a chat request.
+// Anthropic's API accepts either a plain string (container id) or an object
+// with id + skills[]. Mirrors AnthropicContainer in the provider package.
+type ChatContainer struct {
+	ContainerStr    *string
+	ContainerObject *ChatContainerObject
+}
+
+// MarshalJSON emits the raw string or the object form directly.
+func (c ChatContainer) MarshalJSON() ([]byte, error) {
+	if c.ContainerStr != nil && c.ContainerObject != nil {
+		return nil, fmt.Errorf("both ContainerStr and ContainerObject are set; only one should be non-nil")
+	}
+	if c.ContainerStr != nil {
+		return MarshalSorted(*c.ContainerStr)
+	}
+	if c.ContainerObject != nil {
+		return MarshalSorted(c.ContainerObject)
+	}
+	return MarshalSorted(nil)
+}
+
+// UnmarshalJSON accepts either a plain string or the object form.
+// Uses the build-tag-aware package-level Unmarshal (sonic on native, stdlib
+// json on wasm/tinygo) and clears the inactive union arm on each success so
+// repeated decodes into the same value don't leave both arms populated.
+// JSON null clears both arms. Follows the ChatToolChoice.UnmarshalJSON pattern.
+func (c *ChatContainer) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		c.ContainerStr = nil
+		c.ContainerObject = nil
+		return nil
+	}
+
+	var s string
+	if err := Unmarshal(data, &s); err == nil {
+		c.ContainerStr = &s
+		c.ContainerObject = nil
+		return nil
+	}
+	var obj ChatContainerObject
+	if err := Unmarshal(data, &obj); err == nil {
+		c.ContainerStr = nil
+		c.ContainerObject = &obj
+		return nil
+	}
+	return fmt.Errorf("container field is neither a string nor an object")
+}
+
+// ChatTaskBudget advises the model of a full-loop token budget.
+// Origin: Anthropic output_config.task_budget (beta task-budgets-2026-03-13).
+type ChatTaskBudget struct {
+	Type      string `json:"type"`                // Always "tokens"
+	Total     int    `json:"total"`               // Total advisory budget
+	Remaining *int   `json:"remaining,omitempty"` // Optional client-side counter
+}
+
+// ChatToolInputExample is one example input for a tool, shown to the model.
+// Origin: Anthropic tool.input_examples (beta tool-examples-2025-10-29).
+type ChatToolInputExample struct {
+	Input       json.RawMessage `json:"input"`
+	Description *string         `json:"description,omitempty"`
+}
+
+// ChatMCPServer is an MCP server definition attached to a chat request.
+// Origin: Anthropic mcp_servers[] (mcp-client-2025-11-20 format).
+type ChatMCPServer struct {
+	Type               string  `json:"type"` // "url"
+	URL                string  `json:"url"`
+	Name               string  `json:"name"`
+	AuthorizationToken *string `json:"authorization_token,omitempty"`
 }
 
 // ChatInputImage represents image data in a message.

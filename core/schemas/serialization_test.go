@@ -781,6 +781,204 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestResponsesTool_RoundTrip_AnthropicFields ensures the Anthropic-native tool
+// flags promoted onto ResponsesTool (defer_loading, allowed_callers,
+// input_examples, eager_input_streaming) survive a full Marshal→Unmarshal→
+// Marshal cycle. Before MarshalJSON/UnmarshalJSON were taught to handle these
+// keys, all four were silently dropped at the JSON boundary.
+func TestResponsesTool_RoundTrip_AnthropicFields(t *testing.T) {
+	original := ResponsesTool{
+		Type:                ResponsesToolTypeFunction,
+		Name:                Ptr("lookup"),
+		Description:         Ptr("lookup something"),
+		DeferLoading:        Ptr(true),
+		AllowedCallers:      []string{"direct", "agent"},
+		EagerInputStreaming: Ptr(false),
+		InputExamples: []ChatToolInputExample{
+			{Input: json.RawMessage(`{"q":"hello"}`), Description: Ptr("basic")},
+			{Input: json.RawMessage(`{"q":"world"}`)},
+		},
+		ResponsesToolFunction: &ResponsesToolFunction{
+			Parameters: &ToolFunctionParameters{},
+		},
+	}
+
+	data, err := Marshal(original)
+	require.NoError(t, err)
+
+	// All four keys must appear in the wire bytes.
+	for _, key := range []string{`"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`} {
+		assert.Contains(t, string(data), key,
+			"%s must be emitted by MarshalJSON — otherwise it is silently dropped", key)
+	}
+
+	var decoded ResponsesTool
+	require.NoError(t, Unmarshal(data, &decoded))
+
+	require.NotNil(t, decoded.DeferLoading)
+	assert.True(t, *decoded.DeferLoading)
+	assert.Equal(t, []string{"direct", "agent"}, decoded.AllowedCallers)
+	require.NotNil(t, decoded.EagerInputStreaming)
+	assert.False(t, *decoded.EagerInputStreaming)
+	require.Len(t, decoded.InputExamples, 2)
+	assert.JSONEq(t, `{"q":"hello"}`, string(decoded.InputExamples[0].Input))
+	require.NotNil(t, decoded.InputExamples[0].Description)
+	assert.Equal(t, "basic", *decoded.InputExamples[0].Description)
+	assert.JSONEq(t, `{"q":"world"}`, string(decoded.InputExamples[1].Input))
+
+	// Second-round marshal must be byte-stable.
+	data2, err := Marshal(decoded)
+	require.NoError(t, err)
+	assert.Equal(t, string(data), string(data2), "round-trip must be stable")
+}
+
+// TestChatTool_MarshalJSON_EnforcesUnion verifies that the custom codec
+// canonicalizes mixed-state ChatTools on the wire, regardless of what the
+// caller populated in memory. Exactly one variant's fields survive marshal —
+// matching Type — so downstream provider converters can't misinterpret or
+// forward stray fields from a different shape.
+func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
+	t.Run("function_type_clears_custom_and_server_tool_fields", func(t *testing.T) {
+		tool := ChatTool{
+			Type:     ChatToolTypeFunction,
+			Function: &ChatToolFunction{Name: "get_weather"},
+			// Mixed state: server-tool + custom fields also populated.
+			Custom:        &ChatToolCustom{},
+			Name:          "leaked_name",
+			MaxUses:       Ptr(5),
+			DisplayWidthPx: Ptr(1280),
+			MCPServerName: "leaked_server",
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"function"`)
+		assert.Contains(t, raw, `"get_weather"`)
+		for _, leak := range []string{`"custom"`, `"leaked_name"`, `"max_uses"`, `"display_width_px"`, `"mcp_server_name"`} {
+			assert.NotContains(t, raw, leak, "function-type wire must not carry %s", leak)
+		}
+	})
+
+	t.Run("custom_type_clears_function_and_server_tool_fields", func(t *testing.T) {
+		tool := ChatTool{
+			Type:   ChatToolTypeCustom,
+			Custom: &ChatToolCustom{Format: &ChatToolCustomFormat{Type: "text"}},
+			Name:   "my_custom",
+			// Leaks
+			Function: &ChatToolFunction{Name: "should_be_stripped"},
+			MaxUses:  Ptr(5),
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"custom"`)
+		assert.Contains(t, raw, `"my_custom"`)    // custom tool retains top-level Name
+		assert.Contains(t, raw, `"format"`)       // custom's format field
+		assert.NotContains(t, raw, `"function"`)
+		assert.NotContains(t, raw, `"should_be_stripped"`)
+		assert.NotContains(t, raw, `"max_uses"`)
+	})
+
+	t.Run("server_tool_type_clears_function_and_custom", func(t *testing.T) {
+		tool := ChatTool{
+			Type:    "web_search_20260209",
+			Name:    "web_search",
+			MaxUses: Ptr(5),
+			AllowedCallers: []string{"direct"},
+			// Leaks
+			Function: &ChatToolFunction{Name: "should_be_stripped"},
+			Custom:   &ChatToolCustom{},
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"web_search_20260209"`)
+		assert.Contains(t, raw, `"web_search"`)
+		assert.Contains(t, raw, `"max_uses":5`)
+		assert.Contains(t, raw, `"allowed_callers":["direct"]`)
+		assert.NotContains(t, raw, `"function"`)
+		assert.NotContains(t, raw, `"custom"`)
+		assert.NotContains(t, raw, `"should_be_stripped"`)
+	})
+}
+
+// TestChatTool_UnmarshalJSON_NormalizesMixedInput verifies that tolerant
+// decode of a mixed-shape payload produces a canonical single-variant struct
+// so downstream provider conversion code doesn't have to defend against
+// the untrusted shape.
+func TestChatTool_UnmarshalJSON_NormalizesMixedInput(t *testing.T) {
+	t.Run("function_type_mixed_with_server_fields_normalizes", func(t *testing.T) {
+		// Caller sends a function tool but also includes server-tool metadata.
+		raw := []byte(`{
+			"type":"function",
+			"function":{"name":"get_weather"},
+			"name":"stray_server_name",
+			"max_uses":5,
+			"display_width_px":1280
+		}`)
+		var tool ChatTool
+		require.NoError(t, Unmarshal(raw, &tool))
+
+		assert.Equal(t, ChatToolTypeFunction, tool.Type)
+		require.NotNil(t, tool.Function)
+		assert.Equal(t, "get_weather", tool.Function.Name)
+		assert.Empty(t, tool.Name, "function-type must nil top-level Name (lives in Function.Name)")
+		assert.Nil(t, tool.MaxUses)
+		assert.Nil(t, tool.DisplayWidthPx)
+	})
+
+	t.Run("server_tool_type_mixed_with_function_normalizes", func(t *testing.T) {
+		// Caller sends a server-tool but also includes function.
+		raw := []byte(`{
+			"type":"web_search_20260209",
+			"name":"web_search",
+			"max_uses":5,
+			"function":{"name":"stray"}
+		}`)
+		var tool ChatTool
+		require.NoError(t, Unmarshal(raw, &tool))
+
+		assert.Equal(t, ChatToolType("web_search_20260209"), tool.Type)
+		assert.Equal(t, "web_search", tool.Name)
+		require.NotNil(t, tool.MaxUses)
+		assert.Equal(t, 5, *tool.MaxUses)
+		assert.Nil(t, tool.Function, "server-tool must nil Function")
+		assert.Nil(t, tool.Custom, "server-tool must nil Custom")
+	})
+}
+
+// TestChatTool_RoundTrip_SurvivesMixedInput verifies that a mixed-input
+// payload, once canonicalized by Unmarshal and re-emitted by Marshal, drops
+// the stray fields and produces a deterministic single-variant wire format.
+func TestChatTool_RoundTrip_SurvivesMixedInput(t *testing.T) {
+	raw := []byte(`{
+		"type":"web_search_20260209",
+		"name":"web_search",
+		"max_uses":5,
+		"function":{"name":"stray"},
+		"custom":{"format":{"type":"text"}}
+	}`)
+	var tool ChatTool
+	require.NoError(t, Unmarshal(raw, &tool))
+
+	out, err := Marshal(tool)
+	require.NoError(t, err)
+	outStr := string(out)
+	assert.NotContains(t, outStr, `"function"`)
+	assert.NotContains(t, outStr, `"custom"`)
+	assert.Contains(t, outStr, `"web_search_20260209"`)
+
+	// Second pass must be byte-stable (critical for prompt caching keys).
+	var tool2 ChatTool
+	require.NoError(t, Unmarshal(out, &tool2))
+	out2, err := Marshal(tool2)
+	require.NoError(t, err)
+	assert.Equal(t, string(out), string(out2), "round-trip must be stable")
+}
+
 func TestToolFunctionParameters_ExplicitEmptyObjectPreserved(t *testing.T) {
 	var params ToolFunctionParameters
 	err := Unmarshal([]byte(`{}`), &params)

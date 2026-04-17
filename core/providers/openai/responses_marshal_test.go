@@ -694,3 +694,179 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonT
 		t.Fatalf("non-text blocks must not be flattened to string; raw=%s", string(jsonBytes))
 	}
 }
+
+// TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
+// Responses serializer drops the four Anthropic-native tool flags
+// (defer_loading, allowed_callers, input_examples, eager_input_streaming)
+// along with CacheControl before forwarding to OpenAI — mirroring the Chat
+// path's behavior so Anthropic-flavored tools cannot 400 OpenAI via Responses.
+func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:                schemas.ResponsesToolTypeFunction,
+					Name:                schemas.Ptr("lookup"),
+					Description:         schemas.Ptr("lookup something"),
+					CacheControl:        &schemas.CacheControl{Type: "ephemeral"},
+					DeferLoading:        schemas.Ptr(true),
+					AllowedCallers:      []string{"direct", "agent"},
+					EagerInputStreaming: schemas.Ptr(false),
+					InputExamples: []schemas.ChatToolInputExample{
+						{Input: json.RawMessage(`{"q":"hi"}`)},
+					},
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	// None of the five Anthropic-only tool keys must survive on the wire.
+	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`} {
+		if strings.Contains(raw, key) {
+			t.Errorf("OpenAI Responses serializer must strip %s; raw=%s", key, raw)
+		}
+	}
+	// Function tool identity should be preserved.
+	if !strings.Contains(raw, `"name":"lookup"`) {
+		t.Errorf("tool identity lost after strip; raw=%s", raw)
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes verifies
+// that Anthropic-only tool types (web_fetch, memory) are dropped entirely when
+// serializing for OpenAI Responses. Per OpenAI's OpenAPI spec the Responses
+// Tool discriminator union does not include web_fetch or memory, so forwarding
+// them would trigger a 400 schema-validation error. Mirrors the Chat path's
+// isAnthropicServerToolShape drop behavior.
+func TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				// Kept: function (OpenAI-native).
+				{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("keeper_func"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+				// Dropped: web_fetch (Anthropic-only).
+				{
+					Type:                  schemas.ResponsesToolTypeWebFetch,
+					Name:                  schemas.Ptr("anthropic_webfetch"),
+					ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{},
+				},
+				// Kept: web_search (both support).
+				{
+					Type:                   schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+				},
+				// Dropped: memory (Anthropic-only).
+				{
+					Type: schemas.ResponsesToolTypeMemory,
+					Name: schemas.Ptr("anthropic_memory"),
+				},
+				// Kept: tool_search (both support per OpenAI OpenAPI spec).
+				{
+					Type: schemas.ResponsesToolTypeToolSearch,
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	// Dropped types must not appear on the wire.
+	for _, dropped := range []string{`"web_fetch"`, `"memory"`, `"anthropic_webfetch"`, `"anthropic_memory"`} {
+		if strings.Contains(raw, dropped) {
+			t.Errorf("Anthropic-only tool must be dropped; found %s in raw=%s", dropped, raw)
+		}
+	}
+	// Kept types must still appear.
+	for _, kept := range []string{`"function"`, `"web_search"`, `"tool_search"`, `"keeper_func"`} {
+		if !strings.Contains(raw, kept) {
+			t.Errorf("supported tool %s should be preserved; raw=%s", kept, raw)
+		}
+	}
+
+	// Confirm the tools array is present and has exactly 3 entries (2 dropped of 5).
+	var decoded struct {
+		Tools []map[string]interface{} `json:"tools"`
+	}
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(decoded.Tools) != 3 {
+		t.Errorf("expected 3 tools after drop (function, web_search, tool_search), got %d; tools=%+v", len(decoded.Tools), decoded.Tools)
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported verifies the
+// no-reshape fast path: if every tool is OpenAI-compatible with no
+// Anthropic-only flags, the tools slice passes through unchanged (no copy,
+// no drop).
+func TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("f"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+				{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{}},
+				{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var decoded struct {
+		Tools []map[string]interface{} `json:"tools"`
+	}
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(decoded.Tools) != 3 {
+		t.Errorf("expected 3 tools preserved, got %d", len(decoded.Tools))
+	}
+}

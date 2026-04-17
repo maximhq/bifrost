@@ -772,19 +772,32 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			},
 			unexpectHeaders: []string{AnthropicInterleavedThinkingBetaHeader},
 		},
-		// Fast mode tests
+		// Fast mode tests — fast mode is Opus 4.6 only (research preview),
+		// so tests must set Model to exercise the path. Non-Opus-4.6 models
+		// are model-gated out regardless of provider flag.
 		{
 			name:     "Anthropic gets fast mode header",
 			provider: schemas.Anthropic,
 			req: &AnthropicMessageRequest{
+				Model: "claude-opus-4-6",
 				Speed: schemas.Ptr("fast"),
 			},
 			expectHeaders: []string{AnthropicFastModeBetaHeader},
 		},
 		{
+			name:     "Anthropic skips fast mode header on non-Opus-4.6 model",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Model: "claude-sonnet-4-6",
+				Speed: schemas.Ptr("fast"),
+			},
+			unexpectHeaders: []string{AnthropicFastModeBetaHeader},
+		},
+		{
 			name:     "Bedrock skips fast mode header",
 			provider: schemas.Bedrock,
 			req: &AnthropicMessageRequest{
+				Model: "claude-opus-4-6", // fast mode is model-gated; set a supporting model so the test actually exercises provider suppression
 				Speed: schemas.Ptr("fast"),
 			},
 			unexpectHeaders: []string{AnthropicFastModeBetaHeader},
@@ -793,6 +806,7 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			name:     "Azure skips fast mode header",
 			provider: schemas.Azure,
 			req: &AnthropicMessageRequest{
+				Model: "claude-opus-4-6", // fast mode is model-gated; set a supporting model so the test actually exercises provider suppression
 				Speed: schemas.Ptr("fast"),
 			},
 			unexpectHeaders: []string{AnthropicFastModeBetaHeader},
@@ -1237,6 +1251,239 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
+	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
+		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
+		// inference_geo (no InferenceGeo), mcp_servers (no MCP), container.skills
+		// (no Skills), top-level cache_control.scope (no PromptCachingScope),
+		// output_config.task_budget (no TaskBudgets). All should be stripped.
+		input := []byte(`{
+			"model":"claude-opus-4-6",
+			"speed":"fast",
+			"inference_geo":"us-east-1",
+			"mcp_servers":[{"type":"url","url":"https://example.com","name":"x"}],
+			"container":{"id":"c-1","skills":[{"skill_id":"s","type":"anthropic"}]},
+			"cache_control":{"type":"ephemeral","ttl":"5m","scope":"user"},
+			"output_config":{"task_budget":{"type":"tokens","total":20000}}
+		}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, path := range []string{"speed", "inference_geo", "mcp_servers", "container", "cache_control.scope", "output_config.task_budget"} {
+			if providerUtils.JSONFieldExists(result, path) {
+				t.Errorf("expected %q to be stripped for Bedrock, got: %s", path, string(result))
+			}
+		}
+		// Confirm non-scope cache_control fields are retained.
+		if !providerUtils.JSONFieldExists(result, "cache_control.ttl") {
+			t.Errorf("expected cache_control.ttl to survive, got: %s", string(result))
+		}
+	})
+
+	t.Run("vertex_strips_mcp_strict_and_input_examples_via_feature_check", func(t *testing.T) {
+		// Vertex: no MCP, no InputExamples, no StructuredOutputs.
+		// tool.strict stripped; tool.input_examples stripped; mcp_servers stripped.
+		// tool.cache_control.scope stripped (Vertex has no PromptCachingScope).
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"mcp_servers":[{"type":"url","url":"u","name":"n"}],
+			"tools":[{"name":"t1","strict":true,"input_examples":[{"input":{"a":1}}],"cache_control":{"type":"ephemeral","scope":"user"}}]
+		}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Vertex, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, path := range []string{"mcp_servers", "tools.0.strict", "tools.0.input_examples", "tools.0.cache_control.scope"} {
+			if providerUtils.JSONFieldExists(result, path) {
+				t.Errorf("expected %q to be stripped for Vertex, got: %s", path, string(result))
+			}
+		}
+		if !providerUtils.JSONFieldExists(result, "tools.0.name") {
+			t.Errorf("expected tool name to survive")
+		}
+	})
+
+	t.Run("bedrock_keeps_input_examples_via_standalone_flag", func(t *testing.T) {
+		// Bedrock has InputExamples=true via tool-examples-2025-10-29 but
+		// AdvancedToolUse=false. input_examples should be KEPT; defer_loading
+		// and allowed_callers (bundle-only) should be STRIPPED.
+		input := []byte(`{
+			"model":"claude-opus-4-6",
+			"tools":[{"name":"t1","input_examples":[{"input":{"a":1}}],"defer_loading":true,"allowed_callers":["direct"]}]
+		}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "tools.0.input_examples") {
+			t.Errorf("expected tools[0].input_examples to survive on Bedrock, got: %s", string(result))
+		}
+		for _, path := range []string{"tools.0.defer_loading", "tools.0.allowed_callers"} {
+			if providerUtils.JSONFieldExists(result, path) {
+				t.Errorf("expected %q to be stripped for Bedrock (AdvancedToolUse bundle unsupported), got: %s", path, string(result))
+			}
+		}
+	})
+
+	t.Run("speed_stripped_on_non_opus_46_even_on_anthropic", func(t *testing.T) {
+		// Model gate: fast-mode is Opus 4.6 only per docs. Even on Anthropic
+		// direct where FastMode=true, targeting a different model must strip.
+		input := []byte(`{"model":"claude-sonnet-4-6","speed":"fast"}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "speed") {
+			t.Errorf("expected speed stripped for non-Opus-4.6 model on Anthropic, got: %s", string(result))
+		}
+	})
+
+	t.Run("anthropic_direct_is_noop", func(t *testing.T) {
+		// Anthropic supports everything — body should survive untouched.
+		input := []byte(`{"model":"claude-opus-4-6","speed":"fast","mcp_servers":[{"type":"url","url":"u","name":"n"}],"container":{"id":"c"},"tools":[{"name":"t","defer_loading":true,"input_examples":[{"input":{"a":1}}]}]}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, path := range []string{"speed", "mcp_servers", "container", "tools.0.defer_loading", "tools.0.input_examples"} {
+			if !providerUtils.JSONFieldExists(result, path) {
+				t.Errorf("expected %q preserved on Anthropic direct, got: %s", path, string(result))
+			}
+		}
+	})
+
+	t.Run("nested_scope_stripped_on_messages_and_system", func(t *testing.T) {
+		// Nested scope on system blocks and message blocks must also be stripped
+		// when the provider lacks PromptCachingScope.
+		input := []byte(`{
+			"model":"claude-opus-4-6",
+			"system":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"user"}}],
+			"messages":[{"role":"user","content":[{"type":"text","text":"q","cache_control":{"type":"ephemeral","scope":"global"}}]}]
+		}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, path := range []string{"system.0.cache_control.scope", "messages.0.content.0.cache_control.scope"} {
+			if providerUtils.JSONFieldExists(result, path) {
+				t.Errorf("expected nested %q stripped, got: %s", path, string(result))
+			}
+		}
+	})
+
+	t.Run("unknown_provider_is_safe_noop", func(t *testing.T) {
+		input := []byte(`{"model":"claude-opus-4-6","speed":"fast"}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.ModelProvider("custom"), "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "speed") {
+			t.Errorf("expected speed preserved for unknown provider (safe default), got: %s", string(result))
+		}
+	})
+
+	t.Run("container_empty_skills_stripped_but_container_preserved", func(t *testing.T) {
+		// Skills=false provider (Bedrock), ContainerBasic=true.
+		// skills:[] is a caller oversight — strip the empty key, preserve container.
+		input := []byte(`{"model":"claude-opus-4-6","container":{"id":"c-1","skills":[]}}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "container.skills") {
+			t.Errorf("expected empty container.skills stripped on Skills=false provider, got: %s", string(result))
+		}
+		if !providerUtils.JSONFieldExists(result, "container.id") {
+			t.Errorf("expected container.id preserved (bare form still valid), got: %s", string(result))
+		}
+	})
+
+	t.Run("container_nonempty_skills_drops_whole_container", func(t *testing.T) {
+		// Non-empty skills signals caller intent; provider doesn't support — drop container.
+		input := []byte(`{"model":"claude-opus-4-6","container":{"id":"c-1","skills":[{"skill_id":"s","type":"anthropic"}]}}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "container") {
+			t.Errorf("expected whole container dropped for non-empty skills on Skills=false, got: %s", string(result))
+		}
+	})
+
+	t.Run("container_empty_skills_on_skills_capable_provider_preserved", func(t *testing.T) {
+		// On Anthropic direct (Skills=true), the empty skills array must be preserved
+		// as-is — our strip logic only fires when !features.Skills.
+		input := []byte(`{"model":"claude-opus-4-6","container":{"id":"c-1","skills":[]}}`)
+		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-opus-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "container.skills") {
+			t.Errorf("expected container.skills preserved on Skills=true provider, got: %s", string(result))
+		}
+	})
+}
+
+// TestStripUnsupportedAnthropicFields_ContainerSkillsGating mirrors the raw-path
+// tests above on the typed path — ensures the typed sanitizer treats explicit
+// empty skills arrays as a stripable (not drop-triggering) signal.
+func TestStripUnsupportedAnthropicFields_ContainerSkillsGating(t *testing.T) {
+	t.Run("empty_skills_on_skills_false_provider_strips_skills_keeps_container", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-opus-4-6",
+			Container: &AnthropicContainer{
+				ContainerObject: &AnthropicContainerObject{
+					ID:     schemas.Ptr("c-1"),
+					Skills: []AnthropicContainerSkill{}, // explicit empty
+				},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-opus-4-6")
+		if req.Container == nil {
+			t.Fatalf("expected container preserved (bare form valid with empty skills), got nil")
+		}
+		if req.Container.ContainerObject == nil || req.Container.ContainerObject.Skills != nil {
+			t.Errorf("expected skills cleared on Skills=false, got %v", req.Container.ContainerObject)
+		}
+	})
+
+	t.Run("nonempty_skills_on_skills_false_provider_drops_container", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-opus-4-6",
+			Container: &AnthropicContainer{
+				ContainerObject: &AnthropicContainerObject{
+					ID:     schemas.Ptr("c-1"),
+					Skills: []AnthropicContainerSkill{{SkillID: "s", Type: "anthropic"}},
+				},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-opus-4-6")
+		if req.Container != nil {
+			t.Errorf("expected whole container dropped for non-empty skills on Skills=false, got %v", req.Container)
+		}
+	})
+
+	t.Run("empty_skills_on_skills_true_provider_preserved", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-opus-4-6",
+			Container: &AnthropicContainer{
+				ContainerObject: &AnthropicContainerObject{
+					ID:     schemas.Ptr("c-1"),
+					Skills: []AnthropicContainerSkill{},
+				},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-6")
+		if req.Container == nil || req.Container.ContainerObject == nil {
+			t.Fatalf("expected container preserved on Skills=true provider, got %v", req.Container)
+		}
+		if req.Container.ContainerObject.Skills == nil {
+			t.Errorf("expected empty skills preserved on Skills=true provider (not nilled)")
+		}
+	})
 }
 
 func TestStripAutoInjectableTools(t *testing.T) {
