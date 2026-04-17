@@ -1025,6 +1025,11 @@ func CreateCursorChatCompletionsRouteConfigs(pathPrefix string, handlerStore lib
 					return err
 				},
 			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				// Set the user agent to cursor for tool manager duplicate checks
+				bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, schemas.Cursor.String())
+				return nil
+			},
 		})
 	}
 

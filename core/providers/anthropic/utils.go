@@ -2700,13 +2700,13 @@ func anthropicExtractFloat64(v interface{}) (float64, bool) {
 func IsClaudeCodeMaxMode(ctx *schemas.BifrostContext) bool {
 	userAgent, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
 	skipKeySelection, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
-	return strings.Contains(strings.ToLower(userAgent), "claude-cli") && skipKeySelection
+	return schemas.ClaudeCLI.Matches(userAgent) && skipKeySelection
 }
 
 // IsClaudeCodeRequest checks if the request is a Claude Code request.
 func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 	if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
-		return strings.Contains(strings.ToLower(userAgent), "claude-cli")
+		return schemas.ClaudeCLI.Matches(userAgent)
 	}
 	return false
 }

@@ -58,7 +58,7 @@ func isAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
 	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI")
 }
 
-func hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostContext, req interface{}) {
+func hydrateOpenAIRequestFromLargePayloadMetadata(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) {
 	if bifrostCtx == nil {
 		return
 	}
@@ -140,14 +140,16 @@ func hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostCon
 
 // openAILargePayloadPreHook populates model + stream from LargePayloadMetadata
 // when body parsing is skipped under large payload mode.
-func openAILargePayloadPreHook(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-	hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
+func openAILargePayloadPreHook(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+	schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 	return nil
 }
 
 func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
+		hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+		schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 
 		azureKey := ctx.Request.Header.Peek("authorization")
 		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
@@ -743,7 +745,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				},
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-				hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
+				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 				if isAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
