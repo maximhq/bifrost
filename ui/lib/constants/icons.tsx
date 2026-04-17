@@ -200,6 +200,11 @@ export const ProviderIcons = {
 		);
 	},
 
+	codex: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return <Network size={resolvedSize} className={className} />;
+	},
+
 	elevenlabs: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

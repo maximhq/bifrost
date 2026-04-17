@@ -25,6 +25,7 @@ type Key struct {
 	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
 	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
 	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
+	CodexKeyConfig       *CodexKeyConfig       `json:"codex_key_config,omitempty"`       // Codex subscription-specific key configuration
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
@@ -112,6 +113,27 @@ type VLLMKeyConfig struct {
 	URL       EnvVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
 	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
 }
+
+type CodexAuthMethod string
+
+const (
+	CodexAuthMethodDevice CodexAuthMethod = "device"
+	CodexAuthMethodManual CodexAuthMethod = "manual"
+)
+
+// CodexKeyConfig holds ChatGPT Plus/Pro subscription credentials used by the Codex provider.
+// Refresh tokens are the durable credential; access tokens are optional cached tokens for request reuse.
+type CodexKeyConfig struct {
+	RefreshToken         EnvVar          `json:"refresh_token"`
+	AccessToken          *EnvVar         `json:"access_token,omitempty"`
+	AccessTokenExpiresAt *string         `json:"access_token_expires_at,omitempty"`
+	AccountID            *EnvVar         `json:"account_id,omitempty"`
+	AuthMethod           CodexAuthMethod `json:"auth_method,omitempty"`
+}
+
+// CodexCredentialPersister persists refreshed Codex credentials for a stored key.
+// It is injected by transports that can update persistent provider configuration.
+type CodexCredentialPersister func(keyID string, keyConfig *CodexKeyConfig) error
 
 // Account defines the interface for managing provider accounts and their configurations.
 // It provides methods to access provider-specific settings, API keys, and configurations.

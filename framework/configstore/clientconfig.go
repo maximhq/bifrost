@@ -418,6 +418,24 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
+
+		if key.CodexKeyConfig != nil {
+			codexConfig := &schemas.CodexKeyConfig{
+				RefreshToken: key.CodexKeyConfig.RefreshToken,
+				AuthMethod:   key.CodexKeyConfig.AuthMethod,
+			}
+			codexConfig.RefreshToken = *key.CodexKeyConfig.RefreshToken.Redacted()
+			if key.CodexKeyConfig.AccessToken != nil {
+				codexConfig.AccessToken = key.CodexKeyConfig.AccessToken.Redacted()
+			}
+			if key.CodexKeyConfig.AccountID != nil {
+				codexConfig.AccountID = key.CodexKeyConfig.AccountID.Redacted()
+			}
+			if key.CodexKeyConfig.AccessTokenExpiresAt != nil {
+				codexConfig.AccessTokenExpiresAt = key.CodexKeyConfig.AccessTokenExpiresAt
+			}
+			redactedConfig.Keys[i].CodexKeyConfig = codexConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -580,6 +598,13 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
 		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	if key.CodexKeyConfig != nil {
+		data, err := sonic.Marshal(key.CodexKeyConfig)
 		if err != nil {
 			return "", err
 		}

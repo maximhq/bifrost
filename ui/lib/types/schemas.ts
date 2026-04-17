@@ -164,6 +164,32 @@ export const vllmKeyConfigSchema = z.object({
 	model_name: z.string().trim().min(1, "Model name is required"),
 });
 
+export const codexAuthMethodSchema = z.enum(["device", "manual"]);
+
+export const codexKeyConfigSchema = z
+	.object({
+		refresh_token: envVarSchema.optional(),
+		access_token: envVarSchema.optional(),
+		access_token_expires_at: z.string().optional(),
+		account_id: envVarSchema.optional(),
+		auth_method: codexAuthMethodSchema.optional(),
+	})
+	.superRefine((data, ctx) => {
+		const hasRefreshToken = !!data.refresh_token?.value?.trim() || !!data.refresh_token?.env_var?.trim();
+		const hasAccessToken = !!data.access_token?.value?.trim() || !!data.access_token?.env_var?.trim();
+		const hasAccountID = !!data.account_id?.value?.trim() || !!data.account_id?.env_var?.trim();
+		const hasExpiry = !!data.access_token_expires_at?.trim();
+		const isManual = data.auth_method === "manual";
+
+		if ((isManual || hasAccessToken || hasAccountID || hasExpiry) && !hasRefreshToken) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["refresh_token"],
+				message: "Refresh token is required for manual Codex credentials",
+			});
+		}
+	});
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -197,12 +223,13 @@ export const modelProviderKeySchema = z
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
+		codex_key_config: codexKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
+			// If provider-specific structured auth config is present, value is not required
+			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config || data.codex_key_config) {
 				return true;
 			}
 			// Otherwise, value is required
@@ -608,17 +635,21 @@ const baseCacheConfigSchema = z.object({
 	updated_at: z.string().optional(),
 });
 
-const directCacheConfigSchema = baseCacheConfigSchema.extend({
-	dimension: z.literal(1),
-	keys: z.array(modelProviderKeySchema).optional(),
-}).strict();
+const directCacheConfigSchema = baseCacheConfigSchema
+	.extend({
+		dimension: z.literal(1),
+		keys: z.array(modelProviderKeySchema).optional(),
+	})
+	.strict();
 
-const providerBackedCacheConfigSchema = baseCacheConfigSchema.extend({
-	provider: modelProviderNameSchema,
-	keys: z.array(modelProviderKeySchema).optional(),
-	embedding_model: z.string().min(1, "Embedding model is required"),
-	dimension: z.number().int().min(2, "Dimension must be greater than 1 for provider-backed semantic cache"),
-}).strict();
+const providerBackedCacheConfigSchema = baseCacheConfigSchema
+	.extend({
+		provider: modelProviderNameSchema,
+		keys: z.array(modelProviderKeySchema).optional(),
+		embedding_model: z.string().min(1, "Embedding model is required"),
+		dimension: z.number().int().min(2, "Dimension must be greater than 1 for provider-backed semantic cache"),
+	})
+	.strict();
 
 export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBackedCacheConfigSchema]);
 

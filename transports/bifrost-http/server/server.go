@@ -1019,6 +1019,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// lib.ChainMiddlewares chains multiple middlewares together
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
+	codexAuthHandler := handlers.NewCodexAuthHandler(s.Config)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config, oauthHandler)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
@@ -1028,6 +1029,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Going ahead with API handlers
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
+	codexAuthHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1122,6 +1124,14 @@ func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
 func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
+	if s.Config != nil && s.Config.ConfigStore != nil {
+		commonMiddlewares = append(commonMiddlewares, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+			return func(ctx *fasthttp.RequestCtx) {
+				ctx.SetUserValue(schemas.BifrostContextKeyCodexCredentialPersister, schemas.CodexCredentialPersister(s.persistCodexCredentialRefresh))
+				next(ctx)
+			}
+		})
+	}
 	// Preparing middlewares
 	// Initializing prometheus plugin
 	prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
@@ -1131,6 +1141,15 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 		logger.Warn("prometheus plugin not found, skipping telemetry middleware")
 	}
 	return commonMiddlewares
+}
+
+func (s *BifrostHTTPServer) persistCodexCredentialRefresh(keyID string, refreshed *schemas.CodexKeyConfig) error {
+	if s.Config == nil || refreshed == nil {
+		return nil
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
+	defer ctx.Cancel()
+	return s.Config.PersistCodexKeyCredentials(ctx, keyID, refreshed)
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.

@@ -64,6 +64,19 @@ export interface ListBaseModelsResponse {
 	total: number;
 }
 
+export interface CodexAuthSessionResponse {
+	id: string;
+	flow_type: string;
+	status: string;
+	expires_at: string;
+	verification_uri?: string;
+	user_code?: string;
+	interval_seconds?: number;
+	next_poll_at?: string;
+	last_error?: string;
+	completed_at?: string;
+}
+
 const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 	mode: "chat",
 	base_model: "default",
@@ -106,6 +119,31 @@ export const providersApi = baseApi.injectEndpoints({
 		getProvider: builder.query<ModelProvider, string>({
 			query: (provider) => `/providers/${encodeURIComponent(provider)}`,
 			providesTags: (result, error, provider) => [{ type: "Providers", id: provider }],
+		}),
+
+		startCodexBrowserAuth: builder.mutation<CodexAuthSessionResponse, string>({
+			query: (keyId) => ({
+				url: `/providers/codex/keys/${encodeURIComponent(keyId)}/auth/browser/start`,
+				method: "POST",
+			}),
+		}),
+
+		startCodexDeviceAuth: builder.mutation<CodexAuthSessionResponse, string>({
+			query: (keyId) => ({
+				url: `/providers/codex/keys/${encodeURIComponent(keyId)}/auth/device/start`,
+				method: "POST",
+			}),
+		}),
+
+		getCodexAuthSession: builder.query<CodexAuthSessionResponse, string>({
+			query: (sessionId) => `/providers/codex/auth/sessions/${encodeURIComponent(sessionId)}`,
+		}),
+
+		cancelCodexAuthSession: builder.mutation<CodexAuthSessionResponse, string>({
+			query: (sessionId) => ({
+				url: `/providers/codex/auth/sessions/${encodeURIComponent(sessionId)}`,
+				method: "DELETE",
+			}),
 		}),
 
 		// Create new provider
@@ -224,6 +262,10 @@ export const providersApi = baseApi.injectEndpoints({
 export const {
 	useGetProvidersQuery,
 	useGetProviderQuery,
+	useStartCodexBrowserAuthMutation,
+	useStartCodexDeviceAuthMutation,
+	useLazyGetCodexAuthSessionQuery,
+	useCancelCodexAuthSessionMutation,
 	useCreateProviderMutation,
 	useUpdateProviderMutation,
 	useDeleteProviderMutation,

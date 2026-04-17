@@ -88,6 +88,7 @@ type ConfigStore interface {
 	GetProviders(ctx context.Context) ([]tables.TableProvider, error)
 	GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error
+	PersistCodexKeyConfig(ctx context.Context, keyID string, keyConfig *schemas.CodexKeyConfig) error
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
@@ -269,6 +270,12 @@ type ConfigStore interface {
 	CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
 	UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
 	DeleteOauthToken(ctx context.Context, id string) error
+
+	// Codex auth sessions
+	GetCodexAuthSessionByID(ctx context.Context, id string) (*tables.TableCodexAuthSession, error)
+	CreateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error
+	UpdateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error
+	DeleteCodexAuthSession(ctx context.Context, id string) error
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)

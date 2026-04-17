@@ -22,6 +22,7 @@ The following table summarizes which operations are supported by each provider v
 | Bedrock (`bedrock/<model>`) | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Cerebras (`cerebras/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Cohere (`cohere/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Codex (`codex/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Elevenlabs (`elevenlabs/<model>`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Fireworks (`fireworks/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Gemini (`gemini/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -44,6 +45,8 @@ The following table summarizes which operations are supported by each provider v
 - 🟡 Not supported by the downstream provider, but internally implemented by Bifrost as a fallback.
 - ❌ Not supported by the downstream provider, hence not supported by Bifrost.
 - ✅ Fully supported by the downstream provider, or internally implemented by Bifrost.
+
+Codex is an experimental subscription-backed provider that depends on a non-public upstream surface. Prefer API-key providers such as OpenAI, Anthropic, Bedrock, or Vertex AI for production use.
 
 
 <Note>

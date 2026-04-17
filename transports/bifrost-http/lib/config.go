@@ -3112,6 +3112,52 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 	return nil
 }
 
+// PersistCodexKeyCredentials updates the persisted and in-memory credentials for a Codex key
+// without triggering a provider reload. The DB remains the source of truth; the in-memory
+// update is only to avoid repeated refreshes on the current instance.
+func (c *Config) PersistCodexKeyCredentials(ctx context.Context, keyID string, refreshed *schemas.CodexKeyConfig) error {
+	if refreshed == nil {
+		return nil
+	}
+
+	if c.ConfigStore != nil {
+		if err := c.ConfigStore.PersistCodexKeyConfig(ctx, keyID, refreshed); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("failed to persist codex key credentials: %w", err)
+		}
+	}
+
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	existingConfig, exists := c.Providers[schemas.Codex]
+	if !exists {
+		return ErrNotFound
+	}
+	for idx := range existingConfig.Keys {
+		if existingConfig.Keys[idx].ID != keyID {
+			continue
+		}
+		current := existingConfig.Keys[idx].CodexKeyConfig
+		merged := &schemas.CodexKeyConfig{}
+		if current != nil {
+			*merged = *current
+		}
+		merged.RefreshToken = refreshed.RefreshToken
+		merged.AccessToken = refreshed.AccessToken
+		merged.AccessTokenExpiresAt = refreshed.AccessTokenExpiresAt
+		merged.AuthMethod = refreshed.AuthMethod
+		if refreshed.AccountID != nil {
+			merged.AccountID = refreshed.AccountID
+		}
+		existingConfig.Keys[idx].CodexKeyConfig = merged
+		c.Providers[schemas.Codex] = existingConfig
+		return nil
+	}
+	return ErrNotFound
+}
+
 // RemoveProvider removes a provider configuration from memory.
 func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	c.Mu.Lock()

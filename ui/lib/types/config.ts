@@ -106,6 +106,24 @@ export interface VLLMKeyConfig {
 	model_name: string;
 }
 
+export type CodexAuthMethod = "device" | "manual";
+
+export interface CodexKeyConfig {
+	refresh_token: EnvVar;
+	access_token?: EnvVar;
+	access_token_expires_at?: string;
+	account_id?: EnvVar;
+	auth_method?: CodexAuthMethod;
+}
+
+export const DefaultCodexKeyConfig: CodexKeyConfig = {
+	refresh_token: { value: "", env_var: "", from_env: false },
+	access_token: { value: "", env_var: "", from_env: false },
+	access_token_expires_at: "",
+	account_id: { value: "", env_var: "", from_env: false },
+	auth_method: "manual",
+} as const satisfies Required<CodexKeyConfig>;
+
 // Default VLLMKeyConfig
 export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
 	url: { value: "", env_var: "", from_env: false },
@@ -127,6 +145,7 @@ export interface ModelProviderKey {
 	bedrock_key_config?: BedrockKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
+	codex_key_config?: CodexKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

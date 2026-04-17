@@ -444,6 +444,22 @@ func (m *MockConfigStore) UpdateProvider(ctx context.Context, provider schemas.M
 	return nil
 }
 
+func (m *MockConfigStore) PersistCodexKeyConfig(ctx context.Context, keyID string, keyConfig *schemas.CodexKeyConfig) error {
+	provider, ok := m.providers[schemas.Codex]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for idx := range provider.Keys {
+		if provider.Keys[idx].ID != keyID {
+			continue
+		}
+		provider.Keys[idx].CodexKeyConfig = keyConfig
+		m.providers[schemas.Codex] = provider
+		return nil
+	}
+	return configstore.ErrNotFound
+}
+
 func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	delete(m.providers, provider)
 	return nil
@@ -1019,6 +1035,22 @@ func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Ta
 }
 
 func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetCodexAuthSessionByID(ctx context.Context, id string) (*tables.TableCodexAuthSession, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteCodexAuthSession(ctx context.Context, id string) error {
 	return nil
 }
 
@@ -15752,13 +15784,13 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	// Enterprise-only features: These fields exist in the JSON schema for documentation
 	// and validation purposes, but are only available in the enterprise version.
 	enterpriseSchemaFields := map[string]bool{
-		"$schema":                      true,
-		"audit_logs":                   true,
-		"cluster_config":               true,
-		"saml_config":                  true,
-		"load_balancer_config":         true,
-		"guardrails_config":            true,
-		"large_payload_optimization":   true,
+		"$schema":                    true,
+		"audit_logs":                 true,
+		"cluster_config":             true,
+		"saml_config":                true,
+		"load_balancer_config":       true,
+		"guardrails_config":          true,
+		"large_payload_optimization": true,
 	}
 
 	schema := loadJSONSchema(t)
