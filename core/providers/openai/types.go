@@ -185,27 +185,42 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		processedMessages = req.Messages
 	}
 
-	// Process tools if needed
+	// Process tools if needed.
+	// On outbound to OpenAI we need to:
+	//   (a) Strip CacheControl (Anthropic-only, existing behavior).
+	//   (b) Drop Anthropic server tools entirely (Function == nil && Custom == nil);
+	//       OpenAI won't accept web_search_20260209 etc.
+	//   (c) Strip Anthropic-native per-tool flags (DeferLoading, AllowedCallers,
+	//       InputExamples, EagerInputStreaming) when they're set on function tools.
 	var processedTools []schemas.ChatTool
 	if len(req.Tools) > 0 {
-		needsToolCopy := false
+		needsToolChange := false
 		for _, tool := range req.Tools {
-			if tool.CacheControl != nil {
-				needsToolCopy = true
+			if tool.CacheControl != nil || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
+				needsToolChange = true
 				break
 			}
 		}
 
-		if needsToolCopy {
-			processedTools = make([]schemas.ChatTool, len(req.Tools))
-			for i, tool := range req.Tools {
-				if tool.CacheControl != nil {
-					toolCopy := tool
-					toolCopy.CacheControl = nil
-					processedTools[i] = toolCopy
-				} else {
-					processedTools[i] = tool
+		if needsToolChange {
+			processedTools = make([]schemas.ChatTool, 0, len(req.Tools))
+			for _, tool := range req.Tools {
+				// Drop Anthropic server tools (no function/custom payload).
+				// OpenAI would reject the request if we forwarded them.
+				if isAnthropicServerToolShape(tool) {
+					continue
 				}
+				if tool.CacheControl == nil && !hasAnthropicOnlyToolFlags(tool) {
+					processedTools = append(processedTools, tool)
+					continue
+				}
+				toolCopy := tool
+				toolCopy.CacheControl = nil
+				toolCopy.DeferLoading = nil
+				toolCopy.AllowedCallers = nil
+				toolCopy.InputExamples = nil
+				toolCopy.EagerInputStreaming = nil
+				processedTools = append(processedTools, toolCopy)
 			}
 		} else {
 			processedTools = req.Tools
@@ -489,6 +504,52 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
+// isAnthropicServerToolShape reports whether the tool carries the Anthropic
+// server-tool shape (Function and Custom both nil). On outbound to OpenAI,
+// these must be dropped — OpenAI doesn't accept tool types like
+// web_search_20260209, computer_20251124, mcp_toolset, etc.
+func isAnthropicServerToolShape(t schemas.ChatTool) bool {
+	return t.Function == nil && t.Custom == nil
+}
+
+// hasAnthropicOnlyToolFlags reports whether the tool carries any of the
+// Anthropic-native flags that OpenAI would reject (DeferLoading,
+// AllowedCallers, InputExamples, EagerInputStreaming). Strip these when
+// forwarding to OpenAI.
+func hasAnthropicOnlyToolFlags(t schemas.ChatTool) bool {
+	return t.DeferLoading != nil ||
+		len(t.AllowedCallers) > 0 ||
+		len(t.InputExamples) > 0 ||
+		t.EagerInputStreaming != nil
+}
+
+// hasAnthropicOnlyResponsesToolFlags is the ResponsesTool-typed parallel of
+// hasAnthropicOnlyToolFlags. The four flags were promoted onto ResponsesTool
+// in core/schemas/responses.go for the Anthropic-via-Responses path; the
+// OpenAI Responses serializer must strip them so they don't leak to OpenAI
+// and trigger a 400 on unknown fields.
+func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool) bool {
+	return t.DeferLoading != nil ||
+		len(t.AllowedCallers) > 0 ||
+		len(t.InputExamples) > 0 ||
+		t.EagerInputStreaming != nil
+}
+
+// isAnthropicOnlyResponsesToolType reports whether the tool type exists only
+// in Anthropic's taxonomy and is not part of OpenAI's Responses API Tool union
+// (per OpenAI's OpenAPI spec component.schemas.Tool, which enumerates function,
+// file_search, computer[_use_preview], web_search[_preview], mcp,
+// code_interpreter, image_generation, local_shell, custom, tool_search, and
+// related shell/namespace/apply_patch variants). Forwarding web_fetch or
+// memory to OpenAI guarantees a 400 on schema discriminator validation, so
+// these get dropped in the Responses→OpenAI serializer — mirroring the Chat
+// path's isAnthropicServerToolShape drop behavior for schema parity across
+// both endpoints.
+func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
+	return t.Type == schemas.ResponsesToolTypeWebFetch ||
+		t.Type == schemas.ResponsesToolTypeMemory
+}
+
 func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
@@ -661,27 +722,45 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
-	// Process tools if needed
+	// Process tools if needed.
+	// Mirrors the Chat path (see ChatRequest.MarshalJSON) so the same
+	// Anthropic-flavored tool payload doesn't leak via the Responses serializer:
+	//   (a) Drop Anthropic-only tool TYPES entirely (web_fetch, memory) since
+	//       OpenAI's Responses Tool union doesn't include them — forwarding
+	//       would 400 on the discriminator.
+	//   (b) Strip CacheControl (Anthropic-only schema field).
+	//   (c) Strip the four Anthropic-native per-tool flags (DeferLoading,
+	//       AllowedCallers, InputExamples, EagerInputStreaming).
 	var processedTools []schemas.ResponsesTool
 	if len(resp.Tools) > 0 {
-		needsToolCopy := false
+		needsReshape := false
 		for _, tool := range resp.Tools {
-			if tool.CacheControl != nil {
-				needsToolCopy = true
+			if isAnthropicOnlyResponsesToolType(tool) ||
+				tool.CacheControl != nil ||
+				hasAnthropicOnlyResponsesToolFlags(tool) {
+				needsReshape = true
 				break
 			}
 		}
 
-		if needsToolCopy {
-			processedTools = make([]schemas.ResponsesTool, len(resp.Tools))
-			for i, tool := range resp.Tools {
-				if tool.CacheControl != nil {
-					toolCopy := tool
-					toolCopy.CacheControl = nil
-					processedTools[i] = toolCopy
-				} else {
-					processedTools[i] = tool
+		if needsReshape {
+			processedTools = make([]schemas.ResponsesTool, 0, len(resp.Tools))
+			for _, tool := range resp.Tools {
+				if isAnthropicOnlyResponsesToolType(tool) {
+					// Drop — OpenAI Responses has no web_fetch or memory.
+					continue
 				}
+				if tool.CacheControl == nil && !hasAnthropicOnlyResponsesToolFlags(tool) {
+					processedTools = append(processedTools, tool)
+					continue
+				}
+				toolCopy := tool
+				toolCopy.CacheControl = nil
+				toolCopy.DeferLoading = nil
+				toolCopy.AllowedCallers = nil
+				toolCopy.InputExamples = nil
+				toolCopy.EagerInputStreaming = nil
+				processedTools = append(processedTools, toolCopy)
 			}
 		} else {
 			processedTools = resp.Tools

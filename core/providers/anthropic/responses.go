@@ -2239,6 +2239,7 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		for _, tool := range req.Tools {
 			bifrostTool := convertAnthropicToolToBifrost(&tool)
 			if bifrostTool != nil {
+				applyAnthropicToolFlagsToResponsesTool(&tool, bifrostTool)
 				bifrostTools = append(bifrostTools, *bifrostTool)
 			}
 		}
@@ -2248,12 +2249,17 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 
 	if req.MCPServers != nil {
-		// Build a map of mcp_toolset configs from tools[] keyed by mcp_server_name
-		toolsetByServer := make(map[string]*AnthropicMCPToolsetTool)
+		// Build a map of mcp_toolset entries from tools[] keyed by mcp_server_name.
+		// Stores the full *AnthropicTool (not just *AnthropicMCPToolsetTool) so
+		// top-level Anthropic tool flags (DeferLoading, AllowedCallers,
+		// InputExamples, EagerInputStreaming) survive the mcp_servers merge path —
+		// without this, mcp_toolset tools bypass applyAnthropicToolFlagsToResponsesTool
+		// because convertAnthropicToolToBifrost skips them.
+		toolsetByServer := make(map[string]*AnthropicTool)
 		if req.Tools != nil {
 			for i := range req.Tools {
 				if req.Tools[i].MCPToolset != nil {
-					toolsetByServer[req.Tools[i].MCPToolset.MCPServerName] = req.Tools[i].MCPToolset
+					toolsetByServer[req.Tools[i].MCPToolset.MCPServerName] = &req.Tools[i]
 				}
 			}
 		}
@@ -2262,9 +2268,10 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		for _, mcpServer := range req.MCPServers {
 			bifrostMCPTool := convertAnthropicMCPServerV2ToBifrostTool(&mcpServer)
 			if bifrostMCPTool != nil {
-				// Merge mcp_toolset configs (allowed tools) if present
-				if toolset, ok := toolsetByServer[mcpServer.Name]; ok {
-					applyMCPToolsetConfigToBifrostTool(bifrostMCPTool, toolset)
+				// Merge mcp_toolset configs (allowed tools) + Anthropic tool flags if present
+				if toolWithFlags, ok := toolsetByServer[mcpServer.Name]; ok {
+					applyMCPToolsetConfigToBifrostTool(bifrostMCPTool, toolWithFlags.MCPToolset)
+					applyAnthropicToolFlagsToResponsesTool(toolWithFlags, bifrostMCPTool)
 				}
 				bifrostMCPTools = append(bifrostMCPTools, *bifrostMCPTool)
 			}
@@ -4851,16 +4858,78 @@ func convertBifrostToolsToAnthropic(model string, tools []schemas.ResponsesTool,
 				mcpServers = append(mcpServers, *server)
 			}
 			if toolset != nil {
-				anthropicTools = append(anthropicTools, AnthropicTool{MCPToolset: toolset})
+				mcpTool := AnthropicTool{MCPToolset: toolset}
+				applyResponsesToolAnthropicFlags(&mcpTool, &tool)
+				anthropicTools = append(anthropicTools, mcpTool)
 			}
 			continue
 		}
 		anthropicTool := convertBifrostToolToAnthropic(model, &tool, provider, hasWebSearchOrFetch)
 		if anthropicTool != nil {
+			applyResponsesToolAnthropicFlags(anthropicTool, &tool)
 			anthropicTools = append(anthropicTools, *anthropicTool)
 		}
 	}
 	return anthropicTools, mcpServers
+}
+
+// applyAnthropicToolFlagsToResponsesTool propagates the Anthropic-native tool
+// flags (DeferLoading, AllowedCallers, InputExamples, EagerInputStreaming) in
+// the inbound direction: from the incoming AnthropicTool onto the neutral
+// ResponsesTool when the native Anthropic /v1/messages endpoint is the entry
+// point. Called once per converted tool so every return path inside
+// convertAnthropicToolToBifrost benefits.
+func applyAnthropicToolFlagsToResponsesTool(at *AnthropicTool, rt *schemas.ResponsesTool) {
+	if at == nil || rt == nil {
+		return
+	}
+	if at.DeferLoading != nil {
+		rt.DeferLoading = at.DeferLoading
+	}
+	if len(at.AllowedCallers) > 0 {
+		rt.AllowedCallers = at.AllowedCallers
+	}
+	if len(at.InputExamples) > 0 {
+		rt.InputExamples = make([]schemas.ChatToolInputExample, len(at.InputExamples))
+		for i, ex := range at.InputExamples {
+			rt.InputExamples[i] = schemas.ChatToolInputExample{
+				Input:       ex.Input,
+				Description: ex.Description,
+			}
+		}
+	}
+	if at.EagerInputStreaming != nil {
+		rt.EagerInputStreaming = at.EagerInputStreaming
+	}
+}
+
+// applyResponsesToolAnthropicFlags propagates the Anthropic-native tool flags
+// (DeferLoading, AllowedCallers, InputExamples, EagerInputStreaming) from the
+// neutral ResponsesTool onto the provider-native AnthropicTool. Called once
+// per converted tool so every branch in convertBifrostToolToAnthropic
+// benefits without duplicating the logic on each return path.
+func applyResponsesToolAnthropicFlags(at *AnthropicTool, rt *schemas.ResponsesTool) {
+	if at == nil || rt == nil {
+		return
+	}
+	if rt.DeferLoading != nil {
+		at.DeferLoading = rt.DeferLoading
+	}
+	if len(rt.AllowedCallers) > 0 {
+		at.AllowedCallers = rt.AllowedCallers
+	}
+	if len(rt.InputExamples) > 0 {
+		at.InputExamples = make([]AnthropicToolInputExample, len(rt.InputExamples))
+		for i, ex := range rt.InputExamples {
+			at.InputExamples[i] = AnthropicToolInputExample{
+				Input:       ex.Input,
+				Description: ex.Description,
+			}
+		}
+	}
+	if rt.EagerInputStreaming != nil {
+		at.EagerInputStreaming = rt.EagerInputStreaming
+	}
 }
 
 // Helper function to convert Tool back to AnthropicTool

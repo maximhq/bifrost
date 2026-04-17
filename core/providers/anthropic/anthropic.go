@@ -450,6 +450,28 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		return nil, bifrostErr
 	}
 
+	// On the raw-body passthrough path, the typed-struct StripUnsupportedAnthropicFields
+	// was not invoked. Apply the JSON-level sanitizer for behavioural parity so
+	// unsupported request-level and tool-level fields don't leak to providers that
+	// would reject them.
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
+		// so custom Anthropic aliases get the same feature lookup as the typed
+		// path above (line 445), keeping raw and typed behavior in lockstep.
+		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
+		if rawErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr, provider.GetProviderKey())
+		}
+		jsonData = sanitized
+		// Auto-inject matching anthropic-beta headers for fields the sanitizer
+		// preserved. Probe-unmarshal reuses the typed path's header walker so
+		// the two paths stay in lockstep.
+		var probe AnthropicMessageRequest
+		if err := schemas.Unmarshal(jsonData, &probe); err == nil {
+			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
+		}
+	}
+
 	// Use struct directly for JSON marshaling
 	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
@@ -532,6 +554,25 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	// On the raw-body passthrough path, the typed-struct StripUnsupportedAnthropicFields
+	// was not invoked. Apply the JSON-level sanitizer for behavioural parity.
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
+		// to keep raw and typed paths in lockstep on custom aliases — mirrors
+		// the typed path's hardcoded schemas.Anthropic at line 548.
+		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
+		if rawErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr, provider.GetProviderKey())
+		}
+		jsonData = sanitized
+		// Auto-inject matching anthropic-beta headers for fields the sanitizer
+		// preserved. Probe-unmarshal reuses the typed path's header walker.
+		var probe AnthropicMessageRequest
+		if err := schemas.Unmarshal(jsonData, &probe); err == nil {
+			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
+		}
 	}
 
 	// Prepare Anthropic headers
