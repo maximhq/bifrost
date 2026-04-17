@@ -24,6 +24,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
+	github.com/tidwall/gjson v1.18.0
 	github.com/valyala/fasthttp v1.68.0
 	go.uber.org/automaxprocs v1.6.0
 	golang.org/x/sync v0.20.0
@@ -129,7 +130,6 @@ require (
 	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

@@ -24,6 +24,10 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 
 	provider, model := schemas.ParseModelString(resp.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
 
+	if len(resp.MCPServers) > 0 && ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKey("mcp-include-clients"), resp.MCPServers)
+	}
+
 	input := resp.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
 		input = []schemas.ResponsesMessage{

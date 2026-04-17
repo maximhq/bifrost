@@ -12,6 +12,8 @@ import { ModelProviderName } from "@/lib/types/config";
 import { usePromptContext } from "../context";
 import { VariablesTableView } from "../components/variablesTableView";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
+import { MCPServerSelector } from "@/components/ui/mcpServerSelector";
+import { useGetMCPClientsQuery } from "@/lib/store/apis/mcpApi";
 
 export function SettingsPanel() {
 	const {
@@ -25,6 +27,8 @@ export function SettingsPanel() {
 		setApiKeyId,
 		variables,
 		setVariables,
+		mcpServers,
+		setMcpServers,
 	} = usePromptContext();
 
 	const onProviderChange = useCallback(
@@ -124,6 +128,9 @@ export function SettingsPanel() {
 		return Array.from(modelSet);
 	}, [apiKeyId, providerKeyConfigs, allProviderModels]);
 
+	const { data: mcpClientsData } = useGetMCPClientsQuery();
+	const mcpClients = useMemo(() => mcpClientsData?.clients ?? [], [mcpClientsData]);
+
 	const handleModelParamsChange = useCallback(
 		(params: Record<string, any>) => {
 			onModelParamsChange(params as ModelParams);
@@ -177,6 +184,17 @@ export function SettingsPanel() {
 
 					{model && (
 						<>
+							<Separator />
+
+							<div className="flex flex-col gap-2">
+								<Label className="text-muted-foreground text-xs font-medium uppercase">MCP Servers</Label>
+								<MCPServerSelector
+									mcpClients={mcpClients}
+									value={mcpServers}
+									onChange={setMcpServers}
+								/>
+							</div>
+
 							<Separator />
 
 							<div className="flex flex-col gap-4">

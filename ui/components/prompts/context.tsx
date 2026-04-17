@@ -60,6 +60,10 @@ interface PromptContextValue {
 	variables: VariableMap;
 	setVariables: React.Dispatch<React.SetStateAction<VariableMap>>;
 
+	// MCP states
+	mcpServers: string[];
+	setMcpServers: React.Dispatch<React.SetStateAction<string[]>>;
+
 	// Sheet states
 	folderSheet: { open: boolean; folder?: Folder };
 	setFolderSheet: React.Dispatch<React.SetStateAction<{ open: boolean; folder?: Folder }>>;
@@ -160,6 +164,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const [isStreaming, setIsStreaming] = useState(false);
 	const activeRunRef = useRef<symbol | null>(null);
 	const [variables, setVariables] = useState<VariableMap>({});
+	const [mcpServers, setMcpServers] = useState<string[]>([]);
 
 	// Fetch model datasheet for capabilities
 	const { data: datasheetData } = useGetModelParametersQuery(model, { skip: !model });
@@ -204,11 +209,17 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		if (selectedVersionId && !selectedVersion) return;
 
 		const loadFromParams = (params: ModelParams, prov: string, mod: string) => {
-			const { api_key_id, ...rest } = params || ({} as ModelParams);
+			const { api_key_id, mcp_servers, ...rest } = params || ({} as ModelParams);
 			setModelParams({ stream: true, ...rest });
 			setApiKeyId(api_key_id || "__auto__");
 			setProvider(prov || "");
 			setModel(mod || "");
+
+			if (mcp_servers && Array.isArray(mcp_servers) && mcp_servers.length > 0) {
+				setMcpServers(mcp_servers);
+			} else {
+				setMcpServers([]);
+			}
 		};
 
 		const loadMessages = (msgs: Message[]) => {
@@ -248,6 +259,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			setModel("");
 			setModelParams({ stream: true });
 			setApiKeyId("__auto__");
+			setMcpServers([]);
 		}
 	}, [selectedSession, selectedVersion, selectedPrompt, selectedSessionId, selectedVersionId, setUrlState, isSessionsLoading, sessions.length]);
 
@@ -271,9 +283,13 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			if (provider !== refProvider) return true;
 			if (model !== refModel) return true;
 
-			const { api_key_id: refApiKeyId, ...refParamsRest } = refParams || ({} as ModelParams);
+			const { api_key_id: refApiKeyId, mcp_servers: refMcpServers, ...refParamsRest } = refParams || ({} as ModelParams);
 			const currentApiKeyId = apiKeyId !== "__auto__" ? apiKeyId : undefined;
 			if (currentApiKeyId !== (refApiKeyId || undefined)) return true;
+
+			const currentMcpServers = mcpServers.length > 0 ? mcpServers : undefined;
+			const refMcpServersNormalized = refMcpServers && Array.isArray(refMcpServers) && refMcpServers.length > 0 ? refMcpServers : undefined;
+			if (JSON.stringify(currentMcpServers) !== JSON.stringify(refMcpServersNormalized)) return true;
 
 			// Normalize: treat missing stream as stream: true so legacy params without stream don't appear changed
 			const normalizeParams = (p: ModelParams): ModelParams => {
@@ -290,7 +306,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 
 			return false;
 		},
-		[provider, model, modelParams, apiKeyId, messages],
+		[provider, model, modelParams, apiKeyId, messages, mcpServers],
 	);
 
 	// Diff detection — compare current playground state against the loaded session/version
@@ -351,6 +367,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			setModel("");
 			setModelParams({ stream: true });
 			setApiKeyId("__auto__");
+			setMcpServers([]);
 			setUrlState({ promptId: id, sessionId: null, versionId: null });
 		},
 		[setUrlState],
@@ -404,8 +421,13 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			activeRunRef.current = runToken;
 			const isActive = () => activeRunRef.current === runToken;
 
+			const execModelParams = { ...modelParams };
+			if (mcpServers.length > 0) {
+				execModelParams.mcp_servers = mcpServers;
+			}
+
 			setIsStreaming(true);
-			await executePrompt(messages, pendingMessage, { provider, model, modelParams, apiKeyId, variables }, {
+			await executePrompt(messages, pendingMessage, { provider, model, modelParams: execModelParams, apiKeyId, variables }, {
 				onStreamingStart: (allMessages, placeholder) => {
 					if (!isActive()) return;
 					setMessages([...allMessages, placeholder]);
@@ -454,7 +476,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			});
 		},
-		[messages, provider, model, modelParams, apiKeyId, variables],
+		[messages, provider, model, modelParams, apiKeyId, variables, mcpServers],
 	);
 
 	const handleSubmitToolResult = useCallback(
@@ -482,9 +504,14 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			newMessages.splice(insertAt, 0, toolResultMsg);
 			setMessages(newMessages);
 
+			const execModelParams = { ...modelParams };
+			if (mcpServers.length > 0) {
+				execModelParams.mcp_servers = mcpServers;
+			}
+
 			// Execute with the updated messages
 			setIsStreaming(true);
-			await executePrompt(newMessages, undefined, { provider, model, modelParams, apiKeyId, variables }, {
+			await executePrompt(newMessages, undefined, { provider, model, modelParams: execModelParams, apiKeyId, variables }, {
 				onStreamingStart: (allMessages, placeholder) => {
 					if (!isActive()) return;
 					setMessages([...allMessages, placeholder]);
@@ -533,7 +560,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			});
 		},
-		[messages, provider, model, modelParams, apiKeyId, variables],
+		[messages, provider, model, modelParams, apiKeyId, variables, mcpServers],
 	);
 
 	const value: PromptContextValue = {
@@ -565,6 +592,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		setApiKeyId,
 		variables,
 		setVariables,
+		mcpServers,
+		setMcpServers,
 		folderSheet,
 		setFolderSheet,
 		promptSheet,
