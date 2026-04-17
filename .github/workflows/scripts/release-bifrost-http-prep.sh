@@ -76,24 +76,32 @@ echo "🔧 Using plugin versions from version files for transport..."
 
 # Track which plugins are actually used by the transport
 cd transports
+
+# Normalize the local go.mod directive up front so prior-release artifacts
+# (e.g. `go 1.26.2` written by earlier `go get` runs) don't trip GOTOOLCHAIN=local.
+go mod edit -go=1.26.1 -toolchain=none
+
 for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
   plugin_version="${PLUGIN_VERSIONS[$plugin_name]}"
 
   # Check if transport depends on this plugin
   if grep -q "github.com/maximhq/bifrost/plugins/$plugin_name" go.mod; then
     echo "  📦 Using $plugin_name plugin $plugin_version"
-    go_get_with_backoff "github.com/maximhq/bifrost/plugins/$plugin_name@$plugin_version"
+    # Textual require bump — skips loading the currently-declared version's go.mod
+    go mod edit -require="github.com/maximhq/bifrost/plugins/$plugin_name@$plugin_version"
   fi
 done
 
 # Also ensure core and framework are up to date
 
 echo "  🔧 Updating core to $CORE_VERSION"
-go_get_with_backoff "github.com/maximhq/bifrost/core@$CORE_VERSION"
+go mod edit -require="github.com/maximhq/bifrost/core@$CORE_VERSION"
 
 echo "  📦 Updating framework to $FRAMEWORK_VERSION"
-go_get_with_backoff "github.com/maximhq/bifrost/framework@$FRAMEWORK_VERSION"
+go mod edit -require="github.com/maximhq/bifrost/framework@$FRAMEWORK_VERSION"
 
+# Re-normalize before tidy in case any edit reintroduced a toolchain line
+go mod edit -go=1.26.1 -toolchain=none
 go mod tidy
 
 cd ..
