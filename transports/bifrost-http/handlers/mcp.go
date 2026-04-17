@@ -316,7 +316,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if OAuth flow is needed
-	if req.AuthType == "oauth" {
+	if req.AuthType == "oauth" || req.AuthType == "per_user_oauth" {
 		if req.OauthConfig == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "OAuth configuration is required when auth_type is 'oauth'")
 			return

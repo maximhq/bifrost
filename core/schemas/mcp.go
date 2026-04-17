@@ -68,9 +68,10 @@ const (
 type MCPAuthType string
 
 const (
-	MCPAuthTypeNone    MCPAuthType = "none"    // No authentication
-	MCPAuthTypeHeaders MCPAuthType = "headers" // Header-based authentication (API keys, etc.)
-	MCPAuthTypeOauth   MCPAuthType = "oauth"   // OAuth 2.0 authentication
+	MCPAuthTypeNone         MCPAuthType = "none"            // No authentication
+	MCPAuthTypeHeaders      MCPAuthType = "headers"         // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth        MCPAuthType = "oauth"           // OAuth 2.0 authentication
+	MCPAuthTypePerUserOauth MCPAuthType = "per_user_oauth" // Per-user OAuth 2.1 authentication
 )
 
 // MCPClientConfig defines tool filtering for an MCP client.
@@ -81,7 +82,7 @@ type MCPClientConfig struct {
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString *EnvVar           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)
-	AuthType         MCPAuthType       `json:"auth_type"`                   // Authentication type (none, headers, or oauth)
+	AuthType         MCPAuthType       `json:"auth_type"`                   // Authentication type (none, headers, oauth, or per_user_oauth)
 	OauthConfigID    *string           `json:"oauth_config_id,omitempty"`   // OAuth config ID (references oauth_configs table)
 	State            string            `json:"state,omitempty"`             // Connection state (connected, disconnected, error)
 	Headers          map[string]EnvVar `json:"headers,omitempty"`           // Headers to send with the request (for headers auth type)
@@ -123,7 +124,7 @@ func (c *MCPClientConfig) HttpHeaders(ctx context.Context, oauth2Provider OAuth2
 	headers := make(map[string]string)
 
 	switch c.AuthType {
-	case MCPAuthTypeOauth:
+	case MCPAuthTypeOauth, MCPAuthTypePerUserOauth:
 		if c.OauthConfigID == nil {
 			return nil, ErrOAuth2ConfigNotFound
 		}
