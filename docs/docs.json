@@ -385,6 +385,7 @@
               "contributing/adding-a-provider",
               "contributing/adding-a-configstore",
               "contributing/adding-a-logstore",
+              "contributing/prerelease3-clean-bedrock-streaming",
               "contributing/adding-a-vectorstore"
             ]
           }

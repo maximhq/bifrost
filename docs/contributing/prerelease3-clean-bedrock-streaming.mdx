@@ -1,0 +1,113 @@
+---
+title: "Prerelease3 Clean Branch"
+description: "Working notes for the clean v1.5.0-prerelease3-based Bedrock fine-grained streaming branch"
+icon: "code-branch"
+---
+
+This note documents the clean branch used for Bedrock fine-grained tool streaming work based on the `v1.5.0-prerelease3` transport release line.
+
+## Goal
+
+Use a branch that stays as close as possible to the upstream `maximhq/bifrost:v1.5.0-prerelease3` image behavior, while carrying only the changes required for:
+
+- Bedrock passthrough `extra_params`
+- Anthropic-compatible `eager_input_streaming`
+- Fine-grained tool streaming beta propagation
+- 600-second stream idle timeout
+- Fork-friendly GHCR image publishing
+
+This branch intentionally avoids unrelated schema drift and migration fixes that were added later on a different experimental branch.
+
+## Baseline
+
+- Upstream transport tag: `transports/v1.5.0-prerelease3`
+- Baseline commit: `c2c01ae15`
+- Clean branch: `DJJ/djj/v1.5.0-prerelease3-clean`
+- Fork remote branch: `TokenRollAI/bifrost:DJJ/djj/v1.5.0-prerelease3-clean`
+
+## Included Commits
+
+The clean branch contains these commits on top of `transports/v1.5.0-prerelease3`:
+
+```text
+582167527 feat: support bedrock fine-grained tool streaming passthrough
+24a694d12 ci: fix ghcr image workflow actions
+bb42b8723 ci: default ghcr image workflow to amd64
+e20ec0033 fix: align prerelease3 baseline merge
+```
+
+## What Changed
+
+### Runtime behavior
+
+- Preserves Anthropic-compatible `extra_params` through the Anthropic -> Bifrost -> Bedrock conversion path.
+- Adds `eager_input_streaming` support on Anthropic-compatible tools.
+- Preserves the flag into Bedrock tool specs.
+- Treats `fine-grained-tool-streaming-*` as an allowed Bedrock Anthropic beta.
+- Increases default stream idle timeout from 60s to 600s.
+- Disables Bedrock streaming client's total `http.Client.Timeout` so long-running streams are governed by idle timeout instead of a hard request timeout.
+
+### CI and image publishing
+
+- Adds a fork-friendly GitHub Actions workflow at `.github/workflows/ghcr-image.yml`.
+- Publishes to `ghcr.io/<repo_owner>/bifrost`.
+- Defaults to `linux/amd64` builds for faster and more predictable fork publishing.
+
+## Tested Scope
+
+The branch was verified with targeted tests:
+
+```bash
+cd core
+go test ./providers/anthropic ./schemas -run 'TestFilterBetaHeadersForProvider|TestAddMissingBetaHeadersToContext|TestNetworkConfig_StreamIdleTimeoutRoundTrip'
+go test ./providers/bedrock ./providers/utils -run 'TestToBedrockResponsesRequest_PreservesEagerInputStreaming|TestStreamingHTTPClient_DisablesTotalTimeout|TestIdleTimeoutReader|TestMaxConnWaitTimeoutAlignedWithReadTimeout'
+
+GOWORK=/tmp/bifrost-go-work-clean/go.work \
+  go test /Users/djj/.superset/worktrees/bifrost/DJJ/djj/v1.5.0-prerelease3-clean/transports/bifrost-http/integrations \
+  -run 'TestRequestWithSettableExtraParams_AnthropicRequests|TestRequestWithSettableExtraParams_OpenAIChatRequest|TestRequestWithSettableExtraParams_AllOpenAIRequestTypes|TestExtraParamsRequiresPassthroughHeader'
+```
+
+## Build a Fork Image
+
+### GitHub Actions
+
+Pushing a tag that starts with `v` triggers the GHCR workflow:
+
+```bash
+git tag -a v1.5.0-prerelease3-bedrock-extra-parameters-clean -m "Build clean prerelease3 image"
+git push tokenroolai refs/tags/v1.5.0-prerelease3-bedrock-extra-parameters-clean
+```
+
+Expected image:
+
+```bash
+ghcr.io/tokenrollai/bifrost:v1.5.0-prerelease3-bedrock-extra-parameters-clean
+```
+
+### Manual local build
+
+Use the local-module Dockerfile so the build includes local `core/`, `framework/`, `plugins/`, and `transports/` sources:
+
+```bash
+docker build \
+  -f transports/Dockerfile.local \
+  --build-arg VERSION=1.5.0-prerelease3-bedrock-extra-parameters-clean \
+  -t ghcr.io/tokenrollai/bifrost:v1.5.0-prerelease3-bedrock-extra-parameters-clean \
+  .
+```
+
+## Recommended Base for Other Agents
+
+If another agent needs to continue this work, use:
+
+```text
+/Users/djj/.superset/worktrees/bifrost/DJJ/djj/v1.5.0-prerelease3-clean
+```
+
+Do not use the older experimental branch:
+
+```text
+/Users/djj/.superset/worktrees/bifrost/DJJ/djj/v1.5.0-prerelease3-bedrock-extra_parameters
+```
+
+That branch includes extra compatibility migrations and debugging work that are not part of the clean prerelease3 baseline.
