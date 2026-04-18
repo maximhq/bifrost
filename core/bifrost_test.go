@@ -1862,9 +1862,9 @@ drainLoop:
 					Message: "provider is shutting down",
 				},
 				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:    r.RequestType,
-					Provider:       provKey,
-					ModelRequested: mod,
+					RequestType:            r.RequestType,
+					Provider:               provKey,
+					OriginalModelRequested: mod,
 				},
 			}
 		default:
@@ -2400,9 +2400,9 @@ drainLoop:
 					Message: "provider is shutting down",
 				},
 				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:    r.RequestType,
-					Provider:       provKey,
-					ModelRequested: mod,
+					RequestType:            r.RequestType,
+					Provider:               provKey,
+					OriginalModelRequested: mod,
 				},
 			}
 		default:

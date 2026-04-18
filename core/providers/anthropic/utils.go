@@ -715,7 +715,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		// custom Anthropic aliases get identical feature lookup in both modes.
 		jsonBody, err = stripUnsupportedFieldsFromRawBody(jsonBody, schemas.Anthropic, "")
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		// Auto-inject matching anthropic-beta headers for fields the sanitizer
 		// preserved (speed, task_budget, cache_control.scope, input_examples,
@@ -784,7 +784,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 	// delete fallbacks field
 	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 
 	return jsonBody, nil

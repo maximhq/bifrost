@@ -499,7 +499,7 @@ func TestSafeReset(t *testing.T) {
 	})
 
 	t.Run("panic_nil", func(t *testing.T) {
-		ok := safeReset(func() error { panic(nil) })
+		ok := safeReset(func() error { panic("") })
 		if ok {
 			t.Fatal("expected false for nil panic")
 		}

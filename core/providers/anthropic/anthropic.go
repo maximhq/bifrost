@@ -445,7 +445,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		// path above (line 445), keeping raw and typed behavior in lockstep.
 		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
 		if rawErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr, provider.GetProviderKey())
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}
 		jsonData = sanitized
 		// Auto-inject matching anthropic-beta headers for fields the sanitizer
@@ -538,7 +538,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		// the typed path's hardcoded schemas.Anthropic at line 548.
 		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
 		if rawErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr, provider.GetProviderKey())
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}
 		jsonData = sanitized
 		// Auto-inject matching anthropic-beta headers for fields the sanitizer
@@ -1158,7 +1158,6 @@ func HandleAnthropicResponsesStream(
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
-
 
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := 0
@@ -2682,7 +2681,6 @@ func (provider *AnthropicProvider) PassthroughStream(
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer stopIdleTimeout()
 		defer stopCancellation()
-
 
 		buf := make([]byte, 4096)
 		for {
