@@ -245,6 +245,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			consolidatedResponse.Model = lastResponse.BifrostChatResponse.Model
 			consolidatedResponse.ID = lastResponse.BifrostChatResponse.ID
 			consolidatedResponse.Created = lastResponse.BifrostChatResponse.Created
+			consolidatedResponse.Object = lastResponse.BifrostChatResponse.Object
 
 			// Copy finish reason from last choice if available
 			if len(lastResponse.BifrostChatResponse.Choices) > 0 && lastResponse.BifrostChatResponse.Choices[0].FinishReason != nil {

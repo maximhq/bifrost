@@ -427,6 +427,9 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, ParseMistralError(resp)
@@ -472,7 +475,12 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 	}
 
 	// Set extra fields
-	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType:             schemas.TranscriptionRequest,
+		Provider:                provider.GetProviderKey(),
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerResponseHeaders,
+	}
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -697,8 +705,10 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 
 	// Set extra fields
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		ChunkIndex: chunkIndex,
-		Latency:    time.Since(*lastChunkTime).Milliseconds(),
+		RequestType: schemas.TranscriptionStreamRequest,
+		Provider:    providerName,
+		ChunkIndex:  chunkIndex,
+		Latency:     time.Since(*lastChunkTime).Milliseconds(),
 	}
 	*lastChunkTime = time.Now()
 
