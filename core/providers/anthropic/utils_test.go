@@ -1059,6 +1059,7 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 	t.Run("Bedrock/keeps_supported_headers", func(t *testing.T) {
 		supported := []string{
 			AnthropicComputerUseBetaHeader20251124,
+			AnthropicFineGrainedToolStreamingBetaHeader,
 			AnthropicStructuredOutputsBetaHeader,
 			AnthropicCompactionBetaHeader,
 			AnthropicContextManagementBetaHeader,
@@ -1068,6 +1069,32 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		result := FilterBetaHeadersForProvider(supported, schemas.Bedrock)
 		if len(result) != len(supported) {
 			t.Errorf("expected %d headers, got %d: %v", len(supported), len(result), result)
+		}
+	})
+
+	t.Run("Bedrock/auto_adds_fine_grained_tool_streaming_header", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &AnthropicMessageRequest{
+			Tools: []AnthropicTool{
+				{
+					Name:                "write_file",
+					EagerInputStreaming: schemas.Ptr(true),
+				},
+			},
+		}
+
+		if err := AddMissingBetaHeadersToContext(ctx, req, schemas.Bedrock); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContext() error = %v", err)
+		}
+
+		extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		if !ok {
+			t.Fatal("expected extra headers to be set on context")
+		}
+
+		betaHeaders := extraHeaders[AnthropicBetaHeader]
+		if len(betaHeaders) != 1 || betaHeaders[0] != AnthropicFineGrainedToolStreamingBetaHeader {
+			t.Fatalf("expected %q to be added, got %v", AnthropicFineGrainedToolStreamingBetaHeader, betaHeaders)
 		}
 	})
 

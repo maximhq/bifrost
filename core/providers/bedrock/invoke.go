@@ -840,6 +840,9 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			inputSchemaBytes, _ := providerUtils.MarshalSorted(inputSchema)
 			spec.InputSchema = BedrockToolInputSchema{JSON: json.RawMessage(inputSchemaBytes)}
 		}
+		if eagerInputStreaming, ok := toolMap["eager_input_streaming"].(bool); ok {
+			spec.EagerInputStreaming = &eagerInputStreaming
+		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
 	}

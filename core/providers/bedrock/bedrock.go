@@ -40,6 +40,15 @@ type BedrockProvider struct {
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 }
 
+func (provider *BedrockProvider) streamingHTTPClient() *http.Client {
+	return &http.Client{
+		Transport:     provider.client.Transport,
+		CheckRedirect: provider.client.CheckRedirect,
+		Jar:           provider.client.Jar,
+		Timeout:       0,
+	}
+}
+
 // assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
 // unique combination of role parameters so that STS AssumeRole is not called
 // on every request.
@@ -456,7 +465,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	}
 
 	// Make the request
-	resp, respErr := provider.client.Do(req)
+	resp, respErr := provider.streamingHTTPClient().Do(req)
 	if respErr != nil {
 		if errors.Is(respErr, context.Canceled) {
 			return nil, &schemas.BifrostError{

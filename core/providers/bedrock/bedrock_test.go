@@ -3663,3 +3663,144 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 
 	assert.Equal(t, 1, stopCount, "expected exactly one content_block_stop event, got %d", stopCount)
 }
+func TestToolResultImageContentResponsesAPI(t *testing.T) {
+	// Minimal 1x1 red PNG
+	pngBase64 := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
+	t.Run("ImageBlockPreservedInToolResult", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("tooluse_screenshot_001"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: schemas.Ptr("data:image/png;base64," + pngBase64),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+		require.NoError(t, err)
+		require.Len(t, messages, 1)
+
+		toolResultMsg := messages[0]
+		assert.Equal(t, bedrock.BedrockMessageRoleUser, toolResultMsg.Role)
+		require.Len(t, toolResultMsg.Content, 1)
+
+		toolResult := toolResultMsg.Content[0].ToolResult
+		require.NotNil(t, toolResult, "expected tool result in content block")
+		assert.Equal(t, "tooluse_screenshot_001", toolResult.ToolUseID)
+		require.Len(t, toolResult.Content, 1, "tool result should contain exactly one content block")
+
+		imageBlock := toolResult.Content[0]
+		require.NotNil(t, imageBlock.Image, "tool result content should be an image")
+		assert.Equal(t, "png", imageBlock.Image.Format)
+		require.NotNil(t, imageBlock.Image.Source.Bytes)
+		assert.Equal(t, pngBase64, *imageBlock.Image.Source.Bytes)
+	})
+
+	t.Run("MixedTextAndImageBlocksPreserved", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("tooluse_mixed_002"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesOutputMessageContentTypeText,
+								Text: schemas.Ptr("Screenshot captured successfully"),
+							},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: schemas.Ptr("data:image/png;base64," + pngBase64),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+		require.NoError(t, err)
+		require.Len(t, messages, 1)
+
+		toolResult := messages[0].Content[0].ToolResult
+		require.NotNil(t, toolResult)
+		require.Len(t, toolResult.Content, 2, "both text and image blocks should be preserved")
+
+		assert.NotNil(t, toolResult.Content[0].Text, "first block should be text")
+		assert.NotNil(t, toolResult.Content[1].Image, "second block should be image")
+		assert.Equal(t, "png", toolResult.Content[1].Image.Format)
+	})
+
+	t.Run("RemoteURLImageGracefullyDropped", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("tooluse_remote_003"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: schemas.Ptr("https://example.com/screenshot.png"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+		require.NoError(t, err)
+		require.Len(t, messages, 1)
+
+		toolResult := messages[0].Content[0].ToolResult
+		require.NotNil(t, toolResult)
+		assert.Empty(t, toolResult.Content, "remote URL image should be dropped (Bedrock only supports base64)")
+	})
+}
+
+func TestToBedrockResponsesRequest_PreservesEagerInputStreaming(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:        schemas.ResponsesToolTypeFunction,
+					Name:        schemas.Ptr("write_file"),
+					Description: schemas.Ptr("Write content to a file"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						EagerInputStreaming: schemas.Ptr(true),
+					},
+				},
+			},
+		},
+	}
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec)
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec.EagerInputStreaming)
+	assert.True(t, *result.ToolConfig.Tools[0].ToolSpec.EagerInputStreaming)
+}

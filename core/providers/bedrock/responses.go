@@ -1433,6 +1433,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						}
 					}
 				}
+				bifrostTool.ResponsesToolFunction.EagerInputStreaming = tool.ToolSpec.EagerInputStreaming
 
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
 			} else if tool.CachePoint != nil && !schemas.IsNovaModel(bifrostReq.Model) {
@@ -1922,8 +1923,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 				bedrockTool := BedrockTool{
 					ToolSpec: &BedrockToolSpec{
-						Name:        name,
-						Description: &description,
+						Name:                name,
+						Description:         &description,
+						EagerInputStreaming: tool.ResponsesToolFunction.EagerInputStreaming,
 						InputSchema: BedrockToolInputSchema{
 							JSON: json.RawMessage(schemaObjectBytes),
 						},

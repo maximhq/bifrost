@@ -1,0 +1,118 @@
+name: Publish GHCR Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Optional image tag override, e.g. v1.5.0-prerelease3-bedrock-extra-parameters"
+        required: false
+        type: string
+      push_image:
+        description: "Push image to GHCR"
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/ghcr-image.yml"
+      - "core/**"
+      - "framework/**"
+      - "plugins/**"
+      - "transports/**"
+      - "ui/**"
+
+concurrency:
+  group: ghcr-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    if: github.repository_owner != 'maximhq' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@e9b1fce52c5f5a2a565de72c27548c725fb6f93b # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Compute image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER_LC}/bifrost"
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          sanitize_ref() {
+            echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g'
+          }
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.image_tag }}" ]]; then
+            PRIMARY_TAG="${{ inputs.image_tag }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            PRIMARY_TAG="${GITHUB_REF_NAME}"
+          else
+            PRIMARY_TAG="$(sanitize_ref "${GITHUB_REF_NAME}")-${SHORT_SHA}"
+          fi
+
+          VERSION="${PRIMARY_TAG#v}"
+          TAGS="${IMAGE}:${PRIMARY_TAG}"
+
+          if [[ "${GITHUB_REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+            TAGS="${TAGS}"$'\n'"${IMAGE}:latest"
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            TAGS="${TAGS}"$'\n'"${IMAGE}:sha-${SHORT_SHA}"
+          fi
+
+          {
+            echo "image=${IMAGE}"
+            echo "version=${VERSION}"
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: github.event_name != 'workflow_dispatch' || inputs.push_image
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and optionally push image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ./transports/Dockerfile.local
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push_image }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Print published tags
+        shell: bash
+        run: |
+          echo "Image: ${{ steps.meta.outputs.image }}"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}"

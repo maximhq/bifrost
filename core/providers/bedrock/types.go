@@ -308,9 +308,10 @@ type BedrockTool struct {
 
 // BedrockToolSpec represents the specification of a tool
 type BedrockToolSpec struct {
-	Name        string                 `json:"name"`                  // Required: Tool name
-	Description *string                `json:"description,omitempty"` // Optional: Tool description
-	InputSchema BedrockToolInputSchema `json:"inputSchema"`           // Required: JSON schema for tool input
+	Name                string                 `json:"name"`                            // Required: Tool name
+	Description         *string                `json:"description,omitempty"`           // Optional: Tool description
+	InputSchema         BedrockToolInputSchema `json:"inputSchema"`                     // Required: JSON schema for tool input
+	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic-compatible Bedrock extension for fine-grained tool streaming
 }
 
 // BedrockToolInputSchema represents the input schema for a tool (union type)

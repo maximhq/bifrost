@@ -1905,7 +1905,7 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 // before bifrost considers the connection stalled and closes it. This protects
 // against providers that stop sending data but keep the TCP connection open
 // (e.g., Azure TPM throttling).
-const DefaultStreamIdleTimeout = 60 * time.Second
+const DefaultStreamIdleTimeout = 600 * time.Second
 
 // SetStreamIdleTimeoutIfEmpty sets the stream idle timeout on the context from
 // the provider's network config, but only if no valid timeout is already present.

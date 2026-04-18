@@ -39,6 +39,8 @@ const (
 	// AnthropicInterleavedThinkingBetaHeader is required for interleaved thinking between tool calls.
 	// Deprecated on Opus 4.6/Sonnet 4.6 (use adaptive thinking); active on older Claude 4 models.
 	AnthropicInterleavedThinkingBetaHeader = "interleaved-thinking-2025-05-14"
+	// AnthropicFineGrainedToolStreamingBetaHeader is required for fine-grained tool argument streaming.
+	AnthropicFineGrainedToolStreamingBetaHeader = "fine-grained-tool-streaming-2025-05-14"
 	// AnthropicSkillsBetaHeader is required for Agent Skills (also requires code-execution + files-api headers).
 	AnthropicSkillsBetaHeader = "skills-2025-10-02"
 	// AnthropicContext1MBetaHeader is required for 1M context window on Sonnet 4.5 and Sonnet 4.
@@ -58,43 +60,45 @@ const (
 	// Prefixes for beta headers (version-bump proof).
 	// Use these with strings.HasPrefix when filtering headers per provider,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
-	AnthropicAdvancedToolUseBetaHeaderPrefix     = "advanced-tool-use-"
-	AnthropicStructuredOutputsBetaHeaderPrefix   = "structured-outputs-"
-	AnthropicPromptCachingScopeBetaHeaderPrefix  = "prompt-caching-scope-"
-	AnthropicMCPClientBetaHeaderPrefix           = "mcp-client-"
-	AnthropicInterleavedThinkingBetaHeaderPrefix = "interleaved-thinking-"
-	AnthropicSkillsBetaHeaderPrefix              = "skills-"
-	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
-	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
-	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
+	AnthropicAdvancedToolUseBetaHeaderPrefix          = "advanced-tool-use-"
+	AnthropicFineGrainedToolStreamingBetaHeaderPrefix = "fine-grained-tool-streaming-"
+	AnthropicStructuredOutputsBetaHeaderPrefix        = "structured-outputs-"
+	AnthropicPromptCachingScopeBetaHeaderPrefix       = "prompt-caching-scope-"
+	AnthropicMCPClientBetaHeaderPrefix                = "mcp-client-"
+	AnthropicInterleavedThinkingBetaHeaderPrefix      = "interleaved-thinking-"
+	AnthropicSkillsBetaHeaderPrefix                   = "skills-"
+	AnthropicContext1MBetaHeaderPrefix                = "context-1m-"
+	AnthropicFastModeBetaHeaderPrefix                 = "fast-mode-"
+	AnthropicRedactThinkingBetaHeaderPrefix           = "redact-thinking-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
 // Source: https://docs.anthropic.com/en/build-with-claude/overview (March 2026)
 type ProviderFeatureSupport struct {
-	WebSearch           bool // web_search server tool
-	WebSearchDynamic    bool // web_search_20260209 (dynamic filtering, requires code_execution)
-	WebFetch            bool // web_fetch server tool
-	CodeExecution       bool // code_execution server tool
-	ComputerUse         bool // computer_use client tool
-	Bash                bool // bash client tool
-	Memory              bool // memory client tool
-	TextEditor          bool // text_editor client tool
-	ToolSearch          bool // tool_search server tool
-	MCP                 bool // MCP connector
-	AdvancedToolUse     bool // advanced-tool-use (defer_loading, input_examples, allowed_callers)
-	StructuredOutputs   bool // strict tool validation and output_format
-	PromptCachingScope  bool // prompt caching scope
-	Compaction          bool // server-side context compaction
-	ContextEditing      bool // context editing (clear_tool_uses, clear_thinking)
-	FilesAPI            bool // Files API
-	InterleavedThinking bool // interleaved thinking between tool calls
-	Skills              bool // Agent Skills
-	Context1M           bool // 1M context window beta (for Sonnet 4.5/4 only)
-	FastMode            bool // fast mode (Opus 4.6 only, research preview)
-	RedactThinking      bool // redact thinking blocks in responses
-	FileSearch          bool // file_search server tool (OpenAI-only)
-	ImageGeneration     bool // image_generation server tool (OpenAI-only)
+	WebSearch                bool // web_search server tool
+	WebSearchDynamic         bool // web_search_20260209 (dynamic filtering, requires code_execution)
+	WebFetch                 bool // web_fetch server tool
+	CodeExecution            bool // code_execution server tool
+	ComputerUse              bool // computer_use client tool
+	Bash                     bool // bash client tool
+	Memory                   bool // memory client tool
+	TextEditor               bool // text_editor client tool
+	ToolSearch               bool // tool_search server tool
+	MCP                      bool // MCP connector
+	AdvancedToolUse          bool // advanced-tool-use (defer_loading, input_examples, allowed_callers)
+	FineGrainedToolStreaming bool // fine-grained-tool-streaming (eager_input_streaming)
+	StructuredOutputs        bool // strict tool validation and output_format
+	PromptCachingScope       bool // prompt caching scope
+	Compaction               bool // server-side context compaction
+	ContextEditing           bool // context editing (clear_tool_uses, clear_thinking)
+	FilesAPI                 bool // Files API
+	InterleavedThinking      bool // interleaved thinking between tool calls
+	Skills                   bool // Agent Skills
+	Context1M                bool // 1M context window beta (for Sonnet 4.5/4 only)
+	FastMode                 bool // fast mode (Opus 4.6 only, research preview)
+	RedactThinking           bool // redact thinking blocks in responses
+	FileSearch               bool // file_search server tool (OpenAI-only)
+	ImageGeneration          bool // image_generation server tool (OpenAI-only)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -102,7 +106,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	schemas.Anthropic: {
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
-		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
+		MCP: true, AdvancedToolUse: true, FineGrainedToolStreaming: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, Context1M: true, FastMode: true,
 		RedactThinking: true,
@@ -115,7 +119,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	},
 	schemas.Bedrock: {
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
-		StructuredOutputs: true, Compaction: true, ContextEditing: true,
+		FineGrainedToolStreaming: true, StructuredOutputs: true, Compaction: true, ContextEditing: true,
 		InterleavedThinking: true, Context1M: true,
 	},
 	schemas.Azure: {
@@ -149,6 +153,11 @@ type AnthropicTextRequest struct {
 // GetExtraParams implements the RequestBodyWithExtraParams interface
 func (req *AnthropicTextRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
+}
+
+// SetExtraParams implements the ExtraParamsSetter interface.
+func (req *AnthropicTextRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -205,6 +214,11 @@ func (req *AnthropicMessageRequest) SetStripCacheControlScope(strip bool) {
 // GetExtraParams implements the RequestBodyWithExtraParams interface
 func (req *AnthropicMessageRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
+}
+
+// SetExtraParams implements the ExtraParamsSetter interface.
+func (req *AnthropicMessageRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
 }
 
 type AnthropicMetaData struct {
@@ -922,15 +936,16 @@ type AnthropicToolInputExample struct {
 
 // AnthropicTool represents a tool in Anthropic format
 type AnthropicTool struct {
-	Name           string                          `json:"name"`
-	Type           *AnthropicToolType              `json:"type,omitempty"`
-	Description    *string                         `json:"description,omitempty"`
-	InputSchema    *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
-	CacheControl   *schemas.CacheControl           `json:"cache_control,omitempty"`
-	DeferLoading   *bool                           `json:"defer_loading,omitempty"`   // Beta: defer loading of tool definition
-	Strict         *bool                           `json:"strict,omitempty"`          // Whether to enforce strict parameter validation
-	AllowedCallers []string                        `json:"allowed_callers,omitempty"` // Beta: which callers can use this tool
-	InputExamples  []AnthropicToolInputExample     `json:"input_examples,omitempty"`  // Beta: example inputs for the tool
+	Name                string                          `json:"name"`
+	Type                *AnthropicToolType              `json:"type,omitempty"`
+	Description         *string                         `json:"description,omitempty"`
+	InputSchema         *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
+	EagerInputStreaming *bool                           `json:"eager_input_streaming,omitempty"` // Beta: stream tool input JSON in smaller deltas
+	CacheControl        *schemas.CacheControl           `json:"cache_control,omitempty"`
+	DeferLoading        *bool                           `json:"defer_loading,omitempty"`   // Beta: defer loading of tool definition
+	Strict              *bool                           `json:"strict,omitempty"`          // Whether to enforce strict parameter validation
+	AllowedCallers      []string                        `json:"allowed_callers,omitempty"` // Beta: which callers can use this tool
+	InputExamples       []AnthropicToolInputExample     `json:"input_examples,omitempty"`  // Beta: example inputs for the tool
 
 	*AnthropicToolComputerUse
 	*AnthropicToolWebSearch

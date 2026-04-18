@@ -71,11 +71,19 @@ func (req *AnthropicTextRequest) ToBifrostTextCompletionRequest(ctx *schemas.Bif
 		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 
+	if len(req.ExtraParams) > 0 {
+		bifrostReq.Params.ExtraParams = make(map[string]interface{}, len(req.ExtraParams)+1)
+		for k, v := range req.ExtraParams {
+			bifrostReq.Params.ExtraParams[k] = v
+		}
+	}
+
 	// Add extra params if present
 	if req.TopK != nil {
-		bifrostReq.Params.ExtraParams = map[string]interface{}{
-			"top_k": *req.TopK,
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{}, 1)
 		}
+		bifrostReq.Params.ExtraParams["top_k"] = *req.TopK
 	}
 
 	return bifrostReq

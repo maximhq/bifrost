@@ -1652,8 +1652,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 
 // ResponsesToolFunction represents a tool function
 type ResponsesToolFunction struct {
-	Parameters *ToolFunctionParameters `json:"parameters,omitempty"` // A JSON schema object describing the parameters
-	Strict     *bool                   `json:"strict"`               // Whether to enforce strict parameter validation
+	Parameters          *ToolFunctionParameters `json:"parameters,omitempty"`            // A JSON schema object describing the parameters
+	Strict              *bool                   `json:"strict"`                          // Whether to enforce strict parameter validation
+	EagerInputStreaming *bool                   `json:"eager_input_streaming,omitempty"` // Provider-specific fine-grained tool argument streaming
 }
 
 // ResponsesToolFileSearch represents a tool file search
