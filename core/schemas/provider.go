@@ -424,14 +424,13 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger                  Logger                    `json:"-"`
-	ProxyConfig             *ProxyConfig              `json:"proxy_config,omitempty"`     // Proxy configuration
-	SendBackRawRequest      bool                      `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse     bool                      `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
-	StoreRawRequestResponse bool                      `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
-	CustomProviderConfig    *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig            *OpenAIConfig             `json:"openai_config,omitempty"`
-	PricingOverrides        []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	Logger                  Logger                `json:"-"`
+	ProxyConfig             *ProxyConfig          `json:"proxy_config,omitempty"`     // Proxy configuration
+	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
+	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
