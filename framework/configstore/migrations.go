@@ -199,6 +199,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddHeaderFilterConfigJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAzureDeploymentsJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx, db); err != nil {
 		return err
 	}
@@ -2549,6 +2552,37 @@ func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Cont
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running azure_client_id_and_client_secret_and_tenant_id migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAzureDeploymentsJSONColumn adds the azure_deployments_json column to the key table.
+func migrationAddAzureDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_azure_deployments_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "azure_deployments_json") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "azure_deployments_json"); err != nil {
+					return fmt.Errorf("failed to add azure_deployments_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "azure_deployments_json") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "azure_deployments_json"); err != nil {
+					return fmt.Errorf("failed to drop azure_deployments_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running azure_deployments_json migration: %s", err.Error())
 	}
 	return nil
 }

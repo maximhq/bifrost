@@ -884,3 +884,192 @@ func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
 		})
 	}
 }
+
+func setupKeyTestDBWithoutAzureDeploymentsColumn(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "Failed to create SQLite test database")
+
+	err = db.Exec(`
+		CREATE TABLE config_providers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(50) NOT NULL UNIQUE,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create config_providers table")
+
+	err = db.Exec(`
+		CREATE TABLE config_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(255) NOT NULL,
+			provider_id INTEGER NOT NULL,
+			provider VARCHAR(50),
+			key_id VARCHAR(255) NOT NULL,
+			value TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			config_hash VARCHAR(255),
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create config_keys table")
+
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS gomigrate (
+			id VARCHAR(255) PRIMARY KEY
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create gomigrate table")
+
+	return db
+}
+
+func trySetupPostgresKeyTestDBWithoutAzureDeploymentsColumn(t *testing.T, testSuffix string) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		return nil
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil
+	}
+	if err := sqlDB.Ping(); err != nil {
+		return nil
+	}
+
+	providersTable := fmt.Sprintf("config_providers_%s", strings.ReplaceAll(testSuffix, "-", "_"))
+	keysTable := fmt.Sprintf("config_keys_%s", strings.ReplaceAll(testSuffix, "-", "_"))
+	gomigrateTable := fmt.Sprintf("gomigrate_%s", strings.ReplaceAll(testSuffix, "-", "_"))
+
+	db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", gomigrateTable))
+	db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", keysTable))
+	db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", providersTable))
+
+	err = db.Exec(fmt.Sprintf(`
+		CREATE TABLE %s (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(50) NOT NULL UNIQUE,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`, providersTable)).Error
+	if err != nil {
+		return nil
+	}
+
+	err = db.Exec(fmt.Sprintf(`
+		CREATE TABLE %s (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			provider_id INTEGER NOT NULL,
+			provider VARCHAR(50),
+			key_id VARCHAR(255) NOT NULL,
+			value TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			config_hash VARCHAR(255),
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`, keysTable)).Error
+	if err != nil {
+		return nil
+	}
+
+	err = db.Exec(fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id VARCHAR(255) PRIMARY KEY
+		)
+	`, gomigrateTable)).Error
+	if err != nil {
+		return nil
+	}
+
+	// Map Gormigrate to the temporary table name for this test database.
+	db.Exec(fmt.Sprintf("ALTER TABLE %s RENAME TO gomigrate", gomigrateTable))
+	db.Exec(fmt.Sprintf("ALTER TABLE %s RENAME TO config_providers", providersTable))
+	db.Exec(fmt.Sprintf("ALTER TABLE %s RENAME TO config_keys", keysTable))
+
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS gomigrate")
+		db.Exec("DROP TABLE IF EXISTS config_keys")
+		db.Exec("DROP TABLE IF EXISTS config_providers")
+	})
+
+	return db
+}
+
+func forEachKeyMigrationDB(t *testing.T, testSuffix string) []namedDB {
+	t.Helper()
+
+	dbs := []namedDB{{"sqlite", setupKeyTestDBWithoutAzureDeploymentsColumn(t)}}
+	if pgDB := trySetupPostgresKeyTestDBWithoutAzureDeploymentsColumn(t, testSuffix); pgDB != nil {
+		dbs = append(dbs, namedDB{"postgres", pgDB})
+	}
+	return dbs
+}
+
+func TestMigrationAddAzureDeploymentsJSONColumn(t *testing.T) {
+	for _, ndb := range forEachKeyMigrationDB(t, "azure_deployments_json") {
+		ndb := ndb
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			ctx := context.Background()
+
+			now := time.Now()
+
+			err := db.Exec(`
+				INSERT INTO config_providers (
+					name, created_at, updated_at, encryption_status
+				) VALUES (?, ?, ?, ?)
+			`, "azure_provider", now, now, "plain_text").Error
+			require.NoError(t, err, "Failed to insert provider")
+
+			var providerID uint
+			err = db.Table("config_providers").
+				Select("id").
+				Where("name = ?", "azure_provider").
+				Scan(&providerID).Error
+			require.NoError(t, err, "Failed to fetch provider id")
+			require.NotZero(t, providerID, "provider id should be populated")
+
+			err = db.Exec(`
+				INSERT INTO config_keys (
+					name, provider_id, provider, key_id, value, created_at, updated_at, encryption_status
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, "azure_key", providerID, "azure", "azure-key-id", "test-value", now, now, "plain_text").Error
+			require.NoError(t, err, "Failed to insert key row with old schema")
+
+			hasColumn := db.Migrator().HasColumn(&tables.TableKey{}, "azure_deployments_json")
+			assert.False(t, hasColumn, "azure_deployments_json column should not exist before migration")
+
+			err = migrationAddAzureDeploymentsJSONColumn(ctx, db)
+			require.NoError(t, err, "Migration should succeed")
+
+			hasColumn = db.Migrator().HasColumn(&tables.TableKey{}, "azure_deployments_json")
+			assert.True(t, hasColumn, "azure_deployments_json column should exist after migration")
+
+			var deploymentsJSON *string
+			err = db.Table("config_keys").
+				Select("azure_deployments_json").
+				Where("name = ?", "azure_key").
+				Scan(&deploymentsJSON).Error
+			require.NoError(t, err, "Failed to query azure_deployments_json")
+			assert.Nil(t, deploymentsJSON, "existing rows should default to NULL after migration")
+
+			err = migrationAddAzureDeploymentsJSONColumn(ctx, db)
+			require.NoError(t, err, "Migration should be idempotent")
+		})
+	}
+}
