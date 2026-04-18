@@ -3271,7 +3271,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
 	var blocks []BedrockContentBlock
 
-	if content.ContentStr != nil {
+	if content.ContentStr != nil && *content.ContentStr != "" {
 		blocks = append(blocks, BedrockContentBlock{
 			Text: content.ContentStr,
 		})
@@ -3281,7 +3281,9 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 			bedrockBlock := BedrockContentBlock{}
 			switch block.Type {
 			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
-				bedrockBlock.Text = block.Text
+				if block.Text != nil && *block.Text != "" {
+					bedrockBlock.Text = block.Text
+				}
 			case schemas.ResponsesInputMessageContentBlockTypeImage:
 				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 					imageSource, err := convertImageToBedrockSource(*block.ResponsesInputMessageContentBlockImage.ImageURL)
@@ -3291,7 +3293,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 					bedrockBlock.Image = imageSource
 				}
 			case schemas.ResponsesOutputMessageContentTypeReasoning:
-				if block.Text != nil {
+				if block.Text != nil && *block.Text != "" {
 					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      block.Text,
@@ -3301,7 +3303,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 				}
 			case schemas.ResponsesOutputMessageContentTypeCompaction:
 				// Convert compaction to text block for Bedrock (compaction is Anthropic-specific)
-				if block.ResponsesOutputMessageContentCompaction != nil {
+				if block.ResponsesOutputMessageContentCompaction != nil && block.ResponsesOutputMessageContentCompaction.Summary != "" {
 					bedrockBlock.Text = &block.ResponsesOutputMessageContentCompaction.Summary
 				}
 			case schemas.ResponsesInputMessageContentBlockTypeFile:
