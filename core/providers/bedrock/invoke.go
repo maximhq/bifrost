@@ -394,6 +394,9 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			inputSchemaBytes, _ := providerUtils.MarshalSorted(inputSchema)
 			spec.InputSchema = BedrockToolInputSchema{JSON: json.RawMessage(inputSchemaBytes)}
 		}
+		if eagerInputStreaming, ok := toolMap["eager_input_streaming"].(bool); ok {
+			spec.EagerInputStreaming = &eagerInputStreaming
+		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
 	}
@@ -780,7 +783,7 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"type":  "content_block_delta",
 				"index": idx,
 				"delta": map[string]interface{}{
-					"type":          "input_json_delta",
+					"type":         "input_json_delta",
 					"partial_json": *resp.Delta,
 				},
 			}

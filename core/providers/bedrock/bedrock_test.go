@@ -181,53 +181,53 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
-		EmbeddingModel:      "cohere.embed-v4:0",
-		RerankModel:         rerankModelARN,
-		ReasoningModel:      "claude-4.5-sonnet",
-		PromptCachingModel:  "claude-4.5-sonnet",
-		ImageEditModel:      "amazon.nova-canvas-v1:0",
-		ImageVariationModel: "amazon.nova-canvas-v1:0",
+		EmbeddingModel:           "cohere.embed-v4:0",
+		RerankModel:              rerankModelARN,
+		ReasoningModel:           "claude-4.5-sonnet",
+		PromptCachingModel:       "claude-4.5-sonnet",
+		ImageEditModel:           "amazon.nova-canvas-v1:0",
+		ImageVariationModel:      "amazon.nova-canvas-v1:0",
 		InterleavedThinkingModel: "global.anthropic.claude-opus-4-5-20251101-v1:0",
-		BatchExtraParams:        batchExtraParams,
-		FileExtraParams:         fileExtraParams,
+		BatchExtraParams:         batchExtraParams,
+		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false, // Bedrock doesn't support image URL
-			ImageBase64:           true,
-			MultipleImages:        false, // Since one of the image is URL
-			FileBase64:            true,
-			FileURL:               false, // S3 urls supported for nova models
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			Rerank:                rerankModelARN != "",
-			ListModels:            true,
-			Reasoning:             true,
-			PromptCaching:         true,
-			BatchCreate:           true,
-			BatchList:             true,
-			BatchRetrieve:         true,
-			BatchCancel:           true,
-			BatchResults:          true,
-			FileUpload:            true,
-			FileList:              true,
-			FileRetrieve:          true,
-			FileDelete:            true,
-			FileContent:           true,
-			FileBatchInput:        true,
-			CountTokens:           true,
-			ImageEdit:             true,
-			ImageVariation:        true,
-			StructuredOutputs:     true,
-			InterleavedThinking:  true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false, // Bedrock doesn't support image URL
+			ImageBase64:                true,
+			MultipleImages:             false, // Since one of the image is URL
+			FileBase64:                 true,
+			FileURL:                    false, // S3 urls supported for nova models
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			Rerank:                     rerankModelARN != "",
+			ListModels:                 true,
+			Reasoning:                  true,
+			PromptCaching:              true,
+			BatchCreate:                true,
+			BatchList:                  true,
+			BatchRetrieve:              true,
+			BatchCancel:                true,
+			BatchResults:               true,
+			FileUpload:                 true,
+			FileList:                   true,
+			FileRetrieve:               true,
+			FileDelete:                 true,
+			FileContent:                true,
+			FileBatchInput:             true,
+			CountTokens:                true,
+			ImageEdit:                  true,
+			ImageVariation:             true,
+			StructuredOutputs:          true,
+			InterleavedThinking:        true,
 		},
 	}
 
@@ -4316,4 +4316,35 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 		require.NotNil(t, toolResult)
 		assert.Empty(t, toolResult.Content, "remote URL image should be dropped (Bedrock only supports base64)")
 	})
+}
+
+func TestToBedrockResponsesRequest_PreservesEagerInputStreaming(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:        schemas.ResponsesToolTypeFunction,
+					Name:        schemas.Ptr("write_file"),
+					Description: schemas.Ptr("Write content to a file"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						EagerInputStreaming: schemas.Ptr(true),
+					},
+				},
+			},
+		},
+	}
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec)
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec.EagerInputStreaming)
+	assert.True(t, *result.ToolConfig.Tools[0].ToolSpec.EagerInputStreaming)
 }

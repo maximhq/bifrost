@@ -85,7 +85,7 @@ export const DefaultNetworkConfig = {
 	retry_backoff_max: 10000,
 	insecure_skip_verify: false,
 	ca_cert_pem: "",
-	stream_idle_timeout_in_seconds: 60,
+	stream_idle_timeout_in_seconds: 600,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
 } satisfies NetworkConfig;

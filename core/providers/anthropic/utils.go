@@ -291,6 +291,11 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			if len(tool.AllowedCallers) > 0 {
 				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
 			}
+			if tool.EagerInputStreaming != nil && *tool.EagerInputStreaming {
+				if !hasProvider || features.FineGrainedToolStreaming {
+					headers = appendUniqueHeader(headers, AnthropicFineGrainedToolStreamingBetaHeader)
+				}
+			}
 			// Check for cache control with scope
 			if !hasCachingScope && tool.CacheControl != nil && tool.CacheControl.Scope != nil {
 				if !hasProvider || features.PromptCachingScope {
@@ -415,6 +420,7 @@ var betaHeaderPrefixKnown = []string{
 	"context-management-",
 	"files-api-",
 	AnthropicAdvancedToolUseBetaHeaderPrefix,
+	AnthropicFineGrainedToolStreamingBetaHeaderPrefix,
 	AnthropicInterleavedThinkingBetaHeaderPrefix,
 	AnthropicSkillsBetaHeaderPrefix,
 	AnthropicContext1MBetaHeaderPrefix,
@@ -606,10 +612,13 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicStructuredOutputsBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.StructuredOutputs },
 	AnthropicMCPClientBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.MCP },
 	AnthropicPromptCachingScopeBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.PromptCachingScope },
-	"compact-":                                   func(f ProviderFeatureSupport) bool { return f.Compaction },
-	"context-management-":                        func(f ProviderFeatureSupport) bool { return f.ContextEditing },
-	"files-api-":                                 func(f ProviderFeatureSupport) bool { return f.FilesAPI },
-	AnthropicAdvancedToolUseBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
+	"compact-":                               func(f ProviderFeatureSupport) bool { return f.Compaction },
+	"context-management-":                    func(f ProviderFeatureSupport) bool { return f.ContextEditing },
+	"files-api-":                             func(f ProviderFeatureSupport) bool { return f.FilesAPI },
+	AnthropicAdvancedToolUseBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
+	AnthropicFineGrainedToolStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool {
+		return f.FineGrainedToolStreaming
+	},
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },
 	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },

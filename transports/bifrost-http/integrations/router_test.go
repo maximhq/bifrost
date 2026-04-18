@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -82,6 +83,69 @@ func TestRequestWithSettableExtraParams_AllOpenAIRequestTypes(t *testing.T) {
 			assert.Equal(t, extra, getter.GetExtraParams())
 		})
 	}
+}
+
+func TestRequestWithSettableExtraParams_AnthropicRequests(t *testing.T) {
+	t.Run("AnthropicMessageRequest propagates extra params to Bifrost responses request", func(t *testing.T) {
+		req := &anthropic.AnthropicMessageRequest{
+			Model:     "bedrock/global.anthropic.claude-sonnet-4-6",
+			MaxTokens: 128,
+			Messages: []anthropic.AnthropicMessage{
+				{
+					Role: anthropic.AnthropicMessageRoleUser,
+					Content: anthropic.AnthropicContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				},
+			},
+		}
+		extra := map[string]interface{}{
+			"anthropic_beta": []interface{}{"fine-grained-tool-streaming-2025-05-14"},
+			"custom_flag":    true,
+		}
+
+		rws, ok := interface{}(req).(RequestWithSettableExtraParams)
+		require.True(t, ok, "AnthropicMessageRequest should implement RequestWithSettableExtraParams")
+
+		rws.SetExtraParams(extra)
+
+		require.Equal(t, extra, req.GetExtraParams())
+
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		bifrostReq := req.ToBifrostResponsesRequest(ctx)
+
+		require.NotNil(t, bifrostReq)
+		require.NotNil(t, bifrostReq.Params)
+		assert.Equal(t, extra["anthropic_beta"], bifrostReq.Params.ExtraParams["anthropic_beta"])
+		assert.Equal(t, extra["custom_flag"], bifrostReq.Params.ExtraParams["custom_flag"])
+		assert.Equal(t, schemas.Bedrock, bifrostReq.Provider)
+	})
+
+	t.Run("AnthropicTextRequest propagates extra params to Bifrost text request", func(t *testing.T) {
+		req := &anthropic.AnthropicTextRequest{
+			Model:             "bedrock/anthropic.claude-v2",
+			Prompt:            "hello",
+			MaxTokensToSample: 32,
+		}
+		extra := map[string]interface{}{
+			"anthropic_beta": []interface{}{"fine-grained-tool-streaming-2025-05-14"},
+			"custom_flag":    true,
+		}
+
+		rws, ok := interface{}(req).(RequestWithSettableExtraParams)
+		require.True(t, ok, "AnthropicTextRequest should implement RequestWithSettableExtraParams")
+
+		rws.SetExtraParams(extra)
+
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		bifrostReq := req.ToBifrostTextCompletionRequest(ctx)
+
+		require.NotNil(t, bifrostReq)
+		require.NotNil(t, bifrostReq.Params)
+		assert.Equal(t, extra["anthropic_beta"], bifrostReq.Params.ExtraParams["anthropic_beta"])
+		assert.Equal(t, extra["custom_flag"], bifrostReq.Params.ExtraParams["custom_flag"])
+		assert.Equal(t, schemas.Bedrock, bifrostReq.Provider)
+	})
 }
 
 func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {

@@ -2121,6 +2121,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
+	for k, v := range req.ExtraParams {
+		params.ExtraParams[k] = v
+	}
 
 	if req.MaxTokens > 0 {
 		params.MaxOutputTokens = &req.MaxTokens
@@ -4720,10 +4723,11 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		Description: tool.Description,
 	}
 
-	if tool.InputSchema != nil || tool.Strict != nil {
+	if tool.InputSchema != nil || tool.Strict != nil || tool.EagerInputStreaming != nil {
 		bifrostTool.ResponsesToolFunction = &schemas.ResponsesToolFunction{
-			Parameters: tool.InputSchema,
-			Strict:     tool.Strict,
+			Parameters:          tool.InputSchema,
+			Strict:              tool.Strict,
+			EagerInputStreaming: tool.EagerInputStreaming,
 		}
 	}
 
@@ -5008,6 +5012,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	// Convert parameters and strict from ToolFunction
 	if tool.ResponsesToolFunction != nil {
 		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
+		anthropicTool.EagerInputStreaming = tool.ResponsesToolFunction.EagerInputStreaming
 	}
 	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
 		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
