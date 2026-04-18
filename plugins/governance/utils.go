@@ -2,7 +2,6 @@
 package governance
 
 import (
-	"slices"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"

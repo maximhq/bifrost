@@ -15,13 +15,13 @@ import (
 
 type asyncTestLogger struct{}
 
-func (asyncTestLogger) Debug(string, ...any)                                  {}
-func (asyncTestLogger) Info(string, ...any)                                   {}
-func (asyncTestLogger) Warn(string, ...any)                                   {}
-func (asyncTestLogger) Error(string, ...any)                                  {}
-func (asyncTestLogger) Fatal(string, ...any)                                  {}
-func (asyncTestLogger) SetLevel(schemas.LogLevel)                             {}
-func (asyncTestLogger) SetOutputType(schemas.LoggerOutputType)                {}
+func (asyncTestLogger) Debug(string, ...any)                   {}
+func (asyncTestLogger) Info(string, ...any)                    {}
+func (asyncTestLogger) Warn(string, ...any)                    {}
+func (asyncTestLogger) Error(string, ...any)                   {}
+func (asyncTestLogger) Fatal(string, ...any)                   {}
+func (asyncTestLogger) SetLevel(schemas.LogLevel)              {}
+func (asyncTestLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (asyncTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
 }
@@ -88,7 +88,7 @@ func TestSubmitJob_PropagatesContextValues(t *testing.T) {
 
 	// Simulate original request context values
 	contextValues := map[any]any{
-		schemas.BifrostContextKeyVirtualKey: "sk-bf-test",
+		schemas.BifrostContextKeyVirtualKey:         "sk-bf-test",
 		schemas.BifrostContextKey("x-bf-prom-env"):  "production",
 		schemas.BifrostContextKey("x-bf-eh-custom"): "custom-value",
 	}
@@ -102,7 +102,7 @@ func TestSubmitJob_PropagatesContextValues(t *testing.T) {
 		return map[string]string{"status": "ok"}, nil
 	}
 
-	job, err := executor.SubmitJob(strPtr("sk-bf-test"), 3600, operation, schemas.ChatCompletionRequest, contextValues)
+	job, err := executor.SubmitJob(capturedCtx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 
@@ -126,7 +126,7 @@ func TestSubmitJob_NilContextValues(t *testing.T) {
 		return map[string]string{"status": "ok"}, nil
 	}
 
-	job, err := executor.SubmitJob(strPtr("sk-bf-test"), 3600, operation, schemas.ChatCompletionRequest, nil)
+	job, err := executor.SubmitJob(capturedCtx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 
@@ -148,7 +148,7 @@ func TestSubmitJob_EmptyContextValues(t *testing.T) {
 		return map[string]string{"status": "ok"}, nil
 	}
 
-	job, err := executor.SubmitJob(strPtr("sk-bf-test"), 3600, operation, schemas.ChatCompletionRequest, map[any]any{})
+	job, err := executor.SubmitJob(capturedCtx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 
@@ -161,21 +161,16 @@ func TestSubmitJob_EmptyContextValues(t *testing.T) {
 func TestSubmitJob_AsyncFlagOverridesContextValues(t *testing.T) {
 	executor := newTestAsyncExecutor(t)
 
-	// Pass context values that try to set BifrostIsAsyncRequest to false
-	contextValues := map[any]any{
-		schemas.BifrostIsAsyncRequest: false,
-	}
-
 	var capturedCtx *schemas.BifrostContext
 	var done atomic.Bool
-
+	capturedCtx.SetValue(schemas.BifrostIsAsyncRequest, false)
 	operation := func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 		capturedCtx = bgCtx
 		done.Store(true)
 		return map[string]string{"status": "ok"}, nil
 	}
 
-	job, err := executor.SubmitJob(strPtr("sk-bf-test"), 3600, operation, schemas.ChatCompletionRequest, contextValues)
+	job, err := executor.SubmitJob(capturedCtx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 
@@ -188,11 +183,8 @@ func TestSubmitJob_AsyncFlagOverridesContextValues(t *testing.T) {
 func TestSubmitJob_OperationFailure_PreservesContext(t *testing.T) {
 	executor := newTestAsyncExecutor(t)
 
-	contextValues := map[any]any{
-		schemas.BifrostContextKeyVirtualKey: "sk-bf-test",
-	}
-
 	var capturedCtx *schemas.BifrostContext
+	capturedCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
 	var done atomic.Bool
 
 	statusCode := fasthttp.StatusBadRequest
@@ -205,7 +197,7 @@ func TestSubmitJob_OperationFailure_PreservesContext(t *testing.T) {
 		}
 	}
 
-	job, err := executor.SubmitJob(strPtr("sk-bf-test"), 3600, operation, schemas.ChatCompletionRequest, contextValues)
+	job, err := executor.SubmitJob(capturedCtx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 

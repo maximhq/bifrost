@@ -792,7 +792,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			traceID != "" {
 			if accResult := tracer.ProcessStreamingChunk(traceID, true, result, bifrostErr); accResult != nil {
 				if streamResponse := convertToProcessedStreamResponse(accResult, requestType); streamResponse != nil {
-					p.applyStreamingOutputToEntry(entry, streamResponse)
+					p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw)
 				}
 			}
 			tracer.CleanupStreamAccumulator(traceID)
