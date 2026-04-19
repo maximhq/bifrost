@@ -1256,6 +1256,35 @@ func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tabl
 	return &mcpClient, nil
 }
 
+// GetMCPClientConfigByID retrieves an MCP client by ID and converts it to a schemas.MCPClientConfig.
+// Unlike GetMCPClientByID, this includes DiscoveredTools and DiscoveredToolNameMapping.
+func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
+	dbClient, err := s.GetMCPClientByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &schemas.MCPClientConfig{
+		ID:                        dbClient.ClientID,
+		Name:                      dbClient.Name,
+		IsCodeModeClient:          dbClient.IsCodeModeClient,
+		ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
+		ConnectionString:          dbClient.ConnectionString,
+		StdioConfig:               dbClient.StdioConfig,
+		AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
+		OauthConfigID:             dbClient.OauthConfigID,
+		ToolsToExecute:            dbClient.ToolsToExecute,
+		ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
+		Headers:                   dbClient.Headers,
+		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
+		IsPingAvailable:           dbClient.IsPingAvailable,
+		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+		ToolPricing:               dbClient.ToolPricing,
+		DiscoveredTools:           dbClient.DiscoveredTools,
+		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+	}, nil
+}
+
 // GetMCPClientByName retrieves an MCP client by name from the database.
 func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
@@ -1282,21 +1311,24 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		}
 		// Create new client
 		dbClient := tables.TableMCPClient{
-			ClientID:              clientConfigCopy.ID,
-			Name:                  clientConfigCopy.Name,
-			IsCodeModeClient:      clientConfigCopy.IsCodeModeClient,
-			ConnectionType:        string(clientConfigCopy.ConnectionType),
-			ConnectionString:      clientConfigCopy.ConnectionString,
-			StdioConfig:           clientConfigCopy.StdioConfig,
-			AuthType:              string(clientConfigCopy.AuthType),
-			OauthConfigID:         clientConfigCopy.OauthConfigID,
-			ToolsToExecute:        clientConfigCopy.ToolsToExecute,
-			ToolsToAutoExecute:    clientConfigCopy.ToolsToAutoExecute,
-			Headers:               clientConfigCopy.Headers,
-			AllowedExtraHeaders:   clientConfigCopy.AllowedExtraHeaders,
-			IsPingAvailable:       clientConfigCopy.IsPingAvailable,
-			ToolSyncInterval:      int(clientConfigCopy.ToolSyncInterval.Minutes()),
-			AllowOnAllVirtualKeys: clientConfigCopy.AllowOnAllVirtualKeys,
+			ClientID:                  clientConfigCopy.ID,
+			Name:                      clientConfigCopy.Name,
+			IsCodeModeClient:          clientConfigCopy.IsCodeModeClient,
+			ConnectionType:            string(clientConfigCopy.ConnectionType),
+			ConnectionString:          clientConfigCopy.ConnectionString,
+			StdioConfig:               clientConfigCopy.StdioConfig,
+			AuthType:                  string(clientConfigCopy.AuthType),
+			OauthConfigID:             clientConfigCopy.OauthConfigID,
+			ToolsToExecute:            clientConfigCopy.ToolsToExecute,
+			ToolsToAutoExecute:        clientConfigCopy.ToolsToAutoExecute,
+			Headers:                   clientConfigCopy.Headers,
+			AllowedExtraHeaders:       clientConfigCopy.AllowedExtraHeaders,
+			IsPingAvailable:           clientConfigCopy.IsPingAvailable,
+			ToolSyncInterval:          int(clientConfigCopy.ToolSyncInterval.Minutes()),
+			AllowOnAllVirtualKeys:     clientConfigCopy.AllowOnAllVirtualKeys,
+			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
+			DiscoveredTools:           clientConfig.DiscoveredTools,
+			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -1409,26 +1441,6 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		return nil
 	})
-}
-
-// UpdateMCPClientDiscoveredTools persists discovered tools for a per-user OAuth MCP client.
-func (s *RDBConfigStore) UpdateMCPClientDiscoveredTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
-	toolsJSON, err := json.Marshal(tools)
-	if err != nil {
-		return fmt.Errorf("failed to marshal discovered tools: %w", err)
-	}
-	mappingJSON, err := json.Marshal(toolNameMapping)
-	if err != nil {
-		return fmt.Errorf("failed to marshal tool name mapping: %w", err)
-	}
-	return s.DB().WithContext(ctx).
-		Model(&tables.TableMCPClient{}).
-		Where("client_id = ?", clientID).
-		Updates(map[string]interface{}{
-			"discovered_tools_json":  string(toolsJSON),
-			"tool_name_mapping_json": string(mappingJSON),
-			"updated_at":             time.Now(),
-		}).Error
 }
 
 // DeleteMCPClientConfig deletes an MCP client configuration from the database.

@@ -1097,7 +1097,11 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		// Persist MCP client config in config store
+		// Attach discovered tools before persisting so the DB row includes them from the start.
+		mcpClientConfig.DiscoveredTools = tools
+		mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
+
+		// Persist MCP client config in config store (BeforeSave hook serializes DiscoveredTools)
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
@@ -1121,13 +1125,6 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 
 		// Set discovered tools on the client
 		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
-
-		// Persist discovered tools to DB so they survive restart
-		if h.store.ConfigStore != nil {
-			if err := h.store.ConfigStore.UpdateMCPClientDiscoveredTools(ctx, mcpClientConfig.ID, tools, toolNameMapping); err != nil {
-				logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to persist discovered tools for %s: %v", mcpClientConfig.ID, err))
-			}
-		}
 
 		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
 		SendJSON(ctx, map[string]any{

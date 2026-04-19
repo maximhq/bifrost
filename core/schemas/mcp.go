@@ -15,14 +15,14 @@ import (
 
 // OAuth-related errors
 var (
-	ErrOAuth2ConfigNotFound       = errors.New("oauth2 config not found")
-	ErrOAuth2ProviderNotAvailable = errors.New("oauth2 provider not available")
-	ErrOAuth2TokenExpired         = errors.New("oauth2 token expired")
-	ErrOAuth2TokenInvalid         = errors.New("oauth2 token invalid")
-	ErrOAuth2RefreshFailed        = errors.New("oauth2 token refresh failed")
-	ErrOAuth2NotPerUserSession    = errors.New("state does not match a per-user oauth session")
-	ErrOAuth2TokenNotFound              = errors.New("per-user oauth token not found for this identity and mcp server")
-	ErrPerUserOAuthPendingFlowExpired   = errors.New("per-user oauth pending flow has expired")
+	ErrOAuth2ConfigNotFound           = errors.New("oauth2 config not found")
+	ErrOAuth2ProviderNotAvailable     = errors.New("oauth2 provider not available")
+	ErrOAuth2TokenExpired             = errors.New("oauth2 token expired")
+	ErrOAuth2TokenInvalid             = errors.New("oauth2 token invalid")
+	ErrOAuth2RefreshFailed            = errors.New("oauth2 token refresh failed")
+	ErrOAuth2NotPerUserSession        = errors.New("state does not match a per-user oauth session")
+	ErrOAuth2TokenNotFound            = errors.New("per-user oauth token not found for this identity and mcp server")
+	ErrPerUserOAuthPendingFlowExpired = errors.New("per-user oauth pending flow has expired")
 )
 
 // MCPUserOAuthRequiredError is returned when a per-user OAuth MCP server requires
@@ -119,14 +119,14 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`         // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
-	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`        // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`              // Tool pricing for each tool (cost per execution)
-	ConfigHash            string             `json:"-"`                                   // Config hash for reconciliation (not serialized)
-	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`  // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
+	ConfigHash            string             `json:"-"`                            // Config hash for reconciliation (not serialized)
+	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`    // Whether to allow the MCP client to run on all virtual keys
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
-	DiscoveredTools          map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
+	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
 }
 

@@ -547,6 +547,10 @@ func (m *MockConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tab
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error) {
 	return nil, nil
 }
@@ -611,10 +615,6 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 
 func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params configstore.MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
 	return nil, 0, nil
-}
-
-func (m *MockConfigStore) UpdateMCPClientDiscoveredTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
-	return nil
 }
 
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
