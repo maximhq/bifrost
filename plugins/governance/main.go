@@ -398,7 +398,7 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 
 	// Process virtual key if provided
 	if virtualKeyValue != nil {
-		virtualKey, ok = p.store.GetVirtualKey(*virtualKeyValue)
+		virtualKey, ok = p.store.GetVirtualKey(ctx, *virtualKeyValue)
 		if !ok || virtualKey == nil || !virtualKey.IsActive {
 			return nil, nil
 		}
@@ -496,7 +496,7 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 	// Process virtual key if provided
 	var virtualKey *configstoreTables.TableVirtualKey
 	if virtualKeyValue != nil {
-		vk, ok := p.store.GetVirtualKey(*virtualKeyValue)
+		vk, ok := p.store.GetVirtualKey(ctx, *virtualKeyValue)
 		if !ok || vk == nil || !vk.IsActive {
 			return nil, nil
 		}
@@ -1061,7 +1061,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// Checking if the virtual key is valid or not
 	isVirtualKeyValid := false
 	if evaluationRequest.VirtualKey != "" {
-		_, exists := p.store.GetVirtualKey(evaluationRequest.VirtualKey)
+		_, exists := p.store.GetVirtualKey(ctx, evaluationRequest.VirtualKey)
 		if exists {
 			isVirtualKeyValid = true
 		} else {
@@ -1095,20 +1095,68 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
 	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
 
-	// Check user-level governance (enterprise-only, runs before VK checks)
-	if result.Decision == DecisionAllow {
-		result = p.resolver.EvaluateUserRequest(ctx, evaluationRequest.UserID, evaluationRequest)
+	// The flow for governance checks is:
+	//   VK (identity + VK-level budget/rate-limit) -> Customer -> Team -> User
+	// VK identity runs FIRST so that revoked, provider-disallowed, or model-disallowed
+	// keys are blocked before any hierarchy state is consulted. Running Customer/Team/
+	// User ahead of VK would leak topology: a revoked key attached to an over-budget
+	// team would return 429 team-budget-exceeded instead of 403 VK-blocked, telling
+	// an attacker the key's team structure was validated.
+
+	// Resolve the VK once; it feeds both the VK evaluation and hierarchy-ID extraction.
+	var hierarchyVK *configstoreTables.TableVirtualKey
+	if evaluationRequest.VirtualKey != "" {
+		if vk, ok := p.store.GetVirtualKey(ctx, evaluationRequest.VirtualKey); ok && vk != nil {
+			hierarchyVK = vk
+		}
 	}
 
-	// If model/provider checks passed, evaluate virtual key
+	// Step 1: Evaluate virtual key (identity + VK-level budget/rate-limit hierarchy).
+	// Short-circuits with VirtualKeyBlocked / ProviderBlocked / ModelBlocked before
+	// we touch Customer / Team / User.
 	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
-		if evaluationRequest.UserID != "" {
-			// User auth present: only use VK for routing/filtering (skip rate limits and budgets)
-			result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, true)
-		} else {
-			// No user auth: full VK governance (routing + limits)
-			result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, false)
+		skipVKBudgetLimit := evaluationRequest.UserID != ""
+		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, skipVKBudgetLimit)
+	}
+
+	// Step 2: Customer-level budget (customer attached directly to VK, or via the VK's team).
+	// Fall back to the loaded relation IDs so VKs populated via joins without FK
+	// pointer columns still participate in customer-level enforcement.
+	if result.Decision == DecisionAllow && hierarchyVK != nil {
+		var customerID string
+		switch {
+		case hierarchyVK.CustomerID != nil:
+			customerID = *hierarchyVK.CustomerID
+		case hierarchyVK.Customer != nil:
+			customerID = hierarchyVK.Customer.ID
+		case hierarchyVK.Team != nil && hierarchyVK.Team.CustomerID != nil:
+			customerID = *hierarchyVK.Team.CustomerID
+		case hierarchyVK.Team != nil && hierarchyVK.Team.Customer != nil:
+			customerID = hierarchyVK.Team.Customer.ID
 		}
+		if customerID != "" {
+			result = p.resolver.EvaluateCustomerRequest(ctx, customerID, evaluationRequest)
+		}
+	}
+
+	// Step 3: Team-level budget. Fall back to vk.Team.ID when the FK pointer is nil
+	// but the relation is populated.
+	if result.Decision == DecisionAllow && hierarchyVK != nil {
+		var teamID string
+		switch {
+		case hierarchyVK.TeamID != nil:
+			teamID = *hierarchyVK.TeamID
+		case hierarchyVK.Team != nil:
+			teamID = hierarchyVK.Team.ID
+		}
+		if teamID != "" {
+			result = p.resolver.EvaluateTeamRequest(ctx, teamID, evaluationRequest)
+		}
+	}
+
+	// Step 4: User-level governance (enterprise-only).
+	if result.Decision == DecisionAllow {
+		result = p.resolver.EvaluateUserRequest(ctx, evaluationRequest.UserID, evaluationRequest)
 	}
 
 	// Check the actual MCP tools injected into the request against the VK MCPConfigs.
@@ -1315,7 +1363,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil && virtualKey != "" {
 		// filter models which are not supported on this virtual key
-		result.ListModelsResponse.Data = p.filterModelsForVirtualKey(result.ListModelsResponse.Data, virtualKey)
+		result.ListModelsResponse.Data = p.filterModelsForVirtualKey(ctx, result.ListModelsResponse.Data, virtualKey)
 	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
@@ -1389,7 +1437,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// Blind single-tool check: validate the specific tool being executed against VK MCPConfigs.
 	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
 	if virtualKeyValue != "" {
-		vk, ok := p.store.GetVirtualKey(virtualKeyValue)
+		vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
 		if !ok || vk == nil || !vk.IsActive {
 			// VK became invalid after initial check - fail closed for security
 			ctx.SetValue(governanceRejectedContextKey, true)

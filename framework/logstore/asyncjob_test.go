@@ -30,7 +30,7 @@ type testGovernanceStore struct {
 	virtualKeys map[string]*configstoreTables.TableVirtualKey
 }
 
-func (t *testGovernanceStore) GetVirtualKey(vkValue string) (*configstoreTables.TableVirtualKey, bool) {
+func (t *testGovernanceStore) GetVirtualKey(_ context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool) {
 	vk, ok := t.virtualKeys[vkValue]
 	return vk, ok
 }
@@ -157,16 +157,18 @@ func TestSubmitJob_EmptyContextValues(t *testing.T) {
 func TestSubmitJob_AsyncFlagOverridesContextValues(t *testing.T) {
 	executor := newTestAsyncExecutor(t)
 
+	inputCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	inputCtx.SetValue(schemas.BifrostIsAsyncRequest, false)
+
 	var capturedCtx *schemas.BifrostContext
 	var done atomic.Bool
-	capturedCtx.SetValue(schemas.BifrostIsAsyncRequest, false)
 	operation := func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 		capturedCtx = bgCtx
 		done.Store(true)
 		return map[string]string{"status": "ok"}, nil
 	}
 
-	job, err := executor.SubmitJob(capturedCtx, 3600, operation, schemas.ChatCompletionRequest)
+	job, err := executor.SubmitJob(inputCtx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 
@@ -179,8 +181,10 @@ func TestSubmitJob_AsyncFlagOverridesContextValues(t *testing.T) {
 func TestSubmitJob_OperationFailure_PreservesContext(t *testing.T) {
 	executor := newTestAsyncExecutor(t)
 
+	inputCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	inputCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+
 	var capturedCtx *schemas.BifrostContext
-	capturedCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
 	var done atomic.Bool
 
 	statusCode := fasthttp.StatusBadRequest
@@ -193,7 +197,7 @@ func TestSubmitJob_OperationFailure_PreservesContext(t *testing.T) {
 		}
 	}
 
-	job, err := executor.SubmitJob(capturedCtx, 3600, operation, schemas.ChatCompletionRequest)
+	job, err := executor.SubmitJob(inputCtx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 

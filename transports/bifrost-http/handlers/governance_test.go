@@ -18,7 +18,7 @@ type mockGovernanceManagerForVK struct {
 	GovernanceManager
 }
 
-func (m *mockGovernanceManagerForVK) GetGovernanceData() *governance.GovernanceData {
+func (m *mockGovernanceManagerForVK) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	return nil
 }
 

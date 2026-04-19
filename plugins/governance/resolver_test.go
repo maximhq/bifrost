@@ -289,7 +289,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 
 	// Test: VK budget exceeds should fail
 	// Get the governance data to update the budget directly
-	governanceData := store.GetGovernanceData()
+	governanceData := store.GetGovernanceData(context.Background())
 	vkBudgetToUpdate := governanceData.Budgets["vk-budget"]
 	if vkBudgetToUpdate != nil {
 		vkBudgetToUpdate.CurrentUsage = 100.0

@@ -414,6 +414,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationNormalizeOtelTraceType(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -6556,6 +6559,75 @@ func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB) error {
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running normalize_otel_trace_type migration: %s", err.Error())
 
+	}
+	return nil
+}
+
+// migrateCalendarAlignedToBudgetsAndRateLimitsTable
+func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "migrate_calendar_aligned",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			// Adding columns first
+			if !mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to budgets: %w", err)
+				}
+			}
+			// Adding columns first
+			if !mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableRateLimit{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to rate_limits: %w", err)
+				}
+			}
+			// Prefill calendar_aligned for existing budgets and rate_limits attached to virtual keys.
+			// GORM v2: Preload must precede the Find finisher, otherwise it's a no-op on the executed query.
+			var virtualKeys []tables.TableVirtualKey
+			if err := tx.Preload("Budgets").Find(&virtualKeys).Error; err != nil {
+				return fmt.Errorf("failed to load virtual keys: %w", err)
+			}
+			for i := range virtualKeys {
+				// Preserve the legacy per-VK semantic: only copy calendar_aligned=true to
+				// the VK's budgets and rate_limit when the source VK itself was aligned.
+				// Hardcoding true would change reset behavior for tenants whose VKs were
+				// never calendar-aligned.
+				if !virtualKeys[i].CalendarAligned {
+					continue
+				}
+				// Ratelimit updates. A stale rate_limit_id is skipped — the FK is intentionally
+				// not DB-enforced for TableVirtualKey — but the VK's budgets are still migrated.
+				if virtualKeys[i].RateLimitID != nil {
+					var rateLimit tables.TableRateLimit
+					err := tx.First(&rateLimit, virtualKeys[i].RateLimitID).Error
+					switch {
+					case err == gorm.ErrRecordNotFound:
+						// Skip only the rate-limit update; fall through to the budget loop.
+					case err != nil:
+						return fmt.Errorf("failed to load rate limit for virtual key %s: %w", virtualKeys[i].ID, err)
+					default:
+						rateLimit.CalendarAligned = true
+						if err := tx.Save(&rateLimit).Error; err != nil {
+							return fmt.Errorf("failed to save rate limit for virtual key %s: %w", virtualKeys[i].ID, err)
+						}
+					}
+				}
+				// Budgets update
+				for j := range virtualKeys[i].Budgets {
+					virtualKeys[i].Budgets[j].CalendarAligned = true
+					if err := tx.Save(&virtualKeys[i].Budgets[j]).Error; err != nil {
+						return fmt.Errorf("failed to save budget for virtual key %s: %w", virtualKeys[i].ID, err)
+					}
+				}
+			}
+			log.Printf("[Migration] Prefilled calendar_aligned field for existing budgets and rate limits")
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running migrate_calendar_aligned migration: %s", err.Error())
 	}
 	return nil
 }

@@ -19,6 +19,8 @@ type TableBudget struct {
 	VirtualKeyID     *string `gorm:"type:varchar(255);index" json:"virtual_key_id,omitempty"`
 	ProviderConfigID *uint   `gorm:"index" json:"provider_config_id,omitempty"`
 
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -36,7 +38,6 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	if b.VirtualKeyID != nil && b.ProviderConfigID != nil {
 		return fmt.Errorf("budget cannot belong to both a virtual key and a provider config")
 	}
-
 	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y")
 	if d, err := ParseDuration(b.ResetDuration); err != nil {
 		return fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)

@@ -70,7 +70,7 @@ type ServerCallbacks interface {
 	ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	// Governance related callbacks
-	GetGovernanceData() *governance.GovernanceData
+	GetGovernanceData(ctx context.Context) *governance.GovernanceData
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
 	ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
@@ -329,7 +329,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if err != nil {
 		return nil, err
 	}
-	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(virtualKey, nil, nil, nil)
+	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	return virtualKey, nil
 }
@@ -348,10 +348,10 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 	}
 	if preloadedVk == nil {
 		// This could be broadcast message from other server, so we will just clean up in-memory store
-		governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(id)
+		governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
 		return nil
 	}
-	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(id)
+	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
 	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value)
 	return nil
 }
@@ -369,7 +369,7 @@ func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.
 		return nil, err
 	}
 	// Add to in-memory store
-	governancePlugin.GetGovernanceStore().UpdateTeamInMemory(preloadedTeam, nil)
+	governancePlugin.GetGovernanceStore().UpdateTeamInMemory(ctx, preloadedTeam, nil)
 	return preloadedTeam, nil
 }
 
@@ -387,10 +387,10 @@ func (s *BifrostHTTPServer) RemoveTeam(ctx context.Context, id string) error {
 	}
 	if preloadedTeam == nil {
 		// At-least deleting from in-memory store to avoid conflicts
-		governancePlugin.GetGovernanceStore().DeleteTeamInMemory(id)
+		governancePlugin.GetGovernanceStore().DeleteTeamInMemory(ctx, id)
 		return nil
 	}
-	governancePlugin.GetGovernanceStore().DeleteTeamInMemory(id)
+	governancePlugin.GetGovernanceStore().DeleteTeamInMemory(ctx, id)
 	return nil
 }
 
@@ -405,7 +405,7 @@ func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tab
 		return nil, err
 	}
 	// Add to in-memory store
-	governancePlugin.GetGovernanceStore().UpdateCustomerInMemory(preloadedCustomer, nil)
+	governancePlugin.GetGovernanceStore().UpdateCustomerInMemory(ctx, preloadedCustomer, nil)
 	return preloadedCustomer, nil
 }
 
@@ -423,10 +423,10 @@ func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error
 	}
 	if preloadedCustomer == nil {
 		// At-least deleting from in-memory store to avoid conflicts
-		governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(id)
+		governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(ctx, id)
 		return nil
 	}
-	governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(id)
+	governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(ctx, id)
 	return nil
 }
 
@@ -443,7 +443,7 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 		return nil, err
 	}
 	// Update in memory and get back the potentially modified model config
-	updatedMC := governancePlugin.GetGovernanceStore().UpdateModelConfigInMemory(preloadedMC)
+	updatedMC := governancePlugin.GetGovernanceStore().UpdateModelConfigInMemory(ctx, preloadedMC)
 	if updatedMC == nil {
 		return preloadedMC, nil
 	}
@@ -475,7 +475,7 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 	if err != nil {
 		return err
 	}
-	governancePlugin.GetGovernanceStore().DeleteModelConfigInMemory(id)
+	governancePlugin.GetGovernanceStore().DeleteModelConfigInMemory(ctx, id)
 	return nil
 }
 
@@ -507,7 +507,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 			logger.Warn("governance plugin found but failed to get: %v", err)
 		} else {
 			// Update in memory and get back the potentially modified provider
-			govUpdated := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(providerInfo)
+			govUpdated := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(ctx, providerInfo)
 			if govUpdated != nil {
 				updatedProvider = govUpdated
 			}
@@ -630,7 +630,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	if err != nil {
 		return err
 	}
-	governancePlugin.GetGovernanceStore().DeleteProviderInMemory(string(provider))
+	governancePlugin.GetGovernanceStore().DeleteProviderInMemory(ctx, string(provider))
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
@@ -640,14 +640,13 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 }
 
 // GetGovernanceData returns the governance data
-func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
+func (s *BifrostHTTPServer) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	// Use type-safe finder from Config
 	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 	if err != nil {
 		return nil
 	}
-
-	return governancePlugin.GetGovernanceStore().GetGovernanceData()
+	return governancePlugin.GetGovernanceStore().GetGovernanceData(ctx)
 }
 
 // ReloadRoutingRule reloads a routing rule from the database into the governance store
@@ -667,7 +666,7 @@ func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) er
 		return fmt.Errorf("failed to get routing rule from config store: %w", err)
 	}
 	// Update the rule in the store (this updates the in-memory cache)
-	if err := store.UpdateRoutingRuleInMemory(rule); err != nil {
+	if err := store.UpdateRoutingRuleInMemory(ctx, rule); err != nil {
 		return fmt.Errorf("failed to update routing rule in store: %w", err)
 	}
 	return nil
@@ -686,7 +685,7 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	// Get the governance store from the plugin
 	store := governancePlugin.GetGovernanceStore()
 	// Delete the rule from the store (this removes from in-memory cache)
-	if err := store.DeleteRoutingRuleInMemory(id); err != nil {
+	if err := store.DeleteRoutingRuleInMemory(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete routing rule from store: %w", err)
 	}
 	return nil

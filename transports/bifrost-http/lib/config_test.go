@@ -372,7 +372,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/stretchr/testify/require"
@@ -418,6 +417,9 @@ func NewMockConfigStore() *MockConfigStore {
 }
 
 // Implement ConfigStore interface methods
+func (m *MockConfigStore) RefreshConnectionPool(ctx context.Context) error {
+	return nil
+}
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
@@ -426,7 +428,7 @@ func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *go
 	return fn(nil)
 }
 
-func (m *MockConfigStore) RunMigration(ctx context.Context, migration *migrator.Migration) error {
+func (m *MockConfigStore) RunMigration(context.Context, func(context.Context, *gorm.DB) error) error {
 	return nil
 }
 

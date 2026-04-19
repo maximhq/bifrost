@@ -53,7 +53,7 @@ func TestGovernanceStore_GetVirtualKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			vk, exists := store.GetVirtualKey(tt.vkValue)
+			vk, exists := store.GetVirtualKey(context.Background(), tt.vkValue)
 			if tt.wantNil {
 				assert.False(t, exists)
 				assert.Nil(t, vk)
@@ -85,7 +85,7 @@ func TestGovernanceStore_ConcurrentReads(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				vk, exists := store.GetVirtualKey("sk-bf-test")
+				vk, exists := store.GetVirtualKey(context.Background(), "sk-bf-test")
 				if !exists || vk == nil {
 					errorCount.Add(1)
 					return
@@ -114,7 +114,7 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve VK with budget
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	tests := []struct {
 		name      string
@@ -152,8 +152,8 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 				Budgets:     []configstoreTables.TableBudget{*testBudget},
 			}, nil)
 
-			testVK, _ = testStore.GetVirtualKey("sk-bf-test")
-			err := testStore.CheckBudget(context.Background(), testVK, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+			testVK, _ = testStore.GetVirtualKey(context.Background(), "sk-bf-test")
+			_, err := testStore.CheckVirtualKeyBudget(context.Background(), testVK, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 			if tt.shouldErr {
 				assert.Error(t, err, "Expected error for usage check")
 			} else {
@@ -190,10 +190,10 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Test: All budgets under limit should pass
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err, "Should pass when all budgets are under limit")
 
 	// Test: If VK budget exceeds limit, should fail
@@ -207,7 +207,7 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 			}
 		}
 	}
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	require.Error(t, err, "Should fail when VK budget exceeds limit")
 }
 
@@ -232,8 +232,8 @@ func TestGovernanceStore_MultiBudget_AllUnderLimit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err, "Should pass when all budgets are under limit")
 }
 
@@ -257,8 +257,8 @@ func TestGovernanceStore_MultiBudget_SmallBudgetExceeded(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	require.Error(t, err, "Should fail when hourly budget is exceeded even though daily is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -283,8 +283,8 @@ func TestGovernanceStore_MultiBudget_LargeBudgetExceeded(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	require.Error(t, err, "Should fail when daily budget is exceeded even though hourly is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -308,7 +308,7 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Simulate a $3.50 request
 	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 3.50)
@@ -334,7 +334,7 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 	assert.InDelta(t, 10.50, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Daily budget should accumulate")
 
 	// Now CheckBudget should fail (hourly exceeded)
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	require.Error(t, err, "Should fail after usage exceeds hourly budget")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -359,8 +359,8 @@ func TestGovernanceStore_MultiBudget_ProviderConfigBudgets(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	require.Error(t, err, "Should fail when provider config hourly budget is exceeded")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -388,10 +388,10 @@ func TestGovernanceStore_MultiBudget_VKAndProviderConfigCombined(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Provider config budget exceeded → should block even though VK budget is fine
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	require.Error(t, err, "Should fail: provider config budget exceeded even though VK budget is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -474,7 +474,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	resolver := NewBudgetResolver(store, nil, logger, nil)
 
 	// Request 1: $0.80 — both budgets fine
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
@@ -483,7 +483,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	assertDecision(t, DecisionAllow, result)
 
 	// Request 2: $0.80 — still fine ($1.60 total)
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
@@ -492,7 +492,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	assertDecision(t, DecisionAllow, result)
 
 	// Request 3: $0.80 — pushes hourly to $2.40 > $2.00 limit → blocked
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
@@ -542,11 +542,11 @@ func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify VK-level calendar_aligned is set
-	vk, _ = store.GetVirtualKey("sk-bf-test")
+	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 	assert.True(t, vk.CalendarAligned, "VK should have calendar_aligned=true")
 
 	// Both under limit — should pass
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err)
 }
 
@@ -568,26 +568,26 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	}
 
 	// Create
-	store.CreateVirtualKeyInMemory(vk)
+	store.CreateVirtualKeyInMemory(context.Background(), vk)
 
 	_, exists := store.budgets.Load("b1")
 	assert.True(t, exists, "Budget b1 should be in memory after create")
 	_, exists = store.budgets.Load("b2")
 	assert.True(t, exists, "Budget b2 should be in memory after create")
 
-	retrieved, found := store.GetVirtualKey("sk-bf-test")
+	retrieved, found := store.GetVirtualKey(context.Background(), "sk-bf-test")
 	require.True(t, found)
 	assert.Len(t, retrieved.Budgets, 2, "VK should have 2 budgets")
 
 	// Delete
-	store.DeleteVirtualKeyInMemory("vk1")
+	store.DeleteVirtualKeyInMemory(context.Background(), "vk1")
 
 	_, exists = store.budgets.Load("b1")
 	assert.False(t, exists, "Budget b1 should be removed after delete")
 	_, exists = store.budgets.Load("b2")
 	assert.False(t, exists, "Budget b2 should be removed after delete")
 
-	_, found = store.GetVirtualKey("sk-bf-test")
+	_, found = store.GetVirtualKey(context.Background(), "sk-bf-test")
 	assert.False(t, found, "VK should not be found after delete")
 }
 
@@ -609,7 +609,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	assert.NoError(t, err, "Rate limit update should succeed")
 
 	// Retrieve the updated rate limit from the main RateLimits map
-	governanceData := store.GetGovernanceData()
+	governanceData := store.GetGovernanceData(context.Background())
 	updatedRateLimit, exists := governanceData.RateLimits["rl1"]
 	require.True(t, exists, "Rate limit should exist")
 	require.NotNil(t, updatedRateLimit)
@@ -622,7 +622,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	assert.NoError(t, err, "Rate limit update should succeed")
 
 	// Retrieve the updated rate limit again
-	governanceData = store.GetGovernanceData()
+	governanceData = store.GetGovernanceData(context.Background())
 	updatedRateLimit, exists = governanceData.RateLimits["rl1"]
 	require.True(t, exists, "Rate limit should exist")
 	require.NotNil(t, updatedRateLimit)
@@ -663,7 +663,7 @@ func TestGovernanceStore_ResetExpiredRateLimits(t *testing.T) {
 	assert.NoError(t, err, "Reset should succeed")
 
 	// Retrieve the updated VK to check rate limit changes
-	updatedVK, _ := store.GetVirtualKey("sk-bf-test")
+	updatedVK, _ := store.GetVirtualKey(context.Background(), "sk-bf-test")
 	require.NotNil(t, updatedVK)
 	require.NotNil(t, updatedVK.RateLimit)
 
@@ -698,7 +698,7 @@ func TestGovernanceStore_ResetExpiredBudgets(t *testing.T) {
 	assert.NoError(t, err, "Reset should succeed")
 
 	// Retrieve the updated VK to check budget changes
-	updatedVK, _ := store.GetVirtualKey("sk-bf-test")
+	updatedVK, _ := store.GetVirtualKey(context.Background(), "sk-bf-test")
 	require.NotNil(t, updatedVK)
 	require.True(t, len(updatedVK.Budgets) > 0, "VK should have budgets")
 
@@ -720,7 +720,7 @@ func TestGovernanceStore_GetAllBudgets(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	allBudgets := store.GetGovernanceData().Budgets
+	allBudgets := store.GetGovernanceData(context.Background()).Budgets
 	assert.Equal(t, 3, len(allBudgets), "Should have 3 budgets")
 	assert.NotNil(t, allBudgets["budget1"])
 	assert.NotNil(t, allBudgets["budget2"])
@@ -773,22 +773,22 @@ func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 	}
 
 	// Store rules in memory
-	err = store.UpdateRoutingRuleInMemory(rule1)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule1)
 	require.NoError(t, err)
-	err = store.UpdateRoutingRuleInMemory(rule2)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule2)
 	require.NoError(t, err)
 
 	// Test retrieval by scope
-	globalRules := store.GetScopedRoutingRules("global", "")
+	globalRules := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(globalRules))
 	assert.Equal(t, "Global Rule", globalRules[0].Name)
 
-	teamRules := store.GetScopedRoutingRules("team", teamID)
+	teamRules := store.GetScopedRoutingRules(context.Background(), "team", teamID)
 	assert.Equal(t, 1, len(teamRules))
 	assert.Equal(t, "Team Rule", teamRules[0].Name)
 
 	// Test ListRoutingRules
-	allRules := store.GetAllRoutingRules()
+	allRules := store.GetAllRoutingRules(context.Background())
 	assert.Equal(t, 2, len(allRules))
 }
 
@@ -827,12 +827,12 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 	}
 
 	for _, rule := range rules {
-		err := store.UpdateRoutingRuleInMemory(rule)
+		err := store.UpdateRoutingRuleInMemory(context.Background(), rule)
 		require.NoError(t, err)
 	}
 
 	// Retrieve and verify ordering (sorted by priority ASC, so lower numbers first)
-	retrieved := store.GetScopedRoutingRules("global", "")
+	retrieved := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 3, len(retrieved))
 	assert.Equal(t, 5, retrieved[0].Priority)
 	assert.Equal(t, 10, retrieved[1].Priority)
@@ -861,13 +861,13 @@ func TestGovernanceStore_RoutingRules_DisabledRulesFiltered(t *testing.T) {
 		ScopeID: nil,
 	}
 
-	err = store.UpdateRoutingRuleInMemory(enabledRule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), enabledRule)
 	require.NoError(t, err)
-	err = store.UpdateRoutingRuleInMemory(disabledRule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), disabledRule)
 	require.NoError(t, err)
 
 	// Only enabled rules should be returned
-	retrieved := store.GetScopedRoutingRules("global", "")
+	retrieved := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(retrieved))
 	assert.Equal(t, "Enabled Rule", retrieved[0].Name)
 }
@@ -887,18 +887,18 @@ func TestGovernanceStore_RoutingRules_DeleteRule(t *testing.T) {
 	}
 
 	// Add rule
-	err = store.UpdateRoutingRuleInMemory(rule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule)
 	require.NoError(t, err)
 
-	retrieved := store.GetScopedRoutingRules("global", "")
+	retrieved := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(retrieved))
 
 	// Delete rule
-	err = store.DeleteRoutingRuleInMemory(rule.ID)
+	err = store.DeleteRoutingRuleInMemory(context.Background(), rule.ID)
 	require.NoError(t, err)
 
 	// Verify deletion
-	retrieved = store.GetScopedRoutingRules("global", "")
+	retrieved = store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 0, len(retrieved))
 }
 
@@ -994,27 +994,27 @@ func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 		ID: "3", Name: "Team", Scope: "team", ScopeID: &teamID, Priority: 30, Enabled: true,
 	}
 
-	require.NoError(t, store.UpdateRoutingRuleInMemory(globalRule))
-	require.NoError(t, store.UpdateRoutingRuleInMemory(customerRule))
-	require.NoError(t, store.UpdateRoutingRuleInMemory(teamRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), globalRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), customerRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), teamRule))
 
 	// Test global scope
-	globalRules := store.GetScopedRoutingRules("global", "")
+	globalRules := store.GetScopedRoutingRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(globalRules))
 	assert.Equal(t, "Global", globalRules[0].Name)
 
 	// Test customer scope
-	custRules := store.GetScopedRoutingRules("customer", customerID)
+	custRules := store.GetScopedRoutingRules(context.Background(), "customer", customerID)
 	assert.Equal(t, 1, len(custRules))
 	assert.Equal(t, "Customer", custRules[0].Name)
 
 	// Test team scope
-	teamRules := store.GetScopedRoutingRules("team", teamID)
+	teamRules := store.GetScopedRoutingRules(context.Background(), "team", teamID)
 	assert.Equal(t, 1, len(teamRules))
 	assert.Equal(t, "Team", teamRules[0].Name)
 
 	// ListAll should return all rules sorted by priority ASC (lower numbers = higher priority)
-	allRules := store.GetAllRoutingRules()
+	allRules := store.GetAllRoutingRules(context.Background())
 	assert.Equal(t, 3, len(allRules))
 	assert.Equal(t, 10, allRules[0].Priority) // Global (highest)
 	assert.Equal(t, 20, allRules[1].Priority) // Customer
@@ -1038,12 +1038,12 @@ func TestCompileAndCacheProgram(t *testing.T) {
 	}
 
 	// First compilation
-	program1, err := store.GetRoutingProgram(rule)
+	program1, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program1)
 
 	// Verify it's cached - second call should return cached program
-	program2, err := store.GetRoutingProgram(rule)
+	program2, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 
@@ -1067,11 +1067,11 @@ func TestCompileAndCacheProgram_InvalidExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	_, err = store.GetRoutingProgram(rule)
+	_, err = store.GetRoutingProgram(context.Background(), rule)
 	assert.Error(t, err)
 
 	// Invalid rule should not be cached - attempting to get it again should fail
-	_, err = store.GetRoutingProgram(rule)
+	_, err = store.GetRoutingProgram(context.Background(), rule)
 	assert.Error(t, err)
 }
 
@@ -1093,17 +1093,17 @@ func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 	}
 
 	// Compile and cache
-	program1, err := store.GetRoutingProgram(rule)
+	program1, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program1)
 
 	// Update rule in memory (should invalidate cache)
 	rule.CelExpression = "model == 'gpt-4-turbo'"
-	err = store.UpdateRoutingRuleInMemory(rule)
+	err = store.UpdateRoutingRuleInMemory(context.Background(), rule)
 	require.NoError(t, err)
 
 	// Recompile should work
-	program2, err := store.GetRoutingProgram(rule)
+	program2, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 }
@@ -1126,11 +1126,11 @@ func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 	}
 
 	// Compile and cache
-	_, err = store.GetRoutingProgram(rule)
+	_, err = store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 
 	// Delete rule (should invalidate cache)
-	err = store.DeleteRoutingRuleInMemory(rule.ID)
+	err = store.DeleteRoutingRuleInMemory(context.Background(), rule.ID)
 	require.NoError(t, err)
 
 	// After deletion, we can't verify cache directly, but the rule is gone from storage
@@ -1152,12 +1152,12 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 
 	// Verify caching works - second call should return same program
-	program2, err := store.GetRoutingProgram(rule)
+	program2, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program2)
 	assert.Equal(t, program, program2)

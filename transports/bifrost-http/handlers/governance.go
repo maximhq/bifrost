@@ -28,7 +28,7 @@ import (
 
 // GovernanceManager is the interface for the governance manager
 type GovernanceManager interface {
-	GetGovernanceData() *governance.GovernanceData
+	GetGovernanceData(ctx context.Context) *governance.GovernanceData
 	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
 	RemoveVirtualKey(ctx context.Context, id string) error
 	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
@@ -334,7 +334,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -682,7 +682,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -1318,7 +1318,7 @@ func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -1498,7 +1498,7 @@ func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -1740,7 +1740,7 @@ func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -1897,7 +1897,7 @@ func (h *GovernanceHandler) getCustomer(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -2132,7 +2132,7 @@ func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -2160,7 +2160,7 @@ func (h *GovernanceHandler) getRateLimits(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -2248,7 +2248,7 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -2672,7 +2672,7 @@ type ProviderGovernanceResponse struct {
 func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		data := h.governanceManager.GetGovernanceData()
+		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -2967,7 +2967,7 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		gd := h.governanceManager.GetGovernanceData()
+		gd := h.governanceManager.GetGovernanceData(ctx)
 		if gd == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return
@@ -3101,7 +3101,7 @@ func (h *GovernanceHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
-		gd := h.governanceManager.GetGovernanceData()
+		gd := h.governanceManager.GetGovernanceData(ctx)
 		if gd == nil {
 			SendError(ctx, 500, "Governance data is not available")
 			return

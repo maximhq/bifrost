@@ -124,7 +124,7 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	// Build VK id→name lookup from in-memory governance data
 	vkNameByID := make(map[string]string)
 	if h.governanceManager != nil {
-		if gd := h.governanceManager.GetGovernanceData(); gd != nil {
+		if gd := h.governanceManager.GetGovernanceData(ctx); gd != nil {
 			for _, vk := range gd.VirtualKeys {
 				vkNameByID[vk.ID] = vk.Name
 			}
@@ -250,7 +250,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 	// Build VK id→name lookup from in-memory governance data (no extra DB queries)
 	vkNameByID := make(map[string]string)
 	if h.governanceManager != nil {
-		if gd := h.governanceManager.GetGovernanceData(); gd != nil {
+		if gd := h.governanceManager.GetGovernanceData(ctx); gd != nil {
 			for _, vk := range gd.VirtualKeys {
 				vkNameByID[vk.ID] = vk.Name
 			}

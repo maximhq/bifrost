@@ -2,6 +2,7 @@
 package governance
 
 import (
+	"context"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -89,11 +90,12 @@ func getWeight(w *float64) float64 {
 // filterModelsForVirtualKey filters models based on virtual key's provider configs
 // Returns only models that are allowed by the virtual key's ProviderConfigs
 func (p *GovernancePlugin) filterModelsForVirtualKey(
+	ctx context.Context,
 	models []schemas.Model,
 	virtualKeyValue string,
 ) []schemas.Model {
 	// Get virtual key configuration
-	vk, exists := p.store.GetVirtualKey(virtualKeyValue)
+	vk, exists := p.store.GetVirtualKey(ctx, virtualKeyValue)
 	if !exists {
 		p.logger.Warn("[Governance] Virtual key not found for list models filtering: %s", virtualKeyValue)
 		return []schemas.Model{} // VK not found, return empty list
