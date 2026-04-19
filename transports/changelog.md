@@ -1,0 +1,1 @@
+- fix: malformed OAuth authorization URL when base URL already contains query parameters
