@@ -389,6 +389,29 @@ func (bifrost *Bifrost) getTracer() schemas.Tracer {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	
+	// Update plugin lists
+	if config.LLMPlugins != nil {
+		bifrost.llmPlugins.Store(&config.LLMPlugins)
+		// Call SetBifrost for all BifrostAwarePlugins
+		for _, p := range config.LLMPlugins {
+			if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+				bifrost.logger.Debug("calling SetBifrost for LLM plugin %s during ReloadConfig", p.GetName())
+				aware.SetBifrost(bifrost)
+			}
+		}
+	}
+	if config.MCPPlugins != nil {
+		bifrost.mcpPlugins.Store(&config.MCPPlugins)
+		// Call SetBifrost for all BifrostAwarePlugins
+		for _, p := range config.MCPPlugins {
+			if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+				bifrost.logger.Debug("calling SetBifrost for MCP plugin %s during ReloadConfig", p.GetName())
+				aware.SetBifrost(bifrost)
+			}
+		}
+	}
+	
 	return nil
 }
 
