@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/maxim
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/maximhq/bifrost/core v1.5.2
