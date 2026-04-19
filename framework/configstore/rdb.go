@@ -1915,6 +1915,7 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 	}
 	return db.
 		Preload(relation("Teams")).
+		Preload(relation("Teams.Budgets")).
 		Preload(relation("Budget")).
 		Preload(relation("RateLimit")).
 		Preload(relation("VirtualKeys"))
@@ -2589,7 +2590,7 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 	// Preload relationships for complete information
 	query := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budget").Preload("RateLimit")
+		Preload("Customer").Preload("Budgets").Preload("RateLimit")
 	// Optional filtering by customer
 	if customerID != "" {
 		query = query.Where("customer_id = ?", customerID)
@@ -2632,7 +2633,7 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 	var teams []tables.TableTeam
 	if err := baseQuery.
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budget").Preload("RateLimit").
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&teams).Error; err != nil {
@@ -2647,7 +2648,7 @@ func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableT
 	var team tables.TableTeam
 	if err := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
-		Preload("Customer").Preload("Budget").Preload("RateLimit").
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").
 		First(&team, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -2686,10 +2687,12 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 }
 
 // DeleteTeam deletes a team from the database.
+// Owned budgets cascade via the governance_budgets.team_id FK.
+// Rate limit is a sibling row (team holds a FK to it) — deleted explicitly.
 func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var team tables.TableTeam
-		if err := tx.WithContext(ctx).Preload("Budget").Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
+		if err := tx.WithContext(ctx).Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -2699,21 +2702,13 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
 			return err
 		}
-		// Store the budget and rate limit IDs before deleting the team
-		budgetID := team.BudgetID
 		rateLimitID := team.RateLimitID
-		// Delete the team first
+		// Delete the team — owned budgets cascade via FK on governance_budgets.team_id
 		if err := tx.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
 			return err
-		}
-		// Delete the team's budget if it exists
-		if budgetID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
 		}
 		// Delete the team's rate limit if it exists
 		if rateLimitID != nil {

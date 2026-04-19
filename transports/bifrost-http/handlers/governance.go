@@ -222,7 +222,7 @@ func collectProviderConfigDeleteIDs(
 type CreateTeamRequest struct {
 	Name       string                  `json:"name" validate:"required"`
 	CustomerID *string                 `json:"customer_id,omitempty"` // Team can belong to a customer
-	Budget     *CreateBudgetRequest    `json:"budget,omitempty"`      // Team can have its own budget
+	Budgets    []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
 	RateLimit  *CreateRateLimitRequest `json:"rate_limit,omitempty"`  // Team can have its own rate limit
 }
 
@@ -230,7 +230,7 @@ type CreateTeamRequest struct {
 type UpdateTeamRequest struct {
 	Name       *string                 `json:"name,omitempty"`
 	CustomerID *string                 `json:"customer_id,omitempty"`
-	Budget     *UpdateBudgetRequest    `json:"budget,omitempty"`
+	Budgets    []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all team budgets
 	RateLimit  *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
@@ -1407,18 +1407,6 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Team name is required")
 		return
 	}
-	// Validate budget if provided
-	if req.Budget != nil {
-		if req.Budget.MaxLimit < 0 {
-			SendError(ctx, 400, fmt.Sprintf("Budget max_limit cannot be negative: %.2f", req.Budget.MaxLimit))
-			return
-		}
-		// Validate reset duration format
-		if _, err := configstoreTables.ParseDuration(req.Budget.ResetDuration); err != nil {
-			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budget.ResetDuration))
-			return
-		}
-	}
 	// Validate rate limit if provided
 	if req.RateLimit != nil {
 		rateLimit := configstoreTables.TableRateLimit{
@@ -1440,22 +1428,6 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:       req.Name,
 			CustomerID: req.CustomerID,
 		}
-		if req.Budget != nil {
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      req.Budget.MaxLimit,
-				ResetDuration: req.Budget.ResetDuration,
-				LastReset:     budgetLastReset(false, req.Budget.ResetDuration),
-				CurrentUsage:  0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.BudgetID = &budget.ID
-		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1471,11 +1443,47 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			}
 			team.RateLimitID = &rateLimit.ID
 		}
+		// Team row must exist before child budgets (FK on governance_budgets.team_id)
 		if err := h.configStore.CreateTeam(ctx, &team, tx); err != nil {
 			return err
 		}
+		// Create owned multi-budgets; enforce unique reset_duration per team
+		seenDurations := make(map[string]bool)
+		for _, b := range req.Budgets {
+			if b.MaxLimit < 0 {
+				return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
+			}
+			if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
+				return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+			}
+			if seenDurations[b.ResetDuration] {
+				return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+			}
+			seenDurations[b.ResetDuration] = true
+			budget := configstoreTables.TableBudget{
+				ID:              uuid.NewString(),
+				MaxLimit:        b.MaxLimit,
+				ResetDuration:   b.ResetDuration,
+				LastReset:       budgetLastReset(b.CalendarAligned, b.ResetDuration),
+				CurrentUsage:    0,
+				CalendarAligned: b.CalendarAligned,
+				TeamID:          &team.ID,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			team.Budgets = append(team.Budgets, budget)
+		}
 		return nil
 	}); err != nil {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		logger.Error("failed to create team: %v", err)
 		SendError(ctx, 500, "failed to create team")
 		return
@@ -1548,8 +1556,8 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating team in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Track IDs to delete after updating the team (to avoid FK constraint)
-		var budgetIDToDelete, rateLimitIDToDelete string
+		// Track rate-limit ID to delete after updating the team (to avoid FK constraint)
+		var rateLimitIDToDelete string
 
 		// Update fields if provided
 		if req.Name != nil {
@@ -1562,63 +1570,81 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				team.CustomerID = req.CustomerID
 			}
 		}
-		// Handle budget updates
-		if req.Budget != nil {
-			// Check if budget removal is requested (all fields nil)
-			budgetIsEmpty := isBudgetRemovalRequest(req.Budget)
-			if budgetIsEmpty {
-				// Mark budget for deletion after FK is removed
-				if team.BudgetID != nil {
-					budgetIDToDelete = *team.BudgetID
-					team.BudgetID = nil
-					team.Budget = nil
+		// Multi-budget reconciliation: match by reset_duration, preserve usage on update,
+		// create new budgets for new durations, delete unmatched existing budgets.
+		// Mirrors VK multi-budget handling above.
+		if req.Budgets != nil {
+			// Validate incoming budgets
+			seenDurations := make(map[string]bool)
+			for _, b := range req.Budgets {
+				if b.MaxLimit < 0 {
+					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 				}
-			} else if team.BudgetID != nil {
-				// Update existing budget — all fields are optional (partial update)
-				budget := configstoreTables.TableBudget{}
-				if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
-					return err
+				if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
 				}
-				if req.Budget.MaxLimit != nil {
-					budget.MaxLimit = *req.Budget.MaxLimit
+				if seenDurations[b.ResetDuration] {
+					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
 				}
-				if req.Budget.ResetDuration != nil {
-					budget.ResetDuration = *req.Budget.ResetDuration
-				}
-				if err := validateBudget(&budget); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-					return err
-				}
-				team.Budget = &budget
-			} else {
-				// Create new budget
-				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
-					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
-				}
-				if *req.Budget.MaxLimit < 0 {
-					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
-				}
-				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
-					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
-				}
-				budget := configstoreTables.TableBudget{
-					ID:            uuid.NewString(),
-					MaxLimit:      *req.Budget.MaxLimit,
-					ResetDuration: *req.Budget.ResetDuration,
-					LastReset:     budgetLastReset(false, *req.Budget.ResetDuration),
-					CurrentUsage:  0,
-				}
-				if err := validateBudget(&budget); err != nil {
-					return err
-				}
-				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-					return err
-				}
-				team.BudgetID = &budget.ID
-				team.Budget = &budget
+				seenDurations[b.ResetDuration] = true
 			}
+
+			existingByDuration := make(map[string]configstoreTables.TableBudget)
+			for _, existing := range team.Budgets {
+				existingByDuration[existing.ResetDuration] = existing
+			}
+
+			var reconciledBudgets []configstoreTables.TableBudget
+			matchedIDs := make(map[string]bool)
+			for _, b := range req.Budgets {
+				if existing, found := existingByDuration[b.ResetDuration]; found {
+					wasCalendarAligned := existing.CalendarAligned
+					existing.MaxLimit = b.MaxLimit
+					existing.CalendarAligned = b.CalendarAligned
+					// Match the UI's calendar-alignment confirmation promise: on the
+					// false → true transition, snap LastReset to the current period
+					// start and zero out CurrentUsage now, instead of lazily waiting
+					// for the next period boundary in ResetExpiredBudgetsInMemory.
+					if b.CalendarAligned && !wasCalendarAligned {
+						existing.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, time.Now())
+						existing.CurrentUsage = 0
+					}
+					if err := validateBudget(&existing); err != nil {
+						return err
+					}
+					if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
+						return err
+					}
+					reconciledBudgets = append(reconciledBudgets, existing)
+					matchedIDs[existing.ID] = true
+				} else {
+					budget := configstoreTables.TableBudget{
+						ID:              uuid.NewString(),
+						MaxLimit:        b.MaxLimit,
+						ResetDuration:   b.ResetDuration,
+						LastReset:       budgetLastReset(b.CalendarAligned, b.ResetDuration),
+						CurrentUsage:    0,
+						CalendarAligned: b.CalendarAligned,
+						TeamID:          &team.ID,
+					}
+					if err := validateBudget(&budget); err != nil {
+						return err
+					}
+					if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+						return err
+					}
+					reconciledBudgets = append(reconciledBudgets, budget)
+				}
+			}
+			// Delete budgets that are no longer present
+			for _, existing := range team.Budgets {
+				if !matchedIDs[existing.ID] {
+					if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete removed team budget: %w", err)
+					}
+				}
+			}
+			team.Budgets = reconciledBudgets
 		}
 		// Handle rate limit updates
 		if req.RateLimit != nil {
@@ -1673,12 +1699,9 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			return err
 		}
 
-		// Now that FK references are removed, delete the orphaned budget/rate limit
-		if budgetIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
-				return err
-			}
-		}
+		// Now that FK references are removed, delete the orphaned rate limit.
+		// Budgets are reconciled above (deletion of unmatched rows happens inside
+		// the reconciliation loop), so nothing to clean up here.
 		if rateLimitIDToDelete != "" {
 			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
 				return err
@@ -1687,6 +1710,12 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 
 		return nil
 	}); err != nil {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		logger.Error("failed to update team: %v", err)
 		SendError(ctx, 500, "Failed to update team")
 		return
 	}
@@ -1808,18 +1837,6 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 	if req.Name == "" {
 		SendError(ctx, 400, "Customer name is required")
 		return
-	}
-	// Validate budget if provided
-	if req.Budget != nil {
-		if req.Budget.MaxLimit < 0 {
-			SendError(ctx, 400, fmt.Sprintf("Budget max_limit cannot be negative: %.2f", req.Budget.MaxLimit))
-			return
-		}
-		// Validate reset duration format
-		if _, err := configstoreTables.ParseDuration(req.Budget.ResetDuration); err != nil {
-			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budget.ResetDuration))
-			return
-		}
 	}
 	// Validate rate limit if provided
 	if req.RateLimit != nil {

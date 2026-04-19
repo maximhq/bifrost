@@ -310,12 +310,20 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 		if team == nil {
 			return
 		}
-		if team.BudgetID != nil {
-			if liveBudget, exists := gs.budgets.Load(*team.BudgetID); exists && liveBudget != nil {
-				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
-					team.Budget = b
+		// Allocate a fresh slice — shallow-copying `team` (via `clone := *team` at
+		// the caller) reuses the backing array, so in-place writes would mutate
+		// the live gs.teams entry under concurrent reads. Mirrors the VK pattern
+		// above. Budgets missing from gs.budgets are dropped rather than kept stale.
+		if len(team.Budgets) > 0 {
+			liveBudgets := make([]configstoreTables.TableBudget, 0, len(team.Budgets))
+			for _, b := range team.Budgets {
+				if lb, exists := gs.budgets.Load(b.ID); exists && lb != nil {
+					if budget, ok := lb.(*configstoreTables.TableBudget); ok {
+						liveBudgets = append(liveBudgets, *budget)
+					}
 				}
 			}
+			team.Budgets = liveBudgets
 		}
 		if team.RateLimitID != nil {
 			if liveRL, exists := gs.rateLimits.Load(*team.RateLimitID); exists && liveRL != nil {
@@ -811,16 +819,20 @@ func (gs *LocalGovernanceStore) CheckTeamBudget(ctx context.Context, teamID stri
 		return DecisionAllow, nil
 	}
 	team, ok := teamValue.(*configstoreTables.TableTeam)
-	if !ok || team.BudgetID == nil {
+	if !ok || len(team.Budgets) == 0 {
 		return DecisionAllow, nil
 	}
-	teamBudget := gs.LoadBudget(ctx, *team.BudgetID)
-	if teamBudget == nil {
+	list := make([]*configstoreTables.TableBudget, 0, len(team.Budgets))
+	for _, b := range team.Budgets {
+		if hot := gs.LoadBudget(ctx, b.ID); hot != nil {
+			list = append(list, hot)
+		}
+	}
+	if len(list) == 0 {
 		return DecisionAllow, nil
 	}
 	key := fmt.Sprintf("Team:%s", teamID)
-	entityWiseBudgets := EntityWiseBudgets{key: {teamBudget}}
-	return gs.CheckBudget(ctx, entityWiseBudgets, baselines)
+	return gs.CheckBudget(ctx, EntityWiseBudgets{key: list}, baselines)
 }
 
 // CheckTeamRateLimit checks team-level rate limit and returns evaluation result if violated
@@ -2087,8 +2099,11 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(_ context.Context, v
 	if vk.TeamID != nil {
 		if teamValue, exists := gs.teams.Load(*vk.TeamID); exists && teamValue != nil {
 			if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
-				if team.BudgetID != nil {
-					if budgetValue, exists := gs.budgets.Load(*team.BudgetID); exists && budgetValue != nil {
+				for _, tb := range team.Budgets {
+					if seen[tb.ID] {
+						continue
+					}
+					if budgetValue, exists := gs.budgets.Load(tb.ID); exists && budgetValue != nil {
 						if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
 							if categoryBudgets := entityWiseBudgets["Team"]; categoryBudgets == nil {
 								entityWiseBudgets["Team"] = []*configstoreTables.TableBudget{}
@@ -2372,9 +2387,10 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 		return // Nothing to create
 	}
 
-	// Create associated budget if exists
-	if team.Budget != nil {
-		gs.budgets.Store(team.Budget.ID, team.Budget)
+	// Create associated budgets if they exist
+	for i := range team.Budgets {
+		b := team.Budgets[i]
+		gs.budgets.Store(b.ID, &b)
 	}
 
 	// Create associated rate limit if exists
@@ -2401,20 +2417,30 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 		// Create clone to avoid modifying the original
 		clone := *team
 
-		// Handle budget updates with consistent logic
-		if clone.Budget != nil {
-			// Preserve existing usage from memory when updating team budget config
-			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
-				if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-					// Preserve current usage and last reset time from existing in-memory budget
-					clone.Budget.CurrentUsage = existingBudget.CurrentUsage
-					clone.Budget.LastReset = existingBudget.LastReset
+		// Reconcile multi-budget slice by ID: preserve live usage on matches,
+		// evict budgets that disappeared from the team (owned-FK semantics —
+		// a team's budgets are team-scoped, so dropping the association means
+		// the budget no longer exists for anyone).
+		existingBudgetIDs := map[string]struct{}{}
+		for _, b := range existingTeam.Budgets {
+			existingBudgetIDs[b.ID] = struct{}{}
+		}
+		nextBudgetIDs := map[string]struct{}{}
+		for i := range clone.Budgets {
+			b := &clone.Budgets[i]
+			nextBudgetIDs[b.ID] = struct{}{}
+			if live, exists := gs.budgets.Load(b.ID); exists && live != nil {
+				if lb, ok := live.(*configstoreTables.TableBudget); ok && lb != nil {
+					b.CurrentUsage = lb.CurrentUsage
+					b.LastReset = lb.LastReset
 				}
 			}
-			gs.budgets.Store(clone.Budget.ID, clone.Budget)
-		} else if existingTeam.Budget != nil {
-			// Budget was removed from the team, delete it from memory
-			gs.budgets.Delete(existingTeam.Budget.ID)
+			gs.budgets.Store(b.ID, b)
+		}
+		for id := range existingBudgetIDs {
+			if _, stillThere := nextBudgetIDs[id]; !stillThere {
+				gs.budgets.Delete(id)
+			}
 		}
 
 		// Handle rate limit updates with consistent logic
@@ -2447,12 +2473,12 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 		return // Nothing to delete
 	}
 
-	// Get team to check for associated budget and rate limit
+	// Get team to check for associated budgets and rate limit
 	if teamValue, exists := gs.teams.Load(teamID); exists && teamValue != nil {
 		if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
-			// Delete associated budget if exists
-			if team.BudgetID != nil {
-				gs.budgets.Delete(*team.BudgetID)
+			// Delete all associated budgets
+			for _, b := range team.Budgets {
+				gs.budgets.Delete(b.ID)
 			}
 			// Delete associated rate limit if exists
 			if team.RateLimitID != nil {
@@ -2807,10 +2833,14 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 		if !ok || team == nil {
 			return true // continue
 		}
-		if team.BudgetID != nil && *team.BudgetID == budgetID {
-			clone := *team
-			clone.Budget = resetBudget
-			gs.teams.Store(key, &clone)
+		for i := range team.Budgets {
+			if team.Budgets[i].ID == budgetID {
+				clone := *team
+				clone.Budgets = append([]configstoreTables.TableBudget(nil), team.Budgets...)
+				clone.Budgets[i] = *resetBudget
+				gs.teams.Store(key, &clone)
+				break
+			}
 		}
 		return true // continue
 	})

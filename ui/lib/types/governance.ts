@@ -29,11 +29,10 @@ export interface Team {
 	id: string;
 	name: string;
 	customer_id?: string;
-	budget_id?: string;
 	rate_limit_id?: string;
 	// Populated relationships
 	customer?: Customer;
-	budget?: Budget;
+	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
 	rate_limit?: RateLimit;
 }
 
@@ -185,14 +184,14 @@ export interface UpdateVirtualKeyRequest {
 export interface CreateTeamRequest {
 	name: string;
 	customer_id?: string;
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Multi-budget: each must have a unique reset_duration
 	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateTeamRequest {
 	name?: string;
 	customer_id?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
 }
 

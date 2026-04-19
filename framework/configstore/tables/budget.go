@@ -15,7 +15,8 @@ type TableBudget struct {
 	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
 	CurrentUsage  float64   `gorm:"default:0" json:"current_usage"`                  // Current usage in dollars
 
-	// Owner FKs: a budget belongs to at most one VK or one ProviderConfig
+	// Owner FKs: a budget belongs to at most one Team, one VK, or one ProviderConfig
+	TeamID           *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
 	VirtualKeyID     *string `gorm:"type:varchar(255);index" json:"virtual_key_id,omitempty"`
 	ProviderConfigID *uint   `gorm:"index" json:"provider_config_id,omitempty"`
 
@@ -35,8 +36,18 @@ func (TableBudget) TableName() string { return "governance_budgets" }
 // BeforeSave hook for Budget to validate reset duration format and max limit
 func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	// A budget belongs to at most one owner type
-	if b.VirtualKeyID != nil && b.ProviderConfigID != nil {
-		return fmt.Errorf("budget cannot belong to both a virtual key and a provider config")
+	owners := 0
+	if b.TeamID != nil {
+		owners++
+	}
+	if b.VirtualKeyID != nil {
+		owners++
+	}
+	if b.ProviderConfigID != nil {
+		owners++
+	}
+	if owners > 1 {
+		return fmt.Errorf("budget cannot have more than one owner (team/virtual key/provider config)")
 	}
 	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y")
 	if d, err := ParseDuration(b.ResetDuration); err != nil {

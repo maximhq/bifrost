@@ -50,6 +50,7 @@ import { formatDistanceToNow } from "date-fns";
 import isEqual from "lodash.isequal";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { v4 as uuid } from "uuid";
 
 interface TeamDialogProps {
   team?: Team | null;
@@ -58,13 +59,23 @@ interface TeamDialogProps {
   onCancel: () => void;
 }
 
+// One editable budget row; teams own multiple, each keyed by reset_duration
+// on the wire. The client-side `id` is stable across re-renders and equals
+// the persisted budget's id for existing rows, or a fresh UUID for new ones —
+// used as the React key and for matching against `team.budgets` when we need
+// to distinguish "already persisted" from "just added in the form".
+interface TeamBudgetRow {
+  id: string;
+  maxLimit: number | undefined;
+  resetDuration: string;
+  calendarAligned: boolean;
+}
+
 interface TeamFormData {
   name: string;
   customerId: string;
-  // Budget
-  budgetMaxLimit: number | undefined;
-  budgetResetDuration: string;
-  budgetCalendarAligned: boolean;
+  // Multi-budget: each row has a unique reset_duration on submit
+  budgets: TeamBudgetRow[];
   // Rate Limit
   tokenMaxLimit: number | undefined;
   tokenResetDuration: string;
@@ -80,10 +91,13 @@ const createInitialState = (
   return {
     name: team?.name || "",
     customerId: team?.customer_id || "",
-    // Budget
-    budgetMaxLimit: team?.budget?.max_limit ?? undefined,
-    budgetResetDuration: team?.budget?.reset_duration || "1M",
-    budgetCalendarAligned: team?.budget?.calendar_aligned ?? false,
+    budgets:
+      team?.budgets?.map((b) => ({
+        id: b.id,
+        maxLimit: b.max_limit,
+        resetDuration: b.reset_duration,
+        calendarAligned: b.calendar_aligned ?? false,
+      })) ?? [],
     // Rate Limit
     tokenMaxLimit: team?.rate_limit?.token_max_limit ?? undefined,
     tokenResetDuration: team?.rate_limit?.token_reset_duration || "1h",
@@ -111,7 +125,7 @@ export default function TeamDialog({
     const nextInitial = createInitialState(team);
     setInitialState(nextInitial);
     setFormData({ ...nextInitial, isDirty: false });
-    setShowCalendarAlignWarning(false);
+    setPendingCalendarAlignIdx(null);
   }, [team]);
 
   const hasCreateAccess = useRbac(RbacResource.Teams, RbacOperation.Create);
@@ -123,25 +137,63 @@ export default function TeamDialog({
   const [updateTeam, { isLoading: isUpdating }] = useUpdateTeamMutation();
   const loading = isCreating || isUpdating;
 
-  const [showCalendarAlignWarning, setShowCalendarAlignWarning] =
-    useState(false);
+  // Tracks which row (by index) is awaiting calendar-align confirmation.
+  const [pendingCalendarAlignIdx, setPendingCalendarAlignIdx] = useState<
+    number | null
+  >(null);
+  const showCalendarAlignWarning = pendingCalendarAlignIdx !== null;
 
-  const handleCalendarAlignedChange = (checked: boolean) => {
-    if (checked && isEditing && team?.budget && !team.budget.calendar_aligned) {
-      setShowCalendarAlignWarning(true);
+  const updateBudgetRow = (idx: number, patch: Partial<TeamBudgetRow>) => {
+    setFormData((prev) => {
+      const next = prev.budgets.map((row, i) =>
+        i === idx ? { ...row, ...patch } : row,
+      );
+      return { ...prev, budgets: next };
+    });
+  };
+
+  const addBudgetRow = () => {
+    setFormData((prev) => ({
+      ...prev,
+      budgets: [
+        ...prev.budgets,
+        {
+          id: uuid(),
+          maxLimit: undefined,
+          resetDuration: "1M",
+          calendarAligned: false,
+        },
+      ],
+    }));
+  };
+
+  const removeBudgetRow = (idx: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      budgets: prev.budgets.filter((_, i) => i !== idx),
+    }));
+  };
+
+  const handleCalendarAlignedChange = (idx: number, checked: boolean) => {
+    // Match the persisted budget by stable row id — for seeded rows this equals
+    // the server-side budget id; for newly-added rows it's a client-only UUID
+    // that won't match anything in team.budgets (correctly: no warning for new rows).
+    // Avoids the reset_duration-duplicate ambiguity before validation resolves.
+    const rowId = formData.budgets[idx]?.id;
+    const existingBudget = team?.budgets?.find((b) => b.id === rowId);
+    if (checked && isEditing && existingBudget && !existingBudget.calendar_aligned) {
+      setPendingCalendarAlignIdx(idx);
     } else {
-      updateField("budgetCalendarAligned", checked);
+      updateBudgetRow(idx, { calendarAligned: checked });
     }
   };
 
   // Track isDirty state
   useEffect(() => {
-    const currentData = {
+    const currentData: Omit<TeamFormData, "isDirty"> = {
       name: formData.name,
       customerId: formData.customerId,
-      budgetMaxLimit: formData.budgetMaxLimit,
-      budgetResetDuration: formData.budgetResetDuration,
-      budgetCalendarAligned: formData.budgetCalendarAligned,
+      budgets: formData.budgets,
       tokenMaxLimit: formData.tokenMaxLimit,
       tokenResetDuration: formData.tokenResetDuration,
       requestMaxLimit: formData.requestMaxLimit,
@@ -154,9 +206,7 @@ export default function TeamDialog({
   }, [
     formData.name,
     formData.customerId,
-    formData.budgetMaxLimit,
-    formData.budgetResetDuration,
-    formData.budgetCalendarAligned,
+    formData.budgets,
     formData.tokenMaxLimit,
     formData.tokenResetDuration,
     formData.requestMaxLimit,
@@ -164,71 +214,73 @@ export default function TeamDialog({
     initialState,
   ]);
 
-  // Values for validation and submission (already numbers)
-  const budgetMaxLimitNum = formData.budgetMaxLimit;
   const tokenMaxLimitNum = formData.tokenMaxLimit;
   const requestMaxLimitNum = formData.requestMaxLimit;
 
   // Validation
-  const validator = useMemo(
-    () =>
-      new Validator([
-        // Basic validation
-        Validator.required(formData.name.trim(), "Team name is required"),
+  const validator = useMemo(() => {
+    // Per-row budget validation plus cross-row uniqueness on reset_duration.
+    const budgetValidators = formData.budgets.flatMap((row, idx) => {
+      if (row.maxLimit === undefined || row.maxLimit === null) return [];
+      return [
+        Validator.minValue(
+          row.maxLimit,
+          0.01,
+          `Budget #${idx + 1} max limit must be greater than $0.01`,
+        ),
+        Validator.required(
+          row.resetDuration,
+          `Budget #${idx + 1} reset duration is required`,
+        ),
+      ];
+    });
+    const populatedDurations = formData.budgets
+      .filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
+      .map((r) => r.resetDuration);
+    const uniqueDurations = new Set(populatedDurations).size;
 
-        // Check if anything is dirty
-        Validator.custom(formData.isDirty, "No changes to save"),
+    return new Validator([
+      Validator.required(formData.name.trim(), "Team name is required"),
+      Validator.custom(formData.isDirty, "No changes to save"),
+      ...budgetValidators,
+      Validator.custom(
+        uniqueDurations === populatedDurations.length,
+        "Each budget must have a distinct reset duration",
+      ),
 
-        // Budget validation
-        ...(formData.budgetMaxLimit !== undefined &&
-        formData.budgetMaxLimit !== null
-          ? [
-              Validator.minValue(
-                budgetMaxLimitNum || 0,
-                0.01,
-                "Budget max limit must be greater than $0.01",
-              ),
-              Validator.required(
-                formData.budgetResetDuration,
-                "Budget reset duration is required",
-              ),
-            ]
-          : []),
+      // Rate limit validation - token limits
+      ...(formData.tokenMaxLimit !== undefined &&
+      formData.tokenMaxLimit !== null
+        ? [
+            Validator.minValue(
+              tokenMaxLimitNum || 0,
+              1,
+              "Token max limit must be at least 1",
+            ),
+            Validator.required(
+              formData.tokenResetDuration,
+              "Token reset duration is required",
+            ),
+          ]
+        : []),
 
-        // Rate limit validation - token limits
-        ...(formData.tokenMaxLimit !== undefined &&
-        formData.tokenMaxLimit !== null
-          ? [
-              Validator.minValue(
-                tokenMaxLimitNum || 0,
-                1,
-                "Token max limit must be at least 1",
-              ),
-              Validator.required(
-                formData.tokenResetDuration,
-                "Token reset duration is required",
-              ),
-            ]
-          : []),
-
-        // Rate limit validation - request limits
-        ...(formData.requestMaxLimit !== undefined &&
-        formData.requestMaxLimit !== null
-          ? [
-              Validator.minValue(
-                requestMaxLimitNum || 0,
-                1,
-                "Request max limit must be at least 1",
-              ),
-              Validator.required(
-                formData.requestResetDuration,
-                "Request reset duration is required",
-              ),
-            ]
-          : []),
-      ]),
-    [formData, budgetMaxLimitNum, tokenMaxLimitNum, requestMaxLimitNum],
-  );
+      // Rate limit validation - request limits
+      ...(formData.requestMaxLimit !== undefined &&
+      formData.requestMaxLimit !== null
+        ? [
+            Validator.minValue(
+              requestMaxLimitNum || 0,
+              1,
+              "Request max limit must be at least 1",
+            ),
+            Validator.required(
+              formData.requestResetDuration,
+              "Request reset duration is required",
+            ),
+          ]
+        : []),
+    ]);
+  }, [formData, tokenMaxLimitNum, requestMaxLimitNum]);
 
   const updateField = <K extends keyof TeamFormData>(
     field: K,
@@ -245,27 +297,25 @@ export default function TeamDialog({
       return;
     }
 
+    // Serialize budget rows whose max_limit was filled in — rows left blank
+    // are silently dropped (the backend treats the slice as authoritative).
+    const submittableBudgets = formData.budgets
+      .filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
+      .map((r) => ({
+        max_limit: r.maxLimit as number,
+        reset_duration: r.resetDuration,
+        calendar_aligned: r.calendarAligned,
+      }));
+
     try {
       if (isEditing && team) {
         // Update existing team
         const updateData: UpdateTeamRequest = {
           name: formData.name,
           customer_id: formData.customerId || undefined,
+          // Always send: backend treats `budgets` as a full replacement.
+          budgets: submittableBudgets,
         };
-
-        // Detect budget changes using had/has pattern
-        const hadBudget = !!team.budget;
-        const hasBudget =
-          budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null;
-        if (hasBudget) {
-          updateData.budget = {
-            max_limit: budgetMaxLimitNum,
-            reset_duration: formData.budgetResetDuration,
-            calendar_aligned: formData.budgetCalendarAligned,
-          };
-        } else if (hadBudget) {
-          updateData.budget = {} as UpdateTeamRequest["budget"];
-        }
 
         // Detect rate limit changes using had/has pattern
         const hadRateLimit = !!team.rate_limit;
@@ -296,16 +346,9 @@ export default function TeamDialog({
         const createData: CreateTeamRequest = {
           name: formData.name,
           customer_id: formData.customerId || undefined,
+          budgets:
+            submittableBudgets.length > 0 ? submittableBudgets : undefined,
         };
-
-        // Add budget if enabled
-        if (budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null) {
-          createData.budget = {
-            max_limit: budgetMaxLimitNum,
-            reset_duration: formData.budgetResetDuration,
-            calendar_aligned: formData.budgetCalendarAligned,
-          };
-        }
 
         // Add rate limit if enabled (token or request limits)
         if (
@@ -411,56 +454,98 @@ export default function TeamDialog({
               )}
             </div>
 
-            {/* Budget Configuration */}
-            <NumberAndSelect
-              id="budgetMaxLimit"
-              label="Maximum Spend (USD)"
-              value={formData.budgetMaxLimit}
-              selectValue={formData.budgetResetDuration}
-              onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
-              onChangeSelect={(value) => {
-                updateField("budgetResetDuration", value);
-                if (!supportsCalendarAlignment(value)) {
-                  updateField("budgetCalendarAligned", false);
-                }
-              }}
-              options={resetDurationOptions}
-              dataTestId="budget-max-limit-input"
-            />
-
-            {/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
-            {formData.budgetMaxLimit &&
-              supportsCalendarAlignment(formData.budgetResetDuration) && (
-                <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-                  <div className="space-y-0.5">
-                    <Label
-                      htmlFor="team-budget-calendar-aligned-toggle"
-                      className="text-sm font-normal"
-                    >
-                      Align to calendar cycle
-                    </Label>
-                    <p
-                      id="team-budget-calendar-aligned-description"
-                      className="text-muted-foreground text-xs"
-                    >
-                      Reset at the start of each period (e.g. 1st of month)
-                      instead of rolling from creation date
-                    </p>
-                  </div>
-                  <Switch
-                    id="team-budget-calendar-aligned-toggle"
-                    aria-describedby="team-budget-calendar-aligned-description"
-                    checked={formData.budgetCalendarAligned}
-                    onCheckedChange={handleCalendarAlignedChange}
-                    data-testid="team-budget-calendar-aligned-toggle"
-                  />
-                </div>
+            {/* Multi-budget configuration: one row per budget, each keyed by reset_duration */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>Budgets</Label>
+                <button
+                  type="button"
+                  onClick={addBudgetRow}
+                  className="text-primary text-xs font-medium hover:underline"
+                  data-testid="team-add-budget-btn"
+                >
+                  + Add budget
+                </button>
+              </div>
+              {formData.budgets.length === 0 && (
+                <p className="text-muted-foreground text-xs">
+                  No budgets. Click "Add budget" to enforce a spend limit.
+                </p>
               )}
+              {formData.budgets.map((row, idx) => (
+                <div
+                  key={row.id}
+                  className="space-y-2 rounded-md border p-3"
+                  data-testid={`team-budget-row-${idx}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1">
+                      <NumberAndSelect
+                        id={`budgetMaxLimit-${idx}`}
+                        label={`Budget #${idx + 1} — Maximum Spend (USD)`}
+                        value={row.maxLimit}
+                        selectValue={row.resetDuration}
+                        onChangeNumber={(value) =>
+                          updateBudgetRow(idx, { maxLimit: value })
+                        }
+                        onChangeSelect={(value) => {
+                          const patch: Partial<TeamBudgetRow> = {
+                            resetDuration: value,
+                          };
+                          if (!supportsCalendarAlignment(value)) {
+                            patch.calendarAligned = false;
+                          }
+                          updateBudgetRow(idx, patch);
+                        }}
+                        options={resetDurationOptions}
+                        dataTestId={`budget-max-limit-input-${idx}`}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeBudgetRow(idx)}
+                      className="text-muted-foreground hover:text-destructive mt-6 text-xs font-medium"
+                      data-testid={`team-remove-budget-btn-${idx}`}
+                    >
+                      Remove
+                    </button>
+                  </div>
+
+                  {row.maxLimit !== undefined &&
+                    supportsCalendarAlignment(row.resetDuration) && (
+                      <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+                        <div className="space-y-0.5">
+                          <Label
+                            htmlFor={`team-budget-calendar-aligned-toggle-${idx}`}
+                            className="text-sm font-normal"
+                          >
+                            Align to calendar cycle
+                          </Label>
+                          <p className="text-muted-foreground text-xs">
+                            Reset at the start of each period (e.g. 1st of
+                            month) instead of rolling from creation date
+                          </p>
+                        </div>
+                        <Switch
+                          id={`team-budget-calendar-aligned-toggle-${idx}`}
+                          checked={row.calendarAligned}
+                          onCheckedChange={(checked) =>
+                            handleCalendarAlignedChange(idx, checked)
+                          }
+                          data-testid={`team-budget-calendar-aligned-toggle-${idx}`}
+                        />
+                      </div>
+                    )}
+                </div>
+              ))}
+            </div>
 
             {/* Warning dialog shown when enabling calendar alignment on an existing budget */}
             <AlertDialog
               open={showCalendarAlignWarning}
-              onOpenChange={setShowCalendarAlignWarning}
+              onOpenChange={(open) => {
+                if (!open) setPendingCalendarAlignIdx(null);
+              }}
             >
               <AlertDialogContent>
                 <AlertDialogHeader>
@@ -470,13 +555,21 @@ export default function TeamDialog({
                     current usage to{" "}
                     <span className="font-semibold">$0.00</span> and snap the
                     reset date to the start of the current{" "}
-                    {formData.budgetResetDuration === "1d"
+                    {pendingCalendarAlignIdx !== null &&
+                    formData.budgets[pendingCalendarAlignIdx]?.resetDuration ===
+                      "1d"
                       ? "day"
-                      : formData.budgetResetDuration === "1w"
+                      : pendingCalendarAlignIdx !== null &&
+                          formData.budgets[pendingCalendarAlignIdx]
+                            ?.resetDuration === "1w"
                         ? "week"
-                        : formData.budgetResetDuration === "1M"
+                        : pendingCalendarAlignIdx !== null &&
+                            formData.budgets[pendingCalendarAlignIdx]
+                              ?.resetDuration === "1M"
                           ? "month"
-                          : formData.budgetResetDuration === "1Y"
+                          : pendingCalendarAlignIdx !== null &&
+                              formData.budgets[pendingCalendarAlignIdx]
+                                ?.resetDuration === "1Y"
                             ? "year"
                             : "period"}
                     . The usage reset to $0.00 cannot be undone, but calendar
@@ -485,14 +578,21 @@ export default function TeamDialog({
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
-                  <AlertDialogCancel data-testid="team-calendar-align-cancel-btn">
+                  <AlertDialogCancel
+                    data-testid="team-calendar-align-cancel-btn"
+                    onClick={() => setPendingCalendarAlignIdx(null)}
+                  >
                     Cancel
                   </AlertDialogCancel>
                   <AlertDialogAction
                     data-testid="team-calendar-align-enable-btn"
                     onClick={() => {
-                      updateField("budgetCalendarAligned", true);
-                      setShowCalendarAlignWarning(false);
+                      if (pendingCalendarAlignIdx !== null) {
+                        updateBudgetRow(pendingCalendarAlignIdx, {
+                          calendarAligned: true,
+                        });
+                      }
+                      setPendingCalendarAlignIdx(null);
                     }}
                   >
                     Enable Calendar Alignment
@@ -528,45 +628,44 @@ export default function TeamDialog({
             />
 
             {/* Current Usage Section (only shown when editing with existing limits) */}
-            {isEditing && (team?.budget || team?.rate_limit) && (
+            {isEditing &&
+              ((team?.budgets && team.budgets.length > 0) ||
+                team?.rate_limit) && (
               <div className="bg-muted/50 space-y-4 rounded-lg border p-4">
                 <p className="text-sm font-medium">Current Usage</p>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {team?.budget && (
-                    <div className="space-y-1">
-                      <p className="text-muted-foreground text-xs">Budget</p>
+                  {team?.budgets?.map((b) => (
+                    <div key={b.id} className="space-y-1">
+                      <p className="text-muted-foreground text-xs">
+                        Budget ({b.reset_duration})
+                      </p>
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-sm">
-                          {formatCurrency(team.budget.current_usage)} /{" "}
-                          {formatCurrency(team.budget.max_limit)}
+                          {formatCurrency(b.current_usage)} /{" "}
+                          {formatCurrency(b.max_limit)}
                         </span>
                         <Badge
                           variant={
-                            team.budget.max_limit > 0 &&
-                            team.budget.current_usage >= team.budget.max_limit
+                            b.max_limit > 0 && b.current_usage >= b.max_limit
                               ? "destructive"
                               : "default"
                           }
                           className="text-xs"
                         >
-                          {team.budget.max_limit > 0
-                            ? Math.round(
-                                (team.budget.current_usage /
-                                  team.budget.max_limit) *
-                                  100,
-                              )
+                          {b.max_limit > 0
+                            ? Math.round((b.current_usage / b.max_limit) * 100)
                             : 0}
                           %
                         </Badge>
                       </div>
                       <p className="text-muted-foreground text-xs">
                         Last Reset:{" "}
-                        {formatDistanceToNow(new Date(team.budget.last_reset), {
+                        {formatDistanceToNow(new Date(b.last_reset), {
                           addSuffix: true,
                         })}
                       </p>
                     </div>
-                  )}
+                  ))}
                   {team?.rate_limit?.token_max_limit && (
                     <div className="space-y-1">
                       <p className="text-muted-foreground text-xs">Tokens</p>

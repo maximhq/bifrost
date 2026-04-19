@@ -582,10 +582,10 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: resetDuration,
-			},
+			}},
 		},
 	})
 
@@ -627,7 +627,12 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 
 	teamsMap1 := getTeamsResp1.Body["teams"].(map[string]interface{})
 	teamData1 := teamsMap1[teamID].(map[string]interface{})
-	budgetID, _ := teamData1["budget_id"].(string)
+	// Teams now expose a `budgets` array instead of a single `budget_id`.
+	budgetsList, ok := teamData1["budgets"].([]interface{})
+	if !ok || len(budgetsList) == 0 {
+		t.Fatalf("Team %s has no budgets in memory", teamID)
+	}
+	budgetID, _ := budgetsList[0].(map[string]interface{})["id"].(string)
 
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
@@ -697,10 +702,10 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/teams/" + teamID,
 		Body: UpdateTeamRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newLowerBudget,
-				ResetDuration: &resetDurationPtr,
-			},
+			Budgets: &[]BudgetRequest{{
+				MaxLimit:      newLowerBudget,
+				ResetDuration: resetDurationPtr,
+			}},
 		},
 	})
 

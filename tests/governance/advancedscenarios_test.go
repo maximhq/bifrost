@@ -24,10 +24,10 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: team1Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      team1Budget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -46,10 +46,10 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: team2Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      team2Budget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -372,10 +372,10 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       team1Name,
 			CustomerID: &customer1ID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // High budget - customer is limiting
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -415,10 +415,10 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       team2Name,
 			CustomerID: &customer2ID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // High budget
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -674,10 +674,10 @@ func TestTeamBudgetUpdateAfterExhaustion(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -762,10 +762,10 @@ func TestTeamBudgetUpdateAfterExhaustion(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/teams/" + teamID,
 		Body: UpdateTeamRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newBudget,
-				ResetDuration: &resetDuration,
-			},
+			Budgets: &[]BudgetRequest{{
+				MaxLimit:      newBudget,
+				ResetDuration: resetDuration,
+			}},
 		},
 	})
 
@@ -1291,10 +1291,10 @@ func TestTeamDeletionDeletesBudget(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -1323,7 +1323,12 @@ func TestTeamDeletionDeletesBudget(t *testing.T) {
 	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
 
 	teamData1 := teamsMap1[teamID].(map[string]interface{})
-	budgetID := teamData1["budget_id"].(string)
+	// Teams now expose a `budgets` array instead of a single `budget_id`.
+	budgetsList, ok := teamData1["budgets"].([]interface{})
+	if !ok || len(budgetsList) == 0 {
+		t.Fatalf("Team %s has no budgets in memory before deletion", teamID)
+	}
+	budgetID := budgetsList[0].(map[string]interface{})["id"].(string)
 
 	_, budgetExists := budgetsMap1[budgetID]
 	if !budgetExists {

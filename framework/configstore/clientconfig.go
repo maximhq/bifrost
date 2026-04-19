@@ -910,9 +910,21 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 		hash.Write([]byte("customerID:" + *t.CustomerID))
 	}
 
-	// Hash BudgetID
-	if t.BudgetID != nil {
-		hash.Write([]byte("budgetID:" + *t.BudgetID))
+	// Hash sorted budget IDs — team now owns multiple budgets; slice order must not
+	// affect the hash, otherwise config-sync would flip the hash on every reload.
+	if len(t.Budgets) > 0 {
+		ids := make([]string, len(t.Budgets))
+		for i, b := range t.Budgets {
+			ids[i] = b.ID
+		}
+		sort.Strings(ids)
+		hash.Write([]byte("budgetIDs:"))
+		for i, id := range ids {
+			if i > 0 {
+				hash.Write([]byte{','})
+			}
+			hash.Write([]byte(id))
+		}
 	}
 
 	// Hash Profile - use Profile if set, else marshal ParsedProfile

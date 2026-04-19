@@ -417,6 +417,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddTeamBudgetsToBudgetsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -6077,6 +6080,133 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_multi_budget_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTeamBudgetsToBudgetsTable pivots team budgets from a single-FK on
+// governance_teams.budget_id to multi-budget ownership via governance_budgets.team_id,
+// mirroring how VK/ProviderConfig budgets were restructured in migrationAddMultiBudgetTables.
+func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_team_budgets_to_budgets_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Add team_id FK column on governance_budgets
+			if !mg.HasColumn(&tables.TableBudget{}, "team_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "TeamID"); err != nil {
+					return fmt.Errorf("failed to add team_id column to governance_budgets: %w", err)
+				}
+			}
+
+			// Create index on the new FK column (AddColumn doesn't create indexes from struct tags)
+			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_team_id") {
+				if err := mg.CreateIndex(&tables.TableBudget{}, "TeamID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_budgets.team_id: %w", err)
+				}
+			}
+
+			// Create FK constraint with CASCADE delete (defined on TableTeam.Budgets)
+			if !mg.HasConstraint(&tables.TableTeam{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableTeam{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for Team -> Budgets: %w", err)
+				}
+			}
+
+			// Backfill: set team_id from legacy governance_teams.budget_id (if column still exists)
+			if mg.HasColumn(&tables.TableTeam{}, "budget_id") {
+				// Preflight: raw SQL below bypasses TableBudget.BeforeSave (which now
+				// enforces exactly-one-of {TeamID, VirtualKeyID, ProviderConfigID}).
+				// Fail fast if any team-referenced budget is already owned by a VK or
+				// ProviderConfig, rather than silently producing a multi-owner row
+				// that would later be rejected by the hook on its next update.
+				var conflictCount int64
+				if err := tx.Raw(`
+					SELECT COUNT(*) FROM governance_budgets b
+					WHERE (b.virtual_key_id IS NOT NULL OR b.provider_config_id IS NOT NULL)
+					  AND EXISTS (SELECT 1 FROM governance_teams t WHERE t.budget_id = b.id)
+				`).Scan(&conflictCount).Error; err != nil {
+					return fmt.Errorf("failed to check for multi-owner team budget conflicts: %w", err)
+				}
+				if conflictCount > 0 {
+					return fmt.Errorf(
+						"cannot migrate team budgets: %d budget row(s) referenced by a team are already owned by a virtual key or provider config; resolve manually before re-running",
+						conflictCount,
+					)
+				}
+
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET team_id = (
+						SELECT id FROM governance_teams
+						WHERE governance_teams.budget_id = governance_budgets.id
+					) WHERE team_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_teams
+						WHERE governance_teams.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill team budget team_id: %w", err)
+				}
+
+				// Drop legacy budget_id column from governance_teams (raw SQL to avoid GORM FK lookup issues)
+				_ = tx.Exec("ALTER TABLE governance_teams DROP COLUMN IF EXISTS budget_id")
+			}
+
+			// Refresh config_hash for teams whose budgets just got linked. GenerateTeamHash
+			// now includes sorted budget IDs, so hashes written by the earlier
+			// migrationAddConfigHashColumn (which ran before budgets were associated)
+			// are stale and would cause phantom drift on the next config.json sync.
+			var teamsToRehash []tables.TableTeam
+			if err := tx.Preload("Budgets").Find(&teamsToRehash).Error; err != nil {
+				return fmt.Errorf("failed to fetch teams for hash refresh: %w", err)
+			}
+			for _, team := range teamsToRehash {
+				if len(team.Budgets) == 0 {
+					continue // hash did not change; skip
+				}
+				hash, err := GenerateTeamHash(team)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for team %s: %w", team.ID, err)
+				}
+				if err := tx.Model(&tables.TableTeam{}).Where("id = ?", team.ID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for team %s: %w", team.ID, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableBudget{}, "team_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "team_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(0)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_team_budgets_to_budgets_table migration: %s", err.Error())
 	}
 	return nil
 }

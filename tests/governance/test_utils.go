@@ -241,9 +241,9 @@ type BudgetRequest struct {
 
 // CreateTeamRequest represents a request to create a team
 type CreateTeamRequest struct {
-	Name       string         `json:"name"`
-	CustomerID *string        `json:"customer_id,omitempty"`
-	Budget     *BudgetRequest `json:"budget,omitempty"`
+	Name       string          `json:"name"`
+	CustomerID *string         `json:"customer_id,omitempty"`
+	Budgets    []BudgetRequest `json:"budgets,omitempty"`
 }
 
 // CreateCustomerRequest represents a request to create a customer
@@ -279,8 +279,12 @@ type UpdateVirtualKeyRequest struct {
 
 // UpdateTeamRequest represents a request to update a team
 type UpdateTeamRequest struct {
-	Name   *string              `json:"name,omitempty"`
-	Budget *UpdateBudgetRequest `json:"budget,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// Pointer-to-slice so tests can distinguish:
+	//   nil                  → field omitted (budgets untouched by server)
+	//   &[]BudgetRequest{}   → explicit empty array (server clears all budgets)
+	//   &[]BudgetRequest{…}  → replace with the provided budgets
+	Budgets *[]BudgetRequest `json:"budgets,omitempty"`
 }
 
 // UpdateCustomerRequest represents a request to update a customer

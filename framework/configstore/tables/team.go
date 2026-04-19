@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"gorm.io/gorm"
 )
 
@@ -13,12 +12,11 @@ type TableTeam struct {
 	ID          string  `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Name        string  `gorm:"type:varchar(255);not null" json:"name"`
 	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"` // A team can belong to a customer
-	BudgetID    *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	Customer    *TableCustomer    `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
-	Budget      *TableBudget      `gorm:"foreignKey:BudgetID" json:"budget,omitempty"`
+	Budgets     []TableBudget     `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
 	RateLimit   *TableRateLimit   `gorm:"foreignKey:RateLimitID" json:"rate_limit,omitempty"`
 	VirtualKeys []TableVirtualKey `gorm:"foreignKey:TeamID" json:"virtual_keys,omitempty"`
 
@@ -52,7 +50,7 @@ func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		t.Profile = bifrost.Ptr(string(data))
+		t.Profile = new(string(data))
 	} else {
 		t.Profile = nil
 	}
@@ -61,7 +59,7 @@ func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		t.Config = bifrost.Ptr(string(data))
+		t.Config = new(string(data))
 	} else {
 		t.Config = nil
 	}
@@ -70,7 +68,7 @@ func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		t.Claims = bifrost.Ptr(string(data))
+		t.Claims = new(string(data))
 	} else {
 		t.Claims = nil
 	}
