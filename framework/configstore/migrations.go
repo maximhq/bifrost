@@ -6716,43 +6716,27 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 				}
 			}
 			// Prefill calendar_aligned for existing budgets and rate_limits attached to virtual keys.
-			// GORM v2: Preload must precede the Find finisher, otherwise it's a no-op on the executed query.
-			var virtualKeys []tables.TableVirtualKey
-			if err := tx.Preload("Budgets").Find(&virtualKeys).Error; err != nil {
-				return fmt.Errorf("failed to load virtual keys: %w", err)
+			// Use subquery-based raw SQL (compatible with both PostgreSQL and SQLite) to avoid
+			// "cached plan must not change result type" (SQLSTATE 0A000): earlier migrations in
+			// the same run added columns to these tables, invalidating pgx's prepared-statement cache.
+			if err := tx.Exec(`
+				UPDATE governance_rate_limits
+				SET calendar_aligned = true
+				WHERE id IN (
+					SELECT rate_limit_id FROM governance_virtual_keys
+					WHERE calendar_aligned = true AND rate_limit_id IS NOT NULL
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to propagate calendar_aligned to rate limits: %w", err)
 			}
-			for i := range virtualKeys {
-				// Preserve the legacy per-VK semantic: only copy calendar_aligned=true to
-				// the VK's budgets and rate_limit when the source VK itself was aligned.
-				// Hardcoding true would change reset behavior for tenants whose VKs were
-				// never calendar-aligned.
-				if !virtualKeys[i].CalendarAligned {
-					continue
-				}
-				// Ratelimit updates. A stale rate_limit_id is skipped — the FK is intentionally
-				// not DB-enforced for TableVirtualKey — but the VK's budgets are still migrated.
-				if virtualKeys[i].RateLimitID != nil {
-					var rateLimit tables.TableRateLimit
-					err := tx.First(&rateLimit, virtualKeys[i].RateLimitID).Error
-					switch {
-					case err == gorm.ErrRecordNotFound:
-						// Skip only the rate-limit update; fall through to the budget loop.
-					case err != nil:
-						return fmt.Errorf("failed to load rate limit for virtual key %s: %w", virtualKeys[i].ID, err)
-					default:
-						rateLimit.CalendarAligned = true
-						if err := tx.Save(&rateLimit).Error; err != nil {
-							return fmt.Errorf("failed to save rate limit for virtual key %s: %w", virtualKeys[i].ID, err)
-						}
-					}
-				}
-				// Budgets update
-				for j := range virtualKeys[i].Budgets {
-					virtualKeys[i].Budgets[j].CalendarAligned = true
-					if err := tx.Save(&virtualKeys[i].Budgets[j]).Error; err != nil {
-						return fmt.Errorf("failed to save budget for virtual key %s: %w", virtualKeys[i].ID, err)
-					}
-				}
+			if err := tx.Exec(`
+				UPDATE governance_budgets
+				SET calendar_aligned = true
+				WHERE virtual_key_id IN (
+					SELECT id FROM governance_virtual_keys WHERE calendar_aligned = true
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to propagate calendar_aligned to budgets: %w", err)
 			}
 			log.Printf("[Migration] Prefilled calendar_aligned field for existing budgets and rate limits")
 			return nil
