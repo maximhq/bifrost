@@ -4213,7 +4213,11 @@ func (provider *GeminiProvider) PassthroughStream(
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
-		fullResponseBody := make([]byte, 0, maxStreamPassthroughCaptureBytes)
+		initialCaptureBytes := 32 * 1024
+		if initialCaptureBytes > maxStreamPassthroughCaptureBytes {
+			initialCaptureBytes = maxStreamPassthroughCaptureBytes
+		}
+		fullResponseBody := make([]byte, 0, initialCaptureBytes)
 		fullResponseBodyTruncated := false
 		terminalDetector := &providerUtils.StreamTerminalDetector{}
 		buf := make([]byte, 4096)
