@@ -193,8 +193,15 @@ var retryableBedrockExceptions = map[string]int{
 func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
 
+	// config can be nil here for keys that were routed in through a
+	// path that skipped ensureBedrockKeyConfig (e.g. cross-region
+	// inference profile model IDs picking a key that was never seeded
+	// with BedrockKeyConfig, #2855). Previously this dereferenced a nil
+	// pointer on line 197 and segfaulted the whole pod in a restart
+	// loop; fall back to the default region and skip the SigV4 path
+	// when there is nothing to sign with.
 	region := DefaultBedrockRegion
-	if config.Region != nil && config.Region.GetValue() != "" {
+	if config != nil && config.Region != nil && config.Region.GetValue() != "" {
 		region = config.Region.GetValue()
 	}
 
@@ -223,6 +230,9 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
+		if config == nil {
+			return nil, 0, nil, providerUtils.NewConfigurationError("bedrock key has neither an API key nor a BedrockKeyConfig - cannot sign request")
+		}
 		// Sign the request using either explicit credentials or IAM role authentication
 		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
 			return nil, 0, nil, err
