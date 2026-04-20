@@ -43,6 +43,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		ToolsParsed:                 data.Tools,
 		SpeechInputParsed:           data.SpeechInput,
 		TranscriptionInputParsed:    data.TranscriptionInput,
+		OCRInputParsed:              data.OCRInput,
 		ImageGenerationInputParsed:  data.ImageGenerationInput,
 		ImageEditInputParsed:        data.ImageEditInput,
 		ImageVariationInputParsed:   data.ImageVariationInput,

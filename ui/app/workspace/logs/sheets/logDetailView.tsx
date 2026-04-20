@@ -66,6 +66,7 @@ import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
 import LogChatMessageView from "../views/logChatMessageView";
 import LogEntryDetailsView from "../views/logEntryDetailsView";
+import OCRView from "../views/ocrView";
 import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
@@ -1444,6 +1445,9 @@ export function LogDetailView({
         </TabsList>
 
         <TabsContent value="messages" className="space-y-4">
+          {(log.ocr_input || log.ocr_output) && (
+            <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />
+          )}
           {(log.speech_input || log.speech_output) && (
             <SpeechView
               speechInput={log.speech_input}

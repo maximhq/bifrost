@@ -20,6 +20,8 @@ var payloadFields = []string{
 	"responses_output",
 	"embedding_output",
 	"rerank_output",
+	"ocr_input",
+	"ocr_output",
 	"params",
 	"tools",
 	"tool_calls",
@@ -58,6 +60,8 @@ func ExtractPayload(l *Log) map[string]string {
 	m["responses_output"] = l.ResponsesOutput
 	m["embedding_output"] = l.EmbeddingOutput
 	m["rerank_output"] = l.RerankOutput
+	m["ocr_input"] = l.OCRInput
+	m["ocr_output"] = l.OCROutput
 	m["params"] = l.Params
 	m["tools"] = l.Tools
 	m["tool_calls"] = l.ToolCalls
@@ -100,6 +104,8 @@ func ClearPayload(l *Log) {
 	l.ResponsesOutput = ""
 	l.EmbeddingOutput = ""
 	l.RerankOutput = ""
+	l.OCRInput = ""
+	l.OCROutput = ""
 	l.Params = ""
 	l.Tools = ""
 	l.ToolCalls = ""
@@ -134,6 +140,8 @@ func ClearPayload(l *Log) {
 	l.ResponsesOutputParsed = nil
 	l.EmbeddingOutputParsed = nil
 	l.RerankOutputParsed = nil
+	l.OCRInputParsed = nil
+	l.OCROutputParsed = nil
 	l.ParamsParsed = nil
 	l.ToolsParsed = nil
 	l.ToolCallsParsed = nil
@@ -182,6 +190,12 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["rerank_output"]; ok && v != "" {
 		l.RerankOutput = v
+	}
+	if v, ok := m["ocr_input"]; ok && v != "" {
+		l.OCRInput = v
+	}
+	if v, ok := m["ocr_output"]; ok && v != "" {
+		l.OCROutput = v
 	}
 	if v, ok := m["params"]; ok && v != "" {
 		l.Params = v
@@ -504,6 +518,12 @@ func clearPayloadField(l *Log, name string) {
 	case "rerank_output":
 		l.RerankOutput = ""
 		l.RerankOutputParsed = nil
+	case "ocr_input":
+		l.OCRInput = ""
+		l.OCRInputParsed = nil
+	case "ocr_output":
+		l.OCROutput = ""
+		l.OCROutputParsed = nil
 	case "params":
 		l.Params = ""
 		l.ParamsParsed = nil

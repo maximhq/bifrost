@@ -214,6 +214,7 @@ type InitialLogData struct {
 	Params                 any
 	SpeechInput            *schemas.SpeechInput
 	TranscriptionInput     *schemas.TranscriptionInput
+	OCRInput               *schemas.OCRDocument
 	ImageGenerationInput   *schemas.ImageGenerationInput
 	ImageEditInput         *schemas.ImageEditInput
 	ImageVariationInput    *schemas.ImageVariationInput
@@ -489,6 +490,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Params = req.RerankRequest.Params
 		case schemas.OCRRequest:
 			initialData.Params = req.OCRRequest.Params
+			initialData.OCRInput = &req.OCRRequest.Document
 		case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 			initialData.Params = req.SpeechRequest.Params
 			initialData.SpeechInput = req.SpeechRequest.Input

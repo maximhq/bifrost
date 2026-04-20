@@ -239,6 +239,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddUserNameColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOCRInputColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2576,6 +2579,39 @@ func migrationAddSelectedPromptColumns(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding selected prompt columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOCRInputColumn adds the ocr_input column to the logs table.
+func migrationAddOCRInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_ocr_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "ocr_input") {
+				if err := mig.AddColumn(&Log{}, "ocr_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "ocr_input") {
+				if err := mig.DropColumn(&Log{}, "ocr_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding ocr_input column: %s", err.Error())
 	}
 	return nil
 }
