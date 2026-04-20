@@ -448,6 +448,8 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override PricingO
 		{dst: &patched.OutputCostPerImageMediumQuality, src: override.OutputCostPerImageMediumQuality},
 		{dst: &patched.OutputCostPerImageHighQuality, src: override.OutputCostPerImageHighQuality},
 		{dst: &patched.OutputCostPerImageAutoQuality, src: override.OutputCostPerImageAutoQuality},
+		{dst: &patched.OCRCostPerPage, src: override.OCRCostPerPage},
+		{dst: &patched.AnnotationCostPerPage, src: override.AnnotationCostPerPage},
 	} {
 		if field.src != nil {
 			*field.dst = field.src

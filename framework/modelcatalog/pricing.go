@@ -151,6 +151,10 @@ type PricingOptions struct {
 	// See UnmarshalJSON below for the custom decoding logic.
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+
+	// Costs - OCR
+	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
+	AnnotationCostPerPage *float64 `json:"annotation_cost_per_page,omitempty"`
 }
 
 // serviceTier captures the OpenAI service_tier value from a response.
@@ -171,6 +175,8 @@ type costInput struct {
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
 	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
 	videoSeconds        *int
+	ocrProcessedPages   *int
+	ocrIsAnnotated      *bool
 	tier                serviceTier
 }
 
@@ -191,6 +197,7 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		schemas.ImageEditRequest,
 		schemas.ImageVariationRequest,
 		schemas.VideoGenerationRequest,
+		schemas.OCRRequest,
 	} {
 		key := makeKey(model, string(provider), normalizeRequestType(mode))
 		pricing, ok := mc.pricingData[key]
@@ -280,7 +287,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 	}
 
 	// If no usage data at all, nothing to price
-	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 {
+	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil {
 		return 0
 	}
 
@@ -309,6 +316,8 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
 		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+	case schemas.OCRRequest:
+		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	default:
 		return 0
 	}
@@ -384,6 +393,15 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		if err == nil {
 			input.videoSeconds = &seconds
 		}
+
+	case result.OCRResponse != nil:
+		pages := len(result.OCRResponse.Pages)
+		if result.OCRResponse.UsageInfo != nil && result.OCRResponse.UsageInfo.PagesProcessed > 0 {
+			pages = result.OCRResponse.UsageInfo.PagesProcessed
+		}
+		input.ocrProcessedPages = &pages
+		isAnnotated := result.OCRResponse.DocumentAnnotation != nil && *result.OCRResponse.DocumentAnnotation != ""
+		input.ocrIsAnnotated = &isAnnotated
 	}
 
 	return input
@@ -777,6 +795,23 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	}
 
 	return inputCost + outputCost
+}
+
+// computeOCRCost handles OCR requests, billing per page processed.
+// ocr_cost_per_page covers base processing; annotation_cost_per_page is added when set.
+func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPages *int, ocrIsAnnotated *bool) float64 {
+	if ocrProcessedPages == nil {
+		return 0
+	}
+	pages := float64(*ocrProcessedPages)
+	cost := 0.0
+	if pricing.OCRCostPerPage != nil {
+		cost += pages * *pricing.OCRCostPerPage
+	}
+	if ocrIsAnnotated != nil && *ocrIsAnnotated && pricing.AnnotationCostPerPage != nil {
+		cost += pages * *pricing.AnnotationCostPerPage
+	}
+	return cost
 }
 
 // ---------------------------------------------------------------------------

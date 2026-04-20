@@ -456,6 +456,9 @@ export interface PricingOverridePatch {
 	// Other
 	search_context_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
+	// OCR
+	ocr_cost_per_page?: number;
+	annotation_cost_per_page?: number;
 }
 
 export interface PricingOverride {

@@ -95,6 +95,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "image_edit"
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
 		baseType = "video_generation"
+	case schemas.OCRRequest:
+		baseType = "ocr"
 	}
 
 	return baseType
@@ -225,6 +227,10 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		// Costs - Other
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+
+		// Costs - OCR
+		OCRCostPerPage:        entry.OCRCostPerPage,
+		AnnotationCostPerPage: entry.AnnotationCostPerPage,
 	}
 }
 
@@ -305,6 +311,10 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		// Costs - Other
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
+
+		// Costs - OCR
+		OCRCostPerPage:        pricing.OCRCostPerPage,
+		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
 	return &PricingEntry{
 		BaseModel:       pricing.BaseModel,

@@ -1056,6 +1056,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.ContainerFileDeleteResponse.ExtraFields.Provider = provider
 		r.ContainerFileDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.ContainerFileDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.OCRResponse != nil:
+		r.OCRResponse.ExtraFields.RequestType = requestType
+		r.OCRResponse.ExtraFields.Provider = provider
+		r.OCRResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.OCRResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.PassthroughResponse != nil:
 		r.PassthroughResponse.ExtraFields.RequestType = requestType
 		r.PassthroughResponse.ExtraFields.Provider = provider

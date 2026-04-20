@@ -2,3 +2,4 @@
 - fix: usage of per-user OAuth servers in codemode
 - fix: adds support for OCR requests logging
 - fix: adds validation on direct api keys
+- fix: adds support for OCR request pricing

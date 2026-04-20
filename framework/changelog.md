@@ -1,0 +1,1 @@
+- fix: adds support for OCR request pricing

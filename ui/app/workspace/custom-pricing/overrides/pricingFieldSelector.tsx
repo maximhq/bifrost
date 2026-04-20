@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { FieldErrors, PricingFieldKey } from "./pricingOverrideSheet";
 import { PRICING_FIELDS } from "./pricingOverrideSheet";
 
-type GroupKey = "chat" | "embedding" | "rerank" | "audio" | "image" | "video";
+type GroupKey = "chat" | "embedding" | "rerank" | "audio" | "image" | "video" | "ocr";
 
 const PRICING_GROUPS: { key: GroupKey; label: string }[] = [
 	{ key: "chat", label: "Chat / Text / Responses" },
@@ -15,6 +15,7 @@ const PRICING_GROUPS: { key: GroupKey; label: string }[] = [
 	{ key: "audio", label: "Audio" },
 	{ key: "image", label: "Image" },
 	{ key: "video", label: "Video" },
+	{ key: "ocr", label: "OCR" },
 ];
 
 const REQUEST_TYPE_TO_CATEGORY: Record<string, GroupKey> = {
@@ -30,6 +31,7 @@ const REQUEST_TYPE_TO_CATEGORY: Record<string, GroupKey> = {
 	image_edit: "image",
 	video_generation: "video",
 	video_remix: "video",
+	ocr: "ocr",
 };
 
 interface PricingFieldSelectorProps {
