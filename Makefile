@@ -33,7 +33,7 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed format ui
 
 all: help
 
@@ -1398,6 +1398,17 @@ fmt: ## Format Go code
 	@$(ECHO) "$(GREEN)Formatting Go code...$(NC)"
 	@gofmt -s -w .
 	@goimports -w .
+
+format: ## Format code (Usage: make format ui)
+ifeq (ui,$(filter ui,$(MAKECMDGOALS)))
+	@$(ECHO) "$(GREEN)Formatting UI code...$(NC)"
+	@cd ui && $(USE_NODE); npm run format
+else
+	@$(ECHO) "$(YELLOW)Usage: make format ui$(NC)"
+endif
+
+ui:
+	@:
 
 # Workspace helpers
 setup-workspace: ## Set up Go workspace with all local modules for development

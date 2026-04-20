@@ -657,15 +657,14 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const hasActive = !!filters.parent_request_id;
 	return (
 		<FilterSection title="Session" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
-			<div className="px-3 py-2.5">
-				<Input
-					value={filters.parent_request_id || ""}
-					onChange={(e) => onFiltersChange({ ...filters, parent_request_id: e.target.value })}
-					placeholder="Parent request ID"
-					className="h-8 text-sm"
-					data-testid="session-filter-input"
-				/>
-			</div>
+			<Input
+				value={filters.parent_request_id || ""}
+				onChange={(e) => onFiltersChange({ ...filters, parent_request_id: e.target.value })}
+				placeholder="Parent request ID"
+				className="h-8 border-0 text-sm"
+				data-testid="session-filter-input"
+				autoFocus
+			/>
 		</FilterSection>
 	);
 }
@@ -678,15 +677,13 @@ function UserFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 	const hasActive = !!filters.user_ids?.length;
 	return (
 		<FilterSection title="User" defaultOpen={defaultOpen || hasActive} testId="user-filter-toggle">
-			<div className="px-3 py-2.5">
-				<Input
-					value={filters.user_ids?.[0] || ""}
-					onChange={(e) => onFiltersChange({ ...filters, user_ids: e.target.value ? [e.target.value] : [] })}
-					placeholder="User ID"
-					className="h-8 text-sm"
-					data-testid="user-id-filter-input"
-				/>
-			</div>
+			<Input
+				value={filters.user_ids?.[0] || ""}
+				onChange={(e) => onFiltersChange({ ...filters, user_ids: e.target.value ? [e.target.value] : [] })}
+				placeholder="User ID"
+				className="h-8 border-0 text-sm"
+				data-testid="user-id-filter-input"
+			/>
 		</FilterSection>
 	);
 }
