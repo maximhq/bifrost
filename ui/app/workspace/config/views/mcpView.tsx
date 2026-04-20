@@ -147,7 +147,7 @@ export default function MCPView() {
 
   return (
     <div
-      className="mx-auto w-full max-w-4xl space-y-4"
+      className="mx-auto w-full max-w-7xl space-y-4"
       data-testid="mcp-settings-view"
     >
       <div>
@@ -158,7 +158,7 @@ export default function MCPView() {
       </div>
       <div className="space-y-4">
         {/* Max Agent Depth */}
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label htmlFor="mcp-agent-depth" className="text-sm font-medium">
               Max Agent Depth
@@ -179,7 +179,7 @@ export default function MCPView() {
         </div>
 
         {/* Tool Execution Timeout */}
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label
               htmlFor="mcp-tool-execution-timeout"
@@ -203,7 +203,7 @@ export default function MCPView() {
         </div>
 
         {/* Tool Sync Interval */}
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label
               htmlFor="mcp-tool-sync-interval"
@@ -228,7 +228,7 @@ export default function MCPView() {
         </div>
 
         {/* Disable Auto Tool Injection */}
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label
               htmlFor="mcp-disable-auto-tool-inject"
@@ -254,7 +254,7 @@ export default function MCPView() {
         </div>
 
         {/* Code Mode Binding Level */}
-        <div className="space-y-4 rounded-lg border p-4">
+        <div className="space-y-4 rounded-sm border p-4">
           <div className="space-y-0.5">
             <label htmlFor="mcp-binding-level" className="text-sm font-medium">
               Code Mode Binding Level
@@ -288,7 +288,7 @@ export default function MCPView() {
             </p>
 
             {localValues.mcp_code_mode_binding_level === "server" ? (
-              <div className="bg-muted border-border rounded-lg border p-4">
+              <div className="bg-muted border-border rounded-sm border p-4">
                 <div className="text-foreground space-y-1 font-mono text-xs">
                   <div>servers/</div>
                   <div className="pl-3">├─ calculator.py</div>
@@ -300,7 +300,7 @@ export default function MCPView() {
                 </p>
               </div>
             ) : (
-              <div className="bg-muted border-border rounded-lg border p-4">
+              <div className="bg-muted border-border rounded-sm border p-4">
                 <div className="text-foreground space-y-1 font-mono text-xs">
                   <div>servers/</div>
                   <div className="pl-3">├─ calculator/</div>

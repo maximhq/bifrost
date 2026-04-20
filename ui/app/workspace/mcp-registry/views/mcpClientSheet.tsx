@@ -7,7 +7,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multiSelect";
-import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -50,7 +50,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 	// VK access management — search-based dropdown (limit 20), no pagination issue
 	const [vkSearch, setVKSearch] = useState("");
-	const [vkSelectValue, setVKSelectValue] = useState("");
+	const [vkPopoverOpen, setVKPopoverOpen] = useState(false);
 	const debouncedVkSearch = useDebouncedValue(vkSearch, 300);
 	const { data: vksData } = useGetVirtualKeysQuery({ limit: 20, search: debouncedVkSearch || undefined });
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
@@ -848,44 +848,63 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														</Tooltip>
 													</TooltipProvider>
 												</div>
-												{vkOptions.length > 0 && (
-													<Select
-														value={vkSelectValue}
-														onValueChange={(v) => {
-															addVKConfig(v);
-															setVKSearch("");
-															setVKSelectValue("");
-														}}
-													>
-														<SelectTrigger
-															className="h-7.5 w-auto gap-1.5 px-2 py-1 text-sm font-medium"
+												<Popover
+													open={vkPopoverOpen}
+													onOpenChange={(open) => {
+														setVKPopoverOpen(open);
+														if (!open) setVKSearch("");
+													}}
+												>
+													<PopoverTrigger asChild>
+														<Button
+															type="button"
+															variant="outline"
+															size="sm"
+															className="h-7.5 gap-1.5 px-2 py-1 text-sm font-medium"
 															data-testid="mcpclient-virtualkey-add-trigger"
 														>
 															<Plus className="h-4 w-4" />
 															Add Virtual Key
-														</SelectTrigger>
-														<SelectContent>
-															<div className="px-2 pb-1">
-																<Input
-																	placeholder="Search virtual keys..."
-																	value={vkSearch}
-																	onChange={(e) => setVKSearch(e.target.value)}
-																	onKeyDown={(e) => e.stopPropagation()}
-																	className="h-7 text-sm"
-																/>
-															</div>
+														</Button>
+													</PopoverTrigger>
+													<PopoverContent side="top" align="end" className="w-56 p-0">
+														<div className="pb-1">
+															<Input
+																data-testid="mcpclient-virtualkey-search-input"
+																placeholder="Search virtual keys..."
+																value={vkSearch}
+																onChange={(e) => setVKSearch(e.target.value)}
+																onKeyDown={(e) => {
+																	e.stopPropagation();
+																	if (e.key === "Enter") e.preventDefault();
+																}}
+																className="h-7 rounded-b-none border-0 border-b text-sm focus-visible:ring-0"
+																autoFocus
+															/>
+														</div>
+														<div className="max-h-48 overflow-y-auto p-1">
 															{vkOptions.length > 0 ? (
 																vkOptions.map((opt) => (
-																	<SelectItem key={opt.value} value={opt.value}>
+																	<button
+																		data-testid={`mcpclient-virtualkey-option-${opt.value}`}
+																		key={opt.value}
+																		type="button"
+																		className="hover:bg-accent hover:text-accent-foreground w-full cursor-pointer rounded-sm px-2 py-1.5 text-left text-sm"
+																		onClick={() => {
+																			addVKConfig(opt.value);
+																			setVKSearch("");
+																			setVKPopoverOpen(false);
+																		}}
+																	>
 																		{opt.label}
-																	</SelectItem>
+																	</button>
 																))
 															) : (
 																<div className="text-muted-foreground px-2 py-1.5 text-sm">No virtual keys found</div>
 															)}
-														</SelectContent>
-													</Select>
-												)}
+														</div>
+													</PopoverContent>
+												</Popover>
 											</div>
 											{form.watch("allow_on_all_virtual_keys") && (
 												<p className="text-muted-foreground flex items-center gap-1 text-xs">

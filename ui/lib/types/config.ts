@@ -219,6 +219,8 @@ export type RequestType =
 	| "image_edit"
 	| "image_edit_stream"
 	| "image_variation"
+	| "ocr"
+	| "ocr_stream"
 	| "video_generation"
 	| "video_retrieve"
 	| "video_download"
@@ -267,6 +269,8 @@ export interface AllowedRequests {
 	image_edit: boolean;
 	image_edit_stream: boolean;
 	image_variation: boolean;
+	ocr: boolean;
+	ocr_stream: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
 	rerank: boolean;

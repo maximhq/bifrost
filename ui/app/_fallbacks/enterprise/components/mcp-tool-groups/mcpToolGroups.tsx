@@ -1,16 +1,15 @@
-import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToolCase } from "lucide-react";
 import ContactUsView from "../views/contactUsView";
 
 export default function MCPToolGroups() {
 	return (
 		<>
-			<CardHeader className="mb-4 px-0">
-				<CardTitle>
-					<h1 className="text-foreground text-lg font-semibold">MCP tool groups</h1>
-				</CardTitle>
-				<CardDescription>Configure tool groups for MCP servers to organize and govern tools.</CardDescription>
-			</CardHeader>
+			<div className="flex items-center justify-between gap-4 mb-4">
+				<div>
+					<h2 className="text-lg font-semibold tracking-tight">MCP tool groups</h2>
+					<p className="text-muted-foreground text-sm">Configure tool groups for MCP servers to organize and govern tools.</p>
+				</div>
+			</div>
 			<div className="rounded-sm border">
 				<div className="flex w-full flex-col items-center justify-center py-16">
 					<ContactUsView

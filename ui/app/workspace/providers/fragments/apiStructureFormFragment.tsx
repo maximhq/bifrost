@@ -50,6 +50,8 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				transcription_stream: provider.custom_provider_config?.allowed_requests?.transcription_stream ?? true,
 				count_tokens: provider.custom_provider_config?.allowed_requests?.count_tokens ?? true,
 				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
+				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
+				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
 		},
