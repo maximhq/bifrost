@@ -1909,11 +1909,12 @@ func ProcessAndSendResponse(
 	}
 
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
-
-	select {
-	case responseChan <- streamResponse:
-	case <-ctx.Done():
-		return
+	if streamResponse != nil {
+		select {
+		case responseChan <- streamResponse:
+		case <-ctx.Done():
+			return
+		}
 	}
 
 	// Check if this is the final chunk and complete deferred span with post-processed data

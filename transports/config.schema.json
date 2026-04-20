@@ -4061,6 +4061,10 @@
           ],
           "description": "Base provider type to extend"
         },
+        "supports_responses_api": {
+          "type": "boolean",
+          "description": "Controls native OpenAI Responses API usage for custom OpenAI-compatible providers. true forces /v1/responses, false forces an internal Chat Completions fallback, and omitting it keeps native behavior first with an automatic downgrade on obvious unsupported-endpoint failures."
+        },
         "request_path_overrides": {
           "type": "object",
           "description": "Mapping of request type to custom path overriding the default provider path",
