@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -86,6 +87,196 @@ func RunSingleMigration(ctx context.Context, db *gorm.DB, migration *migrator.Mi
 	}
 	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{migration})
 	return m.Migrate()
+}
+
+type legacyBudgetVirtualKey struct {
+	tables.TableVirtualKey
+	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
+}
+
+func (legacyBudgetVirtualKey) TableName() string { return "governance_virtual_keys" }
+
+type legacyBudgetVirtualKeyProviderConfig struct {
+	tables.TableVirtualKeyProviderConfig
+	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
+}
+
+func (legacyBudgetVirtualKeyProviderConfig) TableName() string {
+	return "governance_virtual_key_provider_configs"
+}
+
+type legacyBudgetTeam struct {
+	tables.TableTeam
+	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
+}
+
+func (legacyBudgetTeam) TableName() string { return "governance_teams" }
+
+type sqliteColumnInfo struct {
+	Name string `gorm:"column:name"`
+}
+
+func legacyBudgetColumnModel(tableName string) (any, error) {
+	switch tableName {
+	case "governance_virtual_keys":
+		return &legacyBudgetVirtualKey{}, nil
+	case "governance_virtual_key_provider_configs":
+		return &legacyBudgetVirtualKeyProviderConfig{}, nil
+	case "governance_teams":
+		return &legacyBudgetTeam{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported legacy budget column drop table: %s", tableName)
+	}
+}
+
+func currentBudgetOwnerModel(tableName string) (any, error) {
+	switch tableName {
+	case "governance_virtual_keys":
+		return &tables.TableVirtualKey{}, nil
+	case "governance_virtual_key_provider_configs":
+		return &tables.TableVirtualKeyProviderConfig{}, nil
+	case "governance_teams":
+		return &tables.TableTeam{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported legacy budget column drop table: %s", tableName)
+	}
+}
+
+func quoteSQLiteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func sqliteTableColumns(tx *gorm.DB, tableName string) ([]string, error) {
+	var columns []sqliteColumnInfo
+	query := fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdentifier(tableName))
+	if err := tx.Raw(query).Scan(&columns).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]string, 0, len(columns))
+	for _, column := range columns {
+		result = append(result, column.Name)
+	}
+	return result, nil
+}
+
+func sqliteTableHasColumn(tx *gorm.DB, tableName, columnName string) (bool, error) {
+	columns, err := sqliteTableColumns(tx, tableName)
+	if err != nil {
+		return false, err
+	}
+	if slices.Contains(columns, columnName) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// sqliteDropLegacyBudgetColumn removes the legacy budget_id column from a
+// SQLite table by dumping data, recreating the table from the current GORM
+// model, and copying data back.
+//
+// Strategy: dump-data → drop-original → create-clean → restore-data.
+// We never RENAME the original table because SQLite propagates ALTER TABLE
+// RENAME into FK references in OTHER tables, corrupting them.
+func sqliteDropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
+	model, err := currentBudgetOwnerModel(tableName)
+	if err != nil {
+		return err
+	}
+
+	columns, err := sqliteTableColumns(tx, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to inspect SQLite columns for %s: %w", tableName, err)
+	}
+
+	preservedColumns := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if column != "budget_id" {
+			preservedColumns = append(preservedColumns, column)
+		}
+	}
+	if len(preservedColumns) == len(columns) {
+		return nil // budget_id column not present, nothing to do
+	}
+
+	// Build the column list for data transfer.
+	quotedColumns := make([]string, 0, len(preservedColumns))
+	for _, column := range preservedColumns {
+		quotedColumns = append(quotedColumns, quoteSQLiteIdentifier(column))
+	}
+	columnList := strings.Join(quotedColumns, ", ")
+
+	// Dump existing data into a temporary table (data-only, no constraints).
+	dumpTable := tableName + "__dump"
+	if err := tx.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteSQLiteIdentifier(dumpTable))).Error; err != nil {
+		return fmt.Errorf("failed to drop stale dump table %s: %w", dumpTable, err)
+	}
+	dumpSQL := fmt.Sprintf("CREATE TABLE %s AS SELECT %s FROM %s",
+		quoteSQLiteIdentifier(dumpTable), columnList, quoteSQLiteIdentifier(tableName))
+	if err := tx.Exec(dumpSQL).Error; err != nil {
+		return fmt.Errorf("failed to dump %s data: %w", tableName, err)
+	}
+
+	// Drop the original table. Safe because PRAGMA foreign_keys is OFF.
+	// This also removes all indexes and FK definitions cleanly.
+	if err := tx.Exec(fmt.Sprintf("DROP TABLE %s", quoteSQLiteIdentifier(tableName))).Error; err != nil {
+		return fmt.Errorf("failed to drop original SQLite table %s: %w", tableName, err)
+	}
+
+	// Recreate the table from the current GORM model (no budget_id column,
+	// proper indexes and constraints). The original table name is now free.
+	if err := tx.Migrator().CreateTable(model); err != nil {
+		return fmt.Errorf("failed to recreate SQLite table %s: %w", tableName, err)
+	}
+
+	// Restore data from the dump.
+	restoreSQL := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s",
+		quoteSQLiteIdentifier(tableName), columnList, columnList, quoteSQLiteIdentifier(dumpTable))
+	if err := tx.Exec(restoreSQL).Error; err != nil {
+		return fmt.Errorf("failed to restore data into %s: %w", tableName, err)
+	}
+
+	// Clean up the dump table.
+	if err := tx.Exec(fmt.Sprintf("DROP TABLE %s", quoteSQLiteIdentifier(dumpTable))).Error; err != nil {
+		return fmt.Errorf("failed to drop dump table %s: %w", dumpTable, err)
+	}
+	return nil
+}
+
+func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
+	mg := tx.Migrator()
+	if !mg.HasColumn(tableName, "budget_id") {
+		return nil
+	}
+
+	if tx.Dialector.Name() == "sqlite" {
+		if err := sqliteDropLegacyBudgetColumn(tx, tableName); err != nil {
+			return err
+		}
+	} else {
+		model, err := legacyBudgetColumnModel(tableName)
+		if err != nil {
+			return err
+		}
+		if err := mg.DropColumn(model, "budget_id"); err != nil {
+			return fmt.Errorf("failed to drop legacy %s.budget_id column: %w", tableName, err)
+		}
+	}
+
+	var stillExists bool
+	var err error
+	if tx.Dialector.Name() == "sqlite" {
+		stillExists, err = sqliteTableHasColumn(tx, tableName, "budget_id")
+		if err != nil {
+			return fmt.Errorf("failed to verify legacy %s.budget_id column drop: %w", tableName, err)
+		}
+	} else {
+		stillExists = mg.HasColumn(tableName, "budget_id")
+	}
+	if stillExists {
+		return fmt.Errorf("legacy %s.budget_id column still exists after migration", tableName)
+	}
+	return nil
 }
 
 // Migrate performs the necessary database migrations.
@@ -5978,18 +6169,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 				}
 			}
 
-			// Create FK constraints with CASCADE delete (defined on parent structs)
-			if !mg.HasConstraint(&tables.TableVirtualKey{}, "Budgets") {
-				if err := mg.CreateConstraint(&tables.TableVirtualKey{}, "Budgets"); err != nil {
-					return fmt.Errorf("failed to create FK constraint for VirtualKey -> Budgets: %w", err)
-				}
-			}
-			if !mg.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budgets") {
-				if err := mg.CreateConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budgets"); err != nil {
-					return fmt.Errorf("failed to create FK constraint for ProviderConfig -> Budgets: %w", err)
-				}
-			}
-
 			// Backfill: set virtual_key_id from legacy VK budget_id (if column still exists)
 			if mg.HasColumn(&tables.TableVirtualKey{}, "budget_id") {
 				if err := tx.Exec(`
@@ -6032,13 +6211,39 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 				`).Error; err != nil {
 					return fmt.Errorf("failed to backfill calendar_aligned from budgets to virtual keys: %w", err)
 				}
-				// Drop the legacy calendar_aligned column from governance_budgets
-				_ = tx.Exec("ALTER TABLE governance_budgets DROP COLUMN IF EXISTS calendar_aligned")
+				// Drop the legacy calendar_aligned column from governance_budgets.
+				// Plain column with no FK references — not a correctness risk if left behind,
+				// but log a warning so it's not invisible.
+				if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN IF EXISTS calendar_aligned").Error; err != nil {
+					log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
+				}
 			}
 
-			// Drop legacy budget_id columns from VK and ProviderConfig (raw SQL to avoid GORM FK lookup issues)
-			_ = tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN IF EXISTS budget_id")
-			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
+			// Drop legacy budget_id columns BEFORE creating FK constraints.
+			// On SQLite, ALTER TABLE RENAME propagates into FK references in other tables.
+			// If we create FK constraints on governance_budgets first, then rename the
+			// parent table during the legacy column drop (table rebuild), SQLite updates
+			// those FK references to point at the temporary backup table name.
+			if err := dropLegacyBudgetColumn(tx, "governance_virtual_keys"); err != nil {
+				return err
+			}
+			if err := dropLegacyBudgetColumn(tx, "governance_virtual_key_provider_configs"); err != nil {
+				return err
+			}
+
+			// Create FK constraints with CASCADE delete (defined on parent structs).
+			// Must happen after legacy column drops so SQLite rename propagation
+			// cannot corrupt these FK references.
+			if !mg.HasConstraint(&tables.TableVirtualKey{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableVirtualKey{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for VirtualKey -> Budgets: %w", err)
+				}
+			}
+			if !mg.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for ProviderConfig -> Budgets: %w", err)
+				}
+			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -6111,13 +6316,6 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 				}
 			}
 
-			// Create FK constraint with CASCADE delete (defined on TableTeam.Budgets)
-			if !mg.HasConstraint(&tables.TableTeam{}, "Budgets") {
-				if err := mg.CreateConstraint(&tables.TableTeam{}, "Budgets"); err != nil {
-					return fmt.Errorf("failed to create FK constraint for Team -> Budgets: %w", err)
-				}
-			}
-
 			// Backfill: set team_id from legacy governance_teams.budget_id (if column still exists)
 			if mg.HasColumn(&tables.TableTeam{}, "budget_id") {
 				// Preflight: raw SQL below bypasses TableBudget.BeforeSave (which now
@@ -6152,8 +6350,22 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 					return fmt.Errorf("failed to backfill team budget team_id: %w", err)
 				}
 
-				// Drop legacy budget_id column from governance_teams (raw SQL to avoid GORM FK lookup issues)
-				_ = tx.Exec("ALTER TABLE governance_teams DROP COLUMN IF EXISTS budget_id")
+				// Drop legacy budget_id column BEFORE creating FK constraint.
+				// On SQLite, ALTER TABLE RENAME propagates into FK references in other
+				// tables. Dropping first prevents the FK on governance_budgets.team_id
+				// from being corrupted by the table rebuild's rename step.
+				if err := dropLegacyBudgetColumn(tx, "governance_teams"); err != nil {
+					return err
+				}
+			}
+
+			// Create FK constraint with CASCADE delete (defined on TableTeam.Budgets).
+			// Must happen after legacy column drop so SQLite rename propagation
+			// cannot corrupt this FK reference.
+			if !mg.HasConstraint(&tables.TableTeam{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableTeam{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for Team -> Budgets: %w", err)
+				}
 			}
 
 			// Refresh config_hash for teams whose budgets just got linked. GenerateTeamHash

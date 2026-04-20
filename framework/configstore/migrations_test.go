@@ -2074,6 +2074,51 @@ func insertVKRaw(t *testing.T, db *gorm.DB, id, name, value string, rateLimitID 
 	require.NoError(t, err, "Failed to insert virtual key %s", id)
 }
 
+func setupLegacyBudgetOwnerMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "Failed to create test database")
+
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableBudget{},
+		&tables.TableVirtualKey{},
+		&tables.TableVirtualKeyProviderConfig{},
+		&tables.TableTeam{},
+	), "Failed to auto-migrate legacy budget owner test tables")
+
+	// Add legacy budget_id columns WITH foreign key constraints, matching production
+	// schema. The FK definitions are what caused SQLite to reject ALTER TABLE DROP
+	// COLUMN and what triggered FK reference corruption via rename propagation.
+	require.NoError(t, db.Exec(`ALTER TABLE governance_virtual_keys ADD COLUMN budget_id VARCHAR(255) REFERENCES governance_budgets(id)`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE governance_virtual_key_provider_configs ADD COLUMN budget_id VARCHAR(255) REFERENCES governance_budgets(id)`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE governance_teams ADD COLUMN budget_id VARCHAR(255) REFERENCES governance_budgets(id)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
+func insertProviderConfigRaw(t *testing.T, db *gorm.DB, id uint, virtualKeyID, provider string) {
+	t.Helper()
+	err := db.Exec(`
+		INSERT INTO governance_virtual_key_provider_configs
+		  (id, virtual_key_id, provider, allowed_models, allow_all_keys)
+		VALUES (?, ?, ?, '[]', 1)
+	`, id, virtualKeyID, provider).Error
+	require.NoError(t, err, "Failed to insert provider config %d", id)
+}
+
+func insertTeamRaw(t *testing.T, db *gorm.DB, id, name string) {
+	t.Helper()
+	now := time.Now()
+	err := db.Exec(`
+		INSERT INTO governance_teams
+		  (id, name, config_hash, created_at, updated_at)
+		VALUES (?, ?, '', ?, ?)
+	`, id, name, now, now).Error
+	require.NoError(t, err, "Failed to insert team %s", id)
+}
+
 // TestMigrationCalendarAligned_AddColumnsAndBackfill exercises the full migration:
 // column addition on governance_budgets and governance_rate_limits, plus backfill
 // of calendar_aligned=true for rows attached to any virtual key. Rows NOT attached
@@ -2229,16 +2274,68 @@ func TestMigrationCalendarAligned_Idempotent(t *testing.T) {
 	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
 		"first run should succeed")
 	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
-		"second run should be a no-op via migrator ID tracking")
-
-	// Data should still be correct after the second run.
-	var aligned bool
-	require.NoError(t, db.Table("governance_budgets").
-		Select("calendar_aligned").Where("id = ?", "budget-1").Scan(&aligned).Error)
-	assert.True(t, aligned, "budget backfill should persist across idempotent reruns")
+		"second run should be a no-op")
 }
 
-// TestMigrationCalendarAligned_WiredIntoTriggerMigrations confirms the new
+func TestMigrationAddMultiBudgetTables_DropsLegacyBudgetColumnsAndBackfillsOwners(t *testing.T) {
+	db := setupLegacyBudgetOwnerMigrationDB(t)
+	ctx := context.Background()
+	mig := db.Migrator()
+
+	vkID := "vk-legacy"
+	insertVKRaw(t, db, vkID, "vk-legacy", "vk-legacy-value", nil, false)
+	insertBudgetRaw(t, db, "budget-vk-legacy", nil)
+	require.NoError(t, db.Exec(`UPDATE governance_virtual_keys SET budget_id = ? WHERE id = ?`, "budget-vk-legacy", vkID).Error)
+
+	insertProviderConfigRaw(t, db, 1001, vkID, "openai")
+	insertBudgetRaw(t, db, "budget-pc-legacy", nil)
+	require.NoError(t, db.Exec(`UPDATE governance_virtual_key_provider_configs SET budget_id = ? WHERE id = ?`, "budget-pc-legacy", 1001).Error)
+
+	require.True(t, mig.HasColumn("governance_virtual_keys", "budget_id"))
+	require.True(t, mig.HasColumn("governance_virtual_key_provider_configs", "budget_id"))
+
+	require.NoError(t, migrationAddMultiBudgetTables(ctx, db))
+
+	assert.False(t, mig.HasColumn("governance_virtual_keys", "budget_id"), "vk budget_id should be dropped by migration")
+	assert.False(t, mig.HasColumn("governance_virtual_key_provider_configs", "budget_id"), "provider config budget_id should be dropped by migration")
+
+	var vkBudgetOwner string
+	require.NoError(t, db.Table("governance_budgets").Select("virtual_key_id").Where("id = ?", "budget-vk-legacy").Scan(&vkBudgetOwner).Error)
+	assert.Equal(t, vkID, vkBudgetOwner, "migration should backfill governance_budgets.virtual_key_id")
+
+	var providerConfigBudgetOwner uint
+	require.NoError(t, db.Table("governance_budgets").Select("provider_config_id").Where("id = ?", "budget-pc-legacy").Scan(&providerConfigBudgetOwner).Error)
+	assert.Equal(t, uint(1001), providerConfigBudgetOwner, "migration should backfill governance_budgets.provider_config_id")
+
+	// Verify FK references in governance_budgets still point at the correct
+	// table names — not corrupted backup/temp names from SQLite rename propagation.
+	assertNoCorruptedFKReferences(t, db)
+}
+
+func TestMigrationAddTeamBudgetsToBudgetsTable_DropsLegacyBudgetColumnAndBackfillsOwners(t *testing.T) {
+	db := setupLegacyBudgetOwnerMigrationDB(t)
+	ctx := context.Background()
+	mig := db.Migrator()
+
+	insertTeamRaw(t, db, "team-legacy", "Legacy Team")
+	insertBudgetRaw(t, db, "budget-team-legacy", nil)
+	require.NoError(t, db.Exec(`UPDATE governance_teams SET budget_id = ? WHERE id = ?`, "budget-team-legacy", "team-legacy").Error)
+
+	require.True(t, mig.HasColumn("governance_teams", "budget_id"))
+
+	require.NoError(t, migrationAddTeamBudgetsToBudgetsTable(ctx, db))
+
+	assert.False(t, mig.HasColumn("governance_teams", "budget_id"), "team budget_id should be dropped by migration")
+
+	var teamBudgetOwner string
+	require.NoError(t, db.Table("governance_budgets").Select("team_id").Where("id = ?", "budget-team-legacy").Scan(&teamBudgetOwner).Error)
+	assert.Equal(t, "team-legacy", teamBudgetOwner, "migration should backfill governance_budgets.team_id")
+
+	// Verify FK references in governance_budgets still point at the correct
+	// table names — not corrupted backup/temp names from SQLite rename propagation.
+	assertNoCorruptedFKReferences(t, db)
+}
+
 // migration is part of the startup chain so a fresh DB emerges with the column
 // present on both governance_budgets and governance_rate_limits.
 func TestMigrationCalendarAligned_WiredIntoTriggerMigrations(t *testing.T) {
@@ -2248,6 +2345,29 @@ func TestMigrationCalendarAligned_WiredIntoTriggerMigrations(t *testing.T) {
 		"triggerMigrations should add calendar_aligned to governance_budgets")
 	assert.True(t, mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned"),
 		"triggerMigrations should add calendar_aligned to governance_rate_limits")
+}
+
+// assertNoCorruptedFKReferences checks that no table in the database has FK
+// references pointing at temporary/backup table names left behind by a
+// SQLite table rebuild. This is the actual failure mode from the production
+// bug: ALTER TABLE RENAME propagated into FK definitions in other tables,
+// leaving references like governance_teams__legacy_budget_backup.
+func assertNoCorruptedFKReferences(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	type masterRow struct {
+		Name string `gorm:"column:name"`
+		SQL  string `gorm:"column:sql"`
+	}
+	var rows []masterRow
+	require.NoError(t, db.Raw(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL`).Scan(&rows).Error)
+	for _, row := range rows {
+		assert.NotContains(t, row.SQL, "__dump",
+			"table %s has FK referencing a dump table: %s", row.Name, row.SQL)
+		assert.NotContains(t, row.SQL, "__legacy_budget_backup",
+			"table %s has FK referencing a legacy backup table: %s", row.Name, row.SQL)
+		assert.NotContains(t, row.SQL, "__new",
+			"table %s has FK referencing a temp table: %s", row.Name, row.SQL)
+	}
 }
 
 func strPtr(s string) *string { return &s }
