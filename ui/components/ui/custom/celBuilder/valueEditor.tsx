@@ -132,13 +132,27 @@ export function ValueEditor({
 			);
 		}
 
+		let valueToUse = value;
+		if (typeof value === "string" && value) {
+			try {
+				const parsedValue = JSON.parse(value);
+
+				if (Array.isArray(parsedValue)) {
+					valueToUse = parsedValue[0];
+				} else if (typeof parsedValue === "string") {
+					valueToUse = parsedValue;
+				}
+			} catch(error) {}
+		}
+
 		// For single operators (=, !=), use single select
 		return (
 			<ModelMultiselect
-				value={value || ""}
+				value={valueToUse || ""}
 				onChange={handleOnChange}
 				placeholder="Search for a model..."
 				isSingleSelect
+				clearable={true}
 				loadModelsOnEmptyProvider
 				className="border-input w-[360px]"
 				menuPosition={menuPosition}

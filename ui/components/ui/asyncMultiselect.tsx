@@ -64,10 +64,6 @@ const MultiValueRemoveWrapper = <T extends unknown = unknown>(props: MultiValueR
 	return components.MultiValueRemove(props) as React.ReactNode;
 };
 
-const ClearIndicatorWrapper = <T extends unknown = unknown>(props: ClearIndicatorProps<T, boolean, GroupBase<T>>): React.ReactNode => {
-	return components.ClearIndicator(props) as React.ReactNode;
-};
-
 const IndicatorSeparatorWrapper = <T extends unknown = unknown>(
 	props: IndicatorSeparatorProps<T, boolean, GroupBase<T>>,
 ): React.ReactNode => {
@@ -484,6 +480,7 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				}}
 				inputId={props.inputId}
 				aria-labelledby={props.ariaLabelledBy}
+				data-testid={props["data-testid"]}
 				{...customOptionProps}
 				{...customDropdownIndicatorProps}
 				{...customComponentsProps}
@@ -596,7 +593,7 @@ function CustomDropdownIndicator<T>(
 	if (props.selectProps.hideDropdownIndicator) {
 		return null;
 	}
-	return <ChevronDown className="text-content-primary m-2 h-4 w-4 shrink-0 self-start opacity-50" />;
+	return <ChevronDown className="text-content-primary m-2 h-4 w-4 shrink-0 self-start opacity-50 mt-2.5" />;
 }
 
 function CustomMultiValueRemove<T>(props: MultiValueRemoveProps<Option<T>> & { selectProps: CustomComponentsProps }) {
@@ -652,7 +649,16 @@ function CustomClearIndicator<T>(props: ClearIndicatorProps<Option<T>> & { selec
 		return props.selectProps.clearIndicatorView(props);
 	}
 
-	return <ClearIndicatorWrapper {...props} />;
+	const parentTestId = (props.selectProps as { ["data-testid"]?: string })["data-testid"];
+	return (
+		<div
+			{...props.innerProps}
+			data-testid={parentTestId ? `${parentTestId}-clear-indicator-btn` : "multiselect-clear-indicator-btn"}
+			className="text-muted-foreground hover:text-foreground flex cursor-pointer items-center px-1 transition-colors mt-1"
+		>
+			<XIcon className="h-3.5 w-3.5" />
+		</div>
+	);
 }
 
 function CustomIndicatorSeparator<T>(props: IndicatorSeparatorProps<Option<T>> & { selectProps: CustomComponentsProps }) {
