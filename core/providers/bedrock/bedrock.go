@@ -138,22 +138,6 @@ func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Bedrock, provider.customProviderConfig)
 }
 
-// ensureBedrockKeyConfig ensures key.BedrockKeyConfig is non-nil. When the key
-// uses API key authentication (key.Value is set) but has no Bedrock-specific
-// config, a minimal default is created so the request URL can be constructed
-// (region defaults to us-east-1). Returns false only when there is truly no
-// way to authenticate (no API key AND no bedrock config).
-func ensureBedrockKeyConfig(key *schemas.Key) bool {
-	if key.BedrockKeyConfig != nil {
-		return true
-	}
-	if key.Value.GetValue() != "" {
-		key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
-		return true
-	}
-	return false
-}
-
 // isStreamTransportError reports whether err is a transport-level connection
 // failure that occurred while reading the EventStream body — as opposed to a
 // semantic error (JSON parse failure, AWS exception event, etc.).

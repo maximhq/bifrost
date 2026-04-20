@@ -1,1 +1,4 @@
 - fix: malformed OAuth authorization URL when base URL already contains query parameters
+- fix: usage of per-user OAuth servers in codemode
+- fix: adds support for OCR requests logging
+- fix: adds validation on direct api keys

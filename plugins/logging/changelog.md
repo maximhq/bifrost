@@ -1,0 +1,1 @@
+- fix: adds support for logging OCR requests

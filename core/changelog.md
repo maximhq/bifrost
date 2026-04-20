@@ -1,0 +1,2 @@
+- fix: usage of per-user OAuth servers in codemode
+- fix: adds validation on direct api keys

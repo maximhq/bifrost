@@ -6846,6 +6846,9 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 	if ctx != nil {
 		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 		if ok {
+			if err := validateKey(baseProviderType, &key); err != nil {
+				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
+			}
 			// If a direct key is specified, return it as a single-element slice
 			return []schemas.Key{key}, nil
 		}
@@ -6893,6 +6896,9 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 	if ctx != nil {
 		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 		if ok {
+			if err := validateKey(baseProviderType, &key); err != nil {
+				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
+			}
 			// If a direct key is specified, return it as a single-element slice
 			return []schemas.Key{key}, nil
 		}
@@ -6981,6 +6987,9 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	// DirectKey: caller supplied a key directly — no pool, no rotation.
 	if ctx != nil {
 		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+			if err := validateKey(baseProviderType, &key); err != nil {
+				return nil, false, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
+			}
 			return []schemas.Key{key}, false, nil
 		}
 	}

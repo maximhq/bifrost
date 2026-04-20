@@ -5,7 +5,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -184,6 +183,7 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 		PluginPipelineProvider: m.pluginPipelineProvider,
 		ReleasePluginPipeline:  m.releasePluginPipeline,
 		FetchNewRequestIDFunc:  m.fetchNewRequestIDFunc,
+		OAuth2Provider:         m.oauth2Provider,
 	}
 }
 
@@ -686,55 +686,9 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 
 	// Handle per-user OAuth: inject user-specific Authorization header
 	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
-		if m.oauth2Provider == nil {
-			return nil, "", "", fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
-		}
-		virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-		userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
-		sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
-
-		// Optional X-Bf-User-Id header overrides user identity; if absent, falls back to virtual key
-		if mcpUserID, _ := ctx.Value(schemas.BifrostContextKeyMCPUserID).(string); mcpUserID != "" {
-			userID = mcpUserID
-		}
-
-		// Try identity-based token lookup first (works even without session token)
-		accessToken, err := m.oauth2Provider.GetUserAccessTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, client.ExecutionConfig.ID)
-		if err != nil && !errors.Is(err, schemas.ErrOAuth2TokenNotFound) {
-			// Had session but token lookup failed with a real error (not just "not found") — return error
-			return nil, "", "", fmt.Errorf("failed to get user access token for MCP server %s: %w", client.ExecutionConfig.Name, err)
-		}
+		accessToken, err := utils.ResolvePerUserOAuthToken(ctx, client, m.oauth2Provider)
 		if err != nil {
-			// No token found — user hasn't authenticated with this MCP server yet.
-			// In LLM gateway mode with no identity, we can't track who this user is,
-			// so an OAuth flow would produce an orphaned token. Return a clear error instead.
-			isMCPGateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool)
-			if !isMCPGateway && userID == "" && virtualKeyID == "" {
-				return nil, "", "", fmt.Errorf(
-					"per-user OAuth for %s requires a user identity: include X-Bf-User-Id or a Virtual Key in your request so the token can be linked to you",
-					client.ExecutionConfig.Name,
-				)
-			}
-
-			// Initiate OAuth flow to get a proper authorize URL with session tracking.
-			if client.ExecutionConfig.OauthConfigID == nil || *client.ExecutionConfig.OauthConfigID == "" {
-				return nil, "", "", fmt.Errorf("per-user OAuth requires an OAuth config but MCP client %s has none", client.ExecutionConfig.Name)
-			}
-			redirectURI := buildRedirectURIFromContext(ctx)
-			if redirectURI == "" {
-				return nil, "", "", fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
-			}
-			flowInitiation, sessionID, flowErr := m.oauth2Provider.InitiateUserOAuthFlow(ctx, *client.ExecutionConfig.OauthConfigID, client.ExecutionConfig.ID, redirectURI)
-			if flowErr != nil {
-				return nil, "", "", fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", client.ExecutionConfig.Name, flowErr)
-			}
-			return nil, "", "", &schemas.MCPUserOAuthRequiredError{
-				MCPClientID:   client.ExecutionConfig.ID,
-				MCPClientName: client.ExecutionConfig.Name,
-				AuthorizeURL:  flowInitiation.AuthorizeURL,
-				SessionID:     sessionID,
-				Message:       fmt.Sprintf("Authentication required for %s. Please visit the authorize URL to connect your account.", client.ExecutionConfig.Name),
-			}
+			return nil, "", "", err
 		}
 
 		if client.Conn == nil {
@@ -743,7 +697,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 			defer cancel()
 
-			toolResponse, callErr := executeToolWithUserToken(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, accessToken, m.logger)
+			toolResponse, callErr := ExecuteToolWithUserToken(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, accessToken, m.logger)
 			if callErr != nil {
 				if toolCtx.Err() == context.DeadlineExceeded {
 					return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
@@ -755,15 +709,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
 		}
 
-		// Persistent connection exists — use per-call headers
-		headers := make(http.Header)
-		if client.ExecutionConfig.Headers != nil {
-			for key, value := range client.ExecutionConfig.Headers {
-				headers.Add(key, value.GetValue())
-			}
-		}
-		headers.Set("Authorization", "Bearer "+accessToken)
-		callRequest.Header = headers
+		callRequest.Header = utils.BuildPerUserOAuthHeaders(callRequest.Header, accessToken)
 	} else if client.ExecutionConfig.Headers != nil {
 		headers := make(http.Header)
 		for key, value := range client.ExecutionConfig.Headers {
@@ -911,7 +857,7 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 // Returns:
 //   - *mcp.CallToolResult: tool execution result
 //   - error: any error during connection or execution
-func executeToolWithUserToken(ctx context.Context, config *schemas.MCPClientConfig, toolName string, arguments map[string]interface{}, accessToken string, logger schemas.Logger) (*mcp.CallToolResult, error) {
+func ExecuteToolWithUserToken(ctx context.Context, config *schemas.MCPClientConfig, toolName string, arguments map[string]interface{}, accessToken string, logger schemas.Logger) (*mcp.CallToolResult, error) {
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
 		return nil, fmt.Errorf("connection URL is required for per-user OAuth tool execution")
 	}
@@ -964,15 +910,6 @@ func executeToolWithUserToken(ctx context.Context, config *schemas.MCPClientConf
 	return tempClient.CallTool(ctx, callRequest)
 }
 
-// buildRedirectURIFromContext extracts the OAuth redirect URI from context.
-// The URI is set by the HTTP middleware from the request's host.
-func buildRedirectURIFromContext(ctx *schemas.BifrostContext) string {
-	if uri, ok := ctx.Value(schemas.BifrostContextKeyOAuthRedirectURI).(string); ok && uri != "" {
-		return uri
-	}
-	// Fallback — should not happen if middleware is configured correctly
-	return ""
-}
 
 // GetCodeModeBindingLevel returns the current code mode binding level.
 // This method is safe to call concurrently from multiple goroutines.
