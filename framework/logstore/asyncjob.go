@@ -60,7 +60,7 @@ func (e *AsyncJobExecutor) RetrieveJob(ctx context.Context, jobID string, vkValu
 		if errors.Is(err, ErrNotFound) {
 			return nil, fmt.Errorf("job not found or expired")
 		}
-		return nil, fmt.Errorf("failed to retrieve async job: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrJobInternal, err)
 	}
 	if job.VirtualKeyID != nil {
 		if vkValue == nil {
