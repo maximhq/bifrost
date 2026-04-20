@@ -11694,7 +11694,7 @@ func TestGenerateTeamHash(t *testing.T) {
 		ID:            "team-1",
 		Name:          "Test Team",
 		CustomerID:    &customerID,
-		BudgetID:      &budgetID,
+		Budgets:       []tables.TableBudget{{ID: budgetID}},
 		ParsedProfile: map[string]interface{}{"key": "value"},
 		ParsedConfig:  map[string]interface{}{"setting": true},
 		ParsedClaims:  map[string]interface{}{"role": "admin"},
@@ -11742,7 +11742,7 @@ func TestGenerateTeamHash(t *testing.T) {
 	// Different BudgetID should produce different hash
 	newBudgetID := "budget-2"
 	team5 := team1
-	team5.BudgetID = &newBudgetID
+	team5.Budgets = []tables.TableBudget{{ID: newBudgetID}}
 	hash5, _ := configstore.GenerateTeamHash(team5)
 	if hash1 == hash5 {
 		t.Error("Different BudgetID should produce different hash")
@@ -13090,7 +13090,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 	initTestLogger()
 
 	db := setupTestDB(t)
-	if err := db.AutoMigrate(&tables.TableTeam{}); err != nil {
+	if err := db.AutoMigrate(&tables.TableBudget{}, &tables.TableTeam{}); err != nil {
 		t.Fatalf("Failed to migrate: %v", err)
 	}
 
@@ -13188,7 +13188,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 			ID:            uuid.New().String(),
 			Name:          "Test Team All",
 			CustomerID:    &customerID,
-			BudgetID:      &budgetID,
+			Budgets:       []tables.TableBudget{{ID: budgetID}},
 			ParsedProfile: map[string]interface{}{"key": "value"},
 			ParsedConfig:  map[string]interface{}{"setting": true},
 			ParsedClaims:  map[string]interface{}{"role": "user"},
@@ -13198,7 +13198,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 		db.Create(&teamToSave)
 
 		var teamFromDB tables.TableTeam
-		db.Where("id = ?", teamToSave.ID).First(&teamFromDB)
+		db.Preload("Budgets").Where("id = ?", teamToSave.ID).First(&teamFromDB)
 
 		hashAfterLoad, _ := configstore.GenerateTeamHash(teamFromDB)
 

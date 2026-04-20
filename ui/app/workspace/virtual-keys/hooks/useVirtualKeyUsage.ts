@@ -41,7 +41,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	const isManagedByProfile = managingProfile !== undefined;
 
 	const displayBudgets: Budget[] | undefined = managingProfile
-		? (managingProfile.budget_lines ?? []).map((line) => ({
+		? (managingProfile.budgets ?? []).map((line) => ({
 				id: line.id,
 				max_limit: line.max_limit,
 				reset_duration: line.reset_duration,
@@ -50,7 +50,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 			}))
 		: vk?.budgets;
 
-	const apRL = managingProfile?.rate_limits;
+	const apRL = managingProfile?.rate_limit;
 	const hasApRateLimit = !!(apRL && (apRL.token_max_limit != null || apRL.request_max_limit != null));
 	// When profile-managed, never fall back to raw VK rate limits (that would contradict the
 	// locked edit/delete UX). If the profile has no rate limit, displayRateLimit is undefined.
