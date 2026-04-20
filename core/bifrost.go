@@ -4941,19 +4941,22 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			go func() {
 				defer func() {
 					drainAndAttachPluginLogs(ctx) // ensure logs are drained even if stream closes without a final chunk
+					if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+						tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
+					}
 					pipeline.FinalizeStreamingPostHookSpans(ctx)
 					bifrost.releasePluginPipeline(pipeline)
 				}()
 				defer close(outputStream)
 
-				// Use lookahead pattern to detect final chunk deterministically.
-				// Read one chunk ahead so we know whether the current chunk is final.
-				var current *schemas.BifrostStreamChunk
-				for {
-					next, ok := <-shortCircuit.Stream
-					if current != nil {
-						// Process current chunk with finality determined by whether next exists
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, !ok)
+			// Use lookahead pattern to detect final chunk deterministically.
+			// Read one chunk ahead so we know whether the current chunk is final.
+			var current *schemas.BifrostStreamChunk
+			for {
+				next, ok := <-shortCircuit.Stream
+				if current != nil {
+					// Process current chunk with finality determined by whether next exists
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, !ok)
 
 					bifrostResponse := &schemas.BifrostResponse{}
 					if current.BifrostTextCompletionResponse != nil {
@@ -4976,40 +4979,40 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					}
 
 					// Populate extra fields so plugins (e.g. logging) can read requestType/provider/model
-						bifrostResponse.PopulateExtraFields(req.RequestType, provider, model, model)
-						if current.BifrostError != nil {
-							current.BifrostError.PopulateExtraFields(req.RequestType, provider, model, model)
+					bifrostResponse.PopulateExtraFields(req.RequestType, provider, model, model)
+					if current.BifrostError != nil {
+						current.BifrostError.PopulateExtraFields(req.RequestType, provider, model, model)
+					}
+
+					// Run post hooks on the stream message
+					processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, current.BifrostError)
+
+					// Build the client-facing chunk via the shared helper, which strips raw
+					// request/response fields when in logging-only mode without mutating the
+					// shared processedResponse or processedError objects.
+					streamResponse := providerUtils.BuildClientStreamChunk(ctx, processedResponse, processedError)
+
+					// Guarded send: if the consumer abandons outputStream (client
+					// disconnect, ctx cancel), drain the upstream shortCircuit.Stream
+					// so its producer can exit cleanly instead of blocking on its send.
+					select {
+					case outputStream <- streamResponse:
+					case <-ctx.Done():
+						for range shortCircuit.Stream {
 						}
-
-						// Run post hooks on the stream message
-						processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, current.BifrostError)
-
-						// Build the client-facing chunk via the shared helper, which strips raw
-						// request/response fields when in logging-only mode without mutating the
-						// shared processedResponse or processedError objects.
-						streamResponse := providerUtils.BuildClientStreamChunk(ctx, processedResponse, processedError)
-
-						// Guarded send: if the consumer abandons outputStream (client
-						// disconnect, ctx cancel), drain the upstream shortCircuit.Stream
-						// so its producer can exit cleanly instead of blocking on its send.
-						select {
-						case outputStream <- streamResponse:
-						case <-ctx.Done():
-							for range shortCircuit.Stream {
-							}
-							return
-						}
-
-						// TODO: Release the processed response immediately after use
+						return
 					}
-					if !ok {
-						break
-					}
-					if next == nil {
-						continue // Skip nil chunks
-					}
-					current = next
+
+					// TODO: Release the processed response immediately after use
 				}
+				if !ok {
+					break
+				}
+				if next == nil {
+					continue // Skip nil chunks
+				}
+				current = next
+			}
 			}()
 
 			return outputStream, nil
