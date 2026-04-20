@@ -2757,6 +2757,10 @@ func (g *GenericRouter) handlePassthroughStream(
 	provider schemas.ModelProvider,
 	req *schemas.BifrostPassthroughRequest,
 ) {
+	// Deferred trace completion must be explicitly finalized after streaming ends.
+	// Without this, observability injectors (including logging) never flush final state.
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+
 	stream, bifrostErr := g.client.PassthroughStream(bifrostCtx, provider, req)
 	if bifrostErr != nil {
 		cancel()
@@ -2819,6 +2823,9 @@ func (g *GenericRouter) handlePassthroughStream(
 
 	go func() {
 		defer func() {
+			if traceCompleter != nil {
+				traceCompleter(nil)
+			}
 			reader.Done()
 			cancel()
 		}()

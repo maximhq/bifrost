@@ -11,10 +11,11 @@ type BifrostPassthroughRequest struct {
 }
 
 type BifrostPassthroughResponse struct {
-	StatusCode  int
-	Headers     map[string]string
-	Body        []byte
-	ExtraFields BifrostResponseExtraFields
+	StatusCode    int
+	Headers       map[string]string
+	Body          []byte
+	BodyTruncated bool
+	ExtraFields   BifrostResponseExtraFields
 }
 
 type PassthroughLogParams struct {

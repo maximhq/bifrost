@@ -182,7 +182,6 @@ func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing
 	}
 }
 
-
 func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 	// Simulate fallback/retry scenario where multiple PostLLMHook calls
 	// store entries under the same traceID. All entries must be preserved.

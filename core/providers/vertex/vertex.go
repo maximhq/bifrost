@@ -45,6 +45,8 @@ var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
 
 var vertexProjectsPathRe = regexp.MustCompile(`/projects/[^/]+`)
 
+const maxStreamPassthroughCaptureBytes = 1024 * 1024
+
 // vertexBodyProjectsRe matches projects/{project} in body JSON values,
 // where the path may appear as "projects/X (after a JSON quote) or /projects/X (mid-path).
 var vertexBodyProjectsRe = regexp.MustCompile(`(["/])projects/[^/"]+`)
@@ -2998,8 +3000,6 @@ func (provider *VertexProvider) PassthroughStream(
 		requestURL += "?" + req.RawQuery
 	}
 
-	startTime := time.Now()
-
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -3121,13 +3121,30 @@ func (provider *VertexProvider) PassthroughStream(
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer stopIdleTimeout()
 		defer stopCancellation()
+		streamStart := time.Now()
 
+		fullResponseBody := make([]byte, 0, maxStreamPassthroughCaptureBytes)
+		fullResponseBodyTruncated := false
+		terminalDetector := &providerUtils.StreamTerminalDetector{}
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := bodyStream.Read(buf)
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
+				if !fullResponseBodyTruncated {
+					remaining := maxStreamPassthroughCaptureBytes - len(fullResponseBody)
+					if remaining > 0 {
+						if n <= remaining {
+							fullResponseBody = append(fullResponseBody, chunk...)
+						} else {
+							fullResponseBody = append(fullResponseBody, chunk[:remaining]...)
+							fullResponseBodyTruncated = true
+						}
+					} else {
+						fullResponseBodyTruncated = true
+					}
+				}
 				select {
 				case ch <- &schemas.BifrostStreamChunk{
 					BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{
@@ -3140,21 +3157,45 @@ func (provider *VertexProvider) PassthroughStream(
 				case <-ctx.Done():
 					return
 				}
+
+				// Vertex streamGenerateContent passthrough can emit terminal markers
+				// (finishReason) before the underlying HTTP body is closed.
+				// Finalize as success once this appears to avoid hanging clients.
+				if terminalDetector.ObserveChunk(chunk) {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					extraFields.Latency = time.Since(streamStart).Milliseconds()
+					var capturedBody []byte
+					if !fullResponseBodyTruncated {
+						capturedBody = append([]byte(nil), fullResponseBody...)
+					}
+					finalResp := &schemas.BifrostResponse{
+						PassthroughResponse: &schemas.BifrostPassthroughResponse{
+							StatusCode:  statusCode,
+							Headers:     headers,
+							Body:        capturedBody,
+							ExtraFields: extraFields,
+						},
+					}
+					postHookRunner(ctx, finalResp, nil)
+					return
+				}
 			}
 			if readErr == io.EOF {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(startTime).Milliseconds()
+				extraFields.Latency = time.Since(streamStart).Milliseconds()
+				var capturedBody []byte
+				if !fullResponseBodyTruncated {
+					capturedBody = append([]byte(nil), fullResponseBody...)
+				}
 				finalResp := &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{
 						StatusCode:  statusCode,
 						Headers:     headers,
+						Body:        capturedBody,
 						ExtraFields: extraFields,
 					},
 				}
 				postHookRunner(ctx, finalResp, nil)
-				if postHookSpanFinalizer != nil {
-					postHookSpanFinalizer(ctx)
-				}
 				return
 			}
 			if readErr != nil {
@@ -3162,7 +3203,7 @@ func (provider *VertexProvider) PassthroughStream(
 					return // let defer handle cancel/timeout
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(startTime).Milliseconds()
+				extraFields.Latency = time.Since(streamStart).Milliseconds()
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger, postHookSpanFinalizer)
 				return
 			}

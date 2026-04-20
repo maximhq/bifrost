@@ -859,6 +859,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
 				params.StatusCode = result.PassthroughResponse.StatusCode
 			}
+			if contentLoggingEnabled && len(result.PassthroughResponse.Body) > 0 {
+				entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
+				if shouldStoreRaw {
+					entry.RawResponse = string(result.PassthroughResponse.Body)
+				}
+			}
 			// Flip status for passthrough error responses (4xx/5xx from provider)
 			if isPassthroughErrorResponse(result) {
 				entry.Status = "error"

@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	BifrostContextKeyResponseFormat schemas.BifrostContextKey = "bifrost_context_key_response_format"
+	BifrostContextKeyResponseFormat  schemas.BifrostContextKey = "bifrost_context_key_response_format"
+	maxStreamPassthroughCaptureBytes                           = 1024 * 1024
 )
 
 type GeminiProvider struct {
@@ -173,7 +174,6 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 // Returns the response and latency, or an error if the request fails.
 func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -4213,12 +4213,28 @@ func (provider *GeminiProvider) PassthroughStream(
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
+		fullResponseBody := make([]byte, 0, maxStreamPassthroughCaptureBytes)
+		fullResponseBodyTruncated := false
+		terminalDetector := &providerUtils.StreamTerminalDetector{}
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := bodyStream.Read(buf)
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
+				if !fullResponseBodyTruncated {
+					remaining := maxStreamPassthroughCaptureBytes - len(fullResponseBody)
+					if remaining > 0 {
+						if n <= remaining {
+							fullResponseBody = append(fullResponseBody, chunk...)
+						} else {
+							fullResponseBody = append(fullResponseBody, chunk[:remaining]...)
+							fullResponseBodyTruncated = true
+						}
+					} else {
+						fullResponseBodyTruncated = true
+					}
+				}
 				select {
 				case ch <- &schemas.BifrostStreamChunk{
 					BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{
@@ -4231,21 +4247,44 @@ func (provider *GeminiProvider) PassthroughStream(
 				case <-ctx.Done():
 					return
 				}
+
+				if terminalDetector.ObserveChunk(chunk) {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					extraFields.Latency = time.Since(startTime).Milliseconds()
+					var capturedBody []byte
+					if !fullResponseBodyTruncated {
+						capturedBody = append([]byte(nil), fullResponseBody...)
+					}
+					finalResp := &schemas.BifrostResponse{
+						PassthroughResponse: &schemas.BifrostPassthroughResponse{
+							StatusCode:    statusCode,
+							Headers:       headers,
+							Body:          capturedBody,
+							BodyTruncated: fullResponseBodyTruncated,
+							ExtraFields:   extraFields,
+						},
+					}
+					postHookRunner(ctx, finalResp, nil)
+					return
+				}
 			}
 			if readErr == io.EOF {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				extraFields.Latency = time.Since(startTime).Milliseconds()
+				var capturedBody []byte
+				if !fullResponseBodyTruncated {
+					capturedBody = append([]byte(nil), fullResponseBody...)
+				}
 				finalResp := &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{
-						StatusCode:  statusCode,
-						Headers:     headers,
-						ExtraFields: extraFields,
+						StatusCode:    statusCode,
+						Headers:       headers,
+						Body:          capturedBody,
+						BodyTruncated: fullResponseBodyTruncated,
+						ExtraFields:   extraFields,
 					},
 				}
 				postHookRunner(ctx, finalResp, nil)
-				if postHookSpanFinalizer != nil {
-					postHookSpanFinalizer(ctx)
-				}
 				return
 			}
 			if readErr != nil {
