@@ -45,6 +45,7 @@ import {
   Status
 } from "@/lib/constants/logs";
 import { LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { downloadAsJson } from "@/lib/utils/browser-download";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
@@ -52,6 +53,7 @@ import {
   AlertCircle,
   ChevronDown,
   Clipboard,
+  Download,
   Loader2,
   MoreVertical,
   Trash2,
@@ -490,6 +492,13 @@ export function LogDetailView({
                 >
                   <Clipboard className="h-4 w-4" />
                   Copy request body
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
+                  data-testid="logdetails-export-log-button"
+                >
+                  <Download className="h-4 w-4" />
+                  Export as JSON
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <AlertDialogTrigger asChild>
