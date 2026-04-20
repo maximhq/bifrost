@@ -925,6 +925,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	} else if result != nil {
 		entry.Status = "success"
+		entry.Stream = bifrost.IsStreamRequestType(requestType)
 		extraFields := result.GetExtraFields()
 		applyModelAlias(entry, extraFields.OriginalModelRequested, extraFields.ResolvedModelUsed)
 		if requestType == schemas.RealtimeRequest {
