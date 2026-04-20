@@ -365,16 +365,18 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
+	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
-			Search:     search,
-			CustomerID: customerID,
-			TeamID:     teamID,
-			SortBy:     sortBy,
-			Order:      order,
-			Export:     isExport,
+			Search:                             search,
+			CustomerID:                         customerID,
+			TeamID:                             teamID,
+			SortBy:                             sortBy,
+			Order:                              order,
+			Export:                             isExport,
+			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
