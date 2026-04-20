@@ -582,7 +582,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 								/>
 
 							</div>
-							<fieldset disabled={isManagedByProfile} className={isManagedByProfile ? "space-y-4 opacity-50" : "space-y-4"}>
+							<fieldset
+								disabled={isManagedByProfile}
+								aria-disabled={isManagedByProfile}
+								inert={isManagedByProfile ? "" : undefined}
+								className={isManagedByProfile ? "pointer-events-none space-y-4 opacity-50" : "space-y-4"}
+							>
 							<div className="space-y-4">
 								<FormField
 									control={form.control}
