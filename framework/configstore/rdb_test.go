@@ -758,6 +758,96 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 	assert.ErrorAs(t, err, &unresolvedErr, "Should be ErrUnresolvedKeys")
 }
 
+func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+				{ID: "key-b", Name: "openai-key-b", Value: *schemas.NewEnvVar("sk-b"), Weight: 1.0},
+			},
+		},
+	}
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err)
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-update-provider-cleanup",
+		Name:     "VK Update Provider Cleanup",
+		Value:    "vk-update-provider-cleanup-value",
+		IsActive: true,
+	}
+	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	weight := 1.0
+	pc := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-update-provider-cleanup",
+		Provider:     "openai",
+		Weight:       &weight,
+		Keys: []tables.TableKey{
+			{Name: "openai-key-b"},
+		},
+	}
+	err = store.CreateVirtualKeyProviderConfig(ctx, pc)
+	require.NoError(t, err)
+
+	updatedProviderConfig := ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+		},
+	}
+	err = store.UpdateProvider(ctx, "openai", updatedProviderConfig)
+	require.NoError(t, err)
+
+	result, err := store.GetVirtualKey(ctx, "vk-update-provider-cleanup")
+	require.NoError(t, err)
+	require.Len(t, result.ProviderConfigs, 1)
+	assert.Equal(t, "openai", result.ProviderConfigs[0].Provider)
+	assert.False(t, result.ProviderConfigs[0].AllowAllKeys)
+	assert.Empty(t, result.ProviderConfigs[0].Keys)
+}
+
+func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{{ID: "key-delete", Name: "openai-key-delete", Value: *schemas.NewEnvVar("sk-delete"), Weight: 1.0}},
+		},
+	}
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err)
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-delete-provider-cleanup",
+		Name:     "VK Delete Provider Cleanup",
+		Value:    "vk-delete-provider-cleanup-value",
+		IsActive: true,
+	}
+	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	weight := 1.0
+	pc := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-delete-provider-cleanup",
+		Provider:     "openai",
+		Weight:       &weight,
+	}
+	err = store.CreateVirtualKeyProviderConfig(ctx, pc)
+	require.NoError(t, err)
+
+	err = store.DeleteProvider(ctx, "openai")
+	require.NoError(t, err)
+
+	result, err := store.GetVirtualKey(ctx, "vk-delete-provider-cleanup")
+	require.NoError(t, err)
+	assert.Empty(t, result.ProviderConfigs)
+}
+
 // =============================================================================
 // Client Config Tests
 // =============================================================================

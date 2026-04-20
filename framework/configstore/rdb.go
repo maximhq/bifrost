@@ -536,14 +536,58 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	return nil
 }
 
+func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForRemovedProviderKeys(ctx context.Context, txDB *gorm.DB, provider string, removedKeyIDs []uint) error {
+	if len(removedKeyIDs) == 0 {
+		return nil
+	}
+
+	var providerConfigs []tables.TableVirtualKeyProviderConfig
+	if err := txDB.WithContext(ctx).
+		Where("provider = ?", provider).
+		Find(&providerConfigs).Error; err != nil {
+		return err
+	}
+
+	for _, providerConfig := range providerConfigs {
+		if err := txDB.WithContext(ctx).
+			Table("governance_virtual_key_provider_config_keys").
+			Where("table_virtual_key_provider_config_id = ? AND table_key_id IN ?", providerConfig.ID, removedKeyIDs).
+			Delete(nil).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx context.Context, txDB *gorm.DB, provider string) error {
+	var providerConfigIDs []uint
+	if err := txDB.WithContext(ctx).
+		Model(&tables.TableVirtualKeyProviderConfig{}).
+		Where("provider = ?", provider).
+		Pluck("id", &providerConfigIDs).Error; err != nil {
+		return err
+	}
+
+	for _, providerConfigID := range providerConfigIDs {
+		if err := s.DeleteVirtualKeyProviderConfig(ctx, providerConfigID, txDB); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // UpdateProvider updates a single provider configuration in the database without deleting/recreating.
 func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
-	var txDB *gorm.DB
-	if len(tx) > 0 {
-		txDB = tx[0]
-	} else {
-		txDB = s.DB()
+	if len(tx) == 0 {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.UpdateProvider(ctx, provider, config, transaction)
+		})
 	}
+
+	var txDB *gorm.DB
+	txDB = tx[0]
 	// Find the existing provider
 	var dbProvider tables.TableProvider
 	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
@@ -674,6 +718,14 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		}
 	}
 
+	removedProviderKeyIDs := make([]uint, 0, len(existingKeysMap))
+	for _, keyToDelete := range existingKeysMap {
+		removedProviderKeyIDs = append(removedProviderKeyIDs, keyToDelete.ID)
+	}
+	if err := s.cleanupVirtualKeyProviderConfigsForRemovedProviderKeys(ctx, txDB, dbProvider.Name, removedProviderKeyIDs); err != nil {
+		return err
+	}
+
 	// Delete keys that are no longer in the new config
 	for _, keyToDelete := range existingKeysMap {
 		if err := txDB.WithContext(ctx).Delete(&keyToDelete).Error; err != nil {
@@ -789,18 +841,24 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 
 // DeleteProvider deletes a single provider and all its associated keys from the database.
 func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
-	var txDB *gorm.DB
-	if len(tx) > 0 {
-		txDB = tx[0]
-	} else {
-		txDB = s.DB()
+	if len(tx) == 0 {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteProvider(ctx, provider, transaction)
+		})
 	}
+
+	var txDB *gorm.DB
+	txDB = tx[0]
 	// Find the existing provider
 	var dbProvider tables.TableProvider
 	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
+		return err
+	}
+
+	if err := s.cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx, txDB, dbProvider.Name); err != nil {
 		return err
 	}
 
