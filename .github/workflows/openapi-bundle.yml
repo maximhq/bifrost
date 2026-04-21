@@ -61,5 +61,5 @@ jobs:
             echo "No changes to commit"
             exit 0
           fi
-          git commit -m "chore: regenerate openapi.json --skip-pipeline"
+          git commit -m "chore: regenerate openapi.json --skip-ci"
           git push origin "$CURRENT_BRANCH"
