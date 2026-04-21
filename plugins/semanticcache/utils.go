@@ -127,11 +127,9 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 	hashInput := struct {
 		Input  interface{}            `json:"input"`
 		Params map[string]interface{} `json:"params,omitempty"`
-		Stream bool                   `json:"stream,omitempty"`
 	}{
 		Input:  plugin.getNormalizedInputForCaching(req),
 		Params: metadata,
-		Stream: bifrost.IsStreamRequestType(req.RequestType),
 	}
 
 	// Marshal to JSON with deeply sorted keys for deterministic hashing

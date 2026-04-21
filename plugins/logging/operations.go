@@ -368,6 +368,11 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.Cost = streamResponse.Data.Cost
 	}
 
+	// Cache
+	if streamResponse.Data.CacheDebug != nil {
+		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
+	}
+
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
 		// Transcription output
 		if streamResponse.Data.TranscriptionOutput != nil {
@@ -380,10 +385,6 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		// Image generation output
 		if streamResponse.Data.ImageGenerationOutput != nil {
 			entry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
-		}
-		// Cache debug
-		if streamResponse.Data.CacheDebug != nil {
-			entry.CacheDebugParsed = streamResponse.Data.CacheDebug
 		}
 		// Output message
 		if streamResponse.Data.OutputMessage != nil {

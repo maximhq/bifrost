@@ -336,6 +336,7 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 		accResult.OutputMessages = processedResp.Data.OutputMessages
 		accResult.TokenUsage = processedResp.Data.TokenUsage
 		accResult.Cost = processedResp.Data.Cost
+		accResult.CacheDebug = processedResp.Data.CacheDebug
 		accResult.ErrorDetails = processedResp.Data.ErrorDetails
 		accResult.AudioOutput = processedResp.Data.AudioOutput
 		accResult.TranscriptionOutput = processedResp.Data.TranscriptionOutput
