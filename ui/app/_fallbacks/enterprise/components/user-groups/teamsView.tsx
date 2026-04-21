@@ -1,10 +1,10 @@
+import TeamsTable from "@/app/workspace/governance/views/teamsTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import TeamsTable from "@/app/workspace/governance/views/teamsTable";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
@@ -58,7 +58,10 @@ export function TeamsView() {
 	const teamsTotal = teamsData?.total_count ?? 0;
 
 	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
-	}, [teamsTotal, offset, teamsData]);
+	useEffect(() => {
+		if (!teamsData || offset < teamsTotal) return;
+		setOffset(teamsTotal === 0 ? 0 : Math.floor((teamsTotal - 1) / PAGE_SIZE) * PAGE_SIZE);
+	}, [teamsTotal, offset]);
 
 	const isLoading = vkLoading || customersLoading || teamsLoading;
 
