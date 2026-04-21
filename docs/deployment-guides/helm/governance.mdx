@@ -182,7 +182,6 @@ bifrost:
           - provider: "openai"
             weight: 1
             allowed_models: ["gpt-4o", "gpt-4o-mini"]
-            # No keys[] → all configured OpenAI keys allowed
 
       # 3. Multi-provider with weighted routing
       - id: "vk-multi"
@@ -212,8 +211,7 @@ bifrost:
           - provider: "openai"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "openai-primary"  # pin to specific configured key
+            key_ids: ["openai-primary"]  # pin to specific configured key by name
 
       # 5. Restricted testing key
       - id: "vk-testing"
@@ -238,9 +236,10 @@ bifrost:
           - provider: "openai"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "openai-batch"    # only the batch-flagged key
+            key_ids: ["openai-batch"]    # only the batch-flagged key
 ```
+
+`provider_configs[].key_ids` and `provider_configs[].keys` are both supported in Helm values. Prefer `key_ids` for parity with `config.json` (`key_ids` should contain provider key names).
 
 **Use a virtual key in API calls:**
 

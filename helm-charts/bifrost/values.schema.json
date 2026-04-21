@@ -3093,6 +3093,13 @@
           "type": "string",
           "description": "Associated rate limit ID"
         },
+        "key_ids": {
+          "type": "array",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In Helm values, use provider key names.",
+          "items": {
+            "type": "string"
+          }
+        },
         "keys": {
           "type": "array",
           "description": "Provider keys for this config (empty means all keys allowed for this provider)",
