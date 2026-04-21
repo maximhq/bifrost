@@ -197,6 +197,105 @@ A production-ready file with PostgreSQL storage, multi-provider setup, governanc
 
 ---
 
+## Enterprise Example: Postgres + etcd + Access Profiles
+
+Use this pattern when you want enterprise access-profile configuration to be seeded directly from `config.json`, while running clustered nodes with etcd discovery.
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "etcd",
+      "service_name": "bifrost-cluster",
+      "etcd_endpoints": ["http://localhost:2379"]
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "postgres",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost-config",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "postgres",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost-config",
+      "ssl_mode": "disable"
+    }
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "client_id": "echo_http",
+        "name": "echo_http",
+        "connection_type": "http",
+        "connection_string": "https://mcpplaygroundonline.com/mcp-echo-server",
+        "auth_type": "none",
+        "tools_to_execute": ["echo"]
+      }
+    ]
+  },
+  "access_profiles": [
+    {
+      "name": "platform-default",
+      "description": "Default profile for enterprise access-profile testing",
+      "is_active": true,
+      "tags": ["platform", "test"],
+      "provider_configs": [
+        {
+          "provider_name": "OpenAi",
+          "all_models_allowed": false,
+          "allowed_models": ["gpt-4o-mini"]
+        }
+      ]
+    },
+    {
+      "name": "platform-readonly-mcp",
+      "description": "Profile for validating MCP include/exclude behavior",
+      "is_active": true,
+      "tags": ["mcp", "test"],
+      "mcp_servers": [
+        {
+          "mcp_server_id": "echo_http"
+        }
+      ],
+      "mcp_tool_overrides": [
+        {
+          "mcp_client_id": "echo_http",
+          "tool_name": "echo",
+          "action": "include"
+        },
+        {
+          "mcp_client_id": "github",
+          "tool_name": "create_pull_request",
+          "action": "exclude"
+        }
+      ]
+    }
+  ]
+}
+```
+
+<Note>
+`access_profiles` is an enterprise capability. For OSS-only deployments, use `governance.virtual_keys` and related governance resources instead.
+</Note>
+
+---
+
 ## Example Configs
 
 Ready-to-use reference configurations from the [examples/configs](https://github.com/maximhq/bifrost/tree/main/examples/configs) directory on GitHub:
