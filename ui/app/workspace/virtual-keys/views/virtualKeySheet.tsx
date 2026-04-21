@@ -2,14 +2,14 @@ import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtua
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import MultiBudgetLines from "@/components/ui/MultiBudgetLines";
+import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -35,12 +35,12 @@ import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import {
-	getErrorMessage,
-	useCreateVirtualKeyMutation,
-	useGetAllKeysQuery,
-	useGetMCPClientsQuery,
-	useGetProvidersQuery,
-	useUpdateVirtualKeyMutation,
+  getErrorMessage,
+  useCreateVirtualKeyMutation,
+  useGetAllKeysQuery,
+  useGetMCPClientsQuery,
+  useGetProvidersQuery,
+  useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";

@@ -4,6 +4,13 @@ name: Release Pipeline
 on:
   push:
     branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip all tests and jump directly to release (admin only)'
+        required: false
+        type: boolean
+        default: false
 
 # Prevent concurrent runs
 concurrency:
@@ -19,12 +26,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
+      skip-tests: ${{ steps.skip_tests.outputs.skip-tests }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
           allowed-endpoints: >+
+            api.github.com:443
 
       - name: Check if pipeline should be skipped
         id: check
@@ -32,17 +41,34 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
-          if [[ "$FIRST_LINE" == *"--skip-pipeline"* ]]; then
+          if [[ "$FIRST_LINE" == *"--skip-ci"* ]]; then
             echo "should-skip=true" >> $GITHUB_OUTPUT
           else
             echo "should-skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate admin permission for skip_tests
+        id: skip_tests
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.skip_tests }}" == "true" ]]; then
+            PERMISSION=$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission --jq '.permission')
+            if [[ "$PERMISSION" != "admin" ]]; then
+              echo "::error::Only repository admins can use skip_tests=true. ${{ github.actor }} has permission: $PERMISSION"
+              exit 1
+            fi
+            echo "Admin verified: ${{ github.actor }} ($PERMISSION)"
+            echo "skip-tests=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip-tests=false" >> $GITHUB_OUTPUT
           fi
 
   # Detect what needs to be released
   detect-changes:
     needs: [check-skip]
     runs-on: ubuntu-latest
-    # Skip if first line of commit message contains --skip-pipeline
+    # Skip if first line of commit message contains --skip-ci
     if: needs.check-skip.outputs.should-skip != 'true'
     outputs:
       core-needs-release: ${{ steps.detect.outputs.core-needs-release }}
@@ -89,7 +115,7 @@ jobs:
   # Run all tests in parallel before any releases
   test-core:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -189,6 +215,7 @@ jobs:
     if: |
       always() &&
       needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
       needs.detect-changes.outputs.core-needs-release == 'true' &&
       needs.test-core.result == 'failure'
     runs-on: ubuntu-latest
@@ -215,7 +242,7 @@ jobs:
 
   test-framework:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -306,7 +333,7 @@ jobs:
 
   test-plugins:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -408,7 +435,7 @@ jobs:
 
   test-bifrost-http:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -483,7 +510,7 @@ jobs:
   # Migration tests - validates database migrations from previous versions
   test-migrations:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -547,7 +574,7 @@ jobs:
   # E2E UI tests - validates UI with Playwright
   test-e2e-ui:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -640,7 +667,7 @@ jobs:
   # Docker image test - amd64
   test-docker-image-amd64:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -749,7 +776,7 @@ jobs:
   # Docker image test - arm64
   test-docker-image-arm64:
     needs: [check-skip, detect-changes]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -869,7 +896,7 @@ jobs:
         test-docker-image-amd64,
         test-docker-image-arm64,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -965,7 +992,7 @@ jobs:
         test-docker-image-arm64,
         core-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && needs.test-framework.result == 'success' && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1072,7 +1099,7 @@ jobs:
         core-release,
         framework-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && needs.test-plugins.result == 'success' && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1198,7 +1225,7 @@ jobs:
         framework-release,
         plugins-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && needs.test-bifrost-http.result == 'success' && needs.test-migrations.result == 'success' && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write

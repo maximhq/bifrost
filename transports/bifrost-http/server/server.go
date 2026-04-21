@@ -310,7 +310,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 			return nil, err
 		}
 		return preloadedVk, nil
-	}, lib.DBLookupMaxRetries, lib.DBLookupDelay)
+	}, lib.DBLookupMaxRetries, 2*lib.DBLookupDelay)
 	if err != nil {
 		logger.Error("failed to load virtual key: %v", err)
 		return nil, err

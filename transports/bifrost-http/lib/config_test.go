@@ -13182,13 +13182,17 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 	// Test case 4: All fields
 	t.Run("AllFields_GORMRoundTrip", func(t *testing.T) {
 		customerID := "customer-1"
-		budgetID := "budget-1"
+		budgetID := uuid.New().String()
 
 		teamToSave := tables.TableTeam{
-			ID:            uuid.New().String(),
-			Name:          "Test Team All",
-			CustomerID:    &customerID,
-			Budgets:       []tables.TableBudget{{ID: budgetID}},
+			ID:         uuid.New().String(),
+			Name:       "Test Team All",
+			CustomerID: &customerID,
+			Budgets: []tables.TableBudget{{
+				ID:            budgetID,
+				ResetDuration: "1h",
+				MaxLimit:      100.0,
+			}},
 			ParsedProfile: map[string]interface{}{"key": "value"},
 			ParsedConfig:  map[string]interface{}{"setting": true},
 			ParsedClaims:  map[string]interface{}{"role": "user"},

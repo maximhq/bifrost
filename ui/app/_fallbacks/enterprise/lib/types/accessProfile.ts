@@ -29,8 +29,8 @@ export interface UserAccessProfile {
 	is_active: boolean;
 	expires_at?: string;
 	provider_configs?: unknown[];
-	budget_lines?: AccessProfileBudgetLine[];
-	rate_limits?: AccessProfileRateLimitLine;
+	budgets?: AccessProfileBudgetLine[];
+	rate_limit?: AccessProfileRateLimitLine;
 	mcp_configs?: unknown;
 	created_at: string;
 	updated_at: string;
