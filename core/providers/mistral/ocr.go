@@ -30,6 +30,10 @@ func ToMistralOCRRequest(req *schemas.BifrostOCRRequest) *MistralOCRRequest {
 		if req.Document.ImageURL != nil {
 			mistralReq.Document.ImageURL = *req.Document.ImageURL
 		}
+	case schemas.OCRDocumentTypeFile:
+		if req.Document.FileID != nil {
+			mistralReq.Document.FileID = *req.Document.FileID
+		}
 	}
 
 	if req.Params != nil {

@@ -753,9 +753,24 @@ func (provider *MistralProvider) BatchResults(_ *schemas.BifrostContext, _ []sch
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
 
-// FileUpload is not supported by Mistral provider.
-func (provider *MistralProvider) FileUpload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileUploadRequest, provider.GetProviderKey())
+// FileUpload uploads a file to Mistral's Files API.
+// Used for OCR document uploads and other file purposes (fine-tune, batch, ocr).
+// API docs: https://docs.mistral.ai/api/endpoint/files
+func (provider *MistralProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Mistral, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
+		return nil, err
+	}
+
+	if len(request.File) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
+	}
+
+	if request.Purpose == "" {
+		return nil, providerUtils.NewBifrostOperationError("purpose is required", nil)
+	}
+
+	// Delegate to the file upload helper in files.go
+	return provider.MistralFileUpload(ctx, key, request)
 }
 
 // FileList is not supported by Mistral provider.

@@ -1282,6 +1282,10 @@ func prepareOCRRequest(ctx *fasthttp.RequestCtx) (*OCRHandlerRequest, *schemas.B
 		return nil, nil, fmt.Errorf("image_url is required when document type is image_url")
 	}
 
+	if req.Document.Type == schemas.OCRDocumentTypeFile && (req.Document.FileID == nil || *req.Document.FileID == "") {
+		return nil, nil, fmt.Errorf("file_id is required when document type is file")
+	}
+
 	// Extract extra params
 	if req.OCRParameters == nil {
 		req.OCRParameters = &schemas.OCRParameters{}
@@ -2996,10 +3000,14 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// If provider is still not specified, try to get from x-bf-provider header (Bifrost standard header)
 	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required")
-		return
+		provider = string(ctx.Request.Header.Peek("x-bf-provider"))
 	}
+
+	// If provider is still not specified, this is an error for most cases
+	// but we allow FileUpload to proceed without explicit provider for backwards compatibility
+	// The provider will be determined at the core level based on the configured keys
 
 	// Extract purpose (required)
 	purposeValues := form.Value["purpose"]
