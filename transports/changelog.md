@@ -1,5 +1,19 @@
 ## ✨ Features
 
+- **Access Profiles via Config** — Seed enterprise access profiles declaratively from `config.json` and Helm values at deploy time, including provider restrictions, model allowlists, budgets, rate limits, and MCP server/tool controls
+- **Key IDs in Helm** — `key_ids` is now the preferred field for pinning provider keys in Helm virtual key configurations, aligning Helm values with `config.json` schema
+
+## 🐞 Fixed
+
+- **Fallback Stream State** — Clear `BifrostContextKeyStreamEndIndicator` before fallback requests so stale streaming state doesn't carry into retries
+- **Access Profile Rate Limits** — Rate limit counters for access profiles were always showing 0; now persisted correctly to the database
+- **Helm Encryption Key** — `encryptionKey` is now properly optional for Helm StatefulSet deployments when using a Kubernetes secret reference
+- **Teams View OSS/Enterprise Split** — Extracted full TeamsView into the shared fallback component so it works correctly in OSS builds; fixed pagination offset snap-back and RBAC loading state race
+
+---
+
+## ✨ Features
+
 - **Claude Opus 4.7** — Added compatibility for Anthropic's Claude Opus 4.7 model, including adaptive thinking, task-budgets beta header, `display` parameter handling, and "xhigh" effort mapping
 - **Anthropic Structured Outputs** — Added `response_format` and structured output support for Anthropic models across chat completions and Responses API, with order-preserving merge of additional model request fields (thanks [@emirhanmutlu-natuvion](https://github.com/emirhanmutlu-natuvion)!)
 - **MCP Tool Annotations** — Preserve MCP tool annotations (`title`, `readOnly`, `destructive`, `idempotent`, `openWorld`) in bidirectional conversion so agents can reason about tool behavior

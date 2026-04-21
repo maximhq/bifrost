@@ -1,0 +1,2 @@
+- fix: dump all rate limits to DB including access profiles — access profile rate limit counters were always showing 0 in the UI due to missing range in DumpRateLimits
+- chore: upgraded core to v1.5.4 and framework to v1.3.4
