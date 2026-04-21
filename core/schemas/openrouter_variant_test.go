@@ -65,15 +65,53 @@ func TestWhiteListAllowsBaseViaOpenRouterVariant(t *testing.T) {
 }
 
 func TestKeyAliasesResolveOpenRouterVariant(t *testing.T) {
-	aliases := KeyAliases{"openai/gpt-5.2": "openai/gpt-5.2-provider-id"}
+	base := KeyAliases{"openai/gpt-5.2": "openai/gpt-5.2-provider-id"}
 
-	if got := aliases.Resolve("openai/gpt-5.2"); got != "openai/gpt-5.2-provider-id" {
-		t.Fatalf("direct alias resolution failed: got %q", got)
+	tests := []struct {
+		name    string
+		aliases KeyAliases
+		input   string
+		want    string
+	}{
+		{"direct base match", base, "openai/gpt-5.2", "openai/gpt-5.2-provider-id"},
+		{"variant via base fallback", base, "openai/gpt-5.2:nitro", "openai/gpt-5.2-provider-id:nitro"},
+		{"variant case insensitive", base, "openai/gpt-5.2:NITRO", "openai/gpt-5.2-provider-id:nitro"},
+		{"case-insensitive base match", base, "OpenAI/GPT-5.2:free", "openai/gpt-5.2-provider-id:free"},
+		{"unknown variant suffix passes through", base, "openai/gpt-5.2:foobar", "openai/gpt-5.2:foobar"},
+		{"empty trailing colon passes through", base, "openai/gpt-5.2:", "openai/gpt-5.2:"},
+		{"unknown model returns input", base, "unknown/model:nitro", "unknown/model:nitro"},
+		{"nil aliases returns input", nil, "openai/gpt-5.2:nitro", "openai/gpt-5.2:nitro"},
 	}
-	if got := aliases.Resolve("openai/gpt-5.2:nitro"); got != "openai/gpt-5.2-provider-id:nitro" {
-		t.Fatalf("variant alias resolution failed: got %q", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.aliases.Resolve(tc.input); got != tc.want {
+				t.Fatalf("Resolve(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
 	}
-	if got := aliases.Resolve("unknown/model:nitro"); got != "unknown/model:nitro" {
-		t.Fatalf("unknown model should return input: got %q", got)
+}
+
+// TestKeyAliasesResolveExactVariantWins pins down that an alias configured for
+// the exact variant slug takes precedence over the base-model fallback.
+func TestKeyAliasesResolveExactVariantWins(t *testing.T) {
+	aliases := KeyAliases{
+		"openai/gpt-5.2":       "base-target",
+		"openai/gpt-5.2:nitro": "custom-target",
+	}
+	if got := aliases.Resolve("openai/gpt-5.2:nitro"); got != "custom-target" {
+		t.Fatalf("exact variant alias should win, got %q", got)
+	}
+	if got := aliases.Resolve("openai/gpt-5.2:free"); got != "base-target:free" {
+		t.Fatalf("variant without exact alias must fall back to base, got %q", got)
+	}
+}
+
+// TestKeyAliasesResolveAvoidsDoubleVariant pins down that if the alias target
+// already carries a variant suffix, Resolve strips it before re-appending the
+// request variant, so we never produce "foo:nitro:nitro".
+func TestKeyAliasesResolveAvoidsDoubleVariant(t *testing.T) {
+	aliases := KeyAliases{"openai/gpt-5.2": "provider-id:free"}
+	if got := aliases.Resolve("openai/gpt-5.2:nitro"); got != "provider-id:nitro" {
+		t.Fatalf("double-variant should be stripped, got %q", got)
 	}
 }

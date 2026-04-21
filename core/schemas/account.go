@@ -182,13 +182,19 @@ func (ka KeyAliases) Resolve(model string) string {
 	}
 	// OpenRouter variant fallback: try to resolve the base model (:nitro/:free/etc stripped),
 	// then re-append the variant suffix so the target is routed identically to the base.
+	// If the resolved alias target already carries a variant suffix, strip it first to
+	// avoid producing a double-variant string like "foo:nitro:nitro".
 	if base, variant := SplitOpenRouterVariant(model); variant != "" {
+		appendVariant := func(target string) string {
+			targetBase, _ := SplitOpenRouterVariant(target)
+			return targetBase + ":" + variant
+		}
 		if alias, ok := ka[base]; ok {
-			return alias + ":" + variant
+			return appendVariant(alias)
 		}
 		for k, v := range ka {
 			if strings.EqualFold(k, base) {
-				return v + ":" + variant
+				return appendVariant(v)
 			}
 		}
 	}
