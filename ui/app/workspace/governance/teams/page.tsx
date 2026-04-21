@@ -1,7 +1,7 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { RbacOperation, RbacResource, useRbac, useRbacContext } from "@enterprise/lib";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import TeamsTable from "@/app/workspace/governance/views/teamsTable";
@@ -10,6 +10,7 @@ const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export default function GovernanceTeamsPage() {
+	const { isLoading: rbacLoading } = useRbacContext();
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
@@ -63,7 +64,7 @@ export default function GovernanceTeamsPage() {
 		setOffset(teamsTotal === 0 ? 0 : Math.floor((teamsTotal - 1) / PAGE_SIZE) * PAGE_SIZE);
 	}, [teamsTotal, offset]);
 
-	const isLoading = vkLoading || customersLoading || teamsLoading;
+	const isLoading = rbacLoading || vkLoading || customersLoading || teamsLoading;
 
 	useEffect(() => {
 		if (!vkError && !customersError && !teamsError) {
