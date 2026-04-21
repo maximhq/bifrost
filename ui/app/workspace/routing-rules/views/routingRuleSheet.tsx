@@ -260,337 +260,339 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-8">
-				<SheetHeader className="flex flex-col items-start">
+			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
+				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
 					</SheetDescription>
 				</SheetHeader>
 
-				<form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-					{/* Rule Name */}
-					<div className="space-y-3">
-						<Label htmlFor="name">
-							Rule Name <span className="text-red-500">*</span>
-						</Label>
-						<Input
-							id="name"
-							placeholder="e.g., Route GPT-4 to Azure"
-							{...register("name", { required: "Rule name is required", maxLength: 255 })}
-						/>
-						{errors.name && <p className="text-destructive text-sm">{errors.name.message}</p>}
-					</div>
-
-					{/* Description */}
-					<div className="space-y-3">
-						<Label htmlFor="description">Description</Label>
-						<Textarea id="description" placeholder="Describe what this rule does..." rows={2} {...register("description")} />
-					</div>
-
-					{/* Enabled Switch */}
-					<div className="flex items-center justify-between rounded-lg border p-4">
-						<div className="space-y-0.5">
-							<Label htmlFor="enabled">Enable Rule</Label>
-							<p className="text-muted-foreground text-sm">Rule will be active and applied to matching requests</p>
-						</div>
-						<Switch id="enabled" checked={enabled} onCheckedChange={(checked) => setValue("enabled", checked)} />
-					</div>
-
-					{/* Chain Rule Switch */}
-					<div className="flex items-center justify-between rounded-lg border p-4">
-						<div className="space-y-0.5">
-							<Label htmlFor="chain_rule">Chain Rule</Label>
-							<p className="text-muted-foreground text-sm">
-								After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for
-								composing rules — e.g. normalize a model alias first, then route based on the canonical name.
-							</p>
-						</div>
-						<Switch
-							id="chain_rule"
-							checked={chainRule}
-							onCheckedChange={(checked) => setValue("chain_rule", checked)}
-							data-testid="routing-rule-chain-rule-switch"
-						/>
-					</div>
-
-					{/* Scope and Priority - Side by Side */}
-					<div className="grid grid-cols-2 gap-4">
+				<form onSubmit={handleSubmit(onSubmit)}>
+					<div className="flex flex-col gap-6 px-8">
+						{/* Rule Name */}
 						<div className="space-y-3">
-							<Label htmlFor="scope">Scope</Label>
-							<Select
-								value={scope}
-								onValueChange={(value) => {
-									setValue("scope", value as any);
-									// Clear scope_id when scope changes
-									setValue("scope_id", "");
-								}}
-							>
-								<SelectTrigger className="w-full">
-									<SelectValue placeholder="Select scope..." />
-								</SelectTrigger>
-								<SelectContent>
-									{ROUTING_RULE_SCOPES.map((scopeOption) => (
-										<SelectItem key={scopeOption.value} value={scopeOption.value}>
-											{scopeOption.label}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-						</div>
-
-						<div className="space-y-3">
-							<Label htmlFor="priority">
-								Priority <span className="text-red-500">*</span>
+							<Label htmlFor="name">
+								Rule Name <span className="text-red-500">*</span>
 							</Label>
 							<Input
-								id="priority"
-								type="number"
-								min={0}
-								max={1000}
-								{...register("priority", {
-									required: "Priority is required",
-									min: { value: 0, message: "Priority must be ≥ 0" },
-									max: { value: 1000, message: "Priority must be ≤ 1000" },
-									valueAsNumber: true,
-								})}
+								id="name"
+								placeholder="e.g., Route GPT-4 to Azure"
+								{...register("name", { required: "Rule name is required", maxLength: 255 })}
 							/>
-							<p className="text-muted-foreground text-xs">Lower numbers = higher priority (0 is highest)</p>
-							{errors.priority && <p className="text-destructive text-sm">{errors.priority.message}</p>}
-						</div>
-					</div>
-
-					{scope !== "global" && (
-						<div className="space-y-2">
-							<Label htmlFor="scope_id">
-								{scope === "team" ? "Team" : scope === "customer" ? "Customer" : "Virtual Key"} <span className="text-red-500">*</span>
-							</Label>
-							{scope === "team" && teamsData.teams.length > 0 && (
-								<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
-									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select a team..." />
-									</SelectTrigger>
-									<SelectContent>
-										{teamsData.teams.map((team) => (
-											<SelectItem key={team.id} value={team.id}>
-												{team.name}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							)}
-							{scope === "customer" && customersData.customers.length > 0 && (
-								<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
-									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select a customer..." />
-									</SelectTrigger>
-									<SelectContent>
-										{customersData.customers.map((customer) => (
-											<SelectItem key={customer.id} value={customer.id}>
-												{customer.name}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							)}
-							{scope === "virtual_key" && vksData.virtual_keys.length > 0 && (
-								<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
-									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select a virtual key..." />
-									</SelectTrigger>
-									<SelectContent>
-										{vksData.virtual_keys.map((vk) => (
-											<SelectItem key={vk.id} value={vk.id}>
-												{vk.name}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							)}
-							{((scope === "team" && teamsData.teams.length === 0) ||
-								(scope === "customer" && customersData.customers.length === 0) ||
-								(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-									<p className="text-muted-foreground text-sm">
-										No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
-									</p>
-								)}
-							{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
-						</div>
-					)}
-
-					<Separator />
-
-					{/* CEL Rule Builder */}
-					<div className="space-y-3">
-						<Label>Rule Builder</Label>
-						<p className="text-muted-foreground text-sm">
-							Build conditions to determine when this rule should apply. Leave empty to apply this rule to all requests.
-						</p>
-						<CELRuleBuilder
-							key={builderKey}
-							initialQuery={query}
-							onChange={handleQueryChange}
-							providers={availableProviders}
-							models={[]}
-							allowCustomModels={true}
-						/>
-					</div>
-
-					{/* Note about Token/Request Limits and Budget Configuration */}
-					<p className="text-muted-foreground text-xs">
-						Note: Ensure token limits, request limits, and budget are configured in{" "}
-						<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
-						<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
-					</p>
-
-					<Separator />
-
-					{/* Routing Targets */}
-					<div className="space-y-3">
-						<div className="flex items-center justify-between">
-							<div>
-								<Label>Routing Targets</Label>
-								<p className="text-muted-foreground mt-0.5 text-xs">
-									Weights must sum to 1. Leave provider or model empty to use the incoming request value.
-								</p>
-							</div>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={addTarget}
-								className="shrink-0 gap-2"
-								data-testid="routing-rule-target-add"
-							>
-								<Plus className="h-4 w-4" />
-								Add Target
-							</Button>
+							{errors.name && <p className="text-destructive text-sm">{errors.name.message}</p>}
 						</div>
 
+						{/* Description */}
 						<div className="space-y-3">
-							{targets.map((target, index) => (
-								<TargetRow
-									key={index}
-									target={target}
-									index={index}
-									availableProviders={availableProviders}
-									allKeys={allKeysData}
-									showRemove={targets.length > 1}
-									onUpdate={updateTarget}
-									onRemove={removeTarget}
-								/>
-							))}
+							<Label htmlFor="description">Description</Label>
+							<Textarea id="description" placeholder="Describe what this rule does..." rows={2} {...register("description")} />
 						</div>
 
-						{/* Weight sum indicator */}
-						<div
-							className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
-						>
-							Total weight: {totalWeight.toFixed(4)}
-							{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+						{/* Enabled Switch */}
+						<div className="flex items-center justify-between rounded-lg border p-4">
+							<div className="space-y-0.5">
+								<Label htmlFor="enabled">Enable Rule</Label>
+								<p className="text-muted-foreground text-sm">Rule will be active and applied to matching requests</p>
+							</div>
+							<Switch id="enabled" checked={enabled} onCheckedChange={(checked) => setValue("enabled", checked)} />
 						</div>
-					</div>
 
-					{/* Fallbacks */}
-					<div className="space-y-3">
-						<div className="flex items-center justify-between">
-							<div>
-								<Label>Fallbacks</Label>								<p className="text-muted-foreground text-xs mt-0.5">
-									Provider is required, but model is optional. Leave model empty to use the incoming request value.
+						{/* Chain Rule Switch */}
+						<div className="flex items-center justify-between rounded-lg border p-4">
+							<div className="space-y-0.5">
+								<Label htmlFor="chain_rule">Chain Rule</Label>
+								<p className="text-muted-foreground text-sm">
+									After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for
+									composing rules — e.g. normalize a model alias first, then route based on the canonical name.
 								</p>
 							</div>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={() => setValue("fallbacks", [...(fallbacks || []), ""])}
-								className="gap-2"
+							<Switch
+								id="chain_rule"
+								checked={chainRule}
+								onCheckedChange={(checked) => setValue("chain_rule", checked)}
+								data-testid="routing-rule-chain-rule-switch"
+							/>
+						</div>
+
+						{/* Scope and Priority - Side by Side */}
+						<div className="grid grid-cols-2 gap-4">
+							<div className="space-y-3">
+								<Label htmlFor="scope">Scope</Label>
+								<Select
+									value={scope}
+									onValueChange={(value) => {
+										setValue("scope", value as any);
+										// Clear scope_id when scope changes
+										setValue("scope_id", "");
+									}}
+								>
+									<SelectTrigger className="w-full">
+										<SelectValue placeholder="Select scope..." />
+									</SelectTrigger>
+									<SelectContent>
+										{ROUTING_RULE_SCOPES.map((scopeOption) => (
+											<SelectItem key={scopeOption.value} value={scopeOption.value}>
+												{scopeOption.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
+
+							<div className="space-y-3">
+								<Label htmlFor="priority">
+									Priority <span className="text-red-500">*</span>
+								</Label>
+								<Input
+									id="priority"
+									type="number"
+									min={0}
+									max={1000}
+									{...register("priority", {
+										required: "Priority is required",
+										min: { value: 0, message: "Priority must be ≥ 0" },
+										max: { value: 1000, message: "Priority must be ≤ 1000" },
+										valueAsNumber: true,
+									})}
+								/>
+								<p className="text-muted-foreground text-xs">Lower numbers = higher priority (0 is highest)</p>
+								{errors.priority && <p className="text-destructive text-sm">{errors.priority.message}</p>}
+							</div>
+						</div>
+
+						{scope !== "global" && (
+							<div className="space-y-2">
+								<Label htmlFor="scope_id">
+									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : "Virtual Key"} <span className="text-red-500">*</span>
+								</Label>
+								{scope === "team" && teamsData.teams.length > 0 && (
+									<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
+										<SelectTrigger className="w-full">
+											<SelectValue placeholder="Select a team..." />
+										</SelectTrigger>
+										<SelectContent>
+											{teamsData.teams.map((team) => (
+												<SelectItem key={team.id} value={team.id}>
+													{team.name}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								)}
+								{scope === "customer" && customersData.customers.length > 0 && (
+									<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
+										<SelectTrigger className="w-full">
+											<SelectValue placeholder="Select a customer..." />
+										</SelectTrigger>
+										<SelectContent>
+											{customersData.customers.map((customer) => (
+												<SelectItem key={customer.id} value={customer.id}>
+													{customer.name}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								)}
+								{scope === "virtual_key" && vksData.virtual_keys.length > 0 && (
+									<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
+										<SelectTrigger className="w-full">
+											<SelectValue placeholder="Select a virtual key..." />
+										</SelectTrigger>
+										<SelectContent>
+											{vksData.virtual_keys.map((vk) => (
+												<SelectItem key={vk.id} value={vk.id}>
+													{vk.name}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								)}
+								{((scope === "team" && teamsData.teams.length === 0) ||
+									(scope === "customer" && customersData.customers.length === 0) ||
+									(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
+										<p className="text-muted-foreground text-sm">
+											No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+										</p>
+									)}
+								{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
+							</div>
+						)}
+
+						<Separator />
+
+						{/* CEL Rule Builder */}
+						<div className="space-y-3">
+							<Label>Rule Builder</Label>
+							<p className="text-muted-foreground text-sm">
+								Build conditions to determine when this rule should apply. Leave empty to apply this rule to all requests.
+							</p>
+							<CELRuleBuilder
+								key={builderKey}
+								initialQuery={query}
+								onChange={handleQueryChange}
+								providers={availableProviders}
+								models={[]}
+								allowCustomModels={true}
+							/>
+						</div>
+
+						{/* Note about Token/Request Limits and Budget Configuration */}
+						<p className="text-muted-foreground text-xs">
+							Note: Ensure token limits, request limits, and budget are configured in{" "}
+							<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
+							<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
+						</p>
+
+						<Separator />
+
+						{/* Routing Targets */}
+						<div className="space-y-3">
+							<div className="flex items-center justify-between">
+								<div>
+									<Label>Routing Targets</Label>
+									<p className="text-muted-foreground mt-0.5 text-xs">
+										Weights must sum to 1. Leave provider or model empty to use the incoming request value.
+									</p>
+								</div>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={addTarget}
+									className="shrink-0 gap-2"
+									data-testid="routing-rule-target-add"
+								>
+									<Plus className="h-4 w-4" />
+									Add Target
+								</Button>
+							</div>
+
+							<div className="space-y-3">
+								{targets.map((target, index) => (
+									<TargetRow
+										key={index}
+										target={target}
+										index={index}
+										availableProviders={availableProviders}
+										allKeys={allKeysData}
+										showRemove={targets.length > 1}
+										onUpdate={updateTarget}
+										onRemove={removeTarget}
+									/>
+								))}
+							</div>
+
+							{/* Weight sum indicator */}
+							<div
+								className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
 							>
-								<Plus className="h-4 w-4" />
-								Add Fallback
-							</Button>
+								Total weight: {totalWeight.toFixed(4)}
+								{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+							</div>
 						</div>
-						<div className="space-y-2">
-							{(fallbacks || []).length === 0 ? (
-								<p className="text-muted-foreground text-sm">No fallbacks configured</p>
-							) : (
-								(fallbacks || []).map((fallback, index) => {
-									// Parse provider/model from fallback string
-									const parts = fallback.split("/");
-									const fbProvider = parts[0] || "";
-									const fbModel = parts[1] || "";
 
-									const handleProviderChange = (newProvider: string) => {
-										const model = fbModel || "";
-										const newFallback = `${newProvider}/${model}`;
-										const newFallbacks = [...fallbacks];
-										newFallbacks[index] = newFallback;
-										setValue("fallbacks", newFallbacks);
-									};
+						{/* Fallbacks */}
+						<div className="space-y-3">
+							<div className="flex items-center justify-between">
+								<div>
+									<Label>Fallbacks</Label>								<p className="text-muted-foreground text-xs mt-0.5">
+										Provider is required, but model is optional. Leave model empty to use the incoming request value.
+									</p>
+								</div>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => setValue("fallbacks", [...(fallbacks || []), ""])}
+									className="gap-2"
+								>
+									<Plus className="h-4 w-4" />
+									Add Fallback
+								</Button>
+							</div>
+							<div className="space-y-2">
+								{(fallbacks || []).length === 0 ? (
+									<p className="text-muted-foreground text-sm">No fallbacks configured</p>
+								) : (
+									(fallbacks || []).map((fallback, index) => {
+										// Parse provider/model from fallback string
+										const parts = fallback.split("/");
+										const fbProvider = parts[0] || "";
+										const fbModel = parts[1] || "";
 
-									const handleModelChange = (newModel: string) => {
-										const prov = fbProvider || "";
-										const newFallback = `${prov}/${newModel}`;
-										const newFallbacks = [...fallbacks];
-										newFallbacks[index] = newFallback;
-										setValue("fallbacks", newFallbacks);
-									};
+										const handleProviderChange = (newProvider: string) => {
+											const model = fbModel || "";
+											const newFallback = `${newProvider}/${model}`;
+											const newFallbacks = [...fallbacks];
+											newFallbacks[index] = newFallback;
+											setValue("fallbacks", newFallbacks);
+										};
 
-									const handleRemove = () => {
-										const newFallbacks = fallbacks.filter((_: string, i: number) => i !== index);
-										setValue("fallbacks", newFallbacks);
-									};
+										const handleModelChange = (newModel: string) => {
+											const prov = fbProvider || "";
+											const newFallback = `${prov}/${newModel}`;
+											const newFallbacks = [...fallbacks];
+											newFallbacks[index] = newFallback;
+											setValue("fallbacks", newFallbacks);
+										};
 
-									return (
-										<div key={index} className="flex items-center gap-2">
-											<div className="flex-1">
-												<Select value={fbProvider} onValueChange={handleProviderChange}>
-													<SelectTrigger className="w-full">
-														<SelectValue placeholder="Select provider..." />
-													</SelectTrigger>
-													<SelectContent>
-														{availableProviders.map((prov) => (
-															<SelectItem key={prov} value={prov}>
-																<div className="flex items-center gap-2">
-																	<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
-																	<span>{getProviderLabel(prov)}</span>
-																</div>
-															</SelectItem>
-														))}
-													</SelectContent>
-												</Select>
+										const handleRemove = () => {
+											const newFallbacks = fallbacks.filter((_: string, i: number) => i !== index);
+											setValue("fallbacks", newFallbacks);
+										};
+
+										return (
+											<div key={index} className="flex items-center gap-2">
+												<div className="flex-1">
+													<Select value={fbProvider} onValueChange={handleProviderChange}>
+														<SelectTrigger className="w-full">
+															<SelectValue placeholder="Select provider..." />
+														</SelectTrigger>
+														<SelectContent>
+															{availableProviders.map((prov) => (
+																<SelectItem key={prov} value={prov}>
+																	<div className="flex items-center gap-2">
+																		<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
+																		<span>{getProviderLabel(prov)}</span>
+																	</div>
+																</SelectItem>
+															))}
+														</SelectContent>
+													</Select>
+												</div>
+												<div className="flex-1">
+													<ModelMultiselect
+														provider={fbProvider || undefined}
+														value={fbModel}
+														onChange={handleModelChange}
+														placeholder="Incoming (optional)"
+														isSingleSelect
+														disabled={!fbProvider}
+														className="!h-9 !min-h-9 w-full"
+													/>
+												</div>
+												<Button
+													type="button"
+													variant="ghost"
+													size="sm"
+													onClick={handleRemove}
+													className="h-9 px-2"
+													aria-label={`Remove fallback ${index + 1}`}
+												>
+													<Trash2 className="h-4 w-4" />
+												</Button>
 											</div>
-											<div className="flex-1">
-												<ModelMultiselect
-													provider={fbProvider || undefined}
-													value={fbModel}
-													onChange={handleModelChange}
-													placeholder="Incoming (optional)"
-													isSingleSelect
-													disabled={!fbProvider}
-													className="!h-9 !min-h-9 w-full"
-												/>
-											</div>
-											<Button
-												type="button"
-												variant="ghost"
-												size="sm"
-												onClick={handleRemove}
-												className="h-9 px-2"
-												aria-label={`Remove fallback ${index + 1}`}
-											>
-												<Trash2 className="h-4 w-4" />
-											</Button>
-										</div>
-									);
-								})
-							)}
+										);
+									})
+								)}
+							</div>
+							<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
 						</div>
-						<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
+
 					</div>
-
 					{/* Action Buttons */}
-					<div className="flex justify-end gap-3">
+					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-8 py-4">
 						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>
 							<X className="h-4 w-4" />
 							Cancel

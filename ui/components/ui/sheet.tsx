@@ -127,13 +127,18 @@ function SheetContent({
 function SheetHeader({
 	className,
 	children,
+	headerClassName,
 	showCloseButton = true,
 	...props
-}: React.ComponentProps<"div"> & { showCloseButton?: boolean }) {
+}: React.ComponentProps<"div"> & { showCloseButton?: boolean; headerClassName?: string }) {
 	const sheetContext = useSheetContext();
 
 	return (
-		<div data-slot="sheet-header" className={cn("flex items-center", sheetContext?.expandable ? "p-0" : "mb-6")} {...props}>
+		<div
+			data-slot="sheet-header"
+			className={cn("flex items-center", sheetContext?.expandable ? "p-0" : "mb-6", headerClassName)}
+			{...props}
+		>
 			{sheetContext?.expandable && sheetContext?.side === "right" && (
 				<button
 					type="button"
