@@ -1544,6 +1544,9 @@
     },
     "scim_config": {
       "$ref": "#/$defs/scim_config"
+    },
+    "access_profiles": {
+      "$ref": "#/$defs/access_profiles"
     }
   },
   "additionalProperties": false,
@@ -3368,6 +3371,215 @@
           }
         }
       },
+      "additionalProperties": false
+    },
+    "access_profiles": {
+      "type": "array",
+      "description": "Enterprise access profile templates for RBAC-driven governance controls",
+      "items": {
+        "$ref": "#/$defs/access_profile"
+      }
+    },
+    "budget_line": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Budget ID"
+        },
+        "max_limit": {
+          "type": "number",
+          "description": "Maximum spend limit in USD"
+        },
+        "reset_duration": {
+          "type": "string",
+          "description": "Reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "required": [
+        "id",
+        "max_limit",
+        "reset_duration"
+      ],
+      "additionalProperties": false
+    },
+    "rate_limit_line": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Rate limit ID"
+        },
+        "token_max_limit": {
+          "type": "integer",
+          "description": "Maximum number of tokens allowed in the reset window"
+        },
+        "token_reset_duration": {
+          "type": "string",
+          "description": "Token reset window, e.g. \"1M\", \"1h\""
+        },
+        "request_max_limit": {
+          "type": "integer",
+          "description": "Maximum number of requests allowed in the reset window"
+        },
+        "request_reset_duration": {
+          "type": "string",
+          "description": "Request reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    },
+    "access_profile": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique access profile name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional profile description"
+        },
+        "is_active": {
+          "type": "boolean",
+          "description": "Whether this access profile is active",
+          "default": true
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of tags for filtering and grouping profiles"
+        },
+        "budgets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/budget_line"
+          },
+          "description": "Profile-level budgets"
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/rate_limit_line"
+        },
+        "provider_configs": {
+          "type": "array",
+          "description": "Per-provider restrictions and limits for this profile",
+          "items": {
+            "$ref": "#/$defs/access_profile_provider_config"
+          }
+        },
+        "mcp_tool_groups": {
+          "type": "array",
+          "description": "MCP tool group associations",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_tool_group"
+          }
+        },
+        "mcp_servers": {
+          "type": "array",
+          "description": "MCP server associations",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_server"
+          }
+        },
+        "mcp_tool_overrides": {
+          "type": "array",
+          "description": "Per-tool include/exclude MCP overrides",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_tool_override"
+          }
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "access_profile_provider_config": {
+      "type": "object",
+      "properties": {
+        "provider_name": {
+          "type": "string",
+          "description": "Provider name"
+        },
+        "all_models_allowed": {
+          "type": "boolean",
+          "description": "Whether all models under this provider are allowed",
+          "default": false
+        },
+        "allowed_models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed model names (ignored when all_models_allowed is true)"
+        },
+        "budgets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/budget_line"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/rate_limit_line"
+        }
+      },
+      "required": [
+        "provider_name"
+      ],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_tool_group": {
+      "type": "object",
+      "properties": {
+        "tool_group_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "MCP tool group ID"
+        }
+      },
+      "required": [
+        "tool_group_id"
+      ],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_server": {
+      "type": "object",
+      "properties": {
+        "mcp_server_id": {
+          "type": "string",
+          "description": "MCP server identifier"
+        }
+      },
+      "required": [
+        "mcp_server_id"
+      ],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_tool_override": {
+      "type": "object",
+      "properties": {
+        "mcp_client_id": {
+          "type": "string",
+          "description": "MCP client identifier"
+        },
+        "tool_name": {
+          "type": "string",
+          "description": "Tool name"
+        },
+        "action": {
+          "type": "string",
+          "enum": ["include", "exclude"],
+          "description": "Override action"
+        }
+      },
+      "required": [
+        "mcp_client_id",
+        "tool_name",
+        "action"
+      ],
       "additionalProperties": false
     },
     "audit_logs_config": {

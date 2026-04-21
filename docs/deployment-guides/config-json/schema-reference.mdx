@@ -17,11 +17,12 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | Key | Type | Description | Guide |
 |-----|------|-------------|-------|
 | `$schema` | string | Schema URL for IDE validation. Set to `"https://www.getbifrost.ai/schema"` | — |
-| `encryption_key` | string | AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix. Also read from `BIFROST_ENCRYPTION_KEY` env var | [Client](/deployment-guides/config-json/client#encryption-key) |
+| `encryption_key` | string | Optional AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix and is also read from `BIFROST_ENCRYPTION_KEY`. If omitted, data is stored in plaintext. | [Client](/deployment-guides/config-json/client#encryption-key) |
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
 | `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams | [Governance](/deployment-guides/config-json/governance) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
+| `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
 | `config_store` | object | Configuration database backend — SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
 | `logs_store` | object | Request/response log database — SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache — Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
@@ -115,6 +116,38 @@ Full documentation: [Governance](/deployment-guides/config-json/governance).
 Enterprise-only. Two sub-keys: `guardrail_providers` (array) and `guardrail_rules` (array).
 
 Full documentation: [Guardrails](/deployment-guides/config-json/guardrails).
+
+---
+
+## `access_profiles`
+
+Enterprise-only. Defines access profile templates that can later be attached to roles/users.
+
+```json
+{
+  "access_profiles": [
+    {
+      "name": "platform-default",
+      "description": "Default platform profile",
+      "is_active": true,
+      "tags": ["platform", "default"],
+      "provider_configs": [
+        {
+          "provider_name": "openai",
+          "all_models_allowed": false,
+          "allowed_models": ["gpt-4o", "gpt-4o-mini"]
+        }
+      ],
+      "mcp_servers": [
+        { "mcp_server_id": "github" }
+      ],
+      "mcp_tool_overrides": [
+        { "mcp_client_id": "github", "tool_name": "create_pull_request", "action": "include" }
+      ]
+    }
+  ]
+}
+```
 
 ---
 

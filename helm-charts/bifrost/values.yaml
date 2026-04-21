@@ -608,6 +608,34 @@ bifrost:
       #   enabled: true
       #   config: {}
 
+  # Access profiles (enterprise): seed RBAC access profile templates from Helm.
+  # This is rendered directly as top-level `access_profiles` in config.json.
+  accessProfiles: []
+    # - name: "platform-default"
+    #   description: "Default platform profile"
+    #   is_active: true
+    #   tags: ["platform", "default"]
+    #   budgets:
+    #     - id: "ap-budget-1"
+    #       max_limit: 100
+    #       reset_duration: "1M"
+    #   rate_limit:
+    #     id: "ap-rate-limit-1"
+    #     token_max_limit: 200000
+    #     token_reset_duration: "1h"
+    #   provider_configs:
+    #     - provider_name: "openai"
+    #       all_models_allowed: false
+    #       allowed_models: ["gpt-4o", "gpt-4o-mini"]
+    #   mcp_tool_groups:
+    #     - tool_group_id: 1
+    #   mcp_servers:
+    #     - mcp_server_id: "github"
+    #   mcp_tool_overrides:
+    #     - mcp_client_id: "github"
+    #       tool_name: "create_pull_request"
+    #       action: "include"
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false

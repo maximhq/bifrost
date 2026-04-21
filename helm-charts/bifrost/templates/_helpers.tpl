@@ -541,6 +541,10 @@ false
 {{- $_ := set $config "guardrails_config" $guardrails }}
 {{- end }}
 {{- end }}
+{{- /* Access Profiles (Enterprise) */ -}}
+{{- if .Values.bifrost.accessProfiles }}
+{{- $_ := set $config "access_profiles" .Values.bifrost.accessProfiles }}
+{{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}

@@ -419,3 +419,28 @@ kubectl create secret generic bifrost-admin-credentials \
 
 helm install bifrost bifrost/bifrost -f governance-full-values.yaml
 ```
+
+---
+
+## Access Profiles (Enterprise)
+
+You can seed enterprise `access_profiles` directly from Helm values. The chart renders `bifrost.accessProfiles` into top-level `access_profiles` in `config.json`.
+
+```yaml
+bifrost:
+  accessProfiles:
+    - name: "platform-default"
+      description: "Default profile for platform users"
+      is_active: true
+      tags: ["platform", "default"]
+      provider_configs:
+        - provider_name: "openai"
+          all_models_allowed: false
+          allowed_models: ["gpt-4o", "gpt-4o-mini"]
+      mcp_servers:
+        - mcp_server_id: "github"
+      mcp_tool_overrides:
+        - mcp_client_id: "github"
+          tool_name: "create_pull_request"
+          action: "include"
+```

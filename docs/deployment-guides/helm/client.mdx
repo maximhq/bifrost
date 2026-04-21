@@ -172,7 +172,7 @@ helm upgrade bifrost bifrost/bifrost \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `bifrost.encryptionKey` | 32-byte encryption key (plain text — use secret in production) | `""` |
+| `bifrost.encryptionKey` | Optional encryption key (plain text — use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
 | `bifrost.encryptionKeySecret.name` | Kubernetes Secret name containing the key | `""` |
 | `bifrost.encryptionKeySecret.key` | Key within the secret | `"encryption-key"` |
 
