@@ -1,1 +1,2 @@
 - feat: add support for cache creation cost above 1 hour
+- feat: add support for dynamically selecting incoming model for fallbacks in routing rules

@@ -1,0 +1,1 @@
+- feat: automatically add incoming model to empty fallbacks in routing rules
