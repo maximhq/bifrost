@@ -269,7 +269,21 @@ func (mc *ModelCatalog) getBaseModelNameUnsafe(model string) string {
 		return base
 	}
 
-	// Step 2: Strip provider prefix and try again
+	// Step 2: Strip OpenRouter variant suffix (:nitro, :free, :thinking, ...) and retry.
+	// Variants are server-side routing hints — pricing/capability lookups should hit the base entry.
+	if variantStripped := schemas.BaseOpenRouterModel(model); variantStripped != model {
+		if base, ok := mc.baseModelIndex[variantStripped]; ok {
+			return base
+		}
+		// Also try after stripping provider prefix from the variant-stripped form.
+		if _, inner := schemas.ParseModelString(variantStripped, ""); inner != variantStripped {
+			if base, ok := mc.baseModelIndex[inner]; ok {
+				return base
+			}
+		}
+	}
+
+	// Step 3: Strip provider prefix and try again
 	_, baseName := schemas.ParseModelString(model, "")
 	if baseName != model {
 		if base, ok := mc.baseModelIndex[baseName]; ok {
@@ -277,9 +291,9 @@ func (mc *ModelCatalog) getBaseModelNameUnsafe(model string) string {
 		}
 	}
 
-	// Step 3: Fallback to algorithmic date/version stripping
+	// Step 4: Fallback to algorithmic date/version stripping
 	// (for models not in the catalog, e.g., user-configured custom models)
-	return schemas.BaseModelName(baseName)
+	return schemas.BaseModelName(schemas.BaseOpenRouterModel(baseName))
 }
 
 // IsSameModel checks if two model strings refer to the same underlying model.

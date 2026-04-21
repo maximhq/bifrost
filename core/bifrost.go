@@ -7059,7 +7059,17 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 			// NOTE: Model filtering uses the original requested model (which may be an alias).
 			// key.Models and key.BlacklistedModels must therefore be expressed in alias keys.
 			// The provider-specific identifier is resolved later in the handler closure via key.Aliases.Resolve(model).
-			modelSupported := hasValue && key.Models.IsAllowed(model) && !key.BlacklistedModels.IsBlocked(model)
+			// OpenRouter variant suffixes (:nitro, :floor, :online, :thinking, :exacto,
+			// :extended, :free) are routing hints, not distinct models. Fall back to the
+			// base model when evaluating allow/deny lists so users don't have to enumerate
+			// every variant in their key.Models configuration.
+			aclBase := model
+			if baseProviderType == schemas.OpenRouter {
+				aclBase = schemas.BaseOpenRouterModel(model)
+			}
+			allowedForKey := key.Models.IsAllowed(model) || (aclBase != model && key.Models.IsAllowed(aclBase))
+			blockedForKey := key.BlacklistedModels.IsBlocked(model) || (aclBase != model && key.BlacklistedModels.IsBlocked(aclBase))
+			modelSupported := hasValue && allowedForKey && !blockedForKey
 			if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil {
 				if key.VLLMKeyConfig.ModelName != "" {
 					modelSupported = modelSupported && (key.VLLMKeyConfig.ModelName == model)

@@ -77,6 +77,50 @@ func IsKnownProvider(provider string) bool {
 	return knownProviders[provider]
 }
 
+// openRouterVariants is the set of known OpenRouter model-slug suffixes.
+// See https://openrouter.ai/docs/guides/routing/model-variants/*
+// Variants are routing hints server-side (e.g. :nitro sorts providers by
+// throughput); base-model ACL / pricing / capability lookups should treat
+// them as transparent.
+var openRouterVariants = map[string]struct{}{
+	"nitro":    {}, // sort providers by throughput
+	"floor":    {}, // sort providers by price (cheapest first)
+	"online":   {}, // enable real-time web search (deprecated; superseded by server tool)
+	"thinking": {}, // extended reasoning
+	"exacto":   {}, // quality-first provider sort for tool use
+	"extended": {}, // extended context window
+	"free":     {}, // free tier of the model
+}
+
+// SplitOpenRouterVariant splits an OpenRouter model slug into its base model
+// and variant suffix, if the suffix is a known OpenRouter variant.
+//
+// Examples:
+//
+//	"openai/gpt-5.2:nitro"           -> ("openai/gpt-5.2", "nitro")
+//	"anthropic/claude-3.7:thinking"  -> ("anthropic/claude-3.7", "thinking")
+//	"meta-llama/llama-3.2-3b:free"   -> ("meta-llama/llama-3.2-3b", "free")
+//	"openai/gpt-5.2"                 -> ("openai/gpt-5.2", "")
+//	"openai/gpt-5.2:foo"             -> ("openai/gpt-5.2:foo", "")  (not a known variant)
+func SplitOpenRouterVariant(model string) (base, variant string) {
+	idx := strings.LastIndex(model, ":")
+	if idx <= 0 || idx == len(model)-1 {
+		return model, ""
+	}
+	suffix := strings.ToLower(model[idx+1:])
+	if _, ok := openRouterVariants[suffix]; !ok {
+		return model, ""
+	}
+	return model[:idx], suffix
+}
+
+// BaseOpenRouterModel returns the model id with any recognized OpenRouter
+// variant suffix stripped. Returns the id unchanged if no variant is present.
+func BaseOpenRouterModel(model string) string {
+	base, _ := SplitOpenRouterVariant(model)
+	return base
+}
+
 // ParseModelString extracts provider and model from a model string.
 // For model strings like "anthropic/claude", it returns ("anthropic", "claude").
 // For model strings like "claude", it returns ("", "claude").
