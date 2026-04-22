@@ -307,7 +307,7 @@ See [Writing Go Plugins](/plugins/writing-go-plugin) and [Writing WASM Plugins](
 
 **Placement and ordering (DB-backed only):**
 
-When creating plugins dynamically via the DB/UI (rather than `config.json`), you can specify plugin metadata such as `version` (`1` to `32767`) and execution order:
+In DB-backed mode, plugin metadata such as `version` (`1` to `32767`), `placement`, and `order` can be managed via config sync and DB/UI workflows:
 
 | `placement` | When it runs |
 |-------------|-------------|
