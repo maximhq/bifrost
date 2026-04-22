@@ -1,0 +1,185 @@
+---
+title: "Nginx reverse proxy"
+description: "Run Bifrost behind NGINX with streaming-safe settings for SSE and WebSocket traffic"
+icon: "shuffle"
+---
+
+This guide shows how to put NGINX in front of Bifrost for TLS termination, centralized routing, and load balancing.
+
+<Note>
+Incoming reverse-proxy behavior is configured in your infrastructure layer (NGINX/Ingress), not in `config.json`.
+</Note>
+
+---
+
+## When to use this setup
+
+- You want HTTPS termination in front of Bifrost.
+- You run multiple Bifrost replicas and want L7 load balancing.
+- You need one stable gateway URL for SDKs and agent clients.
+
+---
+
+## Docker Compose deployment
+
+Use this when Bifrost and NGINX run as services in the same Compose project.
+
+```yaml
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - bifrost-1
+      - bifrost-2
+      - bifrost-3
+
+  bifrost-1:
+    image: maximhq/bifrost:latest
+    expose:
+      - "8080"
+
+  bifrost-2:
+    image: maximhq/bifrost:latest
+    expose:
+      - "8080"
+
+  bifrost-3:
+    image: maximhq/bifrost:latest
+    expose:
+      - "8080"
+```
+
+```nginx
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream bifrost_backend {
+        least_conn;
+        server bifrost-1:8080;
+        server bifrost-2:8080;
+        server bifrost-3:8080;
+    }
+
+    server {
+        listen 80;
+
+        location / {
+            proxy_pass http://bifrost_backend;
+
+            # Preserve original request context
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # Keep streaming responses stable
+            proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 300s;
+            proxy_send_timeout 300s;
+        }
+    }
+}
+```
+
+If you expose WebSocket traffic through the same endpoint, add upgrade headers in the same `location /` block:
+
+```nginx
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+```
+
+---
+
+## VM or bare-metal deployment
+
+Use the same NGINX `location /` settings as above, and point `upstream` servers to hostnames/IPs reachable from that VM.
+
+If you terminate TLS directly on NGINX, add:
+
+```nginx
+listen 443 ssl;
+server_name bifrost.example.com;
+ssl_certificate /etc/nginx/certs/fullchain.pem;
+ssl_certificate_key /etc/nginx/certs/privkey.pem;
+```
+
+---
+
+## Kubernetes (NGINX Ingress)
+
+If you deploy with Helm, use Ingress values instead of a standalone NGINX config:
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: bifrost.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls
+      hosts:
+        - bifrost.example.com
+```
+
+---
+
+## Verify the proxy path
+
+```bash
+# Docker Compose: render final config and validate syntax
+docker compose config
+
+# Kubernetes: validate ingress manifest locally
+kubectl apply --dry-run=client -f ingress.yaml
+```
+
+```bash
+# Health check through reverse proxy
+curl -i http://bifrost.example.com/health
+
+# Streaming check through NGINX
+curl -N http://bifrost.example.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "stream": true,
+    "messages": [{"role": "user", "content": "test stream"}]
+  }'
+```
+
+If streaming responses arrive in delayed bursts, confirm buffering is disabled in NGINX or Ingress annotations.
+
+---
+
+## Related guides
+
+- [Helm quick start](/deployment-guides/helm)
+- [Helm values reference](/deployment-guides/helm/values)
+- [Multinode deployment](/deployment-guides/how-to/multinode)
+
+---
+
+## Runnable example files
+
+Use the complete Docker Compose + Helm/Kubernetes example in the repository:
+
+- [docker-compose.yml](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/docker-compose.yml)
+- [helm-values.yaml](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/helm-values.yaml)
+- [k8s-ingress.yaml](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/k8s-ingress.yaml)

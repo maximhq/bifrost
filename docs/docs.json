@@ -449,6 +449,7 @@
             "pages": [
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
+              "deployment-guides/how-to/nginx-reverse-proxy",
               "deployment-guides/docker-tuning"
             ]
           }
