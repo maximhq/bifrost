@@ -836,6 +836,9 @@ func (br *BifrostRequest) Clone() BifrostRequest {
 	case br.RerankRequest != nil:
 		tmp := *br.RerankRequest
 		clone.RerankRequest = &tmp
+	case br.OCRRequest != nil:
+		tmp := *br.OCRRequest
+		clone.OCRRequest = &tmp
 	case br.SpeechRequest != nil:
 		tmp := *br.SpeechRequest
 		clone.SpeechRequest = &tmp
