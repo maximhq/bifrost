@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -24,14 +25,17 @@ func buildTestJWT(payload map[string]interface{}) string {
 	return header + "." + payloadB64 + "." + sig
 }
 
-// captureLogger is a minimal schemas.Logger stub that records Warn calls for
-// assertion in tests. All other methods are no-ops.
+// captureLogger is a minimal schemas.Logger stub that records Debug and Warn
+// calls for assertion in tests. All other methods are no-ops.
 type captureLogger struct {
-	warns []string
+	debugs []string
+	warns  []string
 }
 
-func (l *captureLogger) Debug(msg string, args ...any) {}
-func (l *captureLogger) Info(msg string, args ...any)  {}
+func (l *captureLogger) Debug(msg string, args ...any) {
+	l.debugs = append(l.debugs, fmt.Sprintf(msg, args...))
+}
+func (l *captureLogger) Info(msg string, args ...any) {}
 func (l *captureLogger) Warn(msg string, args ...any) {
 	l.warns = append(l.warns, fmt.Sprintf(msg, args...))
 }
@@ -683,7 +687,7 @@ func TestChatGPTOAuthWebSocketHeaders(t *testing.T) {
 	key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
 
 	t.Run("sets Authorization + chatgpt headers", func(t *testing.T) {
-		got := chatGPTOAuthWebSocketHeaders(key, nil, nil)
+		got := chatGPTOAuthWebSocketHeaders(key, nil, nil, nil)
 		assert.Equal(t, "Bearer "+validToken, got["Authorization"])
 		assert.Equal(t, "acct-ws", got["chatgpt-account-id"])
 		assert.Equal(t, "responses=experimental", got["OpenAI-Beta"])
@@ -694,14 +698,14 @@ func TestChatGPTOAuthWebSocketHeaders(t *testing.T) {
 			"authorization": "Bearer should-be-ignored",
 			"X-Custom":      "kept",
 		}
-		got := chatGPTOAuthWebSocketHeaders(key, extra, nil)
+		got := chatGPTOAuthWebSocketHeaders(key, extra, nil, nil)
 		assert.Equal(t, "Bearer "+validToken, got["Authorization"])
 		assert.Equal(t, "kept", got["X-Custom"])
 	})
 
 	t.Run("falls back to auth-only when JWT invalid", func(t *testing.T) {
 		badKey := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
-		got := chatGPTOAuthWebSocketHeaders(badKey, nil, nil)
+		got := chatGPTOAuthWebSocketHeaders(badKey, nil, nil, nil)
 		assert.Equal(t, "Bearer not-a-jwt", got["Authorization"])
 		_, hasAccountID := got["chatgpt-account-id"]
 		assert.False(t, hasAccountID, "account-id should not be set when JWT extraction fails")
@@ -710,10 +714,69 @@ func TestChatGPTOAuthWebSocketHeaders(t *testing.T) {
 	t.Run("logs warning when JWT invalid and logger provided", func(t *testing.T) {
 		badKey := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
 		logger := &captureLogger{}
-		got := chatGPTOAuthWebSocketHeaders(badKey, nil, logger)
+		got := chatGPTOAuthWebSocketHeaders(badKey, nil, nil, logger)
 		assert.Equal(t, "Bearer not-a-jwt", got["Authorization"])
 		require.Len(t, logger.warns, 1)
 		assert.Contains(t, logger.warns[0], "failed to extract account ID for WebSocket")
+	})
+
+	// -----------------------------------------------------------------
+	// forwardedHeaders: first-party Codex identity header passthrough
+	// -----------------------------------------------------------------
+
+	t.Run("forwarded originator and version flow through to upstream headers", func(t *testing.T) {
+		forwarded := map[string]string{
+			"originator": "codex_cli_rs",
+			"version":    "0.121.0",
+			"user-agent": "codex/0.121.0 (Linux; amd64)",
+		}
+		got := chatGPTOAuthWebSocketHeaders(key, nil, forwarded, nil)
+		assert.Equal(t, "codex_cli_rs", got["originator"], "originator must be forwarded")
+		assert.Equal(t, "0.121.0", got["version"], "version must be forwarded")
+		assert.Equal(t, "codex/0.121.0 (Linux; amd64)", got["user-agent"], "user-agent must be forwarded")
+		// OAuth headers still win
+		assert.Equal(t, "Bearer "+validToken, got["Authorization"])
+		assert.Equal(t, "acct-ws", got["chatgpt-account-id"])
+	})
+
+	t.Run("forwarded authorization is overridden by OAuth token", func(t *testing.T) {
+		forwarded := map[string]string{
+			"originator":    "codex_cli_rs",
+			"version":       "0.121.0",
+			"authorization": "Bearer client-should-not-win",
+		}
+		got := chatGPTOAuthWebSocketHeaders(key, nil, forwarded, nil)
+		assert.Equal(t, "Bearer "+validToken, got["Authorization"],
+			"provider OAuth token must override client authorization header")
+	})
+
+	t.Run("empty forwarded map injects originator and version defaults", func(t *testing.T) {
+		log := &captureLogger{}
+		got := chatGPTOAuthWebSocketHeaders(key, nil, map[string]string{}, log)
+		assert.Equal(t, chatGPTOAuthCodexDefaultOriginator, got["originator"],
+			"default originator must be injected when not in forwarded map")
+		assert.Equal(t, chatGPTOAuthCodexDefaultVersion, got["version"],
+			"default version must be injected when not in forwarded map")
+		// Debug log must mention the injected defaults
+		foundOriginator, foundVersion := false, false
+		for _, msg := range log.debugs {
+			if strings.Contains(msg, "originator") {
+				foundOriginator = true
+			}
+			if strings.Contains(msg, "version") {
+				foundVersion = true
+			}
+		}
+		assert.True(t, foundOriginator, "debug log must mention injected originator")
+		assert.True(t, foundVersion, "debug log must mention injected version")
+	})
+
+	t.Run("nil forwarded map injects originator and version defaults", func(t *testing.T) {
+		got := chatGPTOAuthWebSocketHeaders(key, nil, nil, nil)
+		assert.Equal(t, chatGPTOAuthCodexDefaultOriginator, got["originator"],
+			"default originator must be injected when forwardedHeaders is nil")
+		assert.Equal(t, chatGPTOAuthCodexDefaultVersion, got["version"],
+			"default version must be injected when forwardedHeaders is nil")
 	})
 }
 

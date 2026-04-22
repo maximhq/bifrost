@@ -108,9 +108,75 @@ type authHeaders struct {
 	googAPIKey    string
 	baggage       string
 	extraHeaders  map[string]string
+
+	// clientHeaders contains all request headers forwarded from the incoming WS
+	// upgrade that are not Bifrost-internal or hop-by-hop. These are forwarded
+	// to the upstream WS connection so that first-party identity headers (e.g.
+	// originator, version, user-agent sent by Codex) reach the upstream backend.
+	// Keys are stored in their original capitalisation.
+	// See wsUpgradeHeaderBlocklist for the blocklist rationale.
+	clientHeaders map[string]string
+}
+
+// wsUpgradeHeaderBlocklist contains lowercase header names that must NOT be
+// forwarded from the client WS upgrade to the upstream WS connection.
+//
+// Design decision: forward-all-except-blocklist.
+// An allowlist would have to be updated every time Codex adds a new identity
+// header, causing silent regressions.  The blocklist is stable: it covers
+// hop-by-hop headers (which change meaning at each hop), security-sensitive
+// Bifrost-internal routing headers, and credential headers that Bifrost manages
+// itself (authorization is re-injected by the provider with the right token).
+//
+// Hop-by-hop headers (RFC 7230 §6.1 + WebSocket specific):
+//
+//	connection, upgrade, sec-websocket-key, sec-websocket-version,
+//	sec-websocket-extensions, sec-websocket-protocol, keep-alive,
+//	proxy-authorization, proxy-authenticate, te, trailers, transfer-encoding
+//
+// Security / Bifrost-internal:
+//
+//	host            — must reflect the upstream hostname, not the client's
+//	cookie          — session cookies must not be proxied to a different origin
+//	authorization   — re-injected by the provider with the correct OAuth token
+//	x-api-key       — Bifrost routing credential; not forwarded to upstream
+//	x-goog-api-key  — Bifrost routing credential; not forwarded to upstream
+//	x-bf-*          — Bifrost-internal routing/config headers
+//	baggage         — W3C baggage contains Bifrost session metadata (session-id)
+//
+// Content metadata (not meaningful for WS):
+//
+//	content-length, content-type
+var wsUpgradeHeaderBlocklist = map[string]bool{
+	// Hop-by-hop
+	"connection":              true,
+	"upgrade":                 true,
+	"sec-websocket-key":       true,
+	"sec-websocket-version":   true,
+	"sec-websocket-extensions": true,
+	"sec-websocket-protocol":  true,
+	"keep-alive":              true,
+	"proxy-authorization":     true,
+	"proxy-authenticate":      true,
+	"te":                      true,
+	"trailers":                true,
+	"transfer-encoding":       true,
+	// Security / Bifrost-internal
+	"host":          true,
+	"cookie":        true,
+	"authorization": true,
+	"x-api-key":     true,
+	"x-goog-api-key": true,
+	"baggage":       true,
+	// Content metadata
+	"content-length": true,
+	"content-type":   true,
 }
 
 // captureAuthHeaders captures the auth headers from the request.
+// In addition to the named auth fields, it builds clientHeaders: all request
+// headers not in wsUpgradeHeaderBlocklist and not matching the x-bf-* prefix
+// (those are handled separately in extraHeaders).
 func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 	ah := &authHeaders{
 		authorization: string(ctx.Request.Header.Peek("Authorization")),
@@ -119,6 +185,7 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 		googAPIKey:    string(ctx.Request.Header.Peek("x-goog-api-key")),
 		baggage:       string(ctx.Request.Header.Peek("baggage")),
 		extraHeaders:  make(map[string]string),
+		clientHeaders: make(map[string]string),
 	}
 
 	for key, value := range ctx.Request.Header.All() {
@@ -126,9 +193,53 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 		lk := strings.ToLower(k)
 		if strings.HasPrefix(lk, "x-bf-") {
 			ah.extraHeaders[k] = string(value)
+			// x-bf-* headers are NOT forwarded to upstream as clientHeaders.
+			continue
 		}
+		if wsUpgradeHeaderBlocklist[lk] {
+			continue
+		}
+		ah.clientHeaders[k] = string(value)
 	}
 	return ah
+}
+
+// mergeClientWSHeaders merges client-supplied first-party headers into the
+// provider-built upstream headers map.
+//
+// Merge semantics:
+//   - Client headers (from the incoming WS upgrade, pre-filtered by captureAuthHeaders)
+//     are applied first as a base layer so that identity headers like originator,
+//     version, and user-agent reach the upstream backend.
+//   - Provider headers (built by WebSocketHeaders, which already contains OAuth
+//     credentials and any config-level extra headers) are applied on top so that
+//     Authorization, chatgpt-account-id, and OpenAI-Beta are never overwritten.
+//
+// This is effectively: clientHeaders → providerHeaders (provider wins on conflict).
+// The wsUpgradeHeaderBlocklist already ensured clientHeaders contains no auth or
+// hop-by-hop entries, so there is no security risk from the client layer.
+func mergeClientWSHeaders(providerHeaders, clientHeaders map[string]string) map[string]string {
+	if len(clientHeaders) == 0 {
+		return providerHeaders
+	}
+	// Build case-insensitive lookup of provider keys so client cannot silently
+	// shadow a provider header with different capitalisation.
+	providerLower := make(map[string]bool, len(providerHeaders))
+	for k := range providerHeaders {
+		providerLower[strings.ToLower(k)] = true
+	}
+
+	merged := make(map[string]string, len(providerHeaders)+len(clientHeaders))
+	for k, v := range clientHeaders {
+		if providerLower[strings.ToLower(k)] {
+			continue // provider header wins
+		}
+		merged[k] = v
+	}
+	for k, v := range providerHeaders {
+		merged[k] = v
+	}
+	return merged
 }
 
 // eventLoop reads events from the client WebSocket and processes them.
@@ -212,7 +323,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	}
 
 	// Try native WS upstream first
-	if h.tryNativeWSUpstream(session, bifrostCtx, bifrostReq, message) {
+	if h.tryNativeWSUpstream(session, bifrostCtx, auth, bifrostReq, message) {
 		cancel()
 		return
 	}
@@ -224,9 +335,12 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 // tryNativeWSUpstream attempts to forward the event to a native WS upstream connection.
 // Returns true if the event was handled (successfully or with error sent to client).
 // Returns false if the provider doesn't support WS and we should fall back to HTTP bridge.
+// auth is forwarded so that clientHeaders captured at upgrade time can be merged into
+// the upstream WS headers (see mergeClientWSHeaders).
 func (h *WSResponsesHandler) tryNativeWSUpstream(
 	session *bfws.Session,
 	ctx *schemas.BifrostContext,
+	auth *authHeaders,
 	req *schemas.BifrostResponsesRequest,
 	rawEvent []byte,
 ) bool {
@@ -259,7 +373,18 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 	// If no upstream connection pinned, get one from the pool or dial
 	if upstream == nil || upstream.IsClosed() {
-		headers := wsProvider.WebSocketHeaders(key)
+		// Build upstream headers: start with provider base headers (which include
+		// OAuth credentials for chatgpt_oauth), then merge client headers on top
+		// so that first-party identity headers (originator, version, user-agent …)
+		// forwarded from Codex are present.  Provider OAuth headers (Authorization,
+		// chatgpt-account-id, OpenAI-Beta) retain highest priority because they
+		// come from the provider and are merged last inside WebSocketHeaders.
+		//
+		// mergeClientWSHeaders applies the same forward-all-except-blocklist used
+		// in captureAuthHeaders: only non-blocked client headers are merged, so
+		// the provider's OAuth token can never be overwritten by the client.
+		baseHeaders := wsProvider.WebSocketHeaders(key)
+		headers := mergeClientWSHeaders(baseHeaders, auth.clientHeaders)
 		poolKey := bfws.PoolKey{
 			Provider: req.Provider,
 			KeyID:    key.ID,
@@ -565,6 +690,38 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 			ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
+
+	// Populate BifrostContextKeyRequestHeaders so downstream consumers (governance,
+	// logging plugins, provider-specific header forwarding) can access the full
+	// set of client headers.  Keys are lowercased for case-insensitive lookup,
+	// matching the behaviour of the HTTP path in lib/ctx.go.
+	// We merge clientHeaders (non-Bifrost, non-hop-by-hop) with the named auth
+	// fields so the map is complete (auth fields were excluded from clientHeaders
+	// by the blocklist to prevent accidental forwarding upstream, but they are
+	// still relevant for downstream plugin inspection).
+	allHeaders := make(map[string]string, len(auth.clientHeaders)+6)
+	for k, v := range auth.clientHeaders {
+		allHeaders[strings.ToLower(k)] = v
+	}
+	if auth.authorization != "" {
+		allHeaders["authorization"] = auth.authorization
+	}
+	if auth.virtualKey != "" {
+		allHeaders["x-bf-vk"] = auth.virtualKey
+	}
+	if auth.apiKey != "" {
+		allHeaders["x-api-key"] = auth.apiKey
+	}
+	if auth.googAPIKey != "" {
+		allHeaders["x-goog-api-key"] = auth.googAPIKey
+	}
+	if auth.baggage != "" {
+		allHeaders["baggage"] = auth.baggage
+	}
+	for k, v := range auth.extraHeaders {
+		allHeaders[strings.ToLower(k)] = v
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
 	// Forward x-bf-* headers
 	for k, v := range auth.extraHeaders {
