@@ -1109,3 +1109,22 @@ complexity:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
       '503':
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+complexity-reset:
+  post:
+    operationId: resetComplexityAnalyzerConfig
+    summary: Reset complexity analyzer config
+    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the governance plugin.
+    tags:
+      - Governance
+    responses:
+      '200':
+        description: Complexity analyzer config reset successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
