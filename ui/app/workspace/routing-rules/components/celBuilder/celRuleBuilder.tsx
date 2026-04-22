@@ -4,8 +4,9 @@
  */
 
 import { CELRuleBuilder as BaseCELRuleBuilder } from "@/components/ui/custom/celBuilder";
-import { getRoutingFields } from "@/lib/config/celFieldsRouting";
+import { CELFieldDefinition, getRoutingFields } from "@/lib/config/celFieldsRouting";
 import { celOperatorsRouting } from "@/lib/config/celOperatorsRouting";
+import { COMPLEXITY_TIER_VALUES } from "@/lib/types/routingRules";
 import { convertRuleGroupToCEL, validateRegexPattern } from "@/lib/utils/celConverterRouting";
 import { useMemo } from "react";
 import { RuleGroupType } from "react-querybuilder";
@@ -18,6 +19,18 @@ interface CELRuleBuilderProps {
 	allowCustomModels?: boolean;
 	isLoading?: boolean;
 }
+
+const complexityTierField: CELFieldDefinition = {
+	name: "complexity_tier",
+	label: "Complexity Tier",
+	placeholder: "Select complexity tier",
+	inputType: "select",
+	valueEditorType: () => "select",
+	operators: ["=", "!=", "in", "notIn"],
+	defaultOperator: "=",
+	values: COMPLEXITY_TIER_VALUES.map((t) => ({ name: t, label: t })),
+	description: "Filter rules by the type of complexity tier",
+};
 
 export function CELRuleBuilder({
 	onChange,
@@ -34,7 +47,7 @@ export function CELRuleBuilder({
 			onChange={onChange}
 			initialQuery={initialQuery}
 			isLoading={isLoading}
-			fields={fields}
+			fields={[...fields, complexityTierField]}
 			operators={celOperatorsRouting}
 			convertToCEL={convertRuleGroupToCEL}
 			validateRegex={validateRegexPattern}

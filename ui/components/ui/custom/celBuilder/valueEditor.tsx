@@ -247,7 +247,13 @@ export function ValueEditor({
 						}
 
 						return (
-							<SelectItem key={optName} value={optName} disabled={optDisabled} icon={iconElement}>
+							<SelectItem
+								key={optName}
+								value={optName}
+								disabled={optDisabled ?? false}
+								icon={iconElement}
+								data-disabled={optDisabled || undefined}
+							>
 								{displayLabel}
 							</SelectItem>
 						);
