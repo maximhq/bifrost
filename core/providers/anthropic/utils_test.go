@@ -1605,8 +1605,9 @@ func TestStripAutoInjectableTools(t *testing.T) {
 	})
 
 	t.Run("code_execution_and_web_search_only_strips_code_execution", func(t *testing.T) {
-		// When only code_execution + web_search, strip code_execution, keep web_search
-		input := []byte(`{"model":"test","tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_search_20250305","name":"web_search"}]}`)
+		// When only code_execution + web_search (newer version), strip code_execution, keep web_search
+		// Note: web_search_20260209 auto-injects code_execution, so explicit code_execution is stripped
+		input := []byte(`{"model":"test","tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_search_20260209","name":"web_search"}]}`)
 		result, err := StripAutoInjectableTools(input)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -1788,7 +1789,7 @@ func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
 		RawRequestBody: rawBody,
 	}
 
-	result, bifrostErr := getRequestBodyForResponses(ctx, request, false, nil)
+	result, bifrostErr := getRequestBodyForResponses(ctx, request, false, nil, false, false)
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}

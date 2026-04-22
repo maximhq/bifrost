@@ -661,133 +661,16 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 	req.OutputConfig.Effort = &effort
 }
 
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string) ([]byte, *schemas.BifrostError) {
-	// Large payload mode: body streams directly from the LP reader in completeRequest/
-	// setAnthropicRequestBody — skip all body building here (matches CheckContextAndGetRequestBody).
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, nil
-	}
-
-	var jsonBody []byte
-	var err error
-
-	// Check if raw request body should be used
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonBody = request.GetRawRequestBody()
-
-		// Update model with provider model (using gjson/sjson to preserve key order for prompt caching)
-		if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
-			if modelStr := modelResult.String(); modelStr != "" {
-				_, model := schemas.ParseModelString(modelStr, schemas.Anthropic)
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", model)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-		// Add max_tokens if not present
-		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-			defaultMaxTokens := AnthropicDefaultMaxTokens
-			if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
-				defaultMaxTokens = providerUtils.GetMaxOutputTokensOrDefault(modelResult.String(), AnthropicDefaultMaxTokens)
-			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", defaultMaxTokens)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-		// Add stream if streaming
-		if isStreaming {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-		// Strip auto-injectable server-side tools to prevent conflicts with API auto-injection
-		jsonBody, err = StripAutoInjectableTools(jsonBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Sanitize raw-body fields the target provider does not support.
-		// Behavioural parity with StripUnsupportedAnthropicFields on the typed path.
-		// Feature gating keyed to schemas.Anthropic (not providerName) to match
-		// the typed path below which also hardcodes schemas.Anthropic — ensures
-		// custom Anthropic aliases get identical feature lookup in both modes.
-		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Anthropic, "")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Auto-inject matching anthropic-beta headers for fields the sanitizer
-		// preserved (speed, task_budget, cache_control.scope, input_examples,
-		// defer_loading, allowed_callers, eager_input_streaming, mcp_servers,
-		// structured outputs, etc). Without this, raw-body callers who supply
-		// gated fields but not headers would 400 upstream. Single source of
-		// truth: probe-unmarshal into the typed struct and reuse the typed
-		// path's header walker.
-		var probe AnthropicMessageRequest
-		if err := schemas.Unmarshal(jsonBody, &probe); err == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
-		}
-		// Remove excluded fields
-		for _, field := range excludeFields {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-	} else {
-		// Convert request to Anthropic format
-		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr)
-		}
-		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
-		}
-		AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Anthropic)
-		if isStreaming {
-			reqBody.Stream = schemas.Ptr(true)
-		}
-		// Marshal struct to JSON bytes
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err))
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := reqBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use MergeExtraParamsIntoJSON which preserves key order
-				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-			// Remove excluded fields after merging (using sjson to preserve order)
-			for _, field := range excludeFields {
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		} else if len(excludeFields) > 0 {
-			// Remove excluded fields using sjson to preserve key order
-			for _, field := range excludeFields {
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-	}
-
-	// delete fallbacks field
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-	}
-
-	return jsonBody, nil
+// getRequestBodyForResponses serializes a BifrostResponsesRequest into the Anthropic wire format.
+// It delegates to BuildAnthropicResponsesRequestBody with the appropriate provider and streaming config.
+func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
+	return BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               isStreaming,
+		ExcludeFields:             excludeFields,
+		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
+		ShouldSendBackRawResponse: shouldSendBackRawResponse,
+	})
 }
 
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.
@@ -1070,6 +953,27 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 	},
 }
 
+// doesWebSearchOrFetchAutoInjectCodeExecution reports whether the given web search/fetch tool type
+// automatically injects a code-execution beta header. Newer tool versions (2026-02-09 and later)
+// require it; older ones do not. Defaults to true for unrecognized types to preserve backward compatibility.
+func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
+	switch toolType {
+	case string(AnthropicToolTypeWebSearch20250305):
+		return false
+	case string(AnthropicToolTypeWebSearch20260209):
+		return true
+	case string(AnthropicToolTypeWebFetch20260309):
+		return true
+	case string(AnthropicToolTypeWebFetch20250910):
+		return false
+	case string(AnthropicToolTypeWebFetch20260209):
+		return true
+	}
+
+	// Keeping it for backward compatibility as this always used to be true
+	return true
+}
+
 // StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
 // when web_search or web_fetch tools are also present. The Anthropic API auto-injects
 // code_execution when web_search_20260209 or web_fetch_20260209 is included in the request,
@@ -1089,16 +993,16 @@ func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
 
 	// Check if web_search or web_fetch is present — only then does Anthropic
 	// auto-inject code_execution, causing a conflict if it's also explicit.
-	hasWebSearchOrFetch := false
+	hasWebSearchOrFetchWithAutoInjectableCodeExecution := false
 	for _, tool := range tools {
 		toolType := tool.Get("type").String()
 		if strings.HasPrefix(toolType, "web_search_") || strings.HasPrefix(toolType, "web_fetch_") {
-			hasWebSearchOrFetch = true
+			hasWebSearchOrFetchWithAutoInjectableCodeExecution = doesWebSearchOrFetchAutoInjectCodeExecution(toolType)
 			break
 		}
 	}
 
-	if !hasWebSearchOrFetch {
+	if !hasWebSearchOrFetchWithAutoInjectableCodeExecution {
 		return jsonBody, nil
 	}
 
