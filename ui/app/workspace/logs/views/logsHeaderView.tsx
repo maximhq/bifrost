@@ -6,50 +6,22 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
-import { Calculator, MoreVertical, Pause, Play, Search } from "lucide-react";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { Calculator, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-
-const LOG_TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
-];
-
-function getRangeForPeriod(period: string): { from: Date; to: Date } {
-	const to = new Date();
-	const from = new Date(to.getTime());
-	switch (period) {
-		case "1h":
-			from.setHours(from.getHours() - 1);
-			break;
-		case "6h":
-			from.setHours(from.getHours() - 6);
-			break;
-		case "24h":
-			from.setHours(from.getHours() - 24);
-			break;
-		case "7d":
-			from.setDate(from.getDate() - 7);
-			break;
-		case "30d":
-			from.setDate(from.getDate() - 30);
-			break;
-		default:
-			from.setHours(from.getHours() - 24);
-	}
-	return { from, to };
-}
 
 interface LogsHeaderViewProps {
 	filters: LogFiltersType;
 	onFiltersChange: (filters: LogFiltersType) => void;
-	liveEnabled: boolean;
-	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
+	fetchHistogram: () => Promise<void>;
+	loading?: boolean;
+	polling: boolean;
+	onPollToggle: (enabled: boolean) => void;
+	period: string;
+	onPeriodChange: (period: string, from: Date, to: Date) => void;
 	/** Column config for the ColumnConfigDropdown */
 	columnEntries: ColumnConfigEntry[];
 	columnLabels: Record<string, string>;
@@ -60,10 +32,14 @@ interface LogsHeaderViewProps {
 export function LogsHeaderView({
 	filters,
 	onFiltersChange,
-	liveEnabled,
-	onLiveToggle,
 	fetchLogs,
 	fetchStats,
+	fetchHistogram,
+	loading = false,
+	polling,
+	onPollToggle,
+	period,
+	onPeriodChange,
 	columnEntries,
 	columnLabels,
 	onToggleColumnVisibility,
@@ -83,22 +59,17 @@ export function LogsHeaderView({
 		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
 	}, [filters.start_time, filters.end_time]);
 
-	// Keep filtersRef in sync so debounced search always merges with latest filters (search within filtered results)
 	useEffect(() => {
 		filtersRef.current = filters;
 	}, [filters]);
 
-	// Sync localSearch when filters.content_search changes externally (e.g. URL restore)
 	useEffect(() => {
 		setLocalSearch(filters.content_search || "");
 	}, [filters.content_search]);
 
-	// Cleanup timeout on unmount
 	useEffect(() => {
 		return () => {
-			if (searchTimeoutRef.current) {
-				clearTimeout(searchTimeoutRef.current);
-			}
+			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 		};
 	}, []);
 
@@ -120,12 +91,7 @@ export function LogsHeaderView({
 	const handleSearchChange = useCallback(
 		(value: string) => {
 			setLocalSearch(value);
-
-			if (searchTimeoutRef.current) {
-				clearTimeout(searchTimeoutRef.current);
-			}
-
-			// Use filtersRef.current so search is applied on top of current filters (search within filtered results)
+			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 			searchTimeoutRef.current = setTimeout(() => {
 				onFiltersChange({ ...filtersRef.current, content_search: value });
 			}, 500);
@@ -135,18 +101,30 @@ export function LogsHeaderView({
 
 	return (
 		<div className="flex grow items-center justify-between space-x-2">
-			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
-				{liveEnabled ? (
-					<>
-						<Pause className="h-4 w-4" />
-						Live updates
-					</>
-				) : (
-					<>
-						<Play className="h-4 w-4" />
-						Live updates
-					</>
-				)}
+			<Button
+				data-testid="logs-refresh-btn"
+				variant="outline"
+				size="sm"
+				className="h-7.5 disabled:opacity-100"
+				onClick={() => {
+					fetchLogs();
+					fetchStats();
+					fetchHistogram();
+				}}
+				disabled={loading}
+			>
+				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+				Refresh
+			</Button>
+			<Button
+				data-testid="logs-live-btn"
+				variant={polling ? "default" : "outline"}
+				size="sm"
+				className="h-7.5"
+				onClick={() => onPollToggle(!polling)}
+			>
+				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
+				Live
 			</Button>
 			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
@@ -162,6 +140,7 @@ export function LogsHeaderView({
 			<DateTimePickerWithRange
 				triggerTestId="filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
+				predefinedPeriod={period || undefined}
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);
@@ -171,17 +150,14 @@ export function LogsHeaderView({
 						end_time: p.to?.toISOString(),
 					});
 				}}
-				preDefinedPeriods={LOG_TIME_PERIODS}
+				preDefinedPeriods={TIME_PERIODS}
 				onPredefinedPeriodChange={(periodValue) => {
 					if (!periodValue) return;
 					const { from, to } = getRangeForPeriod(periodValue);
 					setStartTime(from);
 					setEndTime(to);
-					onFiltersChange({
-						...filters,
-						start_time: from.toISOString(),
-						end_time: to.toISOString(),
-					});
+					// Relative period: store it in URL and update timestamps via parent
+					onPeriodChange(periodValue, from, to);
 				}}
 			/>
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>

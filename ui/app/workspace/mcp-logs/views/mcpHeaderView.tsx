@@ -3,47 +3,19 @@ import { Button } from "@/components/ui/button";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
-import { Pause, Play, Search } from "lucide-react";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-const LOG_TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
-];
-
-function getRangeForPeriod(period: string): { from: Date; to: Date } {
-	const to = new Date();
-	const from = new Date(to.getTime());
-	switch (period) {
-		case "1h":
-			from.setHours(from.getHours() - 1);
-			break;
-		case "6h":
-			from.setHours(from.getHours() - 6);
-			break;
-		case "24h":
-			from.setHours(from.getHours() - 24);
-			break;
-		case "7d":
-			from.setDate(from.getDate() - 7);
-			break;
-		case "30d":
-			from.setDate(from.getDate() - 30);
-			break;
-		default:
-			from.setHours(from.getHours() - 24);
-	}
-	return { from, to };
-}
 
 interface McpHeaderViewProps {
 	filters: MCPToolLogFilters;
 	onFiltersChange: (filters: MCPToolLogFilters) => void;
-	liveEnabled: boolean;
-	onLiveToggle: (enabled: boolean) => void;
+	period: string;
+	onPeriodChange: (period: string, from: Date, to: Date) => void;
+	polling: boolean;
+	onPollToggle: (enabled: boolean) => void;
+	onRefresh: () => void;
+	loading?: boolean;
 	/** Column config for the ColumnConfigDropdown */
 	columnEntries: ColumnConfigEntry[];
 	columnLabels: Record<string, string>;
@@ -54,8 +26,12 @@ interface McpHeaderViewProps {
 export function McpHeaderView({
 	filters,
 	onFiltersChange,
-	liveEnabled,
-	onLiveToggle,
+	period,
+	onPeriodChange,
+	polling,
+	onPollToggle,
+	onRefresh,
+	loading = false,
 	columnEntries,
 	columnLabels,
 	onToggleColumnVisibility,
@@ -67,38 +43,26 @@ export function McpHeaderView({
 	const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const filtersRef = useRef<MCPToolLogFilters>(filters);
 
-	// Keep filtersRef in sync with filters prop
 	useEffect(() => {
 		filtersRef.current = filters;
 	}, [filters]);
-
-	// Sync localSearch when filters.content_search changes externally
 	useEffect(() => {
 		setLocalSearch(filters.content_search || "");
 	}, [filters.content_search]);
-
 	useEffect(() => {
 		setStartTime(filters.start_time ? new Date(filters.start_time) : undefined);
 		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
 	}, [filters.start_time, filters.end_time]);
-
-	// Cleanup timeout on unmount
 	useEffect(() => {
 		return () => {
-			if (searchTimeoutRef.current) {
-				clearTimeout(searchTimeoutRef.current);
-			}
+			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 		};
 	}, []);
 
 	const handleSearchChange = useCallback(
 		(value: string) => {
 			setLocalSearch(value);
-
-			if (searchTimeoutRef.current) {
-				clearTimeout(searchTimeoutRef.current);
-			}
-
+			if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 			searchTimeoutRef.current = setTimeout(() => {
 				onFiltersChange({ ...filtersRef.current, content_search: value });
 			}, 500);
@@ -108,18 +72,26 @@ export function McpHeaderView({
 
 	return (
 		<div className="flex grow items-center justify-between space-x-2">
-			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
-				{liveEnabled ? (
-					<>
-						<Pause className="h-4 w-4" />
-						Live updates
-					</>
-				) : (
-					<>
-						<Play className="h-4 w-4" />
-						Live updates
-					</>
-				)}
+			<Button
+				variant="outline"
+				size="sm"
+				className="h-7.5 disabled:opacity-100"
+				onClick={onRefresh}
+				disabled={loading}
+				data-testid="mcp-logs-header-refresh-btn"
+			>
+				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+				Refresh
+			</Button>
+			<Button
+				variant={polling ? "default" : "outline"}
+				size="sm"
+				className="h-7.5"
+				onClick={() => onPollToggle(!polling)}
+				data-testid="mcp-logs-header-live-btn"
+			>
+				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
+				Live
 			</Button>
 			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
@@ -133,6 +105,7 @@ export function McpHeaderView({
 			</div>
 			<DateTimePickerWithRange
 				dateTime={{ from: startTime, to: endTime }}
+				predefinedPeriod={period || undefined}
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);
@@ -142,17 +115,13 @@ export function McpHeaderView({
 						end_time: p.to?.toISOString(),
 					});
 				}}
-				preDefinedPeriods={LOG_TIME_PERIODS}
+				preDefinedPeriods={TIME_PERIODS}
 				onPredefinedPeriodChange={(periodValue) => {
 					if (!periodValue) return;
 					const { from, to } = getRangeForPeriod(periodValue);
 					setStartTime(from);
 					setEndTime(to);
-					onFiltersChange({
-						...filters,
-						start_time: from.toISOString(),
-						end_time: to.toISOString(),
-					});
+					onPeriodChange(periodValue, from, to);
 				}}
 			/>
 			<ColumnConfigDropdown

@@ -4,7 +4,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useWebSocket } from "@/hooks/useWebSocket";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ProviderName } from "@/lib/constants/logs";
 import { RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
@@ -51,7 +50,6 @@ interface SessionDetailsSheetProps {
 	highlightedLogId?: string | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	liveEnabled: boolean;
 	onLogClick?: (log: LogEntry) => void;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 }
@@ -61,7 +59,6 @@ export function SessionDetailsSheet({
 	highlightedLogId,
 	open,
 	onOpenChange,
-	liveEnabled,
 	onLogClick,
 	onFilterByParentRequestId,
 }: SessionDetailsSheetProps) {
@@ -74,7 +71,6 @@ export function SessionDetailsSheet({
 	const totalCountRef = useRef(totalCount);
 	const [hasMore, setHasMore] = useState(false);
 	const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
-	const { subscribe } = useWebSocket();
 	const { data: sessionSummary } = useGetLogSessionSummaryByIdQuery(sessionId || "", {
 		skip: !open || !sessionId,
 		pollingInterval: 5000,
@@ -183,34 +179,6 @@ export function SessionDetailsSheet({
 		loadSessionPage(0, true);
 	}, [open, sessionId, sortOrder, loadSessionPage]);
 
-	useEffect(() => {
-		if (!open || !sessionId || !liveEnabled) {
-			return;
-		}
-		const unsubscribe = subscribe("log", (data) => {
-			const log = data.payload as LogEntry;
-			const operation = data.operation as "create" | "update";
-			if (!log?.parent_request_id || log.parent_request_id !== sessionId) {
-				return;
-			}
-
-			setSessionLogs((prev) => {
-				const idx = prev.findIndex((item) => item.id === log.id);
-				if (idx >= 0) {
-					const next = [...prev];
-					next[idx] = log;
-					return sortSessionLogs(next);
-				}
-				return sortSessionLogs([...prev, log]);
-			});
-
-			if (operation === "create") {
-				setTotalCount((prev) => prev + 1);
-				setHasMore((prev) => prev || fetchedCountRef.current < totalCountRef.current + 1);
-			}
-		});
-		return unsubscribe;
-	}, [open, sessionId, liveEnabled, subscribe, sortSessionLogs]);
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
