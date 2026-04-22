@@ -446,7 +446,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
 		// so custom Anthropic aliases get the same feature lookup as the typed
 		// path above (line 445), keeping raw and typed behavior in lockstep.
-		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
+		sanitized, rawErr := StripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
 		if rawErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}
@@ -539,7 +539,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
 		// to keep raw and typed paths in lockstep on custom aliases — mirrors
 		// the typed path's hardcoded schemas.Anthropic at line 548.
-		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
+		sanitized, rawErr := StripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
 		if rawErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}

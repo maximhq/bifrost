@@ -319,7 +319,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	}
 }
 
-// stripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
+// StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
 // StripUnsupportedAnthropicFields. It mutates the request body bytes using
 // sjson/gjson (preserving key order for prompt caching) so the raw-body
 // passthrough path has behavioural parity with the typed conversion path.
@@ -338,7 +338,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 // Unknown providers: safe default — no stripping (parity with the typed helper).
 // Unknown edit types in context_management: left in place for the provider
 // to reject (parity with the typed helper).
-func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
 	if len(jsonBody) == 0 {
 		return jsonBody, nil
 	}
@@ -713,7 +713,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		// Feature gating keyed to schemas.Anthropic (not providerName) to match
 		// the typed path below which also hardcodes schemas.Anthropic — ensures
 		// custom Anthropic aliases get identical feature lookup in both modes.
-		jsonBody, err = stripUnsupportedFieldsFromRawBody(jsonBody, schemas.Anthropic, "")
+		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Anthropic, "")
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}

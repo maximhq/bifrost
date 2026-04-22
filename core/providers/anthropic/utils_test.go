@@ -1268,7 +1268,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 			"cache_control":{"type":"ephemeral","ttl":"5m","scope":"user"},
 			"output_config":{"task_budget":{"type":"tokens","total":20000}}
 		}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1292,7 +1292,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 			"mcp_servers":[{"type":"url","url":"u","name":"n"}],
 			"tools":[{"name":"t1","strict":true,"input_examples":[{"input":{"a":1}}],"cache_control":{"type":"ephemeral","scope":"user"}}]
 		}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Vertex, "claude-sonnet-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Vertex, "claude-sonnet-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1314,7 +1314,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 			"model":"claude-opus-4-6",
 			"tools":[{"name":"t1","input_examples":[{"input":{"a":1}}],"defer_loading":true,"allowed_callers":["direct"]}]
 		}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1332,7 +1332,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		// Model gate: fast-mode is Opus 4.6 only per docs. Even on Anthropic
 		// direct where FastMode=true, targeting a different model must strip.
 		input := []byte(`{"model":"claude-sonnet-4-6","speed":"fast"}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1344,7 +1344,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	t.Run("anthropic_direct_is_noop", func(t *testing.T) {
 		// Anthropic supports everything — body should survive untouched.
 		input := []byte(`{"model":"claude-opus-4-6","speed":"fast","mcp_servers":[{"type":"url","url":"u","name":"n"}],"container":{"id":"c"},"tools":[{"name":"t","defer_loading":true,"input_examples":[{"input":{"a":1}}]}]}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1363,7 +1363,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 			"system":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"user"}}],
 			"messages":[{"role":"user","content":[{"type":"text","text":"q","cache_control":{"type":"ephemeral","scope":"global"}}]}]
 		}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1376,7 +1376,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 
 	t.Run("unknown_provider_is_safe_noop", func(t *testing.T) {
 		input := []byte(`{"model":"claude-opus-4-6","speed":"fast"}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.ModelProvider("custom"), "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.ModelProvider("custom"), "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1389,7 +1389,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		// Skills=false provider (Bedrock), ContainerBasic=true.
 		// skills:[] is a caller oversight — strip the empty key, preserve container.
 		input := []byte(`{"model":"claude-opus-4-6","container":{"id":"c-1","skills":[]}}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1404,7 +1404,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	t.Run("container_nonempty_skills_drops_whole_container", func(t *testing.T) {
 		// Non-empty skills signals caller intent; provider doesn't support — drop container.
 		input := []byte(`{"model":"claude-opus-4-6","container":{"id":"c-1","skills":[{"skill_id":"s","type":"anthropic"}]}}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Bedrock, "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1417,7 +1417,7 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		// On Anthropic direct (Skills=true), the empty skills array must be preserved
 		// as-is — our strip logic only fires when !features.Skills.
 		input := []byte(`{"model":"claude-opus-4-6","container":{"id":"c-1","skills":[]}}`)
-		result, err := stripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-opus-4-6")
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-opus-4-6")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
