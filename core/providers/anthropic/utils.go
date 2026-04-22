@@ -974,6 +974,37 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 	return true
 }
 
+// StripEmptyThinkingBlocks removes thinking content blocks where
+// "thinking" is an empty string. Anthropic rejects such blocks with a 400.
+func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return jsonBody, nil
+	}
+	var err error
+	for mi, msg := range messagesResult.Array() {
+		contentResult := msg.Get("content")
+		if !contentResult.Exists() || !contentResult.IsArray() {
+			continue
+		}
+		var toStrip []int
+		for ci, block := range contentResult.Array() {
+			if block.Get("type").String() == "thinking" && block.Get("thinking").String() == "" {
+				toStrip = append(toStrip, ci)
+			}
+		}
+		for i := len(toStrip) - 1; i >= 0; i-- {
+			path := fmt.Sprintf("messages.%d.content.%d", mi, toStrip[i])
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+			if err != nil {
+				return nil, fmt.Errorf("failed to strip empty thinking block at %s: %w", path, err)
+			}
+
+		}
+	}
+	return jsonBody, nil
+}
+
 // StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
 // when web_search or web_fetch tools are also present. The Anthropic API auto-injects
 // code_execution when web_search_20260209 or web_fetch_20260209 is included in the request,

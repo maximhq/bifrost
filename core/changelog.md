@@ -1,1 +1,2 @@
 - feat: Standardizes tool stripping and anthropic integration handling against anthropic, vertex and azure
+- fix: drops empty thinking block for anthropic provider for claude code
