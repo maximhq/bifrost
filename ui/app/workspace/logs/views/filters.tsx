@@ -6,56 +6,24 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
-import { Calculator, MoreVertical, Pause, Play, Search } from "lucide-react";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { Calculator, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 export { dateToRfc3339Local } from "@/lib/utils/date";
 
-/** Predefined time periods for the logs date range picker (matches E2E test labels) */
-const LOG_TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
-];
-
-function getRangeForPeriod(period: string): { from: Date; to: Date } {
-	const to = new Date();
-	const from = new Date(to.getTime());
-	switch (period) {
-		case "1h":
-			from.setHours(from.getHours() - 1);
-			break;
-		case "6h":
-			from.setHours(from.getHours() - 6);
-			break;
-		case "24h":
-			from.setHours(from.getHours() - 24);
-			break;
-		case "7d":
-			from.setDate(from.getDate() - 7);
-			break;
-		case "30d":
-			from.setDate(from.getDate() - 30);
-			break;
-		default:
-			from.setHours(from.getHours() - 24);
-	}
-	return { from, to };
-}
-
 interface LogFiltersProps {
 	filters: LogFiltersType;
 	onFiltersChange: (filters: LogFiltersType) => void;
-	liveEnabled: boolean;
-	onLiveToggle: (enabled: boolean) => void;
-	fetchLogs: () => Promise<void>;
-	fetchStats: () => Promise<void>;
+	polling: boolean;
+	onPollToggle: (enabled: boolean) => void;
+	onRefresh: () => void;
+	period: string;
+	onPeriodChange: (period: string, from: Date, to: Date) => void;
 }
 
-export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle, fetchLogs, fetchStats }: LogFiltersProps) {
+export function LogFilters({ filters, onFiltersChange, polling, onPollToggle, onRefresh, period, onPeriodChange }: LogFiltersProps) {
 	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
@@ -94,8 +62,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	const handleRecalculateCosts = useCallback(async () => {
 		try {
 			const response = await recalculateCosts({ filters }).unwrap();
-			await fetchLogs();
-			await fetchStats();
+			onRefresh();
 			setOpenMoreActionsPopover(false);
 			toast.success(`Recalculated costs for ${response.updated} logs`, {
 				description: `${response.updated} logs updated, ${response.skipped} logs skipped, ${response.remaining} logs remaining`,
@@ -104,7 +71,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 		} catch (err) {
 			toast.error(getErrorMessage(err));
 		}
-	}, [filters, recalculateCosts, fetchLogs, fetchStats]);
+	}, [filters, recalculateCosts, onRefresh]);
 
 	const handleSearchChange = useCallback(
 		(value: string) => {
@@ -148,18 +115,13 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 
 	return (
 		<div className="flex items-center justify-between space-x-2">
-			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
-				{liveEnabled ? (
-					<>
-						<Pause className="h-4 w-4" />
-						Live updates
-					</>
-				) : (
-					<>
-						<Play className="h-4 w-4" />
-						Live updates
-					</>
-				)}
+			<Button variant="outline" size="sm" className="h-7.5" onClick={onRefresh}>
+				<RefreshCw className="h-4 w-4" />
+				Refresh
+			</Button>
+			<Button variant={polling ? "default" : "outline"} size="sm" className="h-7.5" onClick={() => onPollToggle(!polling)}>
+				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
+				Live
 			</Button>
 			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
@@ -178,26 +140,20 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					from: startTime,
 					to: endTime,
 				}}
-				onDateTimeUpdate={(p) => {
-					setStartTime(p.from);
-					setEndTime(p.to);
-					onFiltersChange({
-						...filters,
-						start_time: p.from?.toISOString(),
-						end_time: p.to?.toISOString(),
-					});
-				}}
-				preDefinedPeriods={LOG_TIME_PERIODS}
+				predefinedPeriod={period || undefined}
+				preDefinedPeriods={[...TIME_PERIODS]}
 				onPredefinedPeriodChange={(periodValue) => {
 					if (!periodValue) return;
 					const { from, to } = getRangeForPeriod(periodValue);
 					setStartTime(from);
 					setEndTime(to);
-					onFiltersChange({
-						...filters,
-						start_time: from.toISOString(),
-						end_time: to.toISOString(),
-					});
+					onPeriodChange(periodValue, from, to);
+				}}
+				onDateTimeUpdate={(p) => {
+					setStartTime(p.from);
+					setEndTime(p.to);
+					onPeriodChange("", p.from ?? new Date(), p.to ?? new Date());
+					onFiltersChange({ ...filters, start_time: p.from?.toISOString(), end_time: p.to?.toISOString() });
 				}}
 			/>
 			<FilterPopover filters={filters} onFilterChange={handleFilterChange} onMetadataFilterChange={handleMetadataFilterChange} showMissingCost />
@@ -210,11 +166,11 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 				<PopoverContent className="bg-accent w-[250px] p-2" align="end">
 					<Command>
 						<CommandList>
-							<CommandItem className="hover:bg-accent/50 cursor-pointer" onSelect={handleRecalculateCosts}>
+							<CommandItem className="hover:bg-accent/50 cursor-pointer" onSelect={handleRecalculateCosts} disabled={recalculating}>
 								<Calculator className="text-muted-foreground size-4" />
 								<div className="flex flex-col">
 									<span className="text-sm">Recalculate costs</span>
-									<span className="text-muted-foreground text-xs">For all logs that don't have a cost</span>
+									<span className="text-muted-foreground text-xs">For all logs that don&apos;t have a cost</span>
 								</div>
 							</CommandItem>
 						</CommandList>

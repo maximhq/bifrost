@@ -7,17 +7,21 @@ import { Statuses } from "@/lib/constants/logs";
 import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { Check, FilterIcon, Pause, Play, Search } from "lucide-react";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { Check, FilterIcon, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface MCPLogFiltersProps {
 	filters: MCPToolLogFilters;
 	onFiltersChange: (filters: MCPToolLogFilters) => void;
-	liveEnabled: boolean;
-	onLiveToggle: (enabled: boolean) => void;
+	polling: boolean;
+	onPollToggle: (enabled: boolean) => void;
+	onRefresh: () => void;
+	period: string;
+	onPeriodChange: (period: string, from: Date, to: Date) => void;
 }
 
-export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle }: MCPLogFiltersProps) {
+export function MCPLogFilters({ filters, onFiltersChange, polling, onPollToggle, onRefresh, period, onPeriodChange }: MCPLogFiltersProps) {
 	const [openFiltersPopover, setOpenFiltersPopover] = useState(false);
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -150,18 +154,13 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 
 	return (
 		<div className="flex items-center justify-between space-x-2">
-			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
-				{liveEnabled ? (
-					<>
-						<Pause className="h-4 w-4" />
-						Live updates
-					</>
-				) : (
-					<>
-						<Play className="h-4 w-4" />
-						Live updates
-					</>
-				)}
+			<Button variant="outline" size="sm" className="h-7.5" onClick={onRefresh}>
+				<RefreshCw className="h-4 w-4" />
+				Refresh
+			</Button>
+			<Button variant={polling ? "default" : "outline"} size="sm" className="h-7.5" onClick={() => onPollToggle(!polling)}>
+				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
+				Live
 			</Button>
 			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
@@ -179,14 +178,20 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 					from: startTime,
 					to: endTime,
 				}}
+				predefinedPeriod={period || undefined}
+				preDefinedPeriods={[...TIME_PERIODS]}
+				onPredefinedPeriodChange={(periodValue) => {
+					if (!periodValue) return;
+					const { from, to } = getRangeForPeriod(periodValue);
+					setStartTime(from);
+					setEndTime(to);
+					onPeriodChange(periodValue, from, to);
+				}}
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);
-					onFiltersChange({
-						...filters,
-						start_time: p.from?.toISOString(),
-						end_time: p.to?.toISOString(),
-					});
+					onPeriodChange("", p.from ?? new Date(), p.to ?? new Date());
+					onFiltersChange({ ...filters, start_time: p.from?.toISOString(), end_time: p.to?.toISOString() });
 				}}
 			/>
 			<Popover open={openFiltersPopover} onOpenChange={setOpenFiltersPopover}>
