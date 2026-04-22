@@ -345,6 +345,15 @@
               "provider_config_id": {
                 "type": "integer",
                 "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
+              },
+              "team_id": {
+                "type": "string",
+                "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id and provider_config_id)"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               }
             },
             "required": ["id", "max_limit", "reset_duration"],
@@ -396,6 +405,11 @@
                 "type": "string",
                 "format": "date-time",
                 "description": "Last time request counter was reset"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               }
             },
             "required": ["id"],
@@ -466,6 +480,12 @@
               "claims": {
                 "type": "object",
                 "description": "Team claims data"
+              },
+              "virtual_key_count": {
+                "type": "integer",
+                "description": "Computed count of virtual keys associated with this team",
+                "minimum": 0,
+                "readOnly": true
               }
             },
             "required": ["id", "name"],
