@@ -1496,8 +1496,16 @@ func updateGovernanceConfigInStore(
 ) error {
 	logger.Debug("updating governance config in store with merged items")
 	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Team-owned budgets require team rows to exist first (FK on governance_budgets.team_id).
+		pendingTeamBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
+		pendingTeamBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+
 		// Create budgets
 		for _, budget := range budgetsToAdd {
+			if budget.TeamID != nil {
+				pendingTeamBudgetsToAdd = append(pendingTeamBudgetsToAdd, budget)
+				continue
+			}
 			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
 			}
@@ -1505,6 +1513,10 @@ func updateGovernanceConfigInStore(
 
 		// Update budgets (config.json changed)
 		for _, budget := range budgetsToUpdate {
+			if budget.TeamID != nil {
+				pendingTeamBudgetsToUpdate = append(pendingTeamBudgetsToUpdate, budget)
+				continue
+			}
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -1549,6 +1561,20 @@ func updateGovernanceConfigInStore(
 		for _, team := range teamsToUpdate {
 			if err := config.ConfigStore.UpdateTeam(ctx, &team, tx); err != nil {
 				return fmt.Errorf("failed to update team %s: %w", team.ID, err)
+			}
+		}
+
+		// Create team-owned budgets after teams exist.
+		for _, budget := range pendingTeamBudgetsToAdd {
+			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Update team-owned budgets after teams exist.
+		for _, budget := range pendingTeamBudgetsToUpdate {
+			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
 		}
 
@@ -1634,8 +1660,7 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		len(config.GovernanceConfig.VirtualKeys),
 		len(config.GovernanceConfig.RoutingRules))
 	if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		for i := range config.GovernanceConfig.Budgets {
-			budget := &config.GovernanceConfig.Budgets[i]
+		createBudget := func(budget *configstoreTables.TableBudget) error {
 			budgetHash, err := configstore.GenerateBudgetHash(*budget)
 			if err != nil {
 				logger.Warn("failed to generate budget hash for %s: %v", budget.ID, err)
@@ -1644,6 +1669,20 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateBudget(ctx, budget, tx); err != nil {
 				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+			return nil
+		}
+
+		// Team-owned budgets require team rows to exist first (FK on governance_budgets.team_id).
+		pendingTeamBudgets := make([]*configstoreTables.TableBudget, 0)
+		for i := range config.GovernanceConfig.Budgets {
+			budget := &config.GovernanceConfig.Budgets[i]
+			if budget.TeamID != nil {
+				pendingTeamBudgets = append(pendingTeamBudgets, budget)
+				continue
+			}
+			if err := createBudget(budget); err != nil {
+				return err
 			}
 		}
 
@@ -1683,6 +1722,12 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateTeam(ctx, team, tx); err != nil {
 				return fmt.Errorf("failed to create team %s: %w", team.ID, err)
+			}
+		}
+
+		for _, budget := range pendingTeamBudgets {
+			if err := createBudget(budget); err != nil {
+				return err
 			}
 		}
 
