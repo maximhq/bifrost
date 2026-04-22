@@ -1207,8 +1207,27 @@
                     "default": 0
                   },
                   "query": {
-                    "type": "object",
-                    "additionalProperties": true
+                    "description": "Visual rule builder state for the management UI (react-querybuilder). Omitted unless exported from the dashboard. Not evaluated at routing runtime (cel_expression is). When present, must include combinator and rules[].",
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "required": ["combinator", "rules"],
+                        "properties": {
+                          "combinator": {
+                            "type": "string",
+                            "enum": ["and", "or"]
+                          },
+                          "rules": {
+                            "type": "array",
+                            "description": "Leaf rules (field, operator, value) and/or nested combinator+rules groups from the query builder."
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    ]
                   }
                 },
                 "required": ["id", "name", "targets"]

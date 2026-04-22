@@ -12,6 +12,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 - Updated StatefulSet PVC template labels to be immutable-safe:
   - `spec.volumeClaimTemplates.metadata.labels` now uses stable selector labels (without chart/app version labels).
+- CI / rendered `config.json` checks (`validate-helm-config-fields.sh`):
+  - No longer expect `governance.virtual_keys[].budget_id` in rendered config (not in `config.schema.json`; `governance.budgets[].virtual_key_id` is the supported way to attach a budget to a virtual key).
+  - Fixture and assertions were updated to include a sample `governance.budgets` entry with `virtual_key_id` for coverage.
+  - Tightened `query` validation in `values.schema.json` and `config.schema.json`: `query` now accepts only `null` or an object with `{ combinator, rules }`; invalid user-provided query shapes may now fail Helm/config validation and should be migrated to the new structure.
+- Note: Bifrost HTTP also syncs `governance.model_configs` and `governance.providers` from file into the config store when using DB-backed config, with hash-based reconciliation.
 - Upgrade impact:
   - Existing SQLite StatefulSets created from older chart templates may require a one-time StatefulSet recreation during upgrade because `spec.volumeClaimTemplates` is immutable in Kubernetes.
 - Migration notes (only if upgrade fails with StatefulSet immutable-field error):
