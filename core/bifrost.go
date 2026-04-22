@@ -4561,9 +4561,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       origProvider,
-			ModelRequested: model,
+			RequestType:            req.RequestType,
+			Provider:               origProvider,
+			OriginalModelRequested: model,
 		}
 		return nil, bifrostErr
 	}
@@ -4584,9 +4584,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if err != nil {
 		bifrostErr := newBifrostError(err)
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
+			RequestType:            req.RequestType,
+			Provider:               provider,
+			OriginalModelRequested: model,
 		}
 		return nil, bifrostErr
 	}
@@ -4878,9 +4878,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       origProvider,
-			ModelRequested: model,
+			RequestType:            req.RequestType,
+			Provider:               origProvider,
+			OriginalModelRequested: model,
 		}
 		return nil, bifrostErr
 	}
@@ -4901,9 +4901,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	if err != nil {
 		bifrostErr := newBifrostError(err)
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
+			RequestType:            req.RequestType,
+			Provider:               provider,
+			OriginalModelRequested: model,
 		}
 		return nil, bifrostErr
 	}
@@ -6992,6 +6992,13 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // canRotate=true is returned when there are two or more eligible keys and no pinning
 // or stickiness constraint is in effect.
 func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) ([]schemas.Key, bool, error) {
+	// ProviderOverride: plugin injected a per-request key via req.UpdateAPIKey — no pool,
+	// no rotation, no validation (consistent with getAllSupportedKeys and
+	// getKeysForBatchAndFileOps). Override wins over DirectKey: a PreLLMHook sets it as
+	// a deliberate runtime decision.
+	if overrideKey := getOverrideKey(ctx); overrideKey != nil {
+		return []schemas.Key{*overrideKey}, false, nil
+	}
 	// DirectKey: caller supplied a key directly — no pool, no rotation.
 	if ctx != nil {
 		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
