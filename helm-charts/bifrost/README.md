@@ -4,9 +4,45 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.4
+**Latest Version:** 2.1.6
 
 ## Changelog
+
+### 2.1.6
+
+- Updated StatefulSet PVC template labels to be immutable-safe:
+  - `spec.volumeClaimTemplates.metadata.labels` now uses stable selector labels (without chart/app version labels).
+- Upgrade impact:
+  - Existing SQLite StatefulSets created from older chart templates may require a one-time StatefulSet recreation during upgrade because `spec.volumeClaimTemplates` is immutable in Kubernetes.
+- Migration notes (only if upgrade fails with StatefulSet immutable-field error):
+  1. Identify StatefulSet name and namespace for your Helm release.
+  2. Delete only the StatefulSet while preserving dependents:
+     - `kubectl delete statefulset <statefulset-name> -n <namespace> --cascade=orphan`
+  3. Run Helm upgrade:
+     - `helm upgrade <release-name> bifrost/bifrost -n <namespace> -f <values-file> --set image.tag=<tag>`
+  4. If needed, re-apply/recreate the StatefulSet from the upgraded chart manifests.
+  5. Verify PVCs are preserved and pods become healthy:
+     - `kubectl get pvc -n <namespace>`
+     - `kubectl get pods -n <namespace>`
+
+### 2.1.5
+
+- Added `version` field support for built-in plugins in DB-backed Helm deployments.
+- Added default `version: 1` for built-in plugins in `values.yaml`:
+  - `telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`
+- Updated `_helpers.tpl` to include plugin `version` in rendered config when set, cast as integer.
+- Updated Helm/deployment docs:
+  - Removed hardcoded chart version text and linked to Artifact Hub.
+  - Added plugin `version` examples and guidance that incrementing `version` forces DB-backed plugin config overwrite on upgrade.
+
+### 2.1.4
+
+- Added stricter cluster discovery validation in Helm templates:
+  - Require `bifrost.cluster.discovery.serviceName` when `bifrost.cluster.discovery.type` is `consul`, `etcd`, or `udp`.
+  - For `udp` discovery, require both:
+    - `bifrost.cluster.discovery.udpBroadcastPort`
+    - `bifrost.cluster.discovery.allowedAddressSpace`
+- Added/updated template fail-fast errors so invalid discovery config is rejected at render time instead of failing later at runtime.
 
 ### 2.1.3
 
