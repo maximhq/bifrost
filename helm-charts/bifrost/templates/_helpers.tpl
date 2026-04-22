@@ -861,10 +861,14 @@ false
 {{- /* Plugins - as array per schema */ -}}
 {{- $plugins := list }}
 {{- if .Values.bifrost.plugins.telemetry.enabled }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "telemetry" "config" .Values.bifrost.plugins.telemetry.config) }}
+{{- $plugin := dict "enabled" true "name" "telemetry" "config" .Values.bifrost.plugins.telemetry.config }}
+{{- if hasKey .Values.bifrost.plugins.telemetry "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.telemetry.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.logging.enabled }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config) }}
+{{- $plugin := dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config }}
+{{- if hasKey .Values.bifrost.plugins.logging "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.logging.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.governance.enabled }}
 {{- $governanceConfig := dict }}
@@ -877,7 +881,9 @@ false
 {{- if hasKey .Values.bifrost.plugins.governance.config "is_enterprise" }}
 {{- $_ := set $governanceConfig "is_enterprise" .Values.bifrost.plugins.governance.config.is_enterprise }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "governance" "config" $governanceConfig) }}
+{{- $plugin := dict "enabled" true "name" "governance" "config" $governanceConfig }}
+{{- if hasKey .Values.bifrost.plugins.governance "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.governance.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.maxim.enabled }}
 {{- $maximConfig := dict }}
@@ -889,7 +895,9 @@ false
 {{- if .Values.bifrost.plugins.maxim.config.log_repo_id }}
 {{- $_ := set $maximConfig "log_repo_id" .Values.bifrost.plugins.maxim.config.log_repo_id }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "maxim" "config" $maximConfig) }}
+{{- $plugin := dict "enabled" true "name" "maxim" "config" $maximConfig }}
+{{- if hasKey .Values.bifrost.plugins.maxim "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.maxim.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
 {{- $scConfig := dict }}
@@ -936,7 +944,9 @@ false
 {{- if hasKey $inputConfig "cleanup_on_shutdown" }}
 {{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "semantic_cache" "config" $scConfig) }}
+{{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
+{{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
@@ -971,7 +981,9 @@ false
 {{- if hasKey $inputConfig "insecure" }}
 {{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
+{{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
+{{- if hasKey .Values.bifrost.plugins.otel "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.otel.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.datadog.enabled }}
 {{- $datadogConfig := dict }}
@@ -994,14 +1006,16 @@ false
 {{- if hasKey $inputConfig "enable_traces" }}
 {{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "datadog" "config" $datadogConfig) }}
+{{- $plugin := dict "enabled" true "name" "datadog" "config" $datadogConfig }}
+{{- if hasKey .Values.bifrost.plugins.datadog "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.datadog.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- /* Custom plugins */ -}}
 {{- if .Values.bifrost.plugins.custom }}
 {{- range .Values.bifrost.plugins.custom }}
 {{- $customPlugin := dict "enabled" .enabled "name" .name }}
 {{- if .path }}{{- $_ := set $customPlugin "path" .path }}{{- end }}
-{{- if .version }}{{- $_ := set $customPlugin "version" .version }}{{- end }}
+{{- if hasKey . "version" }}{{- $_ := set $customPlugin "version" (.version | int) }}{{- end }}
 {{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
 {{- if .placement }}{{- $_ := set $customPlugin "placement" .placement }}{{- end }}
 {{- if .order }}{{- $_ := set $customPlugin "order" (.order | int) }}{{- end }}
@@ -1088,6 +1102,50 @@ Validation template - validates required fields from config.schema.json
 Call this template at the beginning of deployment/stateful templates
 */}}
 {{- define "bifrost.validate" -}}
+
+{{/* Validate semantic cache plugin when enabled */}}
+{{- if and .Values.bifrost.plugins.telemetry.enabled (hasKey .Values.bifrost.plugins.telemetry "version") (lt (int .Values.bifrost.plugins.telemetry.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.telemetry.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.telemetry.enabled (hasKey .Values.bifrost.plugins.telemetry "version") (gt (int .Values.bifrost.plugins.telemetry.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.telemetry.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.logging.enabled (hasKey .Values.bifrost.plugins.logging "version") (lt (int .Values.bifrost.plugins.logging.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.logging.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.logging.enabled (hasKey .Values.bifrost.plugins.logging "version") (gt (int .Values.bifrost.plugins.logging.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.logging.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.governance.enabled (hasKey .Values.bifrost.plugins.governance "version") (lt (int .Values.bifrost.plugins.governance.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.governance.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.governance.enabled (hasKey .Values.bifrost.plugins.governance "version") (gt (int .Values.bifrost.plugins.governance.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.governance.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.maxim.enabled (hasKey .Values.bifrost.plugins.maxim "version") (lt (int .Values.bifrost.plugins.maxim.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.maxim.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.maxim.enabled (hasKey .Values.bifrost.plugins.maxim "version") (gt (int .Values.bifrost.plugins.maxim.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.maxim.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.semanticCache.enabled (hasKey .Values.bifrost.plugins.semanticCache "version") (lt (int .Values.bifrost.plugins.semanticCache.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.semanticCache.enabled (hasKey .Values.bifrost.plugins.semanticCache "version") (gt (int .Values.bifrost.plugins.semanticCache.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.otel.enabled (hasKey .Values.bifrost.plugins.otel "version") (lt (int .Values.bifrost.plugins.otel.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.otel.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.otel.enabled (hasKey .Values.bifrost.plugins.otel "version") (gt (int .Values.bifrost.plugins.otel.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.otel.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.datadog.enabled (hasKey .Values.bifrost.plugins.datadog "version") (lt (int .Values.bifrost.plugins.datadog.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.datadog.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.datadog.enabled (hasKey .Values.bifrost.plugins.datadog "version") (gt (int .Values.bifrost.plugins.datadog.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.datadog.version must be <= 32767." }}
+{{- end }}
 
 {{/* Validate semantic cache plugin when enabled */}}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
@@ -1375,6 +1433,12 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not (hasKey $plugin "enabled") }}
 {{- fail (printf "ERROR: bifrost.plugins.custom[%d].enabled is required for plugin '%s'." $idx $plugin.name) }}
+{{- end }}
+{{- if and (hasKey $plugin "version") (lt (int $plugin.version) 1) }}
+{{- fail (printf "ERROR: bifrost.plugins.custom[%d].version must be >= 1 for plugin '%s'." $idx $plugin.name) }}
+{{- end }}
+{{- if and (hasKey $plugin "version") (gt (int $plugin.version) 32767) }}
+{{- fail (printf "ERROR: bifrost.plugins.custom[%d].version must be <= 32767 for plugin '%s'." $idx $plugin.name) }}
 {{- end }}
 {{- end }}
 {{- end }}
