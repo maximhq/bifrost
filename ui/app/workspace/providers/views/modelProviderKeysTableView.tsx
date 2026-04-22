@@ -232,9 +232,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												checked={isKeyEnabled}
 												size="md"
 												disabled={!hasUpdateProviderAccess || togglingKeyIds.has(key.id)}
-												onCheckedChange={(checked) => {
+												onAsyncCheckedChange={async (checked) => {
 													setTogglingKeyIds((prev) => new Set(prev).add(key.id));
-													updateProviderKey({
+													await updateProviderKey({
 														provider: provider.name,
 														keyId: key.id,
 														key: { ...key, enabled: checked },
