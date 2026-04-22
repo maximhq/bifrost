@@ -390,6 +390,8 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionStreamRequest); err != nil {
 		return nil, err
 	}
+	// Store custom provider config in context so streaming handler can check SendsDoneMarker
+	ctx.SetValue(schemas.BifrostContextKeyCustomProviderConfig, provider.customProviderConfig)
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -562,6 +564,15 @@ func HandleOpenAITextCompletionStreaming(
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
+		// Resolve sends_done_marker once before the loop (custom config overrides provider default)
+		var customCfg *schemas.CustomProviderConfig
+		if v := ctx.Value(schemas.BifrostContextKeyCustomProviderConfig); v != nil {
+			if c, ok := v.(*schemas.CustomProviderConfig); ok {
+				customCfg = c
+			}
+		}
+		providerSendsDoneMarker := providerUtils.ProviderSendsDoneMarker(providerName, customCfg)
+
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
 
@@ -700,7 +711,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 
 			// For providers that don't send [DONE] marker break on finish_reason
-			if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+			if !providerSendsDoneMarker && finishReason != nil {
 				break
 			}
 		}
@@ -898,6 +909,8 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
+	// Store custom provider config in context so streaming handler can check SendsDoneMarker
+	ctx.SetValue(schemas.BifrostContextKeyCustomProviderConfig, provider.customProviderConfig)
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -1101,6 +1114,15 @@ func HandleOpenAIChatCompletionStreaming(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+
+		// Resolve sends_done_marker once before the loop (custom config overrides provider default)
+		var customCfg *schemas.CustomProviderConfig
+		if v := ctx.Value(schemas.BifrostContextKeyCustomProviderConfig); v != nil {
+			if c, ok := v.(*schemas.CustomProviderConfig); ok {
+				customCfg = c
+			}
+		}
+		providerSendsDoneMarker := providerUtils.ProviderSendsDoneMarker(providerName, customCfg)
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
@@ -1310,7 +1332,7 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 
 				// For providers that don't send [DONE] marker break on finish_reason
-				if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+				if !providerSendsDoneMarker && finishReason != nil {
 					break
 				}
 			}
