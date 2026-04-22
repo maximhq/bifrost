@@ -138,10 +138,13 @@ export default function MCPLogsPage() {
 		if (!polling || !period) return;
 		const interval = setInterval(() => {
 			const { from, to } = getRangeForPeriod(periodRef.current);
-			setUrlState({
-				start_time: Math.floor(from.getTime() / 1000),
-				end_time: Math.floor(to.getTime() / 1000),
-			});
+			setUrlState(
+				{
+					start_time: Math.floor(from.getTime() / 1000),
+					end_time: Math.floor(to.getTime() / 1000),
+				},
+				{ history: "replace" },
+			);
 		}, 5000);
 		return () => clearInterval(interval);
 	}, [polling, period, setUrlState]);

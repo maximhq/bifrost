@@ -310,12 +310,12 @@ export function LogsVolumeChart({
     const rightBucket = chartData[refAreaRight];
 
     if (leftBucket && rightBucket) {
-      const leftTime = new Date(leftBucket.timestamp).getTime() / 1000;
-      const rightTime = new Date(rightBucket.timestamp).getTime() / 1000 + data.bucket_size_seconds;
+      const leftStart = new Date(leftBucket.timestamp).getTime() / 1000;
+      const rightStart = new Date(rightBucket.timestamp).getTime() / 1000;
 
-      // Ensure left < right
-      const selectionStart = Math.min(leftTime, rightTime);
-      const selectionEnd = Math.max(leftTime, rightTime);
+      // Normalize drag direction and include full trailing bucket
+      const selectionStart = Math.min(leftStart, rightStart);
+      const selectionEnd = Math.max(leftStart, rightStart) + data.bucket_size_seconds;
 
       // Only trigger if selection spans at least one bucket
       if (selectionEnd - selectionStart >= data.bucket_size_seconds) {
