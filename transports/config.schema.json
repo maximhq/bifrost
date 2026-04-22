@@ -1066,7 +1066,7 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 32767,
-            "description": "DB-Backed Only. Version of the plugin (default: 1). Ignored in config.json. Increment in this number will force a reload of the plugin and DB update.",
+            "description": "DB-Backed Only. Version metadata persisted on TablePlugin (default: 1). In DB-backed sync, version metadata is considered for plugin replacement/reload decisions.",
             "optional": true,
             "default": 1
           },
