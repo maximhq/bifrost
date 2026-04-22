@@ -4,9 +4,158 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+// Default sync interval and config key
+const (
+	TokenTierAbove272K = 272000
+	TokenTierAbove200K = 200000
+	TokenTierAbove128K = 128000
+)
+
+// PricingEntry represents a single model's pricing information.
+// Field names and JSON tags match the datasheet schema exactly.
+type PricingEntry struct {
+	BaseModel string `json:"base_model,omitempty"`
+	Provider  string `json:"provider"`
+	Mode      string `json:"mode"`
+
+	ContextLength   *int                  `json:"context_length,omitempty"`
+	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
+	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+
+	PricingOptions
+}
+
+// UnmarshalJSON implements json.Unmarshaler for PricingEntry.
+// It handles the special case where search_context_cost_per_query may arrive as either
+// a plain float64 or a tiered object {"search_context_size_low":…,
+// "search_context_size_medium":…, "search_context_size_high":…}.
+func (p *PricingEntry) UnmarshalJSON(data []byte) error {
+	// Type alias breaks the UnmarshalJSON recursion while keeping all other fields.
+	type PricingEntryAlias PricingEntry
+	var raw struct {
+		PricingEntryAlias
+		SearchContextCostPerQuery *struct {
+			Low    *float64 `json:"search_context_size_low"`
+			Medium *float64 `json:"search_context_size_medium"`
+			High   *float64 `json:"search_context_size_high"`
+		} `json:"search_context_cost_per_query,omitempty"`
+	}
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*p = PricingEntry(raw.PricingEntryAlias)
+
+	// search_context_cost_per_query arrives as a tiered object – all three values are
+	// equal for non-Perplexity providers; we prefer medium, then low, then high.
+	// Perplexity always returns a pre-computed total_cost so the per-query rate is
+	// never consumed for that provider.
+	if q := raw.SearchContextCostPerQuery; q != nil {
+		switch {
+		case q.Medium != nil:
+			p.SearchContextCostPerQuery = q.Medium
+		case q.Low != nil:
+			p.SearchContextCostPerQuery = q.Low
+		case q.High != nil:
+			p.SearchContextCostPerQuery = q.High
+		}
+	}
+	return nil
+}
+
+type PricingOptions struct {
+	// Costs - Text
+	InputCostPerToken          *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken         *float64 `json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority *float64 `json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenFlex      *float64 `json:"input_cost_per_token_flex,omitempty"`
+	OutputCostPerTokenFlex     *float64 `json:"output_cost_per_token_flex,omitempty"`
+	InputCostPerCharacter      *float64 `json:"input_cost_per_character,omitempty"`
+	// Costs - 128k Tier
+	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
+	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
+	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	// Costs - 200k Tier
+	InputCostPerTokenAbove200kTokens          *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	InputCostPerTokenAbove200kTokensPriority  *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove200kTokens         *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokensPriority *float64 `json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
+	// Costs - 272k Tier
+	InputCostPerTokenAbove272kTokens          *float64 `json:"input_cost_per_token_above_272k_tokens,omitempty"`
+	InputCostPerTokenAbove272kTokensPriority  *float64 `json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove272kTokens         *float64 `json:"output_cost_per_token_above_272k_tokens,omitempty"`
+	OutputCostPerTokenAbove272kTokensPriority *float64 `json:"output_cost_per_token_above_272k_tokens_priority,omitempty"`
+
+	// Costs - Cache
+	CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadInputTokenCost                            *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens         *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_200k_tokens_priority,omitempty"`
+	CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
+	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostFlex                        *float64 `json:"cache_read_input_token_cost_flex,omitempty"`
+	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+	CacheReadInputTokenCostAbove272kTokens             *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
+
+	// Costs - Image
+	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
+	InputCostPerPixel                             *float64 `json:"input_cost_per_pixel,omitempty"`
+	OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
+	OutputCostPerPixel                            *float64 `json:"output_cost_per_pixel,omitempty"`
+	OutputCostPerImagePremiumImage                *float64 `json:"output_cost_per_image_premium_image,omitempty"`
+	OutputCostPerImageAbove512x512Pixels          *float64 `json:"output_cost_per_image_above_512_and_512_pixels,omitempty"`
+	OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
+	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
+	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
+	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
+	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
+	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
+
+	// Costs - Audio/Video
+	InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
+	InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerSecond          *float64 `json:"input_cost_per_second,omitempty"`
+	InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
+	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+
+	// Costs - Other
+	//
+	// SearchContextCostPerQuery is stored as a single float64, but the pricing datasheet
+	// represents it as a tiered object with three keys: search_context_size_low,
+	// search_context_size_medium, and search_context_size_high.  For every provider except
+	// Perplexity the three tier values are identical, so we collapse the object to its
+	// medium tier value (falling back to low then high).  Perplexity always returns a
+	// pre-computed total_cost in its usage response, so the per-query rate is never
+	// consumed for that provider; the collapsed value is therefore correct in all cases.
+	// See UnmarshalJSON below for the custom decoding logic.
+	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+
+	// Costs - OCR
+	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
+	AnnotationCostPerPage *float64 `json:"annotation_cost_per_page,omitempty"`
+}
 
 // serviceTier captures the OpenAI service_tier value from a response.
 // Add new tier flags here as OpenAI introduces them.
@@ -26,27 +175,64 @@ type costInput struct {
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
 	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
 	videoSeconds        *int
+	ocrProcessedPages   *int
+	ocrIsAnnotated      *bool
 	tier                serviceTier
+}
+
+// GetPricingEntryForModel returns the pricing data
+func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	// Check all modes
+	for _, mode := range []schemas.RequestType{
+		schemas.TextCompletionRequest,
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.EmbeddingRequest,
+		schemas.RerankRequest,
+		schemas.SpeechRequest,
+		schemas.TranscriptionRequest,
+		schemas.ImageGenerationRequest,
+		schemas.ImageEditRequest,
+		schemas.ImageVariationRequest,
+		schemas.VideoGenerationRequest,
+		schemas.OCRRequest,
+	} {
+		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		pricing, ok := mc.pricingData[key]
+		if ok {
+			return convertTableModelPricingToPricingData(&pricing)
+		}
+	}
+	return nil
 }
 
 // CalculateCost calculates the cost of a Bifrost response.
 // It handles all request types, cache debug billing, and tiered pricing.
-func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
+// If scopes is nil, an empty PricingLookupScopes is used; global and provider-scoped
+// overrides may still apply since the provider is derived from the response.
+func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *PricingLookupScopes) float64 {
 	if result == nil {
 		return 0
+	}
+
+	var s PricingLookupScopes
+	if scopes != nil {
+		s = *scopes
 	}
 
 	// Handle semantic cache billing
 	cacheDebug := result.GetExtraFields().CacheDebug
 	if cacheDebug != nil {
-		return mc.calculateCostWithCache(result, cacheDebug)
+		return mc.calculateCostWithCache(result, cacheDebug, s)
 	}
 
-	return mc.calculateBaseCost(result)
+	return mc.calculateBaseCost(result, s)
 }
 
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug) float64 {
+func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes PricingLookupScopes) float64 {
 	if cacheDebug.CacheHit {
 		// Direct cache hit — no LLM call, no cost
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
@@ -54,39 +240,42 @@ func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, 
 		}
 		// Semantic cache hit — only the embedding lookup cost
 		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-			return mc.computeCacheEmbeddingCost(cacheDebug)
+			return mc.computeCacheEmbeddingCost(cacheDebug, scopes)
 		}
 		return 0
 	}
 
 	// Cache miss — full LLM cost + embedding lookup cost
-	baseCost := mc.calculateBaseCost(result)
-	embeddingCost := mc.computeCacheEmbeddingCost(cacheDebug)
+	baseCost := mc.calculateBaseCost(result, scopes)
+	embeddingCost := mc.computeCacheEmbeddingCost(cacheDebug, scopes)
 	return baseCost + embeddingCost
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
-func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug) float64 {
+func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes PricingLookupScopes) float64 {
 	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
 		return 0
 	}
-	pricing, exists := mc.getPricing(*cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest)
-	if !exists {
+	if scopes.Provider == "" {
+		scopes.Provider = *cacheDebug.ProviderUsed
+	}
+	pricing := mc.resolvePricing(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", schemas.EmbeddingRequest, scopes)
+	if pricing == nil {
 		return 0
 	}
 	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
-func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float64 {
+func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scopes PricingLookupScopes) float64 {
 	extraFields := result.GetExtraFields()
 	if extraFields == nil {
 		return 0
 	}
 
 	provider := string(extraFields.Provider)
-	model := extraFields.ModelRequested
-	deployment := extraFields.ModelDeployment
+	originalModelRequested := extraFields.OriginalModelRequested
+	resolvedModelUsed := extraFields.ResolvedModelUsed
 	requestType := extraFields.RequestType
 
 	// Extract usage data from the response
@@ -98,7 +287,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float
 	}
 
 	// If no usage data at all, nothing to price
-	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 {
+	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil {
 		return 0
 	}
 
@@ -106,7 +295,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float
 	requestType = normalizeStreamRequestType(requestType)
 
 	// Resolve pricing entry with deployment fallback
-	pricing := mc.resolvePricing(provider, model, deployment, requestType)
+	pricing := mc.resolvePricing(provider, originalModelRequested, resolvedModelUsed, requestType, scopes)
 	if pricing == nil {
 		return 0
 	}
@@ -127,6 +316,8 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float
 		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
 		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+	case schemas.OCRRequest:
+		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	default:
 		return 0
 	}
@@ -202,6 +393,15 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		if err == nil {
 			input.videoSeconds = &seconds
 		}
+
+	case result.OCRResponse != nil:
+		pages := len(result.OCRResponse.Pages)
+		if result.OCRResponse.UsageInfo != nil && result.OCRResponse.UsageInfo.PagesProcessed > 0 {
+			pages = result.OCRResponse.UsageInfo.PagesProcessed
+		}
+		input.ocrProcessedPages = &pages
+		isAnnotated := result.OCRResponse.DocumentAnnotation != nil && *result.OCRResponse.DocumentAnnotation != ""
+		input.ocrIsAnnotated = &isAnnotated
 	}
 
 	return input
@@ -597,6 +797,23 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	return inputCost + outputCost
 }
 
+// computeOCRCost handles OCR requests, billing per page processed.
+// ocr_cost_per_page covers base processing; annotation_cost_per_page is added when set.
+func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPages *int, ocrIsAnnotated *bool) float64 {
+	if ocrProcessedPages == nil {
+		return 0
+	}
+	pages := float64(*ocrProcessedPages)
+	cost := 0.0
+	if pricing.OCRCostPerPage != nil {
+		cost += pages * *pricing.OCRCostPerPage
+	}
+	if ocrIsAnnotated != nil && *ocrIsAnnotated && pricing.AnnotationCostPerPage != nil {
+		cost += pages * *pricing.AnnotationCostPerPage
+	}
+	return cost
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -644,7 +861,10 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if tier.isPriority && pricing.InputCostPerTokenPriority != nil {
 		return *pricing.InputCostPerTokenPriority
 	}
-	return pricing.InputCostPerToken
+	if pricing.InputCostPerToken != nil {
+		return *pricing.InputCostPerToken
+	}
+	return 0
 }
 
 // tieredOutputRate returns the effective per-token output rate based on total token count.
@@ -672,10 +892,16 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	if totalTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil {
 		return *pricing.OutputCostPerTokenAbove128kTokens
 	}
+
 	if tier.isPriority && pricing.OutputCostPerTokenPriority != nil {
 		return *pricing.OutputCostPerTokenPriority
 	}
-	return pricing.OutputCostPerToken
+
+	if pricing.OutputCostPerToken != nil {
+		return *pricing.OutputCostPerToken
+	}
+
+	return 0
 }
 
 // tieredImageInputRate returns the effective rate for image tokens on the input side.
@@ -831,28 +1057,61 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // ---------------------------------------------------------------------------
 
 // resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
-func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
-	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
+func (mc *ModelCatalog) resolvePricing(provider, originalModelRequested, resolvedModelUsed string, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
+	if resolvedModelUsed == "" {
+		resolvedModelUsed = originalModelRequested
+	}
+	mc.logger.Debug("looking up pricing for resolved model %s and provider %s of request type %s", resolvedModelUsed, provider, normalizeRequestType(requestType))
 
-	pricing, exists := mc.getPricing(model, provider, requestType)
-	if exists {
-		return pricing
+	if scopes.Provider == "" {
+		scopes.Provider = provider
 	}
 
-	if deployment != "" {
-		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		pricing, exists = mc.getPricing(deployment, provider, requestType)
-		if exists {
-			return pricing
-		}
+	base, exists := mc.getBasePricing(resolvedModelUsed, provider, requestType)
+	if exists && base != nil {
+		result, _ := mc.applyPricingOverrides(resolvedModelUsed, requestType, *base, scopes)
+		return &result
 	}
 
-	mc.logger.Debug("pricing not found for model %s and provider %s, skipping cost calculation", model, provider)
+	mc.logger.Debug("pricing not found for resolved model %s, trying alias %s", resolvedModelUsed, originalModelRequested)
+	base, exists = mc.getBasePricing(originalModelRequested, provider, requestType)
+	if exists && base != nil {
+		// Apply overrides using the resolved model name, not the alias
+		result, _ := mc.applyPricingOverrides(resolvedModelUsed, requestType, *base, scopes)
+		return &result
+	}
+
+	// No base catalog entry found; still try overrides in case the user defined
+	// override-only pricing for a model not in the built-in catalog.
+	mc.logger.Debug("pricing not found for resolved model %s and provider %s, trying override-only pricing", resolvedModelUsed, provider)
+	result, applied := mc.applyPricingOverrides(resolvedModelUsed, requestType, configstoreTables.TableModelPricing{}, scopes)
+	if applied {
+		return &result
+	}
+	mc.logger.Debug("no pricing found for resolved model %s and provider %s, skipping cost calculation", resolvedModelUsed, provider)
 	return nil
 }
 
-// getPricing returns pricing information for a model (thread-safe)
-func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
+// getBasePricing looks up catalog pricing for the given model, provider, and request type.
+// It applies a provider-specific fallback chain when an exact match is not found:
+//
+//   - Gemini: retries under the "vertex" provider, then falls back to chat mode for Responses requests.
+//   - Vertex: strips the "provider/model" prefix and retries, then falls back to chat mode for Responses requests.
+//   - Bedrock: prepends the "anthropic." namespace for Claude models, then falls back to chat mode for Responses requests.
+//   - All providers: for Responses/ResponsesStream requests, retries the lookup in chat mode.
+//   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
+//
+// The method acquires a read lock for the duration of the lookup.
+//
+// Input:  model       — exact model name to look up.
+//
+//	provider    — provider identifier (e.g. "openai", "anthropic").
+//	requestType — the request type used to derive the pricing mode.
+//
+// Output: TableModelPricing — the matched pricing row (zero value when not found).
+//
+//	bool              — true when a pricing entry was found, false otherwise.
+func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
@@ -872,7 +1131,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		}
 
 		// Lookup in chat if responses not found
-		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.RealtimeRequest {
 			mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
@@ -892,7 +1151,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			}
 
 			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.RealtimeRequest {
 				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
@@ -912,7 +1171,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			}
 
 			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.RealtimeRequest {
 				mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
@@ -923,7 +1182,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 	}
 
 	// Lookup in chat if responses not found
-	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.RealtimeRequest {
 		mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 		if ok {

@@ -38,7 +38,7 @@ func RunWebSocketResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 		defer bfCtx.Cancel()
-		key, err := client.SelectKeyForProvider(bfCtx, testConfig.Provider, testConfig.ChatModel)
+		key, err := client.SelectKeyForProviderRequestType(bfCtx, schemas.WebSocketResponsesRequest, testConfig.Provider, testConfig.ChatModel)
 		if err != nil {
 			t.Fatalf("failed to select key for provider %s: %v", testConfig.Provider, err)
 		}

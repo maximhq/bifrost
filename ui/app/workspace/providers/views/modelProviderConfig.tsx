@@ -6,7 +6,6 @@ import { useMemo, useState } from "react";
 import ProviderConfigSheet from "../dialogs/providerConfigSheet";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
 import ProviderGovernanceTable from "./providerGovernanceTable";
-import { keysRequired } from "./utils";
 
 interface Props {
 	provider: ModelProvider;
@@ -22,13 +21,19 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 		if (provider.custom_provider_config) {
 			return !(provider.custom_provider_config?.is_key_less ?? false);
 		}
-		return keysRequired(provider.name);
+		return true;
 	}, [provider.name, provider.custom_provider_config?.is_key_less]);
 
 	const editConfigButton = (
 		<div className="flex items-center gap-2">
 			{onRequestDelete && hasDeleteProviderAccess && (
-				<Button variant="outline" onClick={onRequestDelete} className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label="Delete provider" data-testid="provider-delete-btn">
+				<Button
+					variant="outline"
+					onClick={onRequestDelete}
+					className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+					aria-label="Delete provider"
+					data-testid="provider-delete-btn"
+				>
 					<Trash className="h-4 w-4" />
 				</Button>
 			)}

@@ -1734,6 +1734,10 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 		logger:              logger,
 		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
 	}
+	// Eagerly verify connectivity, consistent with other store constructors (e.g. Qdrant)
+	if err := store.Ping(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to connect to redis: %w", err)
+	}
 	return store, nil
 }
 

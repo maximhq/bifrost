@@ -10,7 +10,7 @@ export function VariablesTableView({
 	variables: VariableMap;
 	onChange: React.Dispatch<React.SetStateAction<VariableMap>>;
 }) {
-	const entries = useMemo(() => Object.entries(variables), [variables]);
+	const entries = useMemo(() => Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)), [variables]);
 
 	const handleValueChange = useCallback(
 		(name: string, value: string) => {
@@ -25,7 +25,7 @@ export function VariablesTableView({
 			<p className="text-muted-foreground text-xs">
 				Detected from <code className="bg-muted rounded px-1">{"{{ }}"}</code> syntax in messages. Values are substituted at runtime.
 			</p>
-			<div className="border-border overflow-hidden rounded-md border">
+			<div className="border-border overflow-hidden rounded-sm border">
 				<table className="w-full table-fixed text-sm">
 					<thead>
 						<tr className="bg-muted/50 border-border border-b">
@@ -37,7 +37,7 @@ export function VariablesTableView({
 						{entries.map(([name, value]) => (
 							<tr key={name} className="border-border border-b last:border-b-0">
 								<td className="w-[40%] max-w-[40%] px-3 py-1.5 align-top">
-									<span className="block truncate text-xs pt-1">{name}</span>
+									<span className="block truncate pt-1 text-xs">{name}</span>
 								</td>
 								<td className="py-1">
 									<AutoSizeTextarea
@@ -45,7 +45,7 @@ export function VariablesTableView({
 										onChange={(e) => handleValueChange(name, e.target.value)}
 										placeholder={"value"}
 										minRows={1}
-										className="min-h-0 w-full border-none bg-transparent px-3 py-1 text-xs shadow-none outline-none focus-visible:ring-0 resize-none"
+										className="min-h-0 w-full resize-none border-none bg-transparent px-3 py-1 text-xs shadow-none outline-none focus-visible:ring-0"
 									/>
 								</td>
 							</tr>

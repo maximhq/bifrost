@@ -34,6 +34,61 @@ func mapQualityToBedrock(quality *string) *string {
 	}
 }
 
+// isStabilityAIModel returns true if the model is a Stability AI model (contains "stability.")
+func isStabilityAIModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "stability.")
+}
+
+// isPromptOnlyImageGenerationModel returns true for image generation models that use a flat
+// {"prompt": "..."} payload (no taskType field). Covers Vertex Imagen and similar models.
+// Stability AI is excluded here — it's handled separately because it also supports image edit.
+func isPromptOnlyImageGenerationModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "image")
+}
+
+// ToStabilityAIImageGenerationRequest converts a Bifrost image generation request to the Stability AI
+// flat request format used by Bedrock (stability.stable-image-* models).
+func ToStabilityAIImageGenerationRequest(request *schemas.BifrostImageGenerationRequest) (*StabilityAIImageGenerationRequest, error) {
+	if request == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	if request.Input == nil {
+		return nil, fmt.Errorf("request input is required")
+	}
+
+	req := &StabilityAIImageGenerationRequest{
+		Prompt: request.Input.Prompt,
+	}
+
+	if request.Params != nil {
+		if request.Params.AspectRatio != nil {
+			req.AspectRatio = request.Params.AspectRatio
+		}
+		if request.Params.OutputFormat != nil {
+			req.OutputFormat = request.Params.OutputFormat
+		}
+		if request.Params.Seed != nil {
+			req.Seed = request.Params.Seed
+		}
+		if request.Params.NegativePrompt != nil {
+			req.NegativePrompt = request.Params.NegativePrompt
+		}
+		if request.Params.ExtraParams != nil {
+			// aspect_ratio may also arrive via ExtraParams if not in knownFields; skip if already set
+			if req.AspectRatio == nil {
+				if ar, ok := schemas.SafeExtractStringPointer(request.Params.ExtraParams["aspect_ratio"]); ok {
+					delete(request.Params.ExtraParams, "aspect_ratio")
+					req.AspectRatio = ar
+				}
+			}
+			req.ExtraParams = request.Params.ExtraParams
+		}
+	}
+
+	return req, nil
+}
+
 // ToBedrockImageGenerationRequest converts a Bifrost image generation request to a Bedrock image generation request
 func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequest) (*BedrockImageGenerationRequest, error) {
 	if request == nil {
@@ -41,7 +96,7 @@ func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequ
 	}
 
 	if request.Input == nil {
-		return nil, fmt.Errorf("request.Input is required")
+		return nil, fmt.Errorf("request input is required")
 	}
 
 	bedrockReq := &BedrockImageGenerationRequest{
@@ -98,7 +153,24 @@ func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequ
 	}
 
 	return bedrockReq, nil
+}
 
+// ToStabilityAIImageGenerationResponse converts a BifrostImageGenerationResponse back to
+// the native Bedrock invoke API response format used by Stability AI models.
+// Stability AI models use the same BedrockImageGenerationResponse format as Titan/Nova Canvas.
+func ToStabilityAIImageGenerationResponse(response *schemas.BifrostImageGenerationResponse) (*BedrockImageGenerationResponse, error) {
+	if response == nil {
+		return nil, fmt.Errorf("response is nil")
+	}
+	result := &BedrockImageGenerationResponse{}
+	for _, d := range response.Data {
+		result.Images = append(result.Images, d.B64JSON)
+	}
+	if response.ImageGenerationResponseParameters != nil {
+		result.FinishReasons = response.ImageGenerationResponseParameters.FinishReasons
+		result.Seeds = response.ImageGenerationResponseParameters.Seeds
+	}
+	return result, nil
 }
 
 // ToBedrockImageVariationRequest converts a Bifrost image variation request to a Bedrock image variation request
@@ -358,6 +430,292 @@ func buildImageGenerationConfig(params *schemas.ImageEditParameters) *ImageGener
 	return config
 }
 
+// getStabilityAITaskTypeFromParams maps the generic BifrostImageEditParameters.Type value
+// to a Stability AI task type string. Returns "" if the value is not a recognized Stability AI task type.
+func getStabilityAITaskTypeFromParams(t string) string {
+	switch strings.ToLower(t) {
+	case "inpainting", "inpaint":
+		return "inpaint"
+	case "outpainting", "outpaint":
+		return "outpaint"
+	case "background_removal", "remove_background":
+		return "remove-bg"
+	case "erase_object":
+		return "erase-object"
+	case "upscale_fast":
+		return "upscale-fast"
+	case "upscale_creative":
+		return "upscale-creative"
+	case "upscale_conservative":
+		return "upscale-conservative"
+	case "recolor":
+		return "recolor"
+	case "search_replace":
+		return "search-replace"
+	case "control_sketch":
+		return "control-sketch"
+	case "control_structure":
+		return "control-structure"
+	case "style_guide":
+		return "style-guide"
+	case "style_transfer":
+		return "style-transfer"
+	default:
+		return ""
+	}
+}
+
+// getStabilityAIEditTaskType infers the Stability AI edit task from the model name.
+// Returns an error if the model name does not match any known pattern.
+func getStabilityAIEditTaskType(model string) (string, error) {
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "stable-creative-upscale"):
+		return "upscale-creative", nil
+	case strings.Contains(m, "stable-conservative-upscale"):
+		return "upscale-conservative", nil
+	case strings.Contains(m, "stable-fast-upscale"):
+		return "upscale-fast", nil
+	case strings.Contains(m, "stable-image-inpaint"):
+		return "inpaint", nil
+	case strings.Contains(m, "stable-outpaint"):
+		return "outpaint", nil
+	case strings.Contains(m, "stable-image-search-recolor"):
+		return "recolor", nil
+	case strings.Contains(m, "stable-image-search-replace"):
+		return "search-replace", nil
+	case strings.Contains(m, "stable-image-erase-object"):
+		return "erase-object", nil
+	case strings.Contains(m, "stable-image-remove-background"):
+		return "remove-bg", nil
+	case strings.Contains(m, "stable-image-control-sketch"):
+		return "control-sketch", nil
+	case strings.Contains(m, "stable-image-control-structure"):
+		return "control-structure", nil
+	case strings.Contains(m, "stable-image-style-guide"):
+		return "style-guide", nil
+	case strings.Contains(m, "stable-style-transfer"):
+		return "style-transfer", nil
+	default:
+		return "", fmt.Errorf("cannot determine task type from stability ai model name %q", model)
+	}
+}
+
+// ToStabilityAIImageEditRequest converts a Bifrost image edit request to the Stability AI flat request
+// format used by Bedrock edit models. Only fields valid for the detected task type are populated.
+// deployment is the resolved model identifier (after applying any deployment alias mapping); it is
+// used for task-type inference so that alias-mapped models route correctly.
+func ToStabilityAIImageEditRequest(request *schemas.BifrostImageEditRequest, deployment string) (*StabilityAIImageEditRequest, error) {
+	if request == nil || request.Input == nil {
+		return nil, fmt.Errorf("request or input is nil")
+	}
+
+	var taskType string
+	if request.Params != nil && request.Params.Type != nil {
+		taskType = getStabilityAITaskTypeFromParams(*request.Params.Type)
+	}
+	if taskType == "" {
+		var err error
+		taskType, err = getStabilityAIEditTaskType(deployment)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	req := &StabilityAIImageEditRequest{}
+
+	// Image sourcing
+	if taskType == "style-transfer" {
+		if len(request.Input.Images) != 2 {
+			return nil, fmt.Errorf("style-transfer requires exactly two images: init_image and style_image")
+		}
+		if len(request.Input.Images[0].Image) == 0 || len(request.Input.Images[1].Image) == 0 {
+			return nil, fmt.Errorf("style-transfer requires non-empty init_image and style_image")
+		}
+		initB64 := base64.StdEncoding.EncodeToString(request.Input.Images[0].Image)
+		styleB64 := base64.StdEncoding.EncodeToString(request.Input.Images[1].Image)
+		req.InitImage = &initB64
+		req.StyleImage = &styleB64
+	} else {
+		if len(request.Input.Images) == 0 || len(request.Input.Images[0].Image) == 0 {
+			return nil, fmt.Errorf("at least one image is required")
+		}
+		imageB64 := base64.StdEncoding.EncodeToString(request.Input.Images[0].Image)
+		req.Image = &imageB64
+	}
+
+	// Common fields populated based on task allowlist
+	prompt := request.Input.Prompt
+	switch taskType {
+	case "inpaint", "recolor", "search-replace", "control-sketch", "control-structure",
+		"style-guide", "upscale-creative", "upscale-conservative", "outpaint", "style-transfer":
+		req.Prompt = &prompt
+	}
+
+	// Negative prompt
+	if request.Params != nil && request.Params.NegativePrompt != nil {
+		switch taskType {
+		case "inpaint", "outpaint", "recolor", "search-replace", "control-sketch",
+			"control-structure", "style-guide", "upscale-creative", "upscale-conservative", "style-transfer":
+			req.NegativePrompt = request.Params.NegativePrompt
+		}
+	}
+
+	// Seed
+	if request.Params != nil && request.Params.Seed != nil {
+		switch taskType {
+		case "inpaint", "outpaint", "recolor", "search-replace", "erase-object", "control-sketch",
+			"control-structure", "style-guide", "upscale-creative", "upscale-conservative", "style-transfer":
+			req.Seed = request.Params.Seed
+		}
+	}
+
+	// Mask (from Params.Mask bytes)
+	if request.Params != nil && len(request.Params.Mask) > 0 {
+		switch taskType {
+		case "inpaint", "erase-object":
+			maskB64 := base64.StdEncoding.EncodeToString(request.Params.Mask)
+			req.Mask = &maskB64
+		}
+	}
+
+	// ExtraParams
+	if request.Params != nil {
+		// Typed OutputFormat takes priority over ExtraParams
+		if request.Params.OutputFormat != nil {
+			req.OutputFormat = request.Params.OutputFormat
+		}
+
+		if request.Params.ExtraParams != nil {
+			ep := make(map[string]interface{}, len(request.Params.ExtraParams))
+			for k, v := range request.Params.ExtraParams {
+				ep[k] = v
+			}
+
+			// output_format — all tasks (fallback if not already set by typed field)
+			if req.OutputFormat == nil {
+				if v, ok := schemas.SafeExtractStringPointer(ep["output_format"]); ok {
+					delete(ep, "output_format")
+					req.OutputFormat = v
+				}
+			}
+
+			// style_preset
+			switch taskType {
+			case "inpaint", "outpaint", "recolor", "search-replace", "control-sketch",
+				"control-structure", "style-guide", "upscale-creative":
+				if v, ok := schemas.SafeExtractStringPointer(ep["style_preset"]); ok {
+					delete(ep, "style_preset")
+					req.StylePreset = v
+				}
+			}
+
+			// grow_mask
+			switch taskType {
+			case "inpaint", "recolor", "search-replace", "erase-object":
+				if v, ok := schemas.SafeExtractIntPointer(ep["grow_mask"]); ok {
+					delete(ep, "grow_mask")
+					req.GrowMask = v
+				}
+			}
+
+			// outpaint directional fields
+			if taskType == "outpaint" {
+				if v, ok := schemas.SafeExtractIntPointer(ep["left"]); ok {
+					delete(ep, "left")
+					req.Left = v
+				}
+				if v, ok := schemas.SafeExtractIntPointer(ep["right"]); ok {
+					delete(ep, "right")
+					req.Right = v
+				}
+				if v, ok := schemas.SafeExtractIntPointer(ep["up"]); ok {
+					delete(ep, "up")
+					req.Up = v
+				}
+				if v, ok := schemas.SafeExtractIntPointer(ep["down"]); ok {
+					delete(ep, "down")
+					req.Down = v
+				}
+			}
+
+			// creativity
+			switch taskType {
+			case "upscale-creative", "upscale-conservative", "outpaint":
+				if v, ok := schemas.SafeExtractFloat64Pointer(ep["creativity"]); ok {
+					delete(ep, "creativity")
+					req.Creativity = v
+				}
+			}
+
+			// select_prompt (recolor)
+			if taskType == "recolor" {
+				if v, ok := schemas.SafeExtractStringPointer(ep["select_prompt"]); ok {
+					delete(ep, "select_prompt")
+					req.SelectPrompt = v
+				}
+			}
+
+			// search_prompt (search-replace)
+			if taskType == "search-replace" {
+				if v, ok := schemas.SafeExtractStringPointer(ep["search_prompt"]); ok {
+					delete(ep, "search_prompt")
+					req.SearchPrompt = v
+				}
+			}
+
+			// control_strength
+			switch taskType {
+			case "control-sketch", "control-structure":
+				if v, ok := schemas.SafeExtractFloat64Pointer(ep["control_strength"]); ok {
+					delete(ep, "control_strength")
+					req.ControlStrength = v
+				}
+			}
+
+			// style-guide fields
+			if taskType == "style-guide" {
+				if v, ok := schemas.SafeExtractStringPointer(ep["aspect_ratio"]); ok {
+					delete(ep, "aspect_ratio")
+					req.AspectRatio = v
+				}
+				if v, ok := schemas.SafeExtractFloat64Pointer(ep["fidelity"]); ok {
+					delete(ep, "fidelity")
+					req.Fidelity = v
+				}
+			}
+
+			// style-transfer fields
+			if taskType == "style-transfer" {
+				if v, ok := schemas.SafeExtractFloat64Pointer(ep["style_strength"]); ok {
+					delete(ep, "style_strength")
+					req.StyleStrength = v
+				}
+				if v, ok := schemas.SafeExtractFloat64Pointer(ep["composition_fidelity"]); ok {
+					delete(ep, "composition_fidelity")
+					req.CompositionFidelity = v
+				}
+				if v, ok := schemas.SafeExtractFloat64Pointer(ep["change_strength"]); ok {
+					delete(ep, "change_strength")
+					req.ChangeStrength = v
+				}
+			}
+
+			req.ExtraParams = ep
+		}
+	}
+
+	// Validate required per-task fields
+	if taskType == "recolor" && (req.SelectPrompt == nil || *req.SelectPrompt == "") {
+		return nil, fmt.Errorf("select_prompt is required for stability ai recolor task")
+	}
+	if taskType == "search-replace" && (req.SearchPrompt == nil || *req.SearchPrompt == "") {
+		return nil, fmt.Errorf("search_prompt is required for stability ai search-replace task")
+	}
+
+	return req, nil
+}
+
 // ToBifrostImageGenerationResponse converts a Bedrock image generation response to a Bifrost image generation response
 func ToBifrostImageGenerationResponse(response *BedrockImageGenerationResponse) *schemas.BifrostImageGenerationResponse {
 	if response == nil {
@@ -365,6 +723,13 @@ func ToBifrostImageGenerationResponse(response *BedrockImageGenerationResponse) 
 	}
 
 	bifrostResponse := &schemas.BifrostImageGenerationResponse{}
+
+	if len(response.FinishReasons) > 0 || len(response.Seeds) > 0 {
+		bifrostResponse.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{
+			FinishReasons: append([]*string(nil), response.FinishReasons...),
+			Seeds:         append([]int(nil), response.Seeds...),
+		}
+	}
 
 	for index, image := range response.Images {
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.ImageData{

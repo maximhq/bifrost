@@ -80,7 +80,7 @@ export class TestDataFactory {
     return {
       name: this.uniqueId('key'),
       value: `sk-test-${this.uniqueId()}`,
-      models: [],
+      models: ['*'],
       weight: 1.0,
       ...overrides,
     }
@@ -155,8 +155,8 @@ export class TestDataFactory {
     return {
       provider: 'openai',
       weight: 1.0,
-      allowedModels: [],
-      keyIds: [],
+      allowedModels: ['*'],
+      keyIds: ['*'],
       ...overrides,
     }
   }

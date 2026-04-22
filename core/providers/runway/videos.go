@@ -121,7 +121,7 @@ func ToRunwayVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 // ToBifrostVideoGenerationResponse converts Runway task details to Bifrost video generation response format.
 func ToBifrostVideoGenerationResponse(taskDetails *RunwayTaskDetailsResponse) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if taskDetails == nil {
-		return nil, providerUtils.NewBifrostOperationError("task details is nil", nil, schemas.Runway)
+		return nil, providerUtils.NewBifrostOperationError("task details is nil", nil)
 	}
 
 	response := &schemas.BifrostVideoGenerationResponse{

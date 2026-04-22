@@ -1,4 +1,4 @@
-# --- UI Build Stage: Build the Next.js frontend ---
+# --- UI Build Stage: Build the React + Vite frontend ---
   FROM node:25-alpine3.23@sha256:cf38e1f3c28ac9d81cdc0c51d8220320b3b618780e44ef96a39f76f7dbfef023 AS ui-builder
   WORKDIR /app
   
@@ -10,12 +10,11 @@
   COPY ui/ ./
   
   # Build UI (skip the copy-build step)
-  RUN npx next build
-  RUN node scripts/fix-paths.js
+  RUN npm run build-enterprise
   # Skip the copy-build step since we'll copy the files in the Go build stage
   
   # --- Go Build Stage: Compile the Go binary ---
-  FROM golang:1.26.2-alpine3.23@sha256:c2a1f7b2095d046ae14b286b18413a05bb82c9bca9b25fe7ff5efef0f0826166 AS builder
+  FROM golang:1.26.2-alpine3.23@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS builder
   WORKDIR /app
   
   # Install dependencies including gcc for CGO and sqlite

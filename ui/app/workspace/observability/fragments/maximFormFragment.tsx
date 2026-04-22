@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -71,7 +69,13 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 									<FormLabel>API Key</FormLabel>
 									<FormControl>
 										<div className="relative">
-											<Input type={showApiKey ? "text" : "password"} placeholder="Enter your Maxim API key" disabled={!hasMaximAccess} {...field} className="pr-10" />
+											<Input
+												type={showApiKey ? "text" : "password"}
+												placeholder="Enter your Maxim API key"
+												disabled={!hasMaximAccess}
+												{...field}
+												className="pr-10"
+											/>
 											<Button
 												type="button"
 												variant="ghost"
@@ -156,7 +160,11 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button type="submit" disabled={!hasMaximAccess || !form.formState.isDirty || !form.formState.isValid} isLoading={isSaving}>
+									<Button
+										type="submit"
+										disabled={!hasMaximAccess || !form.formState.isDirty || !form.formState.isValid}
+										isLoading={isSaving}
+									>
 										Save Maxim Configuration
 									</Button>
 								</TooltipTrigger>

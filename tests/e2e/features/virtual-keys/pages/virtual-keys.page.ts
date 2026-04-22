@@ -60,6 +60,7 @@ export interface ProviderConfig {
   provider: string
   weight?: number
   allowedModels?: string[]
+  keyIds?: string[]
   budget?: BudgetConfig
   rateLimit?: RateLimitConfig
 }

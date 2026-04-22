@@ -1,5 +1,3 @@
-"use client";
-
 import * as SwitchPrimitives from "@radix-ui/react-switch";
 import { Loader2 } from "lucide-react";
 import * as React from "react";
@@ -50,10 +48,8 @@ const Switch = React.forwardRef<React.ElementRef<typeof SwitchPrimitives.Root>, 
 				<SwitchPrimitives.Thumb
 					className={cn(
 						"pointer-events-none relative block rounded-sm bg-white shadow-lg ring-0 transition-transform dark:bg-zinc-900",
-						size === "default" &&
-							"h-5 w-5 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0",
-						size === "md" &&
-							"h-4 w-4 data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0",
+						size === "default" && "h-5 w-5 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0",
+						size === "md" && "h-4 w-4 data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0",
 					)}
 				>
 					{loading && (

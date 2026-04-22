@@ -27,7 +27,7 @@ func TestVertex(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Vertex,
-		ChatModel:            "google/gemini-2.0-flash-001",
+		ChatModel:            "gemini-2.5-pro",
 		PromptCachingModel:   "claude-sonnet-4-5",
 		VisionModel:          "claude-sonnet-4-5",
 		TextModel:            "", // Vertex doesn't support text completion in newer models
@@ -38,12 +38,12 @@ func TestVertex(t *testing.T) {
 		ImageEditModel:       "imagen-3.0-capability-001",
 		VideoGenerationModel: "veo-3.1-generate-preview",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
@@ -68,8 +68,10 @@ func TestVertex(t *testing.T) {
 			PromptCaching:         true,
 			ListModels:            false,
 			CountTokens:           true,
-			StructuredOutputs:     true,  // Structured outputs with nullable enum support
-			InterleavedThinking:  true,
+			StructuredOutputs:            true,  // Structured outputs with nullable enum support
+			InterleavedThinking:          true,
+			EagerInputStreaming:          true, // fine-grained-tool-streaming-2025-05-14 (GA on Vertex)
+			ServerToolsViaOpenAIEndpoint: true, // web_search only on Vertex per Table 20 (web_fetch/code_execution skip)
 		},
 	}
 

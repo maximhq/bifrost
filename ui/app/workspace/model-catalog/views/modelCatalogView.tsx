@@ -1,15 +1,13 @@
-"use client";
-
-import { useGetModelsQuery, useGetProvidersQuery, useLazyGetLogsStatsQuery, useLazyGetLogsModelHistogramQuery } from "@/lib/store";
+import FullPageLoader from "@/components/fullPageLoader";
+import { NoPermissionView } from "@/components/noPermissionView";
 import { ProviderNames } from "@/lib/constants/logs";
+import { useGetModelsQuery, useGetProvidersQuery, useLazyGetLogsModelHistogramQuery, useLazyGetLogsStatsQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { LogStats } from "@/lib/types/logs";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import ModelCatalogTable, { ModelCatalogRow } from "./modelCatalogTable";
 import { ModelCatalogEmptyState } from "./modelCatalogEmptyState";
-import FullPageLoader from "@/components/fullPageLoader";
-import { NoPermissionView } from "@/components/noPermissionView";
+import ModelCatalogTable, { ModelCatalogRow } from "./modelCatalogTable";
 
 export default function ModelCatalogView() {
 	const hasAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
@@ -19,7 +17,12 @@ export default function ModelCatalogView() {
 	const [modelsUsedMap, setModelsUsedMap] = useState<Map<string, string[]>>(new Map());
 	const [isLoadingModels, setIsLoadingModels] = useState(true);
 
-	const { data: providers, isLoading: isLoadingProviders, error: providersError, refetch: refetchProviders } = useGetProvidersQuery(undefined, { skip: !hasAccess });
+	const {
+		data: providers,
+		isLoading: isLoadingProviders,
+		error: providersError,
+		refetch: refetchProviders,
+	} = useGetProvidersQuery(undefined, { skip: !hasAccess });
 	const { data: modelsData } = useGetModelsQuery({ unfiltered: true }, { skip: !hasAccess });
 
 	// Global 24h stats for summary cards (lazy so we get fresh timestamps)
@@ -47,12 +50,28 @@ export default function ModelCatalogView() {
 				triggerStats({ filters: { providers: [p.name], start_time: dayAgo, end_time: now } })
 					.unwrap()
 					.then((stats) => [p.name, stats] as const)
-					.catch(() => [p.name, { total_requests: 0, success_rate: 0, average_latency: 0, total_tokens: 0, total_cost: 0 }] as const),
+					.catch(
+						() =>
+							[
+								p.name,
+								{ 
+									total_requests: 0, 
+									success_rate: 0, 
+									user_facing_success_rate: 0, 
+									average_latency: 0, 
+									user_facing_total_requests:0,
+									total_tokens: 0, 
+									total_cost: 0 
+								},
+							] as const,
+					),
 			),
 		).then((results) => {
 			if (!cancelled) setStatsMap(new Map(results));
 		});
-		return () => { cancelled = true; };
+		return () => {
+			cancelled = true;
+		};
 	}, [providers, triggerStats]);
 
 	// Per-provider models used in last 30 days
@@ -76,7 +95,9 @@ export default function ModelCatalogView() {
 				setIsLoadingModels(false);
 			}
 		});
-		return () => { cancelled = true; };
+		return () => {
+			cancelled = true;
+		};
 	}, [providers, triggerModelHistogram]);
 
 	// Build table rows

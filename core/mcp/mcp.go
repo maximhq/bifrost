@@ -21,13 +21,6 @@ const (
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
 	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
-
-	// Context keys for client filtering in requests
-	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
-	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
-	// Request context filtering takes priority over client config - context can override client exclusions.
-	MCPContextKeyIncludeClients schemas.BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
-	MCPContextKeyIncludeTools   schemas.BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 )
 
 // ============================================================================
@@ -110,7 +103,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		}
 	}
 
-	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline, logger)
+	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline, oauth2Provider, logger)
 
 	// Set up CodeMode if provided - inject dependencies after manager is created
 	if codeMode != nil {
@@ -149,7 +142,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 						manager.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
 					}
 					manager.mu.Unlock()
-					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, clientConfig.IsPingAvailable, manager.logger)
+					isPingAvailable := true
+					if clientConfig.IsPingAvailable != nil {
+						isPingAvailable = *clientConfig.IsPingAvailable
+					}
+					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, manager.logger)
 					manager.healthMonitorManager.StartMonitoring(monitor)
 				}
 			}(clientConfig)
@@ -158,6 +155,13 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 	}
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
+}
+
+// SetPluginPipeline updates the plugin pipeline provider and release function on the manager's
+// ToolsManager and CodeMode. Call this after attaching an externally-created MCPManager to a Bifrost
+// instance so that nested tool calls in code mode can run through Bifrost's plugin hooks.
+func (manager *MCPManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
+	manager.toolsManager.SetPluginPipeline(provider, release)
 }
 
 // AddToolsToRequest parses available MCP tools from the context and adds them to the request.
@@ -170,11 +174,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 //
 // Returns:
 //   - *schemas.BifrostRequest: The request with tools added
-func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *MCPManager) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	return m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
 }
 
-func (m *MCPManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 

@@ -50,11 +50,6 @@ const pluginSlice = createSlice({
 			}
 		});
 
-		// Listen to createPlugin fulfilled to add the new plugin to the list
-		builder.addMatcher(pluginsApi.endpoints.createPlugin.matchFulfilled, (state, action) => {
-			const newPlugin = action.payload;
-		});
-
 		// Listen to deletePlugin fulfilled to remove the plugin from the list
 		builder.addMatcher(pluginsApi.endpoints.deletePlugin.matchFulfilled, (state, action) => {
 			const deletedPluginName = action.meta.arg.originalArgs;

@@ -83,20 +83,35 @@ export default function ToolResultMessageView({
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
+		<div
+			className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors"
+			ref={containerRef}
+		>
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? MessageRole.ASSISTANT} disabled={disabled} onRoleChange={handleRoleChange} />
-				<div className="ml-auto flex items-center gap-0.5 h-5">
+				<div className="ml-auto flex h-5 items-center gap-0.5">
 					{message.toolCallId && (
-						<span className="text-muted-foreground ml-4 truncate max-w-[200px] font-mono text-xs">{message.toolCallId}</span>
+						<span className="text-muted-foreground ml-4 max-w-[200px] truncate font-mono text-xs">{message.toolCallId}</span>
 					)}
 					{!disabled && (
-						<button type="button" aria-label="Edit message" data-testid="tool-result-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button
+							type="button"
+							aria-label="Edit message"
+							data-testid="tool-result-msg-edit"
+							onClick={() => setEditMode(true)}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+						>
 							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
-						<button type="button" aria-label="Delete message" data-testid="tool-result-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button
+							type="button"
+							aria-label="Delete message"
+							data-testid="tool-result-msg-delete"
+							onClick={onRemove}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+						>
 							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
@@ -141,9 +156,7 @@ export default function ToolResultMessageView({
 							if (!disabled) setEditMode(true);
 						}}
 					>
-						<div className="text-muted-foreground min-h-[20px] font-mono text-sm whitespace-pre-wrap">
-							{content}
-						</div>
+						<div className="text-muted-foreground min-h-[20px] font-mono text-sm whitespace-pre-wrap">{content}</div>
 					</div>
 				)}
 			</div>

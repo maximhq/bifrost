@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Puzzle } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
@@ -13,7 +11,10 @@ interface PluginsEmptyStateProps {
 
 export function PluginsEmptyState({ onCreateClick, canCreate = true }: PluginsEmptyStateProps) {
 	return (
-		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center" data-testid="plugins-empty-state">
+		<div
+			className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
+			data-testid="plugins-empty-state"
+		>
 			<div className="text-muted-foreground">
 				<Puzzle className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>

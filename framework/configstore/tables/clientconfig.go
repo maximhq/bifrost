@@ -29,14 +29,19 @@ type TableClientConfig struct {
 	MCPToolExecutionTimeout         int    `gorm:"default:30" json:"mcp_tool_execution_timeout"`              // Timeout for individual tool execution in seconds (default: 30)
 	MCPCodeModeBindingLevel         string `gorm:"default:server" json:"mcp_code_mode_binding_level"`         // How tools are exposed in VFS: "server" or "tool"
 	MCPToolSyncInterval             int    `gorm:"default:10" json:"mcp_tool_sync_interval"`                  // Global tool sync interval in minutes (default: 10, 0 = disabled)
+	MCPDisableAutoToolInject        bool   `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
 	AsyncJobResultTTL               int    `gorm:"default:3600" json:"async_job_result_ttl"`                  // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeadersJSON             string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 	LoggingHeadersJSON              string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 	HideDeletedVirtualKeysInFilters bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys in logs filter dropdowns
+	RoutingChainMaxDepth            int    `gorm:"default:10" json:"routing_chain_max_depth"`                 // Maximum depth for routing rule chain evaluation (default: 10)
 	WhitelistedRoutesJSON           string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 
-	// LiteLLM fallback flag
-	EnableLiteLLMFallbacks bool `gorm:"column:enable_litellm_fallbacks;default:false" json:"enable_litellm_fallbacks"`
+	// Compat plugin feature flags
+	CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`
+	CompatConvertChatToResponses bool `gorm:"column:compat_convert_chat_to_responses;default:false" json:"-"`
+	CompatShouldDropParams       bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
+	CompatShouldConvertParams    bool `gorm:"column:compat_should_convert_params;default:false" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

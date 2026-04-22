@@ -1,8 +1,10 @@
 package logging
 
 import (
+	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
@@ -34,6 +36,14 @@ type PendingLogData struct {
 	RoutingEnginesUsed []string
 	InitialData        *InitialLogData
 	CreatedAt          time.Time // For cleanup of stale entries
+}
+
+// pendingInjectEntries wraps a slice of log entries so it can be used with sync.Map.
+// The mutex protects concurrent appends to the entries slice within the same traceID.
+type pendingInjectEntries struct {
+	mu        sync.Mutex
+	entries   []*logstore.Log
+	createdAt time.Time
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
@@ -167,10 +177,18 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 // never fires for a request (e.g., request was cancelled before reaching the provider).
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
-	p.pendingLogs.Range(func(key, value any) bool {
+	p.pendingLogsEntries.Range(func(key, value any) bool {
 		if pending, ok := value.(*PendingLogData); ok {
 			if pending.CreatedAt.Before(cutoff) {
-				p.pendingLogs.Delete(key)
+				p.pendingLogsEntries.Delete(key)
+			}
+		}
+		return true
+	})
+	p.pendingLogsToInject.Range(func(key, value any) bool {
+		if pending, ok := value.(*pendingInjectEntries); ok {
+			if pending.createdAt.Before(cutoff) {
+				p.pendingLogsToInject.Delete(key)
 			}
 		}
 		return true
@@ -245,7 +263,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.PassthroughRequestBody) +
 		len(log.PassthroughResponseBody) +
 		len(log.ContentSummary) +
-		len(log.CacheDebug) +		
+		len(log.CacheDebug) +
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512
@@ -298,7 +316,11 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		ToolsParsed:                 pending.InitialData.Tools,
 		SpeechInputParsed:           pending.InitialData.SpeechInput,
 		TranscriptionInputParsed:    pending.InitialData.TranscriptionInput,
+		OCRInputParsed:              pending.InitialData.OCRInput,
 		ImageGenerationInputParsed:  pending.InitialData.ImageGenerationInput,
+		ImageEditInputParsed:        pending.InitialData.ImageEditInput,
+		ImageVariationInputParsed:   pending.InitialData.ImageVariationInput,
+		VideoGenerationInputParsed:  pending.InitialData.VideoGenerationInput,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
@@ -310,14 +332,37 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	return entry
 }
 
+// applyModelAlias sets entry.Model to resolvedModel (falling back to requestedModel if empty)
+// and entry.Alias to requestedModel when the two differ (i.e. an alias mapping was applied).
+func applyModelAlias(entry *logstore.Log, requestedModel, resolvedModel string) {
+	if resolvedModel != "" && resolvedModel != requestedModel {
+		entry.Model = resolvedModel
+		entry.Alias = &requestedModel
+	} else {
+		// No alias mapping; keep whichever value is non-empty as the model.
+		if resolvedModel != "" {
+			entry.Model = resolvedModel
+		} else if requestedModel != "" {
+			entry.Model = requestedModel
+		}
+		entry.Alias = nil
+	}
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,
 	selectedKeyID, selectedKeyName string,
 	virtualKeyID, virtualKeyName string,
 	routingRuleID, routingRuleName string,
+	selectedPromptID, selectedPromptName, selectedPromptVersion string,
+	teamID, teamName string,
+	customerID, customerName string,
+	userID, userName string,
+	businessUnitID, businessUnitName string,
 	numberOfRetries int,
 	latency int64,
+	attemptTrail []schemas.KeyAttemptRecord,
 ) {
 	entry.SelectedKeyID = selectedKeyID
 	entry.SelectedKeyName = selectedKeyName
@@ -333,11 +378,47 @@ func applyOutputFieldsToEntry(
 	if routingRuleName != "" {
 		entry.RoutingRuleName = &routingRuleName
 	}
+	if selectedPromptID != "" {
+		entry.SelectedPromptID = &selectedPromptID
+	}
+	if selectedPromptName != "" {
+		entry.SelectedPromptName = &selectedPromptName
+	}
+	if selectedPromptVersion != "" {
+		entry.SelectedPromptVersion = &selectedPromptVersion
+	}
+	if teamID != "" {
+		entry.TeamID = &teamID
+	}
+	if teamName != "" {
+		entry.TeamName = &teamName
+	}
+	if customerID != "" {
+		entry.CustomerID = &customerID
+	}
+	if customerName != "" {
+		entry.CustomerName = &customerName
+	}
+	if userID != "" {
+		entry.UserID = &userID
+	}
+	if userName != "" {
+		entry.UserName = &userName
+	}
+	if businessUnitID != "" {
+		entry.BusinessUnitID = &businessUnitID
+	}
+	if businessUnitName != "" {
+		entry.BusinessUnitName = &businessUnitName
+	}
 	if numberOfRetries != 0 {
 		entry.NumberOfRetries = numberOfRetries
 	}
 	if latency != 0 {
 		latF := float64(latency)
 		entry.Latency = &latF
+	}
+	if len(attemptTrail) > 0 {
+		entry.AttemptTrailParsed = attemptTrail
 	}
 }

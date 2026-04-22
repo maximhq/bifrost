@@ -8,6 +8,7 @@ import (
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
+	RequestID  string         // Request ID for the trace
 	TraceID    string         // Unique identifier for this trace
 	ParentID   string         // Parent trace ID from incoming W3C traceparent header
 	RootSpan   *Span          // The root span of this trace
@@ -15,6 +16,7 @@ type Trace struct {
 	StartTime  time.Time      // When the trace started
 	EndTime    time.Time      // When the trace completed
 	Attributes map[string]any // Additional attributes for the trace
+	PluginLogs []PluginLogEntry // Plugin log entries accumulated during request processing
 	mu         sync.Mutex     // Mutex for thread-safe span operations
 }
 
@@ -37,15 +39,49 @@ func (t *Trace) GetSpan(spanID string) *Span {
 	return nil
 }
 
+// GetRequestID retrieves the request ID from the trace
+func (t *Trace) GetRequestID() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.RequestID
+}
+
+// SetRequestID sets the request ID for the trace
+func (t *Trace) SetRequestID(requestID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RequestID = requestID
+}
+
 // Reset clears the trace for reuse from pool
 func (t *Trace) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RequestID = ""
 	t.TraceID = ""
 	t.ParentID = ""
 	t.RootSpan = nil
+	for i := range t.Spans {
+		t.Spans[i] = nil
+	}
 	t.Spans = t.Spans[:0]
 	t.StartTime = time.Time{}
 	t.EndTime = time.Time{}
 	t.Attributes = nil
+	for i := range t.PluginLogs {
+		t.PluginLogs[i] = PluginLogEntry{}
+	}
+	t.PluginLogs = t.PluginLogs[:0]
+}
+
+// AppendPluginLogs appends plugin log entries to the trace in a thread-safe manner.
+func (t *Trace) AppendPluginLogs(logs []PluginLogEntry) {
+	if len(logs) == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.PluginLogs = append(t.PluginLogs, logs...)
+	t.mu.Unlock()
 }
 
 // Span represents a single operation within a trace

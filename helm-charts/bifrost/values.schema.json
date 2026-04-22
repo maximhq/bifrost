@@ -238,7 +238,7 @@
         },
         "encryptionKey": {
           "type": "string",
-          "description": "Encryption key for sensitive data"
+          "description": "Encryption key for sensitive data. If not set, encryption is disabled and data is stored in plaintext."
         },
         "encryptionKeySecret": {
           "type": "object",
@@ -1356,6 +1356,10 @@
                   ],
                   "description": "Discovery type (empty when not configured)"
                 },
+                "serviceName": {
+                  "type": "string",
+                  "description": "Service name for discovery backends (required for consul/etcd/udp; used as default for mdns)"
+                },
                 "allowedAddressSpace": {
                   "type": "array",
                   "items": {
@@ -1393,6 +1397,18 @@
                   "type": "string"
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "type": { "const": "udp" }
+                    }
+                  },
+                  "then": {
+                    "required": ["udpBroadcastPort", "allowedAddressSpace"]
+                  }
+                }
+              ],
               "if": {
                 "properties": {
                   "enabled": {
@@ -1660,6 +1676,127 @@
                 ]
               }
             }
+          }
+        },
+        "accessProfiles": {
+          "type": "array",
+          "description": "Enterprise access profile templates rendered as top-level access_profiles in config.json",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "is_active": { "type": "boolean" },
+              "tags": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "budgets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "max_limit": { "type": "number" },
+                    "reset_duration": { "type": "string" }
+                  },
+                  "required": ["id", "max_limit", "reset_duration"],
+                  "additionalProperties": false
+                }
+              },
+              "rate_limit": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "token_max_limit": { "type": "integer" },
+                  "token_reset_duration": { "type": "string" },
+                  "request_max_limit": { "type": "integer" },
+                  "request_reset_duration": { "type": "string" }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+              },
+              "provider_configs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "provider_name": { "type": "string" },
+                    "all_models_allowed": { "type": "boolean" },
+                    "allowed_models": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "budgets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "max_limit": { "type": "number" },
+                          "reset_duration": { "type": "string" }
+                        },
+                        "required": ["id", "max_limit", "reset_duration"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "rate_limit": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "token_max_limit": { "type": "integer" },
+                        "token_reset_duration": { "type": "string" },
+                        "request_max_limit": { "type": "integer" },
+                        "request_reset_duration": { "type": "string" }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["provider_name"],
+                  "additionalProperties": false
+                }
+              },
+              "mcp_tool_groups": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tool_group_id": { "type": "integer" }
+                  },
+                  "required": ["tool_group_id"],
+                  "additionalProperties": false
+                }
+              },
+              "mcp_servers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "mcp_server_id": { "type": "string" }
+                  },
+                  "required": ["mcp_server_id"],
+                  "additionalProperties": false
+                }
+              },
+              "mcp_tool_overrides": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "mcp_client_id": { "type": "string" },
+                    "tool_name": { "type": "string" },
+                    "action": {
+                      "type": "string",
+                      "enum": ["include", "exclude"]
+                    }
+                  },
+                  "required": ["mcp_client_id", "tool_name", "action"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["name"],
+            "additionalProperties": false
           }
         },
         "auditLogs": {
@@ -2700,7 +2837,7 @@
           "additionalProperties": false
         }
       },
-      "required": [
+      "required":[
         "name",
         "weight"
       ],
@@ -3092,6 +3229,13 @@
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
+        },
+        "key_ids": {
+          "type": "array",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In Helm values, use provider key names.",
+          "items": {
+            "type": "string"
+          }
         },
         "keys": {
           "type": "array",

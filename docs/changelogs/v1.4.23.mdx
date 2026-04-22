@@ -1,0 +1,110 @@
+---
+title: "v1.4.23"
+description: "v1.4.23 changelog - 2026-04-18"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.23
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.23
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.23
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.23">
+## ✨ Features
+
+- **Claude Opus 4.7 Support** — Added compatibility for Anthropic's Claude Opus 4.7 model, including adaptive thinking, task-budgets beta header, `display` parameter handling, and "xhigh" effort mapping
+- **Anthropic Structured Outputs** — Added `response_format` and structured output support for Anthropic models across chat completions and Responses API, including JSON-schema and JSON-object formats with order-preserving merge of additional model request fields (thanks [@emirhanmutlu-natuvion](https://github.com/emirhanmutlu-natuvion)!)
+- **MCP Tool Annotations** — Preserve MCP tool annotations (`title`, `readOnly`, `destructive`, `idempotent`, `openWorld`) in bidirectional conversion between MCP tools and Bifrost chat tools so agents can reason about tool behavior
+- **Anthropic Server Tools** — Expanded Anthropic chat schema and Responses converters to surface server-side tools (web search, code execution, computer use containers) end-to-end
+
+## 🐞 Fixed
+
+- **Provider Queue Shutdown Panic** — Eliminated `send on closed channel` panics in provider queue shutdown by leaving queue channels open and exiting workers via the `done` signal; stale producers transparently re-route to new queues during `UpdateProvider`, with rollback on failed updates
+- **OpenAI Tool Result Output** — Flatten array-form `tool_result` output into a newline-joined string before marshaling for the Responses API so strict upstreams (Ollama Cloud, openai-go typed models) no longer reject it with HTTP 400; non-text blocks (images, files) are preserved (thanks [@martingiguere](https://github.com/martingiguere)!)
+- **vLLM Token Usage** — Treat `delta.content=""` the same as `nil` in streaming so the synthesis chunk retains its `finish_reason`, restoring token usage attribution in logs and UI
+- **Config Schema Validator** — Corrected JSON-path lookups for concurrency and SCIM blocks in the schema validation script, and reformatted `transports/config.schema.json` for readability
+- **CI Egress Hardening** — Switched `step-security/harden-runner` from `audit` to `block` across all GitHub Actions workflows with explicit `allowed-endpoints` per job
+- **Gemini Tool Outputs** — Handle content block tool outputs in Responses API path for `function_call_output` messages (thanks [@tom-diacono](https://github.com/tom-diacono)!)
+- **Bedrock Streaming** — Emit `message_stop` event for Anthropic invoke stream and case-insensitive `anthropic-beta` header merging (thanks [@tefimov](https://github.com/tefimov)!)
+- **Bedrock Tool Images** — Preserve image content blocks in tool results when converting Anthropic Messages to Bedrock Converse API (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- **Gemini Thinking Level** — Preserved `thinkingLevel` parameters across round-trip conversions and corrected finish reason mapping
+- **Anthropic WebSearch** — Removed the Claude Code user agent restriction so WebSearch tool arguments flow for all clients
+- **Responses Streaming Errors** — Capture errors mid-stream in the Responses API so transport clients see failures instead of silent termination
+- **Anthropic Request Fallbacks** — Dropped fallback fields from outgoing Anthropic requests to avoid schema validation errors
+- **Async Context Propagation** — Preserve context values in async requests so downstream handlers retain request-scoped data
+- **Custom Providers** — Allow custom providers without a list-models endpoint to accept any model rather than restricting on virtual key registration
+- **OTEL Plugin** — Default `insecure` to `true` in config.json and include fallbacks in emitted OTEL metrics
+- **Payload Marshalling** — Removed unnecessary marshalling of payload in the transport path
+- **Helm mcpClientConfig** — Fixed templating for `mcpClientConfig` (thanks [@crust3780](https://github.com/crust3780)!)
+- **Helm Chart** — Refreshed the helm chart with validation fixes and removed the prerelease tag
+
+</Update>
+<Update label="Core" description="1.4.22">
+- fix: OpenAI provider - flatten array-form tool_result output for Responses API (thanks [@martingiguere](https://github.com/martingiguere)!)
+- fix: Gemini provider - handle content block tool outputs in Responses API path (thanks [@tom-diacono](https://github.com/tom-diacono)!)
+- fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
+- fix: Bedrock provider - emit message_stop event for Anthropic invoke stream (thanks [@tefimov](https://github.com/tefimov)!)
+- fix: Bedrock provider - preserve image content in tool results for Converse API (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- fix: gemini preserves thinkingLevel parameters during round-trip and finish reason mapping
+- fix: WebSearch tool argument handling for all clients by removing the Claude Code user agent restriction
+- fix: capture responses streaming API errors
+- fix: delete fallbacks from outgoing Anthropic requests
+- feat: claude-opus-4-7 compatibility
+- fix: token usage for vllm
+
+</Update>
+<Update label="Framework" description="1.2.39">
+- chore: upgraded core to v1.4.20
+- fix: preserve context values in async requests
+- fix: capture responses streaming API errors
+- fix: otel plugin fixes
+- fix: allow custom providers without a list models endpoint to register any model
+
+</Update>
+<Update label="governance" description="1.4.39">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+- fix: allow custom providers without a list models endpoint to pass in any model rather than restrict it on vk
+
+</Update>
+<Update label="jsonparser" description="1.4.38">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+
+</Update>
+<Update label="litellmcompat" description="0.0.28">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+
+</Update>
+<Update label="logging" description="1.4.39">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+- fix: capture responses streaming API errors
+
+</Update>
+<Update label="maxim" description="1.5.39">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+
+</Update>
+<Update label="mocker" description="1.4.38">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+
+</Update>
+<Update label="otel" description="1.1.38">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+- fix: sets default for `insecure` to `true` for config.json
+- fix: includes fallbacks in otel metrics
+
+</Update>
+<Update label="semanticcache" description="1.4.37">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+
+</Update>
+<Update label="telemetry" description="1.4.39">
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+
+</Update>

@@ -1,13 +1,48 @@
-# Configuration: Multiple Providers with API Keys and Virtual Keys
+# Configuration: Full Provider and Virtual Key Reference
 # Usage: helm install bifrost ./bifrost -f values-examples/providers-and-virtual-keys.yaml
 #
-# This example demonstrates:
-# - Multiple providers (OpenAI, Anthropic, Groq) with 2-3 API keys each
-# - Virtual keys with provider restrictions
-# - Budgets and rate limits for governance
+# This example demonstrates configuration for every Bifrost-supported provider
+# (23 total) plus 7 virtual-key patterns covering different access-control needs:
+#   - Simple API-key providers (openai, anthropic, cohere, groq, gemini, ...)
+#   - Deployment-map providers (huggingface, replicate)
+#   - URL-based / self-hosted providers (ollama, sgl, vllm)
+#   - Cloud-native providers with nested config (azure, vertex, bedrock)
 #
-# Note: API keys in this example are dummy values for demonstration purposes.
-# Replace with real keys in production.
+# Secrets are referenced via env.VAR_NAME (see ENVIRONMENT VARIABLES block
+# below). Provide them via extraEnv (map), env, envFrom, or a Kubernetes Secret
+# mounted on the pod — see values-examples/secrets-from-k8s.yaml for patterns.
+#
+# Field names follow transports/config.schema.json (the Bifrost runtime config
+# contract). VK provider_configs use the helm-native keys:[{name:...}] form,
+# which the helm chart template passes through to config.json.
+
+# ==========================================================================
+# ENVIRONMENT VARIABLES REFERENCED
+# ==========================================================================
+# This file uses env.VAR_NAME for all secret values. Supply them via extraEnv
+# (map), env, envFrom, or an external secret store. Full list:
+#
+#   Provider API keys:
+#     OPENAI_API_KEY_1, OPENAI_API_KEY_2, OPENAI_API_KEY_3
+#     ANTHROPIC_API_KEY_1, ANTHROPIC_API_KEY_2
+#     GROQ_API_KEY_1, GROQ_API_KEY_2
+#     COHERE_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY
+#     PARASAIL_API_KEY, PERPLEXITY_API_KEY, CEREBRAS_API_KEY
+#     ELEVENLABS_API_KEY, XAI_API_KEY, NEBIUS_API_KEY, FIREWORKS_API_KEY
+#     RUNWAY_API_KEY, HUGGINGFACE_API_KEY, REPLICATE_API_KEY
+#
+#   Azure:
+#     AZURE_API_KEY, AZURE_ENDPOINT
+#
+#   Vertex (Google Cloud):
+#     VERTEX_PROJECT_ID, VERTEX_AUTH_CREDENTIALS (service-account key JSON)
+#
+#   Bedrock (AWS) — choose static creds OR STS AssumeRole:
+#     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#     AWS_ROLE_ARN, AWS_EXTERNAL_ID
+#
+#   Self-hosted endpoints:
+#     OLLAMA_URL, SGL_URL, VLLM_URL
 
 # Image configuration
 image:
@@ -61,72 +96,347 @@ bifrost:
     maxRequestBodySizeMb: 100
 
   # ==========================================================================
-  # PROVIDERS CONFIGURATION
+  # PROVIDERS
   # ==========================================================================
-  # Configure multiple providers with 2-3 API keys each.
-  # Keys have weights for load balancing - higher weight = more traffic.
-  # Replace dummy values with real API keys in production.
+  # Every key entry supports the base fields:
+  #   name (required), value, weight (required), models, use_for_batch_api, aliases
+  # Providers with nested configs add *_key_config blocks
+  # (azure_key_config, vertex_key_config, bedrock_key_config, vllm_key_config,
+  # ollama_key_config, sgl_key_config, replicate_key_config).
 
   providers:
-    # OpenAI - 3 API keys with different weights
+    # ------------------------------------------------------------------------
+    # Simple API-key providers (base_key shape)
+    # ------------------------------------------------------------------------
+
+    # OpenAI — 3 keys with weighted load balancing.
+    # openai-batch is flagged use_for_batch_api so it can serve the Batch API.
     openai:
       keys:
         - name: "openai-primary"
-          value: "sk-dummy-openai-key-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          weight: 2  # Gets 50% of traffic (2 out of 4 total weight)
+          value: "env.OPENAI_API_KEY_1"
+          weight: 2 # 50% of traffic (2 of 4 total weight)
           models: ["*"]
         - name: "openai-secondary"
-          value: "sk-dummy-openai-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          weight: 1  # Gets 25% of traffic
+          value: "env.OPENAI_API_KEY_2"
+          weight: 1 # 25%
           models: ["*"]
-        - name: "openai-backup"
-          value: "sk-dummy-openai-key-3-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          weight: 1  # Gets 25% of traffic
+        - name: "openai-batch"
+          value: "env.OPENAI_API_KEY_3"
+          weight: 1 # 25%
           models: ["*"]
+          use_for_batch_api: true # Allow Batch API with this key
 
-    # Anthropic - 2 API keys
+    # Anthropic — 2 keys, equal weight
     anthropic:
       keys:
         - name: "anthropic-primary"
-          value: "sk-ant-dummy-key-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          value: "env.ANTHROPIC_API_KEY_1"
           weight: 1
           models: ["*"]
         - name: "anthropic-secondary"
-          value: "sk-ant-dummy-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          value: "env.ANTHROPIC_API_KEY_2"
           weight: 1
           models: ["*"]
 
-    # Groq - 2 API keys
+    # Groq — 2 keys
     groq:
       keys:
         - name: "groq-primary"
-          value: "gsk_dummy_groq_key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          value: "env.GROQ_API_KEY_1"
           weight: 1
           models: ["*"]
         - name: "groq-secondary"
-          value: "gsk_dummy_groq_key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          value: "env.GROQ_API_KEY_2"
           weight: 1
           models: ["*"]
 
+    cohere:
+      keys:
+        - name: "cohere-main"
+          value: "env.COHERE_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    mistral:
+      keys:
+        - name: "mistral-main"
+          value: "env.MISTRAL_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    gemini:
+      keys:
+        - name: "gemini-main"
+          value: "env.GEMINI_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    openrouter:
+      keys:
+        - name: "openrouter-main"
+          value: "env.OPENROUTER_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    parasail:
+      keys:
+        - name: "parasail-main"
+          value: "env.PARASAIL_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    perplexity:
+      keys:
+        - name: "perplexity-main"
+          value: "env.PERPLEXITY_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    cerebras:
+      keys:
+        - name: "cerebras-main"
+          value: "env.CEREBRAS_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    elevenlabs:
+      keys:
+        - name: "elevenlabs-main"
+          value: "env.ELEVENLABS_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    xai:
+      keys:
+        - name: "xai-main"
+          value: "env.XAI_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    nebius:
+      keys:
+        - name: "nebius-main"
+          value: "env.NEBIUS_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    fireworks:
+      keys:
+        - name: "fireworks-main"
+          value: "env.FIREWORKS_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    runway:
+      keys:
+        - name: "runway-main"
+          value: "env.RUNWAY_API_KEY"
+          weight: 1
+          models: ["*"]
+
+    # ------------------------------------------------------------------------
+    # Deployment-map providers (use `aliases` to map logical -> provider IDs)
+    # ------------------------------------------------------------------------
+
+    huggingface:
+      keys:
+        - name: "huggingface-main"
+          value: "env.HUGGINGFACE_API_KEY"
+          weight: 1
+          models: ["llama-3", "mixtral"]
+          aliases:
+            # Logical model name -> HF repo path used when invoking
+            llama-3: "meta-llama/Meta-Llama-3-8B-Instruct"
+            mixtral: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+
+    replicate:
+      keys:
+        - name: "replicate-main"
+          value: "env.REPLICATE_API_KEY"
+          weight: 1
+          models: ["llama-3"]
+          aliases:
+            llama-3: "meta/meta-llama-3-70b-instruct"
+          replicate_key_config:
+            use_deployments_endpoint: false # false = /models endpoint (default)
+
+    # ------------------------------------------------------------------------
+    # URL-based / self-hosted providers
+    # ------------------------------------------------------------------------
+    # These providers talk to an HTTP endpoint you operate yourself. They do
+    # not typically require API keys (value stays empty).
+
+    ollama:
+      keys:
+        - name: "ollama-main"
+          value: ""
+          weight: 1
+          models: ["*"]
+          ollama_key_config:
+            url: "env.OLLAMA_URL" # e.g. http://ollama.svc.cluster.local:11434
+
+    sgl:
+      keys:
+        - name: "sgl-main"
+          value: ""
+          weight: 1
+          models: ["*"]
+          sgl_key_config:
+            url: "env.SGL_URL" # e.g. http://sgl-router.svc.cluster.local:30000
+
+    vllm:
+      # vLLM instances are model-specific: one key per served model.
+      keys:
+        - name: "vllm-llama3-70b"
+          value: ""
+          weight: 1
+          models: ["llama-3-70b"]
+          vllm_key_config:
+            url: "env.VLLM_URL" # e.g. http://vllm.svc.cluster.local:8000
+            model_name: "meta-llama/Meta-Llama-3-70B-Instruct"
+
+    # ------------------------------------------------------------------------
+    # Cloud-native providers (nested provider-specific config)
+    # ------------------------------------------------------------------------
+
+    # Azure OpenAI — two auth modes:
+    #   1. azure-apikey:           explicit API key (via env var).
+    #   2. azure-managed-identity: inherits credentials via DefaultAzureCredential
+    #                              when `value` is empty. Covers managed identity
+    #                              on Azure VMs / AKS workload identity / env vars
+    #                              (AZURE_CLIENT_ID etc.) / Azure CLI (dev).
+    # (Service-principal client_id/client_secret/tenant_id fields exist in the
+    # runtime code but aren't exposed in the current schema — use env-based
+    # DefaultAzureCredential instead.)
+    azure:
+      keys:
+        - name: "azure-apikey"
+          value: "env.AZURE_API_KEY"
+          weight: 1
+          models: ["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"]
+          azure_key_config:
+            endpoint: "env.AZURE_ENDPOINT" # e.g. https://my-resource.openai.azure.com
+            api_version: "2024-10-21"
+            deployments:
+              # Logical model name -> Azure deployment name
+              gpt-4o: "gpt-4o-prod"
+              gpt-4o-mini: "gpt-4o-mini-prod"
+              text-embedding-3-small: "embeddings-prod"
+        - name: "azure-managed-identity"
+          # Pure identity inheritance: empty `value` triggers DefaultAzureCredential.
+          # Works out-of-the-box on AKS with workload identity, Azure VMs with
+          # system/user-assigned managed identity, or local dev via `az login`.
+          value: ""
+          weight: 1
+          models: ["gpt-4o"]
+          azure_key_config:
+            endpoint: "env.AZURE_ENDPOINT"
+            api_version: "2024-10-21"
+            deployments:
+              gpt-4o: "gpt-4o-prod"
+
+    # Google Vertex AI — two auth modes:
+    #   1. vertex-sa-key:       explicit service-account key JSON via env var.
+    #   2. vertex-workload-id:  inherits credentials from the environment
+    #                           (GKE Workload Identity, GCE metadata server,
+    #                           or GOOGLE_APPLICATION_CREDENTIALS path). Omit
+    #                           `auth_credentials` and the Google SDK calls
+    #                           google.FindDefaultCredentials automatically.
+    vertex:
+      keys:
+        - name: "vertex-sa-key"
+          value: ""
+          weight: 1
+          models: ["*"]
+          vertex_key_config:
+            project_id: "env.VERTEX_PROJECT_ID"
+            region: "us-central1"
+            auth_credentials: "env.VERTEX_AUTH_CREDENTIALS"
+            # project_number: "env.VERTEX_PROJECT_NUMBER"   # optional
+        - name: "vertex-workload-id"
+          # Pure ADC inheritance: works on GKE with Workload Identity, GCE
+          # VMs, Cloud Run, or local dev via `gcloud auth application-default login`.
+          value: ""
+          weight: 1
+          models: ["*"]
+          vertex_key_config:
+            project_id: "env.VERTEX_PROJECT_ID"
+            region: "us-central1"
+            # auth_credentials intentionally omitted -> ADC lookup
+
+    # AWS Bedrock — three auth modes:
+    #   1. bedrock-static:   explicit AWS access/secret keys + S3 batch bucket
+    #   2. bedrock-irsa:     inherits pod/EKS credentials (IRSA, EC2 instance
+    #                        profile, env vars, ~/.aws/credentials) — set only
+    #                        `region`; the AWS SDK default credential chain
+    #                        resolves the rest.
+    #   3. bedrock-assumerole: STS AssumeRole chained on top of the default
+    #                          chain — inherits *source* creds from the pod,
+    #                          then assumes a cross-account role.
+    bedrock:
+      keys:
+        - name: "bedrock-static"
+          value: ""
+          weight: 1
+          models: ["*"]
+          bedrock_key_config:
+            region: "us-east-1"
+            access_key: "env.AWS_ACCESS_KEY_ID"
+            secret_key: "env.AWS_SECRET_ACCESS_KEY"
+            deployments:
+              # Logical model -> Bedrock inference profile
+              anthropic.claude-3-5-sonnet: "us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+            batch_s3_config:
+              buckets:
+                - bucket_name: "my-bedrock-batch-bucket"
+                  prefix: "batch/"
+                  is_default: true
+        - name: "bedrock-irsa"
+          # Pure credential inheritance: works out-of-the-box on EKS with IRSA,
+          # on EC2 with an instance profile, or with AWS_* env vars present.
+          value: ""
+          weight: 1
+          models: ["*"]
+          bedrock_key_config:
+            region: "us-east-1"
+            # access_key / secret_key intentionally omitted -> SDK default chain
+        - name: "bedrock-assumerole"
+          value: ""
+          weight: 1
+          models: ["*"]
+          bedrock_key_config:
+            region: "us-west-2"
+            # No static creds -> source identity comes from pod's default chain.
+            role_arn: "env.AWS_ROLE_ARN"
+            external_id: "env.AWS_EXTERNAL_ID"
+            session_name: "bifrost-session"
+
   # ==========================================================================
-  # GOVERNANCE CONFIGURATION
+  # GOVERNANCE — budgets, rate limits, and virtual keys
   # ==========================================================================
-  # Configure budgets, rate limits, and virtual keys for access control
 
   governance:
-    # Budget configurations - limit spending per period
+    # --------------------------------------------------------------------
+    # Budgets — spending caps per period
+    # --------------------------------------------------------------------
     budgets:
       - id: "budget-dev"
-        max_limit: 50  # $50 limit
-        reset_duration: "1M"  # Resets monthly
+        max_limit: 50 # $50
+        reset_duration: "1M" # monthly
       - id: "budget-production"
-        max_limit: 500  # $500 limit
+        max_limit: 500 # $500
         reset_duration: "1M"
       - id: "budget-testing"
-        max_limit: 10  # $10 limit
-        reset_duration: "1d"  # Resets daily
+        max_limit: 10 # $10
+        reset_duration: "1d" # daily
+      - id: "budget-team-platform"
+        max_limit: 2000 # $2000 — larger team/platform budget
+        reset_duration: "1M"
 
-    # Rate limit configurations - limit requests/tokens per period
+    # --------------------------------------------------------------------
+    # Rate limits — token + request caps per period
+    # --------------------------------------------------------------------
     rateLimits:
       - id: "rate-limit-standard"
         token_max_limit: 100000
@@ -143,68 +453,129 @@ bifrost:
         token_reset_duration: "1h"
         request_max_limit: 100
         request_reset_duration: "1h"
+      - id: "rate-limit-burst"
+        token_max_limit: 50000
+        token_reset_duration: "1m" # Short-window burst cap
+        request_max_limit: 500
+        request_reset_duration: "1m"
 
-    # Virtual Keys - access tokens for different use cases
+    # --------------------------------------------------------------------
+    # Virtual keys — access tokens scoped to providers/models/keys
+    # --------------------------------------------------------------------
+    # provider_configs[].keys scopes the VK to specific provider keys by name.
+    # Omit provider_configs to grant access to every provider.
+    # Omit keys inside a provider_config to allow all keys for that provider.
+
     virtualKeys:
-      # Development virtual key - access to ALL providers (no restrictions)
-      - id: "vk-development"
-        name: "Development Key"
-        value: "vk-dev-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      # 1. Dev key — access to every provider, no restrictions.
+      - id: "vk-all-providers-dev"
+        name: "Dev: all providers"
         is_active: true
         budget_id: "budget-dev"
         rate_limit_id: "rate-limit-standard"
-        # No provider_configs means all providers are accessible
+        # No provider_configs -> all providers accessible
 
-      # OpenAI-only virtual key - restricted to OpenAI provider with specific keys
-      - id: "vk-openai-only"
-        name: "OpenAI Only Key"
-        value: "vk-openai-yyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+      # 2. OpenAI only — restricted to 2 keys and 2 models.
+      - id: "vk-openai-scoped"
+        name: "OpenAI only (scoped)"
         is_active: true
         budget_id: "budget-production"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "openai"
             weight: 1
-            # Restrict to primary and secondary keys only (exclude backup)
+            allowed_models: ["gpt-4o", "gpt-4o-mini"]
             keys:
               - name: "openai-primary"
               - name: "openai-secondary"
 
-      # Anthropic + Groq virtual key - access to both providers with key restrictions
-      - id: "vk-anthropic-groq"
-        name: "Anthropic and Groq Key"
-        value: "vk-anthgroq-zzzzzzzzzzzzzzzzzzzzzzzzzz"
+      # 3. Multi-provider — weighted routing across OpenAI/Anthropic/Groq.
+      # OpenAI gets 50% (weight 2), the others 25% each (weight 1).
+      - id: "vk-multi-provider"
+        name: "Multi-provider weighted"
         is_active: true
         budget_id: "budget-production"
         rate_limit_id: "rate-limit-high"
         provider_configs:
+          - provider: "openai"
+            weight: 2
+            allowed_models: ["*"]
+            # Omitting keys -> all openai keys allowed
           - provider: "anthropic"
             weight: 1
-            # Only use primary anthropic key
+            allowed_models: ["*"]
             keys:
               - name: "anthropic-primary"
           - provider: "groq"
             weight: 1
-            # Use both groq keys
-            keys:
-              - name: "groq-primary"
-              - name: "groq-secondary"
+            allowed_models: ["*"]
 
-      # Testing virtual key - limited budget and rate for testing
-      - id: "vk-testing"
-        name: "Testing Key"
-        value: "vk-test-tttttttttttttttttttttttttttt"
+      # 4. Cloud providers — Azure + Vertex + Bedrock only.
+      # Shows that VK scoping is identical regardless of nested key_config.
+      - id: "vk-cloud-providers"
+        name: "Cloud providers (Azure/Vertex/Bedrock)"
+        is_active: true
+        budget_id: "budget-team-platform"
+        rate_limit_id: "rate-limit-high"
+        provider_configs:
+          - provider: "azure"
+            weight: 1
+            keys:
+              - name: "azure-apikey"
+              - name: "azure-managed-identity"
+          - provider: "vertex"
+            weight: 1
+            keys:
+              - name: "vertex-sa-key"
+              - name: "vertex-workload-id"
+          - provider: "bedrock"
+            weight: 1
+            keys:
+              - name: "bedrock-static"
+              - name: "bedrock-irsa"
+              - name: "bedrock-assumerole"
+
+      # 5. Self-hosted — Ollama + vLLM + SGL only.
+      # Low budget because self-hosted inference is ~free.
+      - id: "vk-self-hosted"
+        name: "Self-hosted (Ollama/vLLM/SGL)"
+        is_active: true
+        budget_id: "budget-dev"
+        rate_limit_id: "rate-limit-high"
+        provider_configs:
+          - provider: "ollama"
+            weight: 1
+          - provider: "vllm"
+            weight: 1
+          - provider: "sgl"
+            weight: 1
+
+      # 6. Testing — tight budget, tight rate limit, single model, single key.
+      - id: "vk-testing-limited"
+        name: "Testing (gpt-4o-mini only)"
         is_active: true
         budget_id: "budget-testing"
         rate_limit_id: "rate-limit-testing"
         provider_configs:
           - provider: "openai"
             weight: 1
-            allowed_models:
-              - "gpt-4o-mini"  # Only allow the cheaper model for testing
-            # Use only the backup key for testing purposes
+            allowed_models: ["gpt-4o-mini"]
             keys:
-              - name: "openai-backup"
+              - name: "openai-secondary"
+
+      # 7. Batch API — restricted to keys flagged use_for_batch_api: true.
+      # Pairs with the openai-batch key above. Burst rate-limit for batch flushes.
+      - id: "vk-batch-api"
+        name: "Batch API workloads"
+        is_active: true
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-burst"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models: ["*"]
+            keys:
+              - name: "openai-batch"
 
   # Plugins configuration
   plugins:
@@ -216,7 +587,7 @@ bifrost:
     governance:
       enabled: true
       config:
-        is_vk_mandatory: false  # Set to true to require virtual key on all requests
+        is_vk_mandatory: false # Set to true to require virtual key on all requests
 
 # Resource limits
 resources:

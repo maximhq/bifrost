@@ -31,7 +31,7 @@ export function ApiKeySelectorView({
 
 	const allOptions = useMemo(() => {
 		const apiKeyOpts = providerKeys.map((k) => ({ label: k.name, value: k.key_id, group: "api" as const }));
-		const vkOpts = virtualKeys.map((vk) => ({ label: vk.name, value: vk.value, group: "virtual" as const }));
+		const vkOpts = virtualKeys.map((vk) => ({ label: vk.name, value: vk.id, group: "virtual" as const }));
 		return [{ label: "Auto (default)", value: "__auto__", group: "api" as const }, ...apiKeyOpts, ...vkOpts];
 	}, [providerKeys, virtualKeys]);
 

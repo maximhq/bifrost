@@ -1,5 +1,3 @@
-"use client";
-
 import type { ProviderCostHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -121,7 +119,9 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
 						{displayProviders.map((provider, idx) => (
-							<Bar isAnimationActive={false}								key={provider}
+							<Bar
+								isAnimationActive={false}
+								key={provider}
 								dataKey={`provider_${idx}`}
 								stackId="cost"
 								fill={getModelColor(idx)}
@@ -155,7 +155,9 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 						/>
 						<Tooltip content={<CustomTooltip selectedProvider={selectedProvider} providers={data.providers} />} />
 						{displayProviders.map((provider, idx) => (
-							<Area isAnimationActive={false}								key={provider}
+							<Area
+								isAnimationActive={false}
+								key={provider}
 								type="monotone"
 								dataKey={`provider_${idx}`}
 								stackId="1"

@@ -43,7 +43,7 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 		defer bfCtx.Cancel()
-		key, err := client.SelectKeyForProvider(bfCtx, testConfig.Provider, testConfig.RealtimeModel)
+		key, err := client.SelectKeyForProviderRequestType(bfCtx, schemas.RealtimeRequest, testConfig.Provider, testConfig.RealtimeModel)
 		if err != nil {
 			t.Fatalf("failed to select key for provider %s: %v", testConfig.Provider, err)
 		}

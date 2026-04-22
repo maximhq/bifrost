@@ -35,7 +35,16 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 		return nil, err
 	}
 	logger.Debug("db opened for configstore")
-	s := &RDBConfigStore{db: db, logger: logger}
+	s := &RDBConfigStore{logger: logger}
+	s.db.Store(db)
+	// SQLite has no server-side prepared-plan cache, and opening a second
+	// handle on the same file would contend for the single-writer lock —
+	// so both hooks operate on the existing *gorm.DB.
+	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, s.DB())
+	}
+	s.refreshPoolFn = func(ctx context.Context) error { return nil }
+
 	logger.Debug("running migration to remove duplicate keys")
 	// Run migration to remove duplicate keys before AutoMigrate
 	if err := s.removeDuplicateKeysAndNullKeys(ctx); err != nil {

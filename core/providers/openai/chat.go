@@ -104,12 +104,17 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters() {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
 	if req.ChatParameters.Reasoning != nil {
+		reasoningCopy := *req.ChatParameters.Reasoning
+		req.ChatParameters.Reasoning = &reasoningCopy
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
-			// Convert "minimal" to "low" for non-OpenAI providers
-			if effort == "minimal" {
+			// Convert "minimal" to "low"; cap "xhigh"/"max" to "high" — OpenAI tops out at high.
+			switch effort {
+			case "minimal":
 				req.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
+			case "xhigh", "max":
+				req.ChatParameters.Reasoning.Effort = schemas.Ptr("high")
 			}
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil

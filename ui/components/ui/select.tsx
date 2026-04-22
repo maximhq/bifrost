@@ -1,5 +1,3 @@
-"use client";
-
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import * as React from "react";
@@ -89,7 +87,7 @@ function SelectItem({ className, children, disabled, disabledReason, icon, ...pr
 	return (
 		<SelectPrimitive.Item
 			disabled={disabled}
-			data-disabled={disabled}
+			data-disabled={disabled || undefined}
 			data-disabled-reason={disabledReason}
 			data-slot="select-item"
 			className={cn(
@@ -160,5 +158,5 @@ export {
 	SelectScrollUpButton,
 	SelectSeparator,
 	SelectTrigger,
-	SelectValue,
+	SelectValue
 };

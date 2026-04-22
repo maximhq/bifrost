@@ -3,6 +3,9 @@ package tracing
 
 import (
 	"context"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -18,6 +21,9 @@ type Tracer struct {
 	store          *TraceStore
 	accumulator    *streaming.Accumulator
 	pricingManager *modelcatalog.ModelCatalog
+	logger         schemas.Logger
+	obsPlugins     atomic.Pointer[[]schemas.ObservabilityPlugin]
+	flushWG        sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -28,12 +34,22 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 		store:          store,
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		pricingManager: pricingManager,
+		logger:         logger,
+		obsPlugins:     atomic.Pointer[[]schemas.ObservabilityPlugin]{},
 	}
 }
 
+// SetObservabilityPlugins updates the plugins that receive completed traces.
+func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+	if t == nil {
+		return
+	}
+	t.obsPlugins.Store(&obsPlugins)
+}
+
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
-func (t *Tracer) CreateTrace(parentID string) string {
-	return t.store.CreateTrace(parentID)
+func (t *Tracer) CreateTrace(parentID string, requestID ...string) string {
+	return t.store.CreateTrace(parentID, requestID...)
 }
 
 // EndTrace completes a trace and returns the trace data for observation/export.
@@ -164,7 +180,7 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 }
 
 // PopulateLLMResponseAttributes populates all LLM-specific response attributes on the span.
-func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
 		return
@@ -185,7 +201,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *
 	}
 	// Populate cost attribute using pricing manager
 	if t.pricingManager != nil && resp != nil {
-		cost := t.pricingManager.CalculateCost(resp)
+		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
 		span.SetAttribute(schemas.AttrUsageCost, cost)
 	}
 }
@@ -306,9 +322,10 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 
 	// Convert ProcessedStreamResponse to StreamAccumulatorResult
 	accResult := &schemas.StreamAccumulatorResult{
-		RequestID: processedResp.RequestID,
-		Model:     processedResp.Model,
-		Provider:  processedResp.Provider,
+		RequestID:      processedResp.RequestID,
+		RequestedModel: processedResp.RequestedModel,
+		ResolvedModel:  processedResp.ResolvedModel,
+		Provider:       processedResp.Provider,
 	}
 
 	if processedResp.Data != nil {
@@ -344,15 +361,79 @@ func (t *Tracer) GetAccumulator() *streaming.Accumulator {
 	return t.accumulator
 }
 
+// AttachPluginLogs appends plugin log entries to the trace identified by traceID.
+func (t *Tracer) AttachPluginLogs(traceID string, logs []schemas.PluginLogEntry) {
+	if len(logs) == 0 || traceID == "" {
+		return
+	}
+	trace := t.store.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.AppendPluginLogs(logs)
+}
+
 // Stop stops the tracer and releases its resources.
 // This stops the internal TraceStore's cleanup goroutine.
 func (t *Tracer) Stop() {
+	t.flushWG.Wait()
 	if t.store != nil {
 		t.store.Stop()
 	}
 	if t.accumulator != nil {
 		t.accumulator.Cleanup()
 	}
+}
+
+// CompleteAndFlushTrace ends a trace and forwards it to any observability
+// plugins asynchronously. Realtime transports need this explicit flush because
+// they bypass the HTTP tracing middleware that normally injects completed traces.
+func (t *Tracer) CompleteAndFlushTrace(traceID string) {
+	if t == nil {
+		return
+	}
+	if strings.TrimSpace(traceID) == "" {
+		return
+	}
+	t.flushWG.Go(func() {
+		completedTrace := t.EndTrace(strings.TrimSpace(traceID))
+		if completedTrace == nil {
+			return
+		}
+		// Defer release so the pooled trace is returned even if a plugin panics;
+		// otherwise an unrecovered panic in this detached goroutine leaks the
+		// trace object and takes down the whole process.
+		defer t.ReleaseTrace(completedTrace)
+
+		var obsPlugins []schemas.ObservabilityPlugin
+		if loaded := t.obsPlugins.Load(); loaded != nil {
+			obsPlugins = *loaded
+		}
+		seen := make(map[string]struct{}, len(obsPlugins))
+		for _, plugin := range obsPlugins {
+			if plugin == nil {
+				continue
+			}
+			// Isolate each plugin callback — one bad observability backend should
+			// not crash the server or prevent other plugins from receiving the trace.
+			func(plugin schemas.ObservabilityPlugin) {
+				name := "<unknown>"
+				defer func() {
+					if r := recover(); r != nil && t.logger != nil {
+						t.logger.Error("observability plugin %s panicked during trace injection: %v", name, r)
+					}
+				}()
+				name = plugin.GetName()
+				if _, exists := seen[name]; exists {
+					return
+				}
+				seen[name] = struct{}{}
+				if err := plugin.Inject(context.Background(), completedTrace); err != nil && t.logger != nil {
+					t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
+				}
+			}(plugin)
+		}
+	})
 }
 
 // Ensure Tracer implements schemas.Tracer at compile time

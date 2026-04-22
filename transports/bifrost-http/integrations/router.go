@@ -52,6 +52,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"errors"
 	"mime"
 	"mime/multipart"
 	"strconv"
@@ -615,7 +616,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		var rawBody []byte
 
 		// Execute the request through Bifrost
-		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderMatcher())
+		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderMatcher(), g.handlerStore.GetMCPHeaderCombinedAllowlist())
 
 		// Set integration type to context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
@@ -1097,6 +1098,19 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
 		providerResponseHeaders = transcriptionResponse.ExtraFields.ProviderResponseHeaders
+
+		// If converter returns raw bytes, write directly with provider headers.
+		// Used for plain-text transcription formats (text, srt, vtt).
+		if err == nil {
+			if rawBytes, ok := response.([]byte); ok {
+				for key, value := range providerResponseHeaders {
+					ctx.Response.Header.Set(key, value)
+				}
+				ctx.SetStatusCode(fasthttp.StatusOK)
+				ctx.SetBody(rawBytes)
+				return
+			}
+		}
 	case bifrostReq.ImageGenerationRequest != nil:
 		imageGenerationResponse, bifrostErr := g.client.ImageGenerationRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
 		if bifrostErr != nil {
@@ -1445,7 +1459,7 @@ func (g *GenericRouter) handleAsyncCreate(
 	// Reject streaming + async
 	if streamingReq, ok := req.(StreamingRequest); ok && streamingReq.IsStreamingRequested() {
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
-			newBifrostError(nil, "streaming is not supported for async requests"))
+			newBifrostErrorWithCode(nil, "streaming is not supported for async requests", fasthttp.StatusBadRequest))
 		return
 	}
 
@@ -1474,7 +1488,6 @@ func (g *GenericRouter) handleAsyncCreate(
 	}
 
 	operationType := config.GetHTTPRequestType(ctx)
-	vkValue := getVirtualKeyFromBifrostContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, g.handlerStore.GetAsyncJobResultTTL())
 
 	// The operation closure runs the Bifrost client call in the background.
@@ -1491,7 +1504,7 @@ func (g *GenericRouter) handleAsyncCreate(
 		}
 	}
 
-	job, err := executor.SubmitJob(vkValue, resultTTL, operation, operationType)
+	job, err := executor.SubmitJob(bifrostCtx, resultTTL, operation, operationType)
 	if err != nil {
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
 			newBifrostError(err, "failed to create async job"))
@@ -1499,7 +1512,6 @@ func (g *GenericRouter) handleAsyncCreate(
 	}
 
 	g.handleAsyncJobResponse(ctx, bifrostCtx, config, job)
-	return
 }
 
 // handleAsyncRetrieve retrieves an async job by ID and returns the response
@@ -1527,8 +1539,13 @@ func (g *GenericRouter) handleAsyncRetrieve(
 
 	job, err := executor.RetrieveJob(bifrostCtx, jobID, vkValue, config.GetHTTPRequestType(ctx))
 	if err != nil {
-		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
-			newBifrostError(err, "job not found or expired"))
+		if errors.Is(err, logstore.ErrJobInternal) {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+				newBifrostErrorWithCode(err, "failed to retrieve async job", fasthttp.StatusInternalServerError))
+		} else {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+				newBifrostErrorWithCode(err, "job not found or expired", fasthttp.StatusNotFound))
+		}
 		return
 	}
 
@@ -1742,7 +1759,6 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 
 // handleFileRequest handles file API requests (upload, list, retrieve, delete, content)
 func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, fileReq *FileRequest, bifrostCtx *schemas.BifrostContext) {
-
 	var response interface{}
 	var err error
 
@@ -2302,8 +2318,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
-	// Get the trace completer function for use in the streaming callback
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+	// Get the trace completer function for use in the streaming callback.
+	// Signature is func([]schemas.PluginLogEntry) so the callback never reads from
+	// ctx.UserValue (ctx may be recycled by fasthttp by the time this fires).
+	// Router path has no transport post-hook phase, so we always pass nil.
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
@@ -2326,7 +2345,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
-				traceCompleter()
+				traceCompleter(nil)
 			}
 		}()
 
@@ -2664,7 +2683,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return true
 	})
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderMatcher(), g.handlerStore.GetMCPHeaderCombinedAllowlist())
 	if directKey := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)); directKey != nil {
 		if key, ok := directKey.(schemas.Key); ok {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
@@ -2744,6 +2763,10 @@ func (g *GenericRouter) handlePassthroughStream(
 	provider schemas.ModelProvider,
 	req *schemas.BifrostPassthroughRequest,
 ) {
+	// Deferred trace completion must be explicitly finalized after streaming ends.
+	// Without this, observability injectors (including logging) never flush final state.
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+
 	stream, bifrostErr := g.client.PassthroughStream(bifrostCtx, provider, req)
 	if bifrostErr != nil {
 		cancel()
@@ -2806,6 +2829,9 @@ func (g *GenericRouter) handlePassthroughStream(
 
 	go func() {
 		defer func() {
+			if traceCompleter != nil {
+				traceCompleter(nil)
+			}
 			reader.Done()
 			cancel()
 		}()

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./logs.db"
+    }
+  },
+  "large_payload_optimization": {
+    "enabled": true,
+    "request_threshold_bytes": 10485760,
+    "response_threshold_bytes": 10485760,
+    "prefetch_size_bytes": 65536,
+    "max_payload_bytes": 524288000,
+    "truncated_log_bytes": 1048576
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "sk-dummy",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}

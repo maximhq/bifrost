@@ -174,6 +174,8 @@ providers:
     thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "global.cohere.embed-v4:0"
+    image_generation: "amazon.titan-image-generator-v2:0"
+    image_variation: "amazon.titan-image-generator-v2:0"
     batch_inline: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     image_edit: "amazon.nova-canvas-v1:0"
     batch_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -517,9 +519,11 @@ provider_scenarios:
     file_retrieve: true  # Bedrock retrieves S3 object metadata
     file_delete: true  # Bedrock deletes S3 objects
     file_content: true  # Bedrock downloads S3 object content
-    image_edit: true  # Bedrock supports image editing via Nova Canvas
+    image_generation: true  # Bedrock supports image generation via invoke (Titan, SA, cross-provider)
+    image_edit: true  # Bedrock supports image editing via invoke (Titan, SA)
+    image_variation: true  # Bedrock supports image variation via invoke (Titan IMAGE_VARIATION)
     count_tokens: true  # Bedrock supports token counting via CountTokens API
-    
+
   cohere:
     simple_chat: true
     multi_turn_conversation: true

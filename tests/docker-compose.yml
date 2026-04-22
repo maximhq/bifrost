@@ -46,6 +46,126 @@ services:
             timeout: 10s
             retries: 3
 
+    # Generates self-signed TLS certs shared with the TLS Redis services.
+    # Writes to ./redis-certs on the host so tests can read the CA cert.
+    redis-certs-init:
+        image: alpine:3.19
+        volumes:
+            - ./redis-certs:/tls
+        command: >
+            sh -c "
+              set -e;
+              if [ ! -f /tls/redis.crt ]; then
+                apk add --no-cache openssl >/dev/null;
+                cd /tls;
+                openssl req -x509 -newkey rsa:2048 -days 365 -nodes -keyout ca.key -out ca.crt -subj '/CN=bifrost-test-ca';
+                openssl req -new -newkey rsa:2048 -nodes -keyout redis.key -out redis.csr -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1';
+                openssl x509 -req -in redis.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out redis.crt -days 365 -extfile <(printf 'subjectAltName=DNS:localhost,IP:127.0.0.1');
+                chmod 644 ca.crt ca.key redis.crt redis.key;
+              fi;
+              echo 'certs ready';
+            "
+        networks:
+            - bifrost_network
+
+    # TLS-enabled standalone Redis on 6380 for TLS client tests.
+    redis-tls:
+        image: redis:7.4-alpine
+        depends_on:
+            redis-certs-init:
+                condition: service_completed_successfully
+        volumes:
+            - ./redis-certs:/tls:ro
+        command: >
+            redis-server
+            --tls-port 6380
+            --port 0
+            --tls-cert-file /tls/redis.crt
+            --tls-key-file /tls/redis.key
+            --tls-ca-cert-file /tls/ca.crt
+            --tls-auth-clients no
+            --protected-mode no
+        ports:
+            - "6380:6380"
+        networks:
+            bifrost_network:
+                ipv4_address: 172.28.0.17
+
+    # Single-node Redis Cluster on 7000 for cluster client tests.
+    redis-cluster:
+        image: redis:7.4-alpine
+        entrypoint: ["sh", "-c"]
+        command:
+            - |
+                redis-server \
+                    --port 7000 \
+                    --bind 0.0.0.0 \
+                    --cluster-enabled yes \
+                    --cluster-config-file /tmp/nodes.conf \
+                    --cluster-announce-ip 127.0.0.1 \
+                    --cluster-announce-port 7000 \
+                    --cluster-announce-bus-port 17000 \
+                    --protected-mode no &
+                SERVER_PID=$$!
+                until redis-cli -p 7000 ping >/dev/null 2>&1; do sleep 0.2; done
+                redis-cli -p 7000 cluster addslotsrange 0 16383 || true
+                wait $$SERVER_PID
+        ports:
+            - "7000:7000"
+            - "17000:17000"
+        healthcheck:
+            test: ["CMD-SHELL", "redis-cli -p 7000 cluster info | grep -q cluster_state:ok"]
+            interval: 5s
+            timeout: 3s
+            retries: 10
+            start_period: 5s
+        networks:
+            bifrost_network:
+                ipv4_address: 172.28.0.18
+
+    # Single-node TLS Redis Cluster on 7100 for TLS cluster client tests.
+    redis-cluster-tls:
+        image: redis:7.4-alpine
+        depends_on:
+            redis-certs-init:
+                condition: service_completed_successfully
+        volumes:
+            - ./redis-certs:/tls:ro
+        entrypoint: ["sh", "-c"]
+        command:
+            - |
+                redis-server \
+                    --tls-port 7100 \
+                    --port 0 \
+                    --bind 0.0.0.0 \
+                    --tls-cert-file /tls/redis.crt \
+                    --tls-key-file /tls/redis.key \
+                    --tls-ca-cert-file /tls/ca.crt \
+                    --tls-auth-clients no \
+                    --tls-cluster yes \
+                    --cluster-enabled yes \
+                    --cluster-config-file /tmp/nodes.conf \
+                    --cluster-announce-ip 127.0.0.1 \
+                    --cluster-announce-tls-port 7100 \
+                    --cluster-announce-bus-port 17100 \
+                    --protected-mode no &
+                SERVER_PID=$$!
+                until redis-cli --tls --cacert /tls/ca.crt -p 7100 ping >/dev/null 2>&1; do sleep 0.2; done
+                redis-cli --tls --cacert /tls/ca.crt -p 7100 cluster addslotsrange 0 16383 || true
+                wait $$SERVER_PID
+        ports:
+            - "7100:7100"
+            - "17100:17100"
+        healthcheck:
+            test: ["CMD-SHELL", "redis-cli --tls --cacert /tls/ca.crt -p 7100 cluster info | grep -q cluster_state:ok"]
+            interval: 5s
+            timeout: 3s
+            retries: 10
+            start_period: 5s
+        networks:
+            bifrost_network:
+                ipv4_address: 172.28.0.19
+
     # Qdrant instance for vector store tests
     qdrant:
         image: qdrant/qdrant:v1.16.0

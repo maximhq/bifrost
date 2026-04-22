@@ -1,5 +1,3 @@
-"use client";
-
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -107,7 +105,6 @@ export default function ClientSettingsView() {
 		if (!config) return false;
 		return (
 			localConfig.drop_excess_requests !== config.drop_excess_requests ||
-			localConfig.enable_litellm_fallbacks !== config.enable_litellm_fallbacks ||
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
@@ -320,34 +317,6 @@ export default function ClientSettingsView() {
 					/>
 				</div>
 
-				{/* Enable LiteLLM Fallbacks */}
-				<div className="flex items-center justify-between space-x-2">
-					<div className="space-y-0.5">
-						<label htmlFor="enable-litellm-fallbacks" className="text-sm font-medium">
-							Enable LiteLLM Fallbacks
-						</label>
-						<p className="text-muted-foreground text-sm">
-							Enable litellm-specific fallbacks.{" "}
-							<a
-								className="text-primary cursor-pointer underline"
-								href="https://docs.getbifrost.ai/features/litellm-compat"
-								target="_blank"
-								rel="noopener noreferrer"
-								data-testid="litellm-docs-link"
-							>
-								Learn more
-							</a>
-						</p>
-					</div>
-					<Switch
-						id="enable-litellm-fallbacks"
-						size="md"
-						checked={localConfig.enable_litellm_fallbacks}
-						onCheckedChange={(checked) => handleConfigChange("enable_litellm_fallbacks", checked)}
-						disabled={!hasSettingsUpdateAccess}
-					/>
-				</div>
-
 				{/* Disable DB Pings in Health */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
@@ -438,9 +407,8 @@ export default function ClientSettingsView() {
 									</li>
 									<li>
 										<span className="font-medium">Wildcards:</span> Use{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match
-										prefixes (e.g.,{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match prefixes
+										(e.g., <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
 										with <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-</code>). Use{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> alone to match all headers.
 									</li>

@@ -88,7 +88,7 @@ spec:
               value: {{ .Values.bifrost.logLevel | quote }}
             - name: LOG_STYLE
               value: {{ .Values.bifrost.logStyle | quote }}
-            {{- if .Values.bifrost.encryptionKeySecret }}
+            {{- if .Values.bifrost.encryptionKeySecret.name }}
             - name: BIFROST_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
@@ -236,6 +236,12 @@ spec:
             {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- range $name := keys . | sortAlpha }}
+            - name: {{ $name }}
+              value: {{ index $.Values.extraEnv $name | quote }}
+            {{- end }}
             {{- end }}
           {{- with .Values.envFrom }}
           envFrom:

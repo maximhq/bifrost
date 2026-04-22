@@ -74,12 +74,58 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Check for response_format and convert to tool
-	responseFormatTool := convertResponseFormatToTool(ctx, bifrostReq.Params)
+	// Handle structured output conversion:
+	// - Anthropic models on Bedrock use native output_config.format
+	// - Other models keep the response_format->tool conversion.
+	responseFormatTool, anthropicOutputFormat := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	if anthropicOutputFormat != nil {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+		}
+		setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
+	}
 
-	// Convert tool config
-	if toolConfig := convertToolConfig(bifrostReq.Model, bifrostReq.Params); toolConfig != nil {
+	// Filter provider-unsupported server tools once; both convertToolConfig and
+	// collectBedrockServerTools consume the same filtered set, and
+	// buildBedrockServerToolChoice resolves pinned names against it.
+	filteredTools, _ := anthropic.ValidateChatToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
+
+	// Convert tool config (function/custom tools → Converse toolConfig.tools).
+	if toolConfig := convertToolConfigFromFiltered(bifrostReq.Model, bifrostReq.Params, filteredTools); toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
+	}
+
+	// Tunnel Bedrock-supported Anthropic server tools through Converse's
+	// additionalModelRequestFields (model-specific passthrough) since Converse's
+	// typed toolSpec shape can't express server tools like bash_*, computer_*,
+	// memory_*, text_editor_*, tool_search_tool_*. Fields injected:
+	//   - tools:          array of server tools in Anthropic-native shape, which
+	//                     Bedrock merges into the underlying Messages request.
+	//   - anthropic_beta: activation header(s) for the relevant server tool, in
+	//                     addition to whatever the existing anthropic-beta HTTP
+	//                     header path in bedrock.go:214/447 already forwards.
+	//   - tool_choice:    Anthropic-native pin for a kept server tool OR an
+	//                     any/required contract when only server tools are
+	//                     present. Emitted only when Converse's typed
+	//                     toolConfig.toolChoice path can't express the intent
+	//                     (see buildBedrockServerToolChoice).
+	if serverTools, betaHeaders := collectBedrockServerToolsFromFiltered(filteredTools); len(serverTools) > 0 {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+		}
+		bedrockReq.AdditionalModelRequestFields.Set("tools", serverTools)
+		if len(betaHeaders) > 0 {
+			bedrockReq.AdditionalModelRequestFields.Set("anthropic_beta", betaHeaders)
+		}
+		// Skip the tunneled tool_choice when response_format forces the synthetic
+		// bf_so_* tool at lines 263-275 below; otherwise Bedrock receives two
+		// conflicting tool-choice directives and the structured-output contract
+		// can silently break.
+		if responseFormatTool == nil {
+			if choice, ok := buildBedrockServerToolChoice(bifrostReq.Params, filteredTools); ok {
+				bedrockReq.AdditionalModelRequestFields.Set("tool_choice", choice)
+			}
+		}
 	}
 
 	// Convert reasoning config
@@ -190,9 +236,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "adaptive",
 					})
-					bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
-						"effort": effort,
-					})
+					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
 					// Opus 4.5 and older models: budget_tokens thinking
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, anthropic.MinimumReasoningMaxTokens, maxTokens)
@@ -270,7 +314,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
 				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
 					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-					bedrockReq.AdditionalModelRequestFields = orderedFields
+					bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
+						bedrockReq.AdditionalModelRequestFields,
+						orderedFields,
+					)
 				}
 			}
 
@@ -339,6 +386,103 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 	return nil
+}
+
+// setOutputConfigField upserts a single key in additionalModelRequestFields.output_config
+// while preserving any existing output_config keys (e.g. keep "format" when adding "effort").
+func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
+	if fields == nil {
+		return
+	}
+	current := schemas.NewOrderedMap()
+	if existing, ok := fields.Get("output_config"); ok {
+		if om, ok := toOrderedMap(existing); ok && om != nil {
+			current = om
+		}
+	}
+	current.Set(key, value)
+	fields.Set("output_config", current)
+}
+
+func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *schemas.OrderedMap {
+	if existing == nil {
+		if incoming == nil {
+			return nil
+		}
+		return incoming.Clone()
+	}
+	if incoming == nil {
+		return existing
+	}
+
+	merged := existing.Clone()
+	incoming.Range(func(key string, value interface{}) bool {
+		if key == "output_config" {
+			current := schemas.NewOrderedMap()
+			if existingValue, ok := merged.Get(key); ok {
+				if om, ok := toOrderedMap(existingValue); ok && om != nil {
+					current = om
+				}
+			}
+			if incomingMap, ok := toOrderedMap(value); ok && incomingMap != nil {
+				mergeOrderedMapInto(current, incomingMap)
+				merged.Set(key, current)
+			} else {
+				merged.Set(key, value)
+			}
+			return true
+		}
+		merged.Set(key, value)
+		return true
+	})
+	return merged
+}
+
+func toOrderedMap(v any) (*schemas.OrderedMap, bool) {
+	switch m := v.(type) {
+	case *schemas.OrderedMap:
+		if m == nil {
+			return nil, false
+		}
+		return m.Clone(), true
+	case schemas.OrderedMap:
+		return m.Clone(), true
+	case map[string]interface{}:
+		// Fallback for callers that still provide a plain map. Order cannot be
+		// reconstructed here, but keeping this path preserves compatibility.
+		return schemas.OrderedMapFromMap(m), true
+	default:
+		return nil, false
+	}
+}
+
+// mergeOrderedMapInto deep-merges src into dst. Nested OrderedMap values are
+// merged recursively; non-map values from src overwrite dst. Existing key order
+// is preserved and newly introduced keys are appended in source order.
+func mergeOrderedMapInto(dst, src *schemas.OrderedMap) {
+	if dst == nil || src == nil {
+		return
+	}
+	src.Range(func(key string, srcVal interface{}) bool {
+		if srcMap, ok := toOrderedMap(srcVal); ok && srcMap != nil {
+			if dstVal, exists := dst.Get(key); exists {
+				if dstMap, ok := toOrderedMap(dstVal); ok && dstMap != nil {
+					mergeOrderedMapInto(dstMap, srcMap)
+					dst.Set(key, dstMap)
+					return true
+				}
+			}
+		}
+		dst.Set(key, srcVal)
+		return true
+	})
+}
+
+func newAnthropicOutputFormatOrderedMap(schemaObj any) *schemas.OrderedMap {
+	return schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("schema", schemaObj),
+	)
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
@@ -825,44 +969,70 @@ func convertImageToBedrockSource(imageURL string) (*BedrockImageSource, error) {
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
 // Returns nil if no response_format is present or if it's not a json_schema type
 // Ref: https://aws.amazon.com/blogs/machine-learning/structured-data-response-with-amazon-bedrock-prompt-engineering-and-tool-use/
-func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.ChatParameters) *BedrockTool {
+func convertResponseFormatToTool(
+	ctx *schemas.BifrostContext,
+	model string,
+	params *schemas.ChatParameters,
+) (*BedrockTool, any) {
 	if params == nil || params.ResponseFormat == nil {
-		return nil
+		return nil, nil
 	}
 
-	// ResponseFormat is stored as interface{}, need to parse it
-	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		return nil
+	responseFormatMap, ok := schemas.SafeExtractOrderedMap(*params.ResponseFormat)
+	if !ok || responseFormatMap == nil {
+		return nil, nil
 	}
 
 	// Check if type is "json_schema"
-	formatType, ok := responseFormatMap["type"].(string)
+	formatTypeRaw, ok := responseFormatMap.Get("type")
+	if !ok {
+		return nil, nil
+	}
+	formatType, ok := schemas.SafeExtractString(formatTypeRaw)
 	if !ok || formatType != "json_schema" {
-		return nil
+		return nil, nil
 	}
 
 	// Extract json_schema object
-	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
+	jsonSchemaRaw, ok := responseFormatMap.Get("json_schema")
 	if !ok {
-		return nil
+		return nil, nil
+	}
+	jsonSchemaObj, ok := schemas.SafeExtractOrderedMap(jsonSchemaRaw)
+	if !ok || jsonSchemaObj == nil {
+		return nil, nil
+	}
+
+	schemaObj, ok := jsonSchemaObj.Get("schema")
+	if !ok {
+		return nil, nil
+	}
+
+	// Anthropic Bedrock supports native output_config.format. Keep this provider-specific
+	// conversion encapsulated here, and let caller just apply returned values.
+	if schemas.IsAnthropicModel(model) {
+		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
 	}
 
 	// Extract name and schema
-	toolName, ok := jsonSchemaObj["name"].(string)
-	if !ok || toolName == "" {
+	toolNameRaw, hasName := jsonSchemaObj.Get("name")
+	toolName, ok := schemas.SafeExtractString(toolNameRaw)
+	if !hasName || !ok || toolName == "" {
 		toolName = "json_response"
-	}
-
-	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
-	if !ok {
-		return nil
 	}
 
 	// Extract description from schema if available
 	description := "Returns structured JSON output"
-	if desc, ok := schemaObj["description"].(string); ok && desc != "" {
-		description = desc
+	if schemaMap, ok := schemas.SafeExtractOrderedMap(schemaObj); ok && schemaMap != nil {
+		if descRaw, hasDesc := schemaMap.Get("description"); hasDesc {
+			if desc, ok := schemas.SafeExtractString(descRaw); ok && desc != "" {
+				description = desc
+			}
+		}
+	} else if schemaMap, ok := schemaObj.(map[string]interface{}); ok {
+		if desc, ok := schemaMap["description"].(string); ok && desc != "" {
+			description = desc
+		}
 	}
 
 	// set bifrost context key structured output tool name
@@ -872,7 +1042,7 @@ func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.Ch
 	// Create the Bedrock tool
 	schemaObjBytes, err := providerUtils.MarshalSorted(schemaObj)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{
@@ -882,18 +1052,19 @@ func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.Ch
 				JSON: json.RawMessage(schemaObjBytes),
 			},
 		},
-	}
+	}, nil
 }
 
-// convertTextFormatToTool converts a text config to a Bedrock tool for structured outpute
-func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.ResponsesTextConfig) *BedrockTool {
+// convertTextFormatToTool converts a Responses text.format config to either a
+// synthetic Bedrock tool or an Anthropic-native output_config.format value.
+func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConfig *schemas.ResponsesTextConfig) (*BedrockTool, any) {
 	if textConfig == nil || textConfig.Format == nil {
-		return nil
+		return nil, nil
 	}
 
 	format := textConfig.Format
 	if format.Type != "json_schema" {
-		return nil
+		return nil, nil
 	}
 
 	toolName := "json_response"
@@ -902,23 +1073,24 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.Re
 	}
 
 	description := "Returns structured JSON output"
+	if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
+		return nil, nil // Schema is required for structured output
+	}
 	if format.JSONSchema.Description != nil {
 		description = *format.JSONSchema.Description
+	}
+	schemaObj := *format.JSONSchema.Schema
+
+	if schemas.IsAnthropicModel(model) {
+		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
 	}
 
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
-	var schemaObj any
-	if format.JSONSchema != nil {
-		schemaObj = *format.JSONSchema
-	} else {
-		return nil // Schema is required for Bedrock tooling
-	}
-
 	schemaObjBytes2, err := providerUtils.MarshalSorted(schemaObj)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{
@@ -928,7 +1100,7 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.Re
 				JSON: json.RawMessage(schemaObjBytes2),
 			},
 		},
-	}
+	}, nil
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
@@ -953,14 +1125,225 @@ func convertInferenceConfig(params *schemas.ChatParameters) *BedrockInferenceCon
 	return &config
 }
 
-// convertToolConfig converts Bifrost tools to Bedrock tool config
+// collectBedrockServerTools partitions kept tools into the function/custom
+// set (which convertToolConfig materializes into Converse's toolConfig.tools)
+// and the kept-server-tool set (which cannot be expressed via Converse's
+// typed toolSpec slot and must be tunneled via additionalModelRequestFields).
+//
+// Returns:
+//   - serverTools:  each ChatTool serialized to its Anthropic-native JSON shape
+//     (e.g. `{"type":"computer_20251124","name":"computer","display_width_px":1280}`)
+//     ready to drop into additionalModelRequestFields.tools. Per the comment on
+//     ChatTool in core/schemas/chatcompletions.go:340-351, the default marshaler
+//     produces this shape directly — no custom codec needed.
+//   - betaHeaders:  anthropic-beta header values derived from the server tool
+//     Types, filtered through FilterBetaHeadersForProvider(schemas.Bedrock) so
+//     only Bedrock-approved headers survive. Only high-confidence mappings are
+//     derived here (computer_* and memory_*); callers relying on other betas
+//     (e.g. text_editor-specific headers) should continue supplying them via
+//     extra-headers / ctx — they flow through bedrock.go's existing
+//     anthropic-beta HTTP header path.
+//
+// Unsupported server tools (e.g. web_search on Bedrock) are dropped upstream
+// by ValidateChatToolsForProvider, so they never reach this helper.
+func collectBedrockServerTools(params *schemas.ChatParameters) (serverTools []json.RawMessage, betaHeaders []string) {
+	if params == nil || len(params.Tools) == 0 {
+		return nil, nil
+	}
+	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.Bedrock)
+	return collectBedrockServerToolsFromFiltered(filtered)
+}
+
+// collectBedrockServerToolsFromFiltered is the inner variant that accepts a
+// pre-filtered tool set (already run through ValidateChatToolsForProvider).
+// convertChatParameters filters once and passes the result to both this helper
+// and convertToolConfigFromFiltered to avoid re-filtering twice per request.
+func collectBedrockServerToolsFromFiltered(filtered []schemas.ChatTool) (serverTools []json.RawMessage, betaHeaders []string) {
+	if len(filtered) == 0 {
+		return nil, nil
+	}
+	seenBeta := make(map[string]struct{})
+	for _, tool := range filtered {
+		if tool.Function != nil || tool.Custom != nil {
+			continue
+		}
+		bytes, err := providerUtils.MarshalSorted(tool)
+		if err != nil {
+			continue
+		}
+		serverTools = append(serverTools, json.RawMessage(bytes))
+		for _, h := range deriveBedrockBetaHeadersForToolType(string(tool.Type)) {
+			if _, ok := seenBeta[h]; ok {
+				continue
+			}
+			seenBeta[h] = struct{}{}
+			betaHeaders = append(betaHeaders, h)
+		}
+	}
+	if len(betaHeaders) > 0 {
+		// Gate through the Bedrock-approved beta-header list.
+		betaHeaders = anthropic.FilterBetaHeadersForProvider(betaHeaders, schemas.Bedrock)
+	}
+	return serverTools, betaHeaders
+}
+
+// buildBedrockServerToolChoice emits an Anthropic-native tool_choice value
+// for tunneling through additionalModelRequestFields.tool_choice ONLY when
+// Converse's typed toolConfig.toolChoice path cannot express the caller's
+// intent:
+//
+//   - Named pin of a kept server tool: convertToolConfig builds toolConfig.tools
+//     from function/custom tools only, and its reconciliation (around line
+//     1274) drops any named pin that doesn't match an entry in that slice.
+//     Server-tool names never appear there, so a legitimate pin like
+//     tool_choice={type:"function", function:{name:"computer"}} gets silently
+//     nuked. We tunnel {"type":"tool","name":"computer"} instead so the
+//     forced-tool contract reaches Anthropic via Bedrock's merge.
+//   - any/required with only server tools: convertToolConfig returns nil
+//     entirely (empty-slice guard since bedrockTools is empty), so the typed
+//     "any" contract is lost. We tunnel {"type":"any"} to preserve it.
+//
+// Returns (nil, false) when the typed Converse path is adequate (auto/none,
+// function-tool pin, any with function tools present, or a pin whose name
+// doesn't match any kept server tool).
+//
+// Anthropic tool_choice shape ref: platform.claude.com/docs/en/docs/agents-and-tools/tool-use/define-tools
+// ("Controlling Claude's output / Forcing tool use" — four options:
+// auto, any, tool, none; forced tool shape is {"type":"tool","name":"..."}).
+func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []schemas.ChatTool) (json.RawMessage, bool) {
+	if params == nil || params.ToolChoice == nil {
+		return nil, false
+	}
+
+	// Resolve effective type and optional pinned name from either the string
+	// or struct representation of ChatToolChoice.
+	var (
+		choiceType schemas.ChatToolChoiceType
+		pinnedName string
+	)
+	if params.ToolChoice.ChatToolChoiceStr != nil {
+		choiceType = schemas.ChatToolChoiceType(*params.ToolChoice.ChatToolChoiceStr)
+	} else if params.ToolChoice.ChatToolChoiceStruct != nil {
+		s := params.ToolChoice.ChatToolChoiceStruct
+		choiceType = s.Type
+		if s.Function != nil {
+			pinnedName = s.Function.Name
+		} else if s.Custom != nil {
+			pinnedName = s.Custom.Name
+		}
+	} else {
+		return nil, false
+	}
+
+	// Partition kept tools: server-tool name set, plus whether any
+	// function/custom tool is present.
+	serverToolNames := make(map[string]struct{})
+	hasFunctionOrCustom := false
+	for _, tool := range filtered {
+		if tool.Function != nil || tool.Custom != nil {
+			hasFunctionOrCustom = true
+			continue
+		}
+		if tool.Name != "" {
+			serverToolNames[tool.Name] = struct{}{}
+		}
+	}
+
+	switch choiceType {
+	case schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
+		schemas.ChatToolChoiceType("tool"):
+		// Only tunnel when the pinned name matches a kept server tool.
+		// Function/custom pins stay on the typed Converse path.
+		if pinnedName == "" {
+			return nil, false
+		}
+		if _, ok := serverToolNames[pinnedName]; !ok {
+			return nil, false
+		}
+		bytes, err := providerUtils.MarshalSorted(map[string]any{
+			"type": "tool",
+			"name": pinnedName,
+		})
+		if err != nil {
+			return nil, false
+		}
+		return json.RawMessage(bytes), true
+
+	case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
+		// When function/custom tools are present, Converse's typed
+		// toolChoice.any handles the any contract — don't double-emit.
+		if hasFunctionOrCustom || len(serverToolNames) == 0 {
+			return nil, false
+		}
+		bytes, err := providerUtils.MarshalSorted(map[string]any{"type": "any"})
+		if err != nil {
+			return nil, false
+		}
+		return json.RawMessage(bytes), true
+
+	default:
+		// auto, none, allowed_tools, empty, unknown — no tunneling.
+		return nil, false
+	}
+}
+
+// deriveBedrockBetaHeadersForToolType maps an Anthropic server-tool Type string
+// to the anthropic-beta header(s) Bedrock requires for the feature to activate.
+// Only high-confidence mappings are encoded here — both are anchored in
+// core/providers/anthropic/types.go (cite: B-header comments around lines 178-183).
+// Unknown prefixes return nil; callers can still inject betas via extra-headers.
+func deriveBedrockBetaHeadersForToolType(toolType string) []string {
+	switch {
+	case strings.HasPrefix(toolType, "computer_"):
+		// computer_YYYYMMDD → computer-use-YYYY-MM-DD (Bedrock B-header).
+		rest := strings.TrimPrefix(toolType, "computer_")
+		if len(rest) == 8 {
+			return []string{"computer-use-" + rest[0:4] + "-" + rest[4:6] + "-" + rest[6:8]}
+		}
+		return nil
+	case strings.HasPrefix(toolType, "memory_"):
+		// Memory activates via the context-management bundle on Bedrock
+		// (see anthropic/types.go:179 — "context-management-2025-06-27 per
+		// B-header (bundles memory)").
+		return []string{"context-management-2025-06-27"}
+	}
+	return nil
+}
+
+// convertToolConfig converts Bifrost tools to Bedrock tool config.
+//
+// Responsibilities (split from collectBedrockServerTools):
+//   - Filters server tools the target provider doesn't support via
+//     ValidateChatToolsForProvider (e.g. web_search on Bedrock per cited
+//     docs — AWS user guide beta-header list, Anthropic overview feature
+//     table). Silently stripped.
+//   - Materializes function/custom tools into Converse's typed toolConfig.tools.
+//     Kept server tools (bash_*, computer_*, memory_*, text_editor_*,
+//     tool_search_tool_*) are NOT emitted here — they are handled separately
+//     by collectBedrockServerTools → additionalModelRequestFields.tools, since
+//     Converse's toolSpec slot has no shape for them.
+//   - Returns nil instead of an empty-slice ToolConfig, since Bedrock's
+//     Converse API rejects `"toolConfig": {"tools": []}` with a 400.
 func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToolConfig {
-	if len(params.Tools) == 0 {
+	if params == nil || len(params.Tools) == 0 {
+		return nil
+	}
+	// Strip unsupported server tools before the conversion loop.
+	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.Bedrock)
+	return convertToolConfigFromFiltered(model, params, filtered)
+}
+
+// convertToolConfigFromFiltered is the inner variant that accepts a
+// pre-filtered tool set. convertChatParameters uses this to avoid filtering
+// twice (once here, once in collectBedrockServerTools). The public
+// convertToolConfig entry point is a thin wrapper preserved for tests.
+func convertToolConfigFromFiltered(model string, params *schemas.ChatParameters, filtered []schemas.ChatTool) *BedrockToolConfig {
+	if params == nil {
 		return nil
 	}
 
 	var bedrockTools []BedrockTool
-	for _, tool := range params.Tools {
+	for _, tool := range filtered {
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
@@ -986,7 +1369,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 			bedrockTool := BedrockTool{
 				ToolSpec: &BedrockToolSpec{
 					Name:        tool.Function.Name,
-					Description: schemas.Ptr(description),
+					Description: new(description),
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes),
 					},
@@ -1004,6 +1387,15 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 		}
 	}
 
+	// Empty-guard: Bedrock's Converse API rejects {"toolConfig": {"tools": []}}
+	// with a 400 "The provided request is not valid". If every incoming tool
+	// was filtered out above (e.g. only server tools the target provider
+	// doesn't support), omit ToolConfig entirely so the request is valid and
+	// the model simply answers without tool access.
+	if len(bedrockTools) == 0 {
+		return nil
+	}
+
 	toolConfig := &BedrockToolConfig{
 		Tools: bedrockTools,
 	}
@@ -1012,7 +1404,28 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	if params.ToolChoice != nil {
 		toolChoice := convertToolChoice(*params.ToolChoice)
 		if toolChoice != nil {
-			toolConfig.ToolChoice = toolChoice
+			// Reconcile: if the choice forces a specific tool by name,
+			// verify that name still exists in the filtered tool set.
+			// Without this, a caller that pinned a server tool we just
+			// stripped (e.g. web_search on Bedrock) would ship a
+			// toolChoice.tool.name ∉ tools, and Bedrock's Converse API
+			// rejects that with a 400 ValidationException — defeating
+			// the silent-strip contract.
+			if toolChoice.Tool != nil && toolChoice.Tool.Name != "" {
+				found := false
+				for _, bt := range bedrockTools {
+					if bt.ToolSpec != nil && bt.ToolSpec.Name == toolChoice.Tool.Name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					toolChoice = nil
+				}
+			}
+			if toolChoice != nil {
+				toolConfig.ToolChoice = toolChoice
+			}
 		}
 	}
 

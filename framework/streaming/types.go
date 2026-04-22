@@ -231,12 +231,13 @@ func (sa *StreamAccumulator) getLastAudioChunkLocked() *AudioStreamChunk {
 
 // ProcessedStreamResponse represents a processed streaming response
 type ProcessedStreamResponse struct {
-	RequestID  string
-	StreamType StreamType
-	Provider   schemas.ModelProvider
-	Model      string
-	Data       *AccumulatedData
-	RawRequest *interface{}
+	RequestID      string
+	StreamType     StreamType
+	Provider       schemas.ModelProvider
+	RequestedModel string // original model requested by the caller
+	ResolvedModel  string // actual model used by the provider (equals RequestedModel when no alias mapping exists)
+	Data           *AccumulatedData
+	RawRequest     *interface{}
 }
 
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse
@@ -256,7 +257,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		textResp := &schemas.BifrostTextCompletionResponse{
 			ID:     p.RequestID,
 			Object: "text_completion",
-			Model:  p.Model,
+			Model:  p.RequestedModel,
 			Choices: []schemas.BifrostResponseChoice{
 				{
 					Index:        0,
@@ -272,10 +273,11 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 
 		resp.TextCompletionResponse = textResp
 		resp.TextCompletionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.TextCompletionRequest,
-			Provider:       p.Provider,
-			ModelRequested: p.Model,
-			Latency:        p.Data.Latency,
+			RequestType:            schemas.TextCompletionRequest,
+			Provider:               p.Provider,
+			OriginalModelRequested: p.RequestedModel,
+			ResolvedModelUsed:      p.ResolvedModel,
+			Latency:                p.Data.Latency,
 		}
 		if p.RawRequest != nil {
 			resp.TextCompletionResponse.ExtraFields.RawRequest = p.RawRequest
@@ -300,7 +302,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		chatResp := &schemas.BifrostChatResponse{
 			ID:      p.RequestID,
 			Object:  "chat.completion",
-			Model:   p.Model,
+			Model:   p.RequestedModel,
 			Created: int(p.Data.StartTimestamp.Unix()),
 			Choices: []schemas.BifrostResponseChoice{
 				{
@@ -317,10 +319,11 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 
 		resp.ChatResponse = chatResp
 		resp.ChatResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.ChatCompletionRequest,
-			Provider:       p.Provider,
-			ModelRequested: p.Model,
-			Latency:        p.Data.Latency,
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               p.Provider,
+			OriginalModelRequested: p.RequestedModel,
+			ResolvedModelUsed:      p.ResolvedModel,
+			Latency:                p.Data.Latency,
 		}
 		if p.RawRequest != nil {
 			resp.ChatResponse.ExtraFields.RawRequest = p.RawRequest
@@ -341,10 +344,11 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			responsesResp.Usage = p.Data.TokenUsage.ToResponsesResponseUsage()
 		}
 		responsesResp.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.ResponsesRequest,
-			Provider:       p.Provider,
-			ModelRequested: p.Model,
-			Latency:        p.Data.Latency,
+			RequestType:            schemas.ResponsesRequest,
+			Provider:               p.Provider,
+			OriginalModelRequested: p.RequestedModel,
+			ResolvedModelUsed:      p.ResolvedModel,
+			Latency:                p.Data.Latency,
 		}
 		if p.RawRequest != nil {
 			responsesResp.ExtraFields.RawRequest = p.RawRequest
@@ -363,10 +367,11 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.SpeechResponse = speechResp
 		resp.SpeechResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.SpeechRequest,
-			Provider:       p.Provider,
-			ModelRequested: p.Model,
-			Latency:        p.Data.Latency,
+			RequestType:            schemas.SpeechRequest,
+			Provider:               p.Provider,
+			OriginalModelRequested: p.RequestedModel,
+			ResolvedModelUsed:      p.ResolvedModel,
+			Latency:                p.Data.Latency,
 		}
 		if p.RawRequest != nil {
 			resp.SpeechResponse.ExtraFields.RawRequest = p.RawRequest
@@ -384,13 +389,20 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.TranscriptionResponse = transcriptionResp
 		resp.TranscriptionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.TranscriptionRequest,
-			Provider:       p.Provider,
-			ModelRequested: p.Model,
-			Latency:        p.Data.Latency,
+			RequestType:            schemas.TranscriptionRequest,
+			Provider:               p.Provider,
+			OriginalModelRequested: p.RequestedModel,
+			ResolvedModelUsed:      p.ResolvedModel,
+			Latency:                p.Data.Latency,
 		}
 		if p.RawRequest != nil {
 			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest
+		}
+		if p.Data.RawResponse != nil {
+			resp.TranscriptionResponse.ExtraFields.RawResponse = *p.Data.RawResponse
+		}
+		if p.Data.CacheDebug != nil {
+			resp.TranscriptionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
 	case StreamTypeImage:
 		imageResp := p.Data.ImageGenerationOutput
@@ -401,8 +413,8 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			if p.RequestID != "" {
 				imageResp.ID = p.RequestID
 			}
-			if p.Model != "" {
-				imageResp.Model = p.Model
+			if p.RequestedModel != "" {
+				imageResp.Model = p.RequestedModel
 			}
 		}
 		// Ensure Data is never nil to serialize as [] instead of null
@@ -411,10 +423,11 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.ImageGenerationResponse = imageResp
 		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.ImageGenerationRequest,
-			Provider:       p.Provider,
-			ModelRequested: p.Model,
-			Latency:        p.Data.Latency,
+			RequestType:            schemas.ImageGenerationRequest,
+			Provider:               p.Provider,
+			OriginalModelRequested: p.RequestedModel,
+			ResolvedModelUsed:      p.ResolvedModel,
+			Latency:                p.Data.Latency,
 		}
 		if p.RawRequest != nil {
 			resp.ImageGenerationResponse.ExtraFields.RawRequest = p.RawRequest

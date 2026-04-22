@@ -1,0 +1,43 @@
+image:
+  tag: "v1.4.18"
+
+replicaCount: 3
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: bifrost.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls
+      hosts:
+        - bifrost.example.com
+
+bifrost:
+  encryptionKey: "env.BIFROST_ENCRYPTION_KEY"
+  client:
+    enableLogging: true
+    maxRequestBodySizeMb: 100
+  providers:
+    openai:
+      keys:
+        - name: "openai-primary"
+          value: "env.OPENAI_API_KEY"
+          models: ["gpt-4o-mini", "gpt-4o"]
+          weight: 1
+
+env:
+  - name: OPENAI_API_KEY
+    value: "replace-with-real-key"
+  - name: BIFROST_ENCRYPTION_KEY
+    value: "replace-with-32-byte-random-string"

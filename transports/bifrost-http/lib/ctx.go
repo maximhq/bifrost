@@ -8,6 +8,8 @@ package lib
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,37 @@ const (
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
 )
+
+// ParseSessionIDFromBaggage extracts the session-id baggage member value.
+// It supports simple W3C baggage parsing sufficient for log grouping.
+func ParseSessionIDFromBaggage(header string) string {
+	for _, member := range strings.Split(header, ",") {
+		member = strings.TrimSpace(member)
+		if member == "" {
+			continue
+		}
+
+		parts := strings.SplitN(member, ";", 2)
+		kv := strings.SplitN(strings.TrimSpace(parts[0]), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+
+		key := strings.ToLower(strings.TrimSpace(kv[0]))
+		value := strings.TrimSpace(kv[1])
+		if key != "session-id" || value == "" {
+			continue
+		}
+		if len(value) > 255 {
+			if logger != nil {
+				logger.Warn("session-id exceeds 255 chars, ignoring: length=%d, prefix=%s", len(value), value[:255])
+			}
+			continue
+		}
+		return value
+	}
+	return ""
+}
 
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
 // preserving important header values for monitoring and tracing purposes.
@@ -74,6 +107,11 @@ const (
 // 8. Session Stickiness Headers:
 //   - x-bf-session-id: Session identifier for key binding (reuse same key across requests)
 //   - x-bf-session-ttl: Per-request TTL override (duration string e.g. "30m" or seconds integer)
+//
+// 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
+//   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
+//   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
+//   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -92,7 +130,7 @@ const (
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher) (*schemas.BifrostContext, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher, mcpHeaderCombinedAllowlist schemas.WhiteList) (*schemas.BifrostContext, context.CancelFunc) {
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
 	var cancel context.CancelFunc
@@ -141,6 +179,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	maximTags := make(map[string]string)
 	// Initialize extra headers map for headers prefixed with x-bf-eh-
 	extraHeaders := make(map[string][]string)
+	// Initialize extra headers map for headers in the mcp header combined allowlist
+	mcpExtraHeaders := make(map[string][]string)
 	// Security denylist of header names that should never be accepted (case-insensitive)
 	// This denylist is always enforced regardless of user configuration
 	securityDenylist := map[string]bool{
@@ -152,8 +192,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		"transfer-encoding":   true,
 
 		// prevent auth/key overrides via x-bf-eh-*
-		"x-api-key":      true,
-		"x-goog-api-key": true,
+		"x-api-key":       true,
+		"x-goog-api-key":  true,
 		"x-bf-api-key":    true,
 		"x-bf-api-key-id": true,
 		"x-bf-vk":         true,
@@ -171,6 +211,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	// Then process other headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
+		if keyStr == "baggage" {
+			if sessionID := ParseSessionIDFromBaggage(string(value)); sessionID != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
+			}
+			return true
+		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok {
 			bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			return true
@@ -377,10 +423,28 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 				return true
 			}
 		}
-		// Send back raw response header
+		// Handle MCP extra headers
+		if mcpHeaderCombinedAllowlist.IsAllowed(keyStr) {
+			mcpExtraHeaders[keyStr] = append(mcpExtraHeaders[keyStr], string(value))
+			return true
+		}
+		// Raw capture headers — all three support "true"/"false" to fully override the
+		// provider-level config for this request.
+		if keyStr == "x-bf-send-back-raw-request" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, b)
+			}
+			return true
+		}
 		if keyStr == "x-bf-send-back-raw-response" {
-			if valueStr := string(value); valueStr == "true" {
-				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, b)
+			}
+			return true
+		}
+		if keyStr == "x-bf-store-raw-request-response" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, b)
 			}
 			return true
 		}
@@ -398,6 +462,47 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			}
 			return true
 		}
+
+		// Compat header: per-request override of compat plugin settings.
+		// Accepts: "true" (enable all), JSON array of feature names, or ["*"] (enable all).
+		// An empty array [] or absent header means no overrides.
+		if keyStr == "x-bf-compat" {
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertTextToChat)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertChatToResponses)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
+			valueStr := strings.TrimSpace(string(value))
+			if valueStr == "true" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+			} else if strings.HasPrefix(valueStr, "[") {
+				var features []string
+				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
+					if len(features) == 1 && features[0] == "*" {
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+					} else {
+						for _, f := range features {
+							switch f {
+							case "convert_text_to_chat":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
+							case "convert_chat_to_responses":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+							case "should_drop_params":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
+							case "should_convert_params":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+							}
+						}
+					}
+				}
+			}
+			return true
+		}
 		return true
 	})
 
@@ -411,6 +516,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
 
+	// Store collected MCP extra headers in the context if any were found
+	if len(mcpExtraHeaders) > 0 {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, mcpExtraHeaders)
+	}
+
 	// Collect all request headers for downstream use (e.g., governance required headers check)
 	// Keys are lowercased for case-insensitive lookup
 	allHeaders := make(map[string]string)
@@ -419,6 +529,21 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		return true
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
+
+	// Extract per-user MCP OAuth user identifier from X-Bf-User-Id header
+	if mcpUserID := string(ctx.Request.Header.Peek("X-Bf-User-Id")); mcpUserID != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserID, mcpUserID)
+	}
+
+	// Build and set OAuth redirect URI for per-user OAuth flows
+	scheme := "http"
+	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+		scheme = "https"
+	}
+	host := string(ctx.Host())
+	if host != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host))
+	}
 
 	if allowDirectKeys {
 		// Extract API key from Authorization header (Bearer format), x-api-key, or x-goog-api-key header
@@ -458,8 +583,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			key := schemas.Key{
 				ID:     "header-provided", // Identifier for header-provided keys
 				Value:  *schemas.NewEnvVar(apiKey),
-				Models: []string{}, // Empty models list - will be validated by provider
-				Weight: 1.0,        // Default weight
+				Models: schemas.WhiteList{"*"}, // Allow all models
+				Weight: 1.0,                    // Default weight
 			}
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
@@ -503,4 +628,17 @@ func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest
 
 	// Note: Body not copied - for streaming, body was already consumed
 	return req
+}
+
+// BuildHTTPResponseFromFastHTTP creates an HTTPResponse snapshot from fasthttp context.
+// Only captures status code and headers — body is skipped because for streaming
+// responses it is an active io.Reader that cannot be materialized.
+// The returned response should be released with schemas.ReleaseHTTPResponse when done.
+func BuildHTTPResponseFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPResponse {
+	resp := schemas.AcquireHTTPResponse()
+	resp.StatusCode = ctx.Response.StatusCode()
+	for key, value := range ctx.Response.Header.All() {
+		resp.Headers[string(key)] = string(value)
+	}
+	return resp
 }

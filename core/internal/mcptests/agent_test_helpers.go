@@ -131,11 +131,11 @@ func SetupAgentTest(t *testing.T, config AgentTestConfig) (*mcp.MCPManager, *Dyn
 
 	// Create context with filtering
 	baseCtx := context.Background()
-	if len(config.ClientFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, config.ClientFiltering)
+	if config.ClientFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, config.ClientFiltering)
 	}
-	if len(config.ToolFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, config.ToolFiltering)
+	if config.ToolFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, config.ToolFiltering)
 	}
 	ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
@@ -192,11 +192,11 @@ func SetupAgentTestWithClients(t *testing.T, config AgentTestConfig, customClien
 
 	// Create context with filtering
 	baseCtx := context.Background()
-	if len(config.ClientFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, config.ClientFiltering)
+	if config.ClientFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, config.ClientFiltering)
 	}
-	if len(config.ToolFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, config.ToolFiltering)
+	if config.ToolFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, config.ToolFiltering)
 	}
 	ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 

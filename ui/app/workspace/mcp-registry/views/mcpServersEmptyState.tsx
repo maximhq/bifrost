@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Server } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
@@ -20,7 +18,8 @@ export function MCPServersEmptyState({ onAddClick, canCreate = true }: MCPServer
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">MCP servers connect tools and context to the gateway</h1>
 				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
-					Add MCP servers to expose tools and resources to the MCP Tools endpoint. Configure connection type, auth, and which tools to enable.
+					Add MCP servers to expose tools and resources to the MCP Tools endpoint. Configure connection type, auth, and which tools to
+					enable.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 					<Button
@@ -33,12 +32,7 @@ export function MCPServersEmptyState({ onAddClick, canCreate = true }: MCPServer
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Add your first MCP server"
-						onClick={onAddClick}
-						disabled={!canCreate}
-						data-testid="create-mcp-client-btn"
-					>
+					<Button aria-label="Add your first MCP server" onClick={onAddClick} disabled={!canCreate} data-testid="create-mcp-client-btn">
 						Add MCP Server
 					</Button>
 				</div>

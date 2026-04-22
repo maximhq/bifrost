@@ -178,6 +178,7 @@ The following metrics are available from both the `/metrics` endpoint and Push G
 | `bifrost_cache_hits_total` | Counter | Cache hits by type |
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token (streaming) |
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency (streaming) |
+| `bifrost_key_rotation_events_total` | Counter | Per-attempt retry/rotation events with key identifiers (see below) <sup>v1.5.0-prerelease4+</sup> |
 
 ### Default Labels
 
@@ -187,11 +188,41 @@ All Bifrost metrics include these labels:
 - `model` - Model identifier
 - `method` - Request type (chat, completion, embedding, etc.)
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
-- `selected_key_id` / `selected_key_name` - Actual key used
-- `number_of_retries` - Retry count
+- `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
+- `number_of_retries` - Total attempts minus one (across all keys)
 - `fallback_index` - Fallback position
 - `team_id` / `team_name` - Team identifiers (if governance enabled)
 - `customer_id` / `customer_name` - Customer identifiers (if governance enabled)
+
+<Note>
+  **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use `bifrost_key_rotation_events_total` or the `attempt_trail` log field to see which keys were tried.
+</Note>
+
+### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>
+
+`bifrost_key_rotation_events_total` is incremented once per **failed attempt** (not per request), giving you time-series visibility into retry pressure:
+
+| Label | Values | Description |
+|-------|--------|-------------|
+| `provider` | e.g. `openai` | LLM provider |
+| `requested_model` | e.g. `gpt-4o` | Model as requested (before any alias resolution) |
+| `key_id` | UUID | The provider API key that failed on this attempt |
+| `key_name` | string | Human-readable name of the provider API key |
+| `fail_reason` | error type string | Provider error type (e.g. `rate_limit_error`, `network_error`) |
+
+**Example queries:**
+
+```promql
+# Rate-limit events per provider over time
+sum by (provider, fail_reason) (
+  rate(bifrost_key_rotation_events_total[5m])
+)
+
+# Which specific keys are hitting rate limits most often
+topk(5, sum by (provider, key_name, fail_reason) (
+  rate(bifrost_key_rotation_events_total{fail_reason="rate_limit_error"}[1h])
+))
+```
 
 ---
 

@@ -1,5 +1,3 @@
-'use client'
-
 import { cn } from "@/lib/utils";
 import { Content } from "@radix-ui/react-dropdown-menu";
 import { cva, type VariantProps } from "class-variance-authority";
@@ -8,26 +6,22 @@ import React, { MouseEventHandler, useCallback, useRef, useState } from "react";
 import { Button, buttonVariants } from "./button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "./dropdownMenu";
 
-export const splitButtonVariants = cva(
-  'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium',
-  {
-    variants: {
-      variant: {
-        default: 'text-foreground bg-background',
-        primary: 'bg-primary text-primary-foreground hover:bg-primary/80',
-        outline:
-          'hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:hover:bg-input/50',
-      },
-      size: {
-        default: 'font-medium text-sm leading-5 h-[32px]',
-      },
-    },
-    defaultVariants: {
-      variant: 'default',
-      size: 'default',
-    },
-  }
-)
+export const splitButtonVariants = cva("inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium", {
+	variants: {
+		variant: {
+			default: "text-foreground bg-background",
+			primary: "bg-primary text-primary-foreground hover:bg-primary/80",
+			outline: "hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:hover:bg-input/50",
+		},
+		size: {
+			default: "font-medium text-sm leading-5 h-[32px]",
+		},
+	},
+	defaultVariants: {
+		variant: "default",
+		size: "default",
+	},
+});
 
 export interface SplitButtonProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "onClick">, VariantProps<typeof splitButtonVariants> {
 	button?: Omit<React.ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants>, "children" | "onClick"> & {
@@ -152,4 +146,4 @@ export const SplitButton = React.forwardRef<HTMLDivElement, SplitButtonProps>(
 		);
 	},
 );
-SplitButton.displayName = 'SplitButton'
+SplitButton.displayName = "SplitButton";

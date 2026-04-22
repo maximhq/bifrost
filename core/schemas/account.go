@@ -1,7 +1,12 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+)
 
 type KeyStatusType string
 
@@ -10,26 +15,172 @@ const (
 	KeyStatusListModelsFailed KeyStatusType = "list_models_failed"
 )
 
+// WhiteList is a list of values that are allowed to be used.
+// Semantics:
+//   - "*" (alone) means all values are allowed.
+//   - Empty list means nothing is allowed.
+//   - Non-empty list (without "*") means only the listed values are allowed.
+//
+// This type is used generically for any field that needs whitelist behavior
+// (e.g., allowed models, allowed tools).
+type WhiteList []string
+
+// Contains reports whether value is in the whitelist.
+// Returns true if value is in the list.
+func (wl WhiteList) Contains(value string) bool {
+	return slices.ContainsFunc(wl, func(s string) bool {
+		return strings.EqualFold(s, value)
+	})
+}
+
+// IsAllowed reports whether value is in the whitelist.
+// Returns true if value is in the list.
+func (wl WhiteList) IsAllowed(value string) bool {
+	return wl.IsUnrestricted() || wl.Contains(value)
+}
+
+// IsEmpty reports whether the whitelist has no entries.
+func (wl WhiteList) IsEmpty() bool {
+	return len(wl) == 0
+}
+
+// IsUnrestricted reports whether the whitelist contains only "*",
+// meaning all values are allowed.
+func (wl WhiteList) IsUnrestricted() bool {
+	return len(wl) == 1 && wl[0] == "*"
+}
+
+// IsRestricted reports whether the whitelist contains entries other than "*",
+// meaning only the listed values are allowed.
+func (wl WhiteList) IsRestricted() bool {
+	return !wl.IsUnrestricted()
+}
+
+// Validate checks that the whitelist is well-formed.
+// Returns an error if "*" is present alongside other values, or if there are duplicate entries.
+func (wl WhiteList) Validate() error {
+	if wl.Contains("*") && len(wl) > 1 {
+		return fmt.Errorf("wildcard '*' cannot be used with other values in the whitelist")
+	}
+	seen := make(map[string]struct{}, len(wl))
+	for _, v := range wl {
+		normalized := strings.ToLower(v)
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("duplicate value '%s' in whitelist", v)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
+// BlackList is a list of values that are denied.
+// Semantics:
+//   - "*" (alone) means all values are blocked.
+//   - Empty list means nothing is blocked.
+//   - Non-empty list (without "*") means only the listed values are blocked.
+type BlackList []string
+
+func (bl BlackList) Contains(value string) bool {
+	return slices.ContainsFunc(bl, func(s string) bool {
+		return strings.EqualFold(s, value)
+	})
+}
+
+// IsBlocked reports whether value is blocked.
+func (bl BlackList) IsBlocked(value string) bool {
+	return bl.IsBlockAll() || bl.Contains(value)
+}
+
+// IsEmpty reports whether the blacklist has no entries (nothing is blocked).
+func (bl BlackList) IsEmpty() bool {
+	return len(bl) == 0
+}
+
+// IsBlockAll reports whether the blacklist contains "*", meaning all values are blocked.
+func (bl BlackList) IsBlockAll() bool {
+	return len(bl) == 1 && bl[0] == "*"
+}
+
+// Validate checks that the blacklist is well-formed.
+func (bl BlackList) Validate() error {
+	if bl.Contains("*") && len(bl) > 1 {
+		return fmt.Errorf("wildcard '*' cannot be used with other values in the blacklist")
+	}
+	seen := make(map[string]struct{}, len(bl))
+	for _, v := range bl {
+		normalized := strings.ToLower(v)
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("duplicate value '%s' in blacklist", v)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
-	ID                   string                `json:"id"`                               // The unique identifier for the key (used by bifrost to identify the key)
-	Name                 string                `json:"name"`                             // The name of the key (used by users to identify the key, not used by bifrost)
-	Value                EnvVar                `json:"value"`                            // The actual API key value
-	Models               []string              `json:"models"`                           // List of models this key can access
-	BlacklistedModels    []string              `json:"blacklisted_models"`               // List of models this key cannot access
-	Weight               float64               `json:"weight"`                           // Weight for load balancing between multiple keys
-	AzureKeyConfig       *AzureKeyConfig       `json:"azure_key_config,omitempty"`       // Azure-specific key configuration
-	VertexKeyConfig      *VertexKeyConfig      `json:"vertex_key_config,omitempty"`      // Vertex-specific key configuration
-	BedrockKeyConfig     *BedrockKeyConfig     `json:"bedrock_key_config,omitempty"`     // AWS Bedrock-specific key configuration
-	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
-	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
-	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
-	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
-	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
-	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
-	Status               KeyStatusType         `json:"status,omitempty"`                 // Status of key
-	Description          string                `json:"description,omitempty"`            // Description of key
+	ID                 string              `json:"id"`                             // The unique identifier for the key (used by bifrost to identify the key)
+	Name               string              `json:"name"`                           // The name of the key (used by users to identify the key, not used by bifrost)
+	Value              EnvVar              `json:"value"`                          // The actual API key value
+	Models             WhiteList           `json:"models"`                         // List of models this key can access
+	BlacklistedModels  BlackList           `json:"blacklisted_models"`             // List of models this key cannot access
+	Weight             float64             `json:"weight"`                         // Weight for load balancing between multiple keys
+	Aliases            KeyAliases          `json:"aliases,omitempty"`              // Mapping of model identifiers to inference profiles
+	AzureKeyConfig     *AzureKeyConfig     `json:"azure_key_config,omitempty"`     // Azure-specific key configuration
+	VertexKeyConfig    *VertexKeyConfig    `json:"vertex_key_config,omitempty"`    // Vertex-specific key configuration
+	BedrockKeyConfig   *BedrockKeyConfig   `json:"bedrock_key_config,omitempty"`   // AWS Bedrock-specific key configuration
+	VLLMKeyConfig      *VLLMKeyConfig      `json:"vllm_key_config,omitempty"`      // vLLM-specific key configuration
+	ReplicateKeyConfig *ReplicateKeyConfig `json:"replicate_key_config,omitempty"` // Replicate-specific key configuration
+	OllamaKeyConfig    *OllamaKeyConfig    `json:"ollama_key_config,omitempty"`    // Ollama-specific key configuration
+	SGLKeyConfig       *SGLKeyConfig       `json:"sgl_key_config,omitempty"`       // SGLang-specific key configuration
+	Enabled            *bool               `json:"enabled,omitempty"`              // Whether the key is active (default:true)
+	UseForBatchAPI     *bool               `json:"use_for_batch_api,omitempty"`    // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	ConfigHash         string              `json:"config_hash,omitempty"`          // Hash of config.json version, used for change detection
+	Status             KeyStatusType       `json:"status,omitempty"`               // Status of key
+	Description        string              `json:"description,omitempty"`          // Description of key
+}
+
+type KeyAliases map[string]string
+
+func (ka KeyAliases) Validate() error {
+	seen := make(map[string]struct{}, len(ka))
+	for from, to := range ka {
+		if strings.TrimSpace(from) == "" {
+			return fmt.Errorf("alias source cannot be empty")
+		}
+		if strings.TrimSpace(to) == "" {
+			return fmt.Errorf("alias target for %q cannot be empty", from)
+		}
+		if strings.TrimSpace(from) != from {
+			return fmt.Errorf("alias source %q cannot have leading or trailing whitespace", from)
+		}
+		if strings.TrimSpace(to) != to {
+			return fmt.Errorf("alias target for %q cannot have leading or trailing whitespace", from)
+		}
+		normalized := strings.ToLower(from)
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("duplicate alias source %q (case-insensitive)", from)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func (ka KeyAliases) Resolve(model string) string {
+	if ka == nil {
+		return model
+	}
+	if alias, ok := ka[model]; ok {
+		return alias
+	}
+	// Fall back to case-insensitive lookup for consistency with WhiteList.Contains
+	for k, v := range ka {
+		if strings.EqualFold(k, model) {
+			return v
+		}
+	}
+	return model
 }
 
 type AzureAuthType string
@@ -42,9 +193,8 @@ const (
 // AzureKeyConfig represents the Azure-specific configuration.
 // It contains Azure-specific settings required for service access and deployment management.
 type AzureKeyConfig struct {
-	Endpoint    EnvVar            `json:"endpoint"`              // Azure service endpoint URL
-	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment names
-	APIVersion  *EnvVar           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
+	Endpoint   EnvVar  `json:"endpoint"`              // Azure service endpoint URL
+	APIVersion *EnvVar `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
 
 	ClientID     *EnvVar  `json:"client_id,omitempty"`     // Azure client ID for authentication
 	ClientSecret *EnvVar  `json:"client_secret,omitempty"` // Azure client secret for authentication
@@ -55,11 +205,10 @@ type AzureKeyConfig struct {
 // VertexKeyConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
 type VertexKeyConfig struct {
-	ProjectID       EnvVar            `json:"project_id"`
-	ProjectNumber   EnvVar            `json:"project_number"`
-	Region          EnvVar            `json:"region"`
-	AuthCredentials EnvVar            `json:"auth_credentials"`
-	Deployments     map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to inference profiles
+	ProjectID       EnvVar `json:"project_id"`
+	ProjectNumber   EnvVar `json:"project_number"`
+	Region          EnvVar `json:"region"`
+	AuthCredentials EnvVar `json:"auth_credentials"`
 }
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.
@@ -90,20 +239,11 @@ type BedrockKeyConfig struct {
 	ExternalID      *EnvVar `json:"external_id,omitempty"`
 	RoleSessionName *EnvVar `json:"session_name,omitempty"`
 
-	Deployments   map[string]string `json:"deployments,omitempty"`     // Mapping of model identifiers to inference profiles
-	BatchS3Config *BatchS3Config    `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
+	BatchS3Config *BatchS3Config `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
 }
 
 // NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
 // To use Bedrock API Key authentication, set Value in Key struct instead.
-
-type HuggingFaceKeyConfig struct {
-	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
-}
-
-type ReplicateKeyConfig struct {
-	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
-}
 
 // VLLMKeyConfig represents the vLLM-specific key configuration.
 // It allows each key to target a different vLLM server URL and model name,
@@ -111,6 +251,26 @@ type ReplicateKeyConfig struct {
 type VLLMKeyConfig struct {
 	URL       EnvVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
 	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+}
+
+// ReplicateKeyConfig represents the Replicate-specific key configuration.
+// It contains Replicate-specific settings required for authentication and service access.
+type ReplicateKeyConfig struct {
+	UseDeploymentsEndpoint bool `json:"use_deployments_endpoint"` // Whether to use the deployments endpoint instead of the models endpoint
+}
+
+// OllamaKeyConfig represents the Ollama-specific key configuration.
+// It allows each key to target a different Ollama server URL,
+// enabling per-key routing and round-robin load balancing across multiple Ollama instances.
+type OllamaKeyConfig struct {
+	URL EnvVar `json:"url"` // Ollama server base URL (required, supports env. prefix)
+}
+
+// SGLKeyConfig represents the SGLang-specific key configuration.
+// It allows each key to target a different SGLang server URL,
+// enabling per-key routing and round-robin load balancing across multiple SGLang instances.
+type SGLKeyConfig struct {
+	URL EnvVar `json:"url"` // SGLang server base URL (required, supports env. prefix)
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

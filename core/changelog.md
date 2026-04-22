@@ -1,2 +1,0 @@
-- fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
-- fix: Bedrock provider - emit message_stop event for Anthropic invoke stream [@tefimov](https://github.com/tefimov)

@@ -1,20 +1,20 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { SplitButton } from "@/components/ui/splitButton";
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdownMenu";
+import { Input } from "@/components/ui/input";
+import { SplitButton } from "@/components/ui/splitButton";
+import { Message, MessageRole } from "@/lib/message";
+import { getErrorMessage } from "@/lib/store";
+import { useCreateSessionMutation, useGetSessionsQuery, useGetVersionsQuery, useRenameSessionMutation } from "@/lib/store/apis/promptsApi";
+import { ModelParams, PromptSession } from "@/lib/types/prompts";
+import { cn } from "@/lib/utils";
 import { Check, GitCommit, PencilIcon, Save, Trash2 } from "lucide-react";
+import { parseAsInteger, useQueryStates } from "nuqs";
 import { useCallback, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-import { parseAsInteger, useQueryStates } from "nuqs";
-import { useCreateSessionMutation, useGetSessionsQuery, useGetVersionsQuery, useRenameSessionMutation } from "@/lib/store/apis/promptsApi";
-import { Message, MessageRole } from "@/lib/message";
 import { toast } from "sonner";
-import { getErrorMessage } from "@/lib/store";
 import { usePromptContext } from "../context";
-import { ModelParams, PromptSession } from "@/lib/types/prompts";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 
 export default function PromptsViewHeader() {
 	const {
@@ -26,6 +26,7 @@ export default function PromptsViewHeader() {
 		modelParams,
 		provider,
 		model,
+		variables,
 		hasChanges,
 		hasVersionChanges,
 		hasSessionChanges,
@@ -87,6 +88,7 @@ export default function PromptsViewHeader() {
 					model_params: buildSaveParams(),
 					provider,
 					model,
+					variables: Object.keys(variables).length > 0 ? variables : undefined,
 				},
 			}).unwrap();
 			setUrlState({ sessionId: result.session.id, versionId: null });
@@ -94,7 +96,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges, isStreaming]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, hasChanges, isStreaming]);
 
 	// Cmd+S / Ctrl+S to save session
 	useHotkeys(
@@ -110,6 +112,13 @@ export default function PromptsViewHeader() {
 
 	const handleCommitVersion = useCallback(async () => {
 		if (!selectedPrompt) return;
+		if (!hasChanges) {
+			const selectedSession = sessions.find((s) => s.id === selectedSessionId);
+			if (selectedSession) {
+				onSessionSaved(selectedSession);
+			}
+			return;
+		}
 		try {
 			// Always create a new session with current state before committing
 			const result = await createSession({
@@ -119,6 +128,7 @@ export default function PromptsViewHeader() {
 					model_params: buildSaveParams(),
 					provider,
 					model,
+					variables: Object.keys(variables).length > 0 ? variables : undefined,
 				},
 			}).unwrap();
 			setUrlState({ sessionId: result.session.id, versionId: null });
@@ -126,7 +136,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, onSessionSaved]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, onSessionSaved, hasChanges]);
 
 	const handleRenameSession = useCallback(
 		async (sessionId: number, name: string) => {

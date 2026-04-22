@@ -51,6 +51,8 @@ export const RequestTypes = [
 	"image_edit",
 	"image_edit_stream",
 	"image_variation",
+	"ocr",
+	"ocr_stream",
 	"video_generation",
 	"video_retrieve",
 	"video_download",
@@ -74,6 +76,7 @@ export const RequestTypes = [
 	// WebSocket/Realtime operations
 	"websocket_responses",
 	"realtime",
+	"realtime.turn",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -163,6 +166,8 @@ export const RequestTypeLabels = {
 	image_edit: "Image Edit",
 	image_edit_stream: "Image Edit Stream",
 	image_variation: "Image Variation",
+	ocr: "OCR",
+	ocr_stream: "OCR Stream",
 	video_generation: "Video Generation",
 	video_retrieve: "Video Retrieve",
 	video_download: "Video Download",
@@ -202,6 +207,7 @@ export const RequestTypeLabels = {
 	// WebSocket operations
 	websocket_responses: "WebSocket Responses",
 	realtime: "Realtime",
+	"realtime.turn": "Realtime Turn",
 } as const;
 
 export const RequestTypeColors = {
@@ -242,6 +248,8 @@ export const RequestTypeColors = {
 	image_edit: "bg-emerald-100 text-emerald-800",
 	image_edit_stream: "bg-teal-100 text-teal-800",
 	image_variation: "bg-violet-100 text-violet-800",
+	ocr: "bg-amber-100 text-amber-800",
+	ocr_stream: "bg-yellow-100 text-yellow-800",
 	video_generation: "bg-fuchsia-100 text-fuchsia-800",
 	video_retrieve: "bg-blue-100 text-blue-800",
 	video_download: "bg-purple-100 text-purple-800",
@@ -282,6 +290,7 @@ export const RequestTypeColors = {
 	// WebSocket operations
 	websocket_responses: "bg-teal-100 text-teal-800",
 	realtime: "bg-indigo-100 text-indigo-800",
+	"realtime.turn": "bg-cyan-100 text-cyan-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

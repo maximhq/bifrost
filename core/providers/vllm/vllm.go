@@ -20,7 +20,8 @@ import (
 // VLLMProvider implements the Provider interface for vLLM's OpenAI-compatible API.
 type VLLMProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -44,12 +45,14 @@ func NewVLLMProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*VL
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	// BaseURL is optional when keys have vllm_key_config with per-key URLs
 	return &VLLMProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -76,9 +79,7 @@ func (provider *VLLMProvider) baseURLOrError(key schemas.Key) (string, *schemas.
 	if u == "" {
 		return "", providerUtils.NewBifrostOperationError(
 			"no base URL configured: set vllm_key_config.url on the key",
-			nil,
-			provider.GetProviderKey(),
-		)
+			nil)
 	}
 	return u, nil
 }
@@ -118,6 +119,7 @@ func (provider *VLLMProvider) ListModels(ctx *schemas.BifrostContext, keys []sch
 
 // TextCompletion performs a text completion request to vLLM's API.
 func (provider *VLLMProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -139,7 +141,8 @@ func (provider *VLLMProvider) TextCompletion(ctx *schemas.BifrostContext, key sc
 }
 
 // TextCompletionStream performs a streaming text completion request to vLLM's API.
-func (provider *VLLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -150,7 +153,7 @@ func (provider *VLLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, 
 	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		authHeader,
@@ -163,11 +166,13 @@ func (provider *VLLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, 
 		HandleVLLMResponse,
 		nil,
 		provider.logger,
+		postHookSpanFinalizer,
 	)
 }
 
 // ChatCompletion performs a chat completion request to vLLM's API.
 func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -189,7 +194,8 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 }
 
 // ChatCompletionStream performs a streaming chat completion request to vLLM's API.
-func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -200,7 +206,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		authHeader,
@@ -215,6 +221,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 		nil,
 		nil,
 		provider.logger,
+		postHookSpanFinalizer,
 	)
 }
 
@@ -246,18 +253,16 @@ func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas
 		return nil, err
 	}
 	response := chatResponse.ToBifrostResponsesResponse()
-	response.ExtraFields.RequestType = schemas.ResponsesRequest
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.ModelRequested = request.Model
 	return response, nil
 }
 
 // ResponsesStream performs a streaming responses request to vLLM's API (via chat completion stream).
-func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
 		postHookRunner,
+		postHookSpanFinalizer,
 		key,
 		request.ToChatRequest(),
 	)
@@ -314,12 +319,14 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 
 	statusCode := resp.StatusCode()
 	if statusCode != fasthttp.StatusOK {
-		return nil, nil, nil, nil, statusCode, latency, openai.ParseOpenAIError(resp, schemas.RerankRequest, provider.GetProviderKey(), request.Model)
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, nil, nil, rawErrBody, statusCode, latency, openai.ParseOpenAIError(resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, nil, nil, nil, statusCode, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, nil, nil, rawErrBody, statusCode, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -336,16 +343,12 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 
 // Rerank performs a rerank request to vLLM's API.
 func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToVLLMRerankRequest(request), nil
-		},
-		providerName,
-	)
+		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -358,6 +361,9 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 		resolvedPath = "/" + resolvedPath
 	}
 
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
 	responsePayload, rawRequest, rawResponse, responseBody, statusCode, latency, bifrostErr := provider.callVLLMRerankEndpoint(ctx, key, request, resolvedPath, jsonData)
 	if bifrostErr != nil && !hasPathOverride && isRerankFallbackStatus(statusCode) {
 		var fallbackLatency time.Duration
@@ -365,7 +371,7 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 		latency += fallbackLatency
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
@@ -373,19 +379,16 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 	if err != nil {
 		return nil, providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError("error converting rerank response", err, providerName),
+			providerUtils.NewBifrostOperationError("error converting rerank response", err),
 			jsonData,
 			responseBody,
-			provider.sendBackRawRequest,
-			provider.sendBackRawResponse,
+			sendBackRawRequest,
+			sendBackRawResponse,
 		)
 	}
 
 	// Keep requested model as the canonical model in Bifrost response.
 	bifrostResponse.Model = request.Model
-	bifrostResponse.ExtraFields.Provider = providerName
-	bifrostResponse.ExtraFields.ModelRequested = request.Model
-	bifrostResponse.ExtraFields.RequestType = schemas.RerankRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -404,7 +407,7 @@ func (provider *VLLMProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, 
 }
 
 // SpeechStream is not supported by the vLLM provider.
-func (provider *VLLMProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -429,7 +432,7 @@ func (provider *VLLMProvider) Transcription(ctx *schemas.BifrostContext, key sch
 }
 
 // TranscriptionStream performs a streaming transcription request to vLLM's API.
-func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -440,7 +443,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		// Use centralized converter
 		reqBody := openai.ToOpenAITranscriptionRequest(request)
 		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil, providerName)
+			return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil)
 		}
 		reqBody.Stream = schemas.Ptr(true)
 
@@ -482,7 +485,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		req.SetBody(body.Bytes())
 
 		// Make the request
-		err := provider.client.Do(req, resp)
+		err := provider.streamingClient.Do(req, resp)
 		if err != nil {
 			defer providerUtils.ReleaseStreamingResponse(resp)
 			if errors.Is(err, context.Canceled) {
@@ -496,9 +499,9 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				}
 			}
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName)
+				return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
 			}
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 		}
 
 		// Store provider response headers in context before status check so error responses also forward them
@@ -507,7 +510,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		// Check for HTTP errors
 		if resp.StatusCode() != fasthttp.StatusOK {
 			defer providerUtils.ReleaseStreamingResponse(resp)
-			return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+			return nil, openai.ParseOpenAIError(resp)
 		}
 
 		// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -524,11 +527,12 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		// Start streaming in a goroutine
 		go func() {
+			defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 			defer func() {
 				if ctx.Err() == context.Canceled {
-					providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TranscriptionStreamRequest, logger)
+					providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
 				} else if ctx.Err() == context.DeadlineExceeded {
-					providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TranscriptionStreamRequest, logger)
+					providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
 				}
 				close(responseChan)
 			}()
@@ -568,7 +572,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						logger.Warn("Error reading stream: %v", readErr)
-						providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
+						providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					}
 					break
 				}
@@ -585,13 +589,8 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 				_, _, bifrostErr = HandleVLLMResponse(dataBytes, &response, nil, false, false)
 				if bifrostErr != nil {
-					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						RequestType:    schemas.TranscriptionStreamRequest,
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)), responseChan, logger)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -608,11 +607,8 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				}
 
 				response.ExtraFields = schemas.BifrostResponseExtraFields{
-					RequestType:    schemas.TranscriptionStreamRequest,
-					Provider:       providerName,
-					ModelRequested: request.Model,
-					ChunkIndex:     chunkIndex,
-					Latency:        time.Since(lastChunkTime).Milliseconds(),
+					ChunkIndex: chunkIndex,
+					Latency:    time.Since(lastChunkTime).Milliseconds(),
 				}
 				lastChunkTime = time.Now()
 
@@ -623,11 +619,11 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 					response.Text = fullTranscriptionText.String()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan, postHookSpanFinalizer)
 					return
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan, postHookSpanFinalizer)
 			}
 		}()
 
@@ -641,7 +637,7 @@ func (provider *VLLMProvider) ImageGeneration(ctx *schemas.BifrostContext, key s
 }
 
 // ImageGenerationStream is not supported by the vLLM provider.
-func (provider *VLLMProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
@@ -651,7 +647,7 @@ func (provider *VLLMProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas
 }
 
 // ImageEditStream is not supported by the vLLM provider.
-func (provider *VLLMProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
 }
 
@@ -800,6 +796,6 @@ func (provider *VLLMProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.K
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
 }
 
-func (provider *VLLMProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *VLLMProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

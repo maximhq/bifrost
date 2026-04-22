@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
@@ -17,6 +15,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface NetworkFormFragmentProps {
 	provider: ModelProvider;
@@ -76,8 +75,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
-				max_conns_per_host:
-					provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 			},
 		},
@@ -88,7 +86,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	}, [form.formState.isDirty, dispatch]);
 
 	const onSubmit = (data: NetworkOnlyFormSchema) => {
-		const requiresBaseUrl = isCustomProvider || provider.name === "ollama" || provider.name === "sgl";
+		const requiresBaseUrl = isCustomProvider;
 		if (requiresBaseUrl && (data.network_config?.base_url ?? "").trim() === "") {
 			if ((provider.network_config?.base_url ?? "").trim() !== "") {
 				toast.error("You can't remove network configuration for this provider.");
@@ -98,8 +96,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 			return;
 		}
 		// Create updated provider configuration
-		const updatedProvider: ModelProvider = {
-			...provider,
+		const updatedProvider = buildProviderUpdatePayload(provider, {
 			network_config: {
 				...provider.network_config,
 				base_url: data.network_config?.base_url || undefined,
@@ -112,11 +109,10 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: data.network_config?.ca_cert_pem?.trim() || undefined,
 				stream_idle_timeout_in_seconds:
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
-				max_conns_per_host:
-					data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 			},
-		};
+		});
 		updateProvider(updatedProvider)
 			.unwrap()
 			.then(() => {
@@ -145,14 +141,13 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
-				max_conns_per_host:
-					provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
 
-	const baseURLRequired = provider.name === "ollama" || provider.name === "sgl" || isCustomProvider;
-	const hideBaseURL = provider.name === "vllm";
+	const baseURLRequired = isCustomProvider;
+	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
 
 	return (
 		<Form {...form}>
@@ -191,17 +186,17 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											<Input
 												placeholder="30"
 												{...field}
-												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
 												onChange={(e) => {
-													const value = e.target.value
-													if (value === '') {
-														field.onChange(undefined)
-														return
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
 													}
-													const parsed = Number(value)
+													const parsed = Number(value);
 													if (!Number.isNaN(parsed)) {
-														field.onChange(parsed)
+														field.onChange(parsed);
 													}
 													form.trigger("network_config");
 												}}
@@ -223,25 +218,25 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 												placeholder="60"
 												data-testid="network-config-stream-idle-timeout-input"
 												{...field}
-												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
 												onChange={(e) => {
-													const value = e.target.value
-													if (value === '') {
-														field.onChange(undefined)
-														return
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
 													}
-													const parsed = Number(value)
+													const parsed = Number(value);
 													if (!Number.isNaN(parsed)) {
-														field.onChange(parsed)
+														field.onChange(parsed);
 													}
 													form.trigger("network_config");
 												}}
 											/>
 										</FormControl>
 										<FormDescription>
-											{field.value ? secondsToHumanReadable(field.value) : ""}
-											{" "}Max time to wait for next chunk before closing a stalled stream
+											{field.value ? secondsToHumanReadable(field.value) : ""} Max time to wait for next chunk before closing a stalled
+											stream
 										</FormDescription>
 										<FormMessage />
 									</FormItem>
@@ -257,17 +252,17 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											<Input
 												placeholder="0"
 												{...field}
-												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
 												onChange={(e) => {
-													const value = e.target.value
-													if (value === '') {
-														field.onChange(undefined)
-														return
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
 													}
-													const parsed = Number(value)
+													const parsed = Number(value);
 													if (!Number.isNaN(parsed)) {
-														field.onChange(parsed)
+														field.onChange(parsed);
 													}
 													form.trigger("network_config");
 												}}
@@ -289,17 +284,17 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											<Input
 												placeholder="e.g 500"
 												{...field}
-												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
 												onChange={(e) => {
-													const value = e.target.value
-													if (value === '') {
-														field.onChange(undefined)
-														return
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
 													}
-													const parsed = Number(value)
+													const parsed = Number(value);
 													if (!Number.isNaN(parsed)) {
-														field.onChange(parsed)
+														field.onChange(parsed);
 													}
 													form.trigger("network_config");
 												}}
@@ -319,17 +314,17 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											<Input
 												placeholder="e.g 10000"
 												{...field}
-												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
 												onChange={(e) => {
-													const value = e.target.value
-													if (value === '') {
-														field.onChange(undefined)
-														return
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
 													}
-													const parsed = Number(value)
+													const parsed = Number(value);
 													if (!Number.isNaN(parsed)) {
-														field.onChange(parsed)
+														field.onChange(parsed);
 													}
 													form.trigger("network_config");
 												}}
@@ -352,24 +347,25 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 												data-testid="network-config-max-conns-per-host-input"
 												placeholder="5000"
 												{...field}
-												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
 												onChange={(e) => {
-													const value = e.target.value
-													if (value === '') {
-														field.onChange(undefined)
-														return
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
 													}
-													const parsed = Number(value)
+													const parsed = Number(value);
 													if (!Number.isNaN(parsed)) {
-														field.onChange(parsed)
+														field.onChange(parsed);
 													}
 													form.trigger("network_config");
 												}}
 											/>
 										</FormControl>
 										<FormDescription>
-											Max TCP connections per provider host. For HTTP/2 providers (e.g. Bedrock), each connection supports ~100 concurrent streams.
+											Max TCP connections per provider host. For HTTP/2 providers (e.g. Bedrock), each connection supports ~100 concurrent
+											streams.
 										</FormDescription>
 										<FormMessage />
 									</FormItem>
@@ -384,7 +380,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									<div className="space-y-0.5">
 										<FormLabel>Enforce HTTP/2</FormLabel>
 										<FormDescription>
-											Force HTTP/2 on provider connections. Relevant for net/http-based providers (e.g. Bedrock) where each HTTP/2 connection supports ~100 concurrent streams.
+											Force HTTP/2 on provider connections. Relevant for net/http-based providers (e.g. Bedrock) where each HTTP/2
+											connection supports ~100 concurrent streams.
 										</FormDescription>
 									</div>
 									<FormControl>
@@ -427,7 +424,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<div className="space-y-0.5">
 											<FormLabel>Skip TLS verification</FormLabel>
 											<FormDescription>
-												Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments.
+												Disable TLS certificate verification for provider connections. This bypasses server certificate validation and
+												should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for
+												self-signed or private CA deployments.
 											</FormDescription>
 										</div>
 										<FormControl>

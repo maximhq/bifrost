@@ -783,7 +783,7 @@ make run-e2e-headed FLOW=<feature>
 **Environment variables:**
 - `BASE_URL` - Override app URL (default: http://localhost:3000)
 - `BIFROST_BASE_URL` - Override Bifrost API URL (default: http://localhost:8080)
-- `SKIP_WEB_SERVER=1` - Skip auto-starting Next.js dev server
+- `SKIP_WEB_SERVER=1` - Skip auto-starting Vite dev server
 - `CI=1` - Enable CI mode (retries, serial execution)
 
 ## Step 5: Debug Failing Tests

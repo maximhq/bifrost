@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/fasthttp/router"
@@ -14,15 +16,35 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// PromptsHandler handles prompt repository endpoints
-type PromptsHandler struct {
-	store configstore.ConfigStore
+// PromptCacheReloader is implemented by the prompts plugin to allow the HTTP handler
+// to trigger an in-memory cache refresh after any repository mutation.
+type PromptCacheReloader interface {
+	Reload(ctx context.Context) error
 }
 
-// NewPromptsHandler creates a new PromptsHandler
-func NewPromptsHandler(store configstore.ConfigStore) *PromptsHandler {
-	return &PromptsHandler{
-		store: store,
+// PromptsHandler handles prompt repository endpoints
+type PromptsHandler struct {
+	store    configstore.ConfigStore
+	reloader PromptCacheReloader // optional; nil when the prompts plugin is not loaded
+}
+
+// NewPromptsHandler creates a new PromptsHandler.
+// reloader may be nil; when set, the in-memory prompt cache is refreshed after mutations.
+func NewPromptsHandler(store configstore.ConfigStore, reloader PromptCacheReloader) *PromptsHandler {
+	if store == nil {
+		return nil
+	}
+	return &PromptsHandler{store: store, reloader: reloader}
+}
+
+// reloadCache triggers a cache refresh if a reloader is configured.
+// Errors are logged but do not fail the originating request.
+func (h *PromptsHandler) reloadCache(ctx context.Context) {
+	if h.reloader == nil {
+		return
+	}
+	if err := h.reloader.Reload(ctx); err != nil {
+		logger.Error("failed to reload prompt cache: %v", err)
 	}
 }
 
@@ -115,25 +137,28 @@ type CreateVersionRequest struct {
 	ModelParams   tables.ModelParams     `json:"model_params"`
 	Provider      string                 `json:"provider"`
 	Model         string                 `json:"model"`
+	Variables     tables.PromptVariables  `json:"variables,omitempty"`
 }
 
 // CreateSessionRequest represents the request body for creating a session
 type CreateSessionRequest struct {
-	Name        string                 `json:"name"`
-	VersionID   *uint                  `json:"version_id,omitempty"`
-	Messages    []tables.PromptMessage `json:"messages,omitempty"`
-	ModelParams tables.ModelParams     `json:"model_params"`
-	Provider    string                 `json:"provider"`
-	Model       string                 `json:"model"`
+	Name        string                  `json:"name"`
+	VersionID   *uint                   `json:"version_id,omitempty"`
+	Messages    []tables.PromptMessage  `json:"messages,omitempty"`
+	ModelParams tables.ModelParams      `json:"model_params"`
+	Provider    string                  `json:"provider"`
+	Model       string                  `json:"model"`
+	Variables   tables.PromptVariables  `json:"variables,omitempty"`
 }
 
 // UpdateSessionRequest represents the request body for updating a session
 type UpdateSessionRequest struct {
-	Name        string                 `json:"name"`
-	Messages    []tables.PromptMessage `json:"messages"`
-	ModelParams tables.ModelParams     `json:"model_params"`
-	Provider    string                 `json:"provider"`
-	Model       string                 `json:"model"`
+	Name        string                  `json:"name"`
+	Messages    []tables.PromptMessage  `json:"messages"`
+	ModelParams tables.ModelParams      `json:"model_params"`
+	Provider    string                  `json:"provider"`
+	Model       string                  `json:"model"`
+	Variables   tables.PromptVariables  `json:"variables,omitempty"`
 }
 
 // RenameSessionRequest represents the request body for renaming a session
@@ -143,7 +168,8 @@ type RenameSessionRequest struct {
 
 // CommitSessionRequest represents the request body for committing a session as a version
 type CommitSessionRequest struct {
-	CommitMessage string `json:"commit_message"`
+	CommitMessage  string `json:"commit_message"`
+	MessageIndices *[]int `json:"message_indices,omitempty"` // optional: indices of messages to include (0-based). If nil/absent, all messages are included.
 }
 
 // ============================================================================
@@ -294,6 +320,7 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "folder deleted successfully",
 	})
@@ -392,6 +419,7 @@ func (h *PromptsHandler) createPrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -465,6 +493,7 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -493,6 +522,7 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "prompt deleted successfully",
 	})
@@ -604,12 +634,22 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		})
 	}
 
+	// Strip variable values — versions store keys only; values live in sessions
+	var versionVars tables.PromptVariables
+	if len(req.Variables) > 0 {
+		versionVars = make(tables.PromptVariables, len(req.Variables))
+		for key := range req.Variables {
+			versionVars[key] = ""
+		}
+	}
+
 	version := &tables.TablePromptVersion{
 		PromptID:      promptID,
 		CommitMessage: req.CommitMessage,
 		ModelParams:   req.ModelParams,
 		Provider:      req.Provider,
 		Model:         req.Model,
+		Variables:     versionVars,
 		Messages:      messages,
 	}
 
@@ -619,6 +659,7 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
@@ -652,6 +693,7 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "version deleted successfully",
 	})
@@ -789,6 +831,12 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		if len(req.ModelParams) == 0 {
 			req.ModelParams = version.ModelParams
 		}
+		if len(req.Variables) == 0 && len(version.Variables) > 0 {
+			req.Variables = make(tables.PromptVariables, len(version.Variables))
+			for key := range version.Variables {
+				req.Variables[key] = ""
+			}
+		}
 	} else {
 		// Use provided messages
 		for _, msg := range req.Messages {
@@ -806,6 +854,7 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		ModelParams: req.ModelParams,
 		Provider:    req.Provider,
 		Model:       req.Model,
+		Variables:   req.Variables,
 		Messages:    messages,
 	}
 
@@ -861,6 +910,9 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 	session.ModelParams = req.ModelParams
 	session.Provider = req.Provider
 	session.Model = req.Model
+	if req.Variables != nil {
+		session.Variables = req.Variables
+	}
 
 	// Update messages
 	var messages []tables.TablePromptSessionMessage
@@ -1005,11 +1057,45 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 
 	// Convert session messages to version messages
 	var messages []tables.TablePromptVersionMessage
-	for _, msg := range session.Messages {
-		messages = append(messages, tables.TablePromptVersionMessage{
-			PromptID: session.PromptID,
-			Message:  msg.Message,
-		})
+	if req.MessageIndices != nil {
+		// Only include messages at the specified indices, deduplicating
+		seen := make(map[int]struct{})
+		for _, idx := range *req.MessageIndices {
+			if _, ok := seen[idx]; ok {
+				continue
+			}
+			seen[idx] = struct{}{}
+			if idx < 0 || idx >= len(session.Messages) {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("message index %d out of range (0-%d)", idx, len(session.Messages)-1))
+				return
+			}
+			msg := session.Messages[idx]
+			messages = append(messages, tables.TablePromptVersionMessage{
+				PromptID: session.PromptID,
+				Message:  msg.Message,
+			})
+		}
+	} else {
+		for _, msg := range session.Messages {
+			messages = append(messages, tables.TablePromptVersionMessage{
+				PromptID: session.PromptID,
+				Message:  msg.Message,
+			})
+		}
+	}
+
+	if len(messages) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "at least one message must be included in the version")
+		return
+	}
+
+	// Copy variable keys from session with empty values for the version
+	var versionVars tables.PromptVariables
+	if len(session.Variables) > 0 {
+		versionVars = make(tables.PromptVariables, len(session.Variables))
+		for key := range session.Variables {
+			versionVars[key] = ""
+		}
 	}
 
 	version := &tables.TablePromptVersion{
@@ -1018,6 +1104,7 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		ModelParams:   session.ModelParams,
 		Provider:      session.Provider,
 		Model:         session.Model,
+		Variables:     versionVars,
 		Messages:      messages,
 	}
 
@@ -1027,6 +1114,7 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})

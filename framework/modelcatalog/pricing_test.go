@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -13,17 +14,14 @@ import (
 // helpers
 // ---------------------------------------------------------------------------
 
-func ptr(v float64) *float64 { return &v }
-func intPtr(v int) *int      { return &v }
-
 // chatPricing returns a TableModelPricing with the given per-token rates.
 func chatPricing(input, output float64) configstoreTables.TableModelPricing {
 	return configstoreTables.TableModelPricing{
 		Model:              "test-model",
 		Provider:           "test-provider",
 		Mode:               "chat",
-		InputCostPerToken:  input,
-		OutputCostPerToken: output,
+		InputCostPerToken:  bifrost.Ptr(input),
+		OutputCostPerToken: bifrost.Ptr(output),
 	}
 }
 
@@ -43,9 +41,9 @@ func makeChatResponse(provider schemas.ModelProvider, model string, usage *schem
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
@@ -57,9 +55,9 @@ func makeEmbeddingResponse(provider schemas.ModelProvider, model string, usage *
 		EmbeddingResponse: &schemas.BifrostEmbeddingResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.EmbeddingRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.EmbeddingRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
@@ -71,9 +69,9 @@ func makeRerankResponse(provider schemas.ModelProvider, model string, usage *sch
 		RerankResponse: &schemas.BifrostRerankResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.RerankRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.RerankRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
@@ -85,12 +83,19 @@ func makeImageResponse(provider schemas.ModelProvider, model string, usage *sche
 		ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ImageGenerationRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.ImageGenerationRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
+}
+
+func derefF(f *float64) float64 {
+	if f == nil {
+		return 0
+	}
+	return *f
 }
 
 // =========================================================================
@@ -124,8 +129,8 @@ func TestComputeTextCost_ZeroTokens(t *testing.T) {
 func TestComputeTextCost_WithCachedPromptTokens(t *testing.T) {
 	// Claude 3.5 Sonnet (Bedrock): input=$3/M, output=$15/M, cache_read=$0.3/M, cache_creation=$3.75/M
 	p := chatPricing(0.000003, 0.000015)
-	p.CacheReadInputTokenCost = ptr(0.0000003)
-	p.CacheCreationInputTokenCost = ptr(0.00000375)
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000003)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000375)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     2000,
@@ -149,8 +154,8 @@ func TestComputeTextCost_WithCachedPromptTokens(t *testing.T) {
 func TestComputeTextCost_Tiered200k(t *testing.T) {
 	// Claude 3.5 Sonnet Bedrock 200k tier: input=$6/M, output=$30/M
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove200kTokens = ptr(0.000006)
-	p.OutputCostPerTokenAbove200kTokens = ptr(0.00003)
+	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = bifrost.Ptr(0.00003)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     180000,
@@ -167,8 +172,8 @@ func TestComputeTextCost_Tiered200k(t *testing.T) {
 
 func TestComputeTextCost_Below200kUsesBaseRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove200kTokens = ptr(0.000006)
-	p.OutputCostPerTokenAbove200kTokens = ptr(0.00003)
+	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = bifrost.Ptr(0.00003)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -185,10 +190,10 @@ func TestComputeTextCost_Below200kUsesBaseRate(t *testing.T) {
 
 func TestComputeTextCost_Tiered272k(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove200kTokens = ptr(0.000006)
-	p.OutputCostPerTokenAbove200kTokens = ptr(0.00003)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenAbove200kTokens = new(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = new(0.00003)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -205,10 +210,10 @@ func TestComputeTextCost_Tiered272k(t *testing.T) {
 
 func TestComputeTextCost_Between200kAnd272kUses200kRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove200kTokens = ptr(0.000006)
-	p.OutputCostPerTokenAbove200kTokens = ptr(0.00003)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenAbove200kTokens = new(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = new(0.00003)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     200000,
@@ -225,10 +230,10 @@ func TestComputeTextCost_Between200kAnd272kUses200kRate(t *testing.T) {
 
 func TestComputeTextCost_272kTierWithCacheRead(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
-	p.CacheReadInputTokenCost = ptr(0.0000003)
-	p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
+	p.CacheReadInputTokenCost = new(0.0000003)
+	p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -250,7 +255,7 @@ func TestComputeTextCost_272kTierWithCacheRead(t *testing.T) {
 
 func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.SearchContextCostPerQuery = ptr(0.01) // $0.01 per search query
+	p.SearchContextCostPerQuery = bifrost.Ptr(0.01) // $0.01 per search query
 
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{
@@ -297,8 +302,8 @@ func TestComputeTextCost_NoCacheRateFallsBackToBaseInputRate(t *testing.T) {
 func TestComputeEmbeddingCost_Basic(t *testing.T) {
 	// Titan Embed Text v1: $0.1/M input
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.0000001,
-		OutputCostPerToken: 0,
+		InputCostPerToken:  bifrost.Ptr(0.0000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
 	}
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens: 5000,
@@ -310,7 +315,7 @@ func TestComputeEmbeddingCost_Basic(t *testing.T) {
 }
 
 func TestComputeEmbeddingCost_NilUsage(t *testing.T) {
-	p := configstoreTables.TableModelPricing{InputCostPerToken: 0.0000001}
+	p := configstoreTables.TableModelPricing{InputCostPerToken: new(0.0000001)}
 	assert.Equal(t, 0.0, computeEmbeddingCost(&p, nil, serviceTier{}))
 }
 
@@ -320,8 +325,8 @@ func TestComputeEmbeddingCost_NilUsage(t *testing.T) {
 
 func TestComputeRerankCost_Basic(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.000001,
-		OutputCostPerToken: 0.000002,
+		InputCostPerToken:  bifrost.Ptr(0.000001),
+		OutputCostPerToken: bifrost.Ptr(0.000002),
 	}
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     2000,
@@ -335,9 +340,9 @@ func TestComputeRerankCost_Basic(t *testing.T) {
 
 func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:         0,
-		OutputCostPerToken:        0,
-		SearchContextCostPerQuery: ptr(0.001),
+		InputCostPerToken:         bifrost.Ptr(0.0),
+		OutputCostPerToken:        bifrost.Ptr(0.0),
+		SearchContextCostPerQuery: bifrost.Ptr(0.001),
 	}
 	numQueries := 5
 	usage := &schemas.BifrostLLMUsage{
@@ -350,7 +355,7 @@ func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 }
 
 func TestComputeRerankCost_NilUsage(t *testing.T) {
-	p := configstoreTables.TableModelPricing{InputCostPerToken: 0.001}
+	p := configstoreTables.TableModelPricing{InputCostPerToken: new(0.001)}
 	assert.Equal(t, 0.0, computeRerankCost(&p, nil, serviceTier{}))
 }
 
@@ -361,9 +366,9 @@ func TestComputeRerankCost_NilUsage(t *testing.T) {
 func TestComputeSpeechCost_TokensPreferredOverDuration(t *testing.T) {
 	// TTS: input=text tokens, output=audio tokens (preferred over per-second)
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:   0.0000025,
-		OutputCostPerToken:  0.00001,
-		OutputCostPerSecond: ptr(0.00025),
+		InputCostPerToken:   bifrost.Ptr(0.0000025),
+		OutputCostPerToken:  bifrost.Ptr(0.00001),
+		OutputCostPerSecond: bifrost.Ptr(0.00025),
 	}
 	seconds := 60
 	usage := &schemas.BifrostLLMUsage{
@@ -382,9 +387,9 @@ func TestComputeSpeechCost_TokensPreferredOverDuration(t *testing.T) {
 func TestComputeSpeechCost_OutputFallsBackToPerSecond(t *testing.T) {
 	// TTS: no output tokens → falls back to per-second output pricing
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:   0.000001,
-		OutputCostPerToken:  0.000002,
-		OutputCostPerSecond: ptr(0.0001),
+		InputCostPerToken:   bifrost.Ptr(0.000001),
+		OutputCostPerToken:  bifrost.Ptr(0.000002),
+		OutputCostPerSecond: bifrost.Ptr(0.0001),
 	}
 	seconds := 120
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 500}
@@ -398,9 +403,9 @@ func TestComputeSpeechCost_OutputFallsBackToPerSecond(t *testing.T) {
 func TestComputeSpeechCost_OutputAudioTokenRate(t *testing.T) {
 	// TTS: output uses OutputCostPerAudioToken when available
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:       0.000001,
-		OutputCostPerToken:      0.000002,
-		OutputCostPerAudioToken: ptr(0.00005),
+		InputCostPerToken:       bifrost.Ptr(0.000001),
+		OutputCostPerToken:      bifrost.Ptr(0.000002),
+		OutputCostPerAudioToken: bifrost.Ptr(0.00005),
 	}
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     200,
@@ -438,9 +443,9 @@ func TestComputeSpeechCost_NilUsageNilSeconds(t *testing.T) {
 func TestComputeTranscriptionCost_DurationBased(t *testing.T) {
 	// assemblyai/nano: input_cost_per_second=0.00010278
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0,
-		OutputCostPerToken: 0,
-		InputCostPerSecond: ptr(0.00010278),
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		InputCostPerSecond: bifrost.Ptr(0.00010278),
 	}
 	seconds := 300 // 5 minutes
 	cost := computeTranscriptionCost(&p, nil, &seconds, nil, serviceTier{})
@@ -450,9 +455,9 @@ func TestComputeTranscriptionCost_DurationBased(t *testing.T) {
 
 func TestComputeTranscriptionCost_AudioTokenDetails(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:      0.000005,
-		OutputCostPerToken:     0.000015,
-		InputCostPerAudioToken: ptr(0.00001),
+		InputCostPerToken:      bifrost.Ptr(0.000005),
+		OutputCostPerToken:     bifrost.Ptr(0.000015),
+		InputCostPerAudioToken: bifrost.Ptr(0.00001),
 	}
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     2000,
@@ -486,10 +491,10 @@ func TestComputeTranscriptionCost_TokenFallback(t *testing.T) {
 func TestComputeTranscriptionCost_TokenDetailsPreferredOverDuration(t *testing.T) {
 	// STT: audio token details present → uses tokens, not per-second
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:          0.000005,
-		OutputCostPerToken:         0,
-		InputCostPerAudioPerSecond: ptr(0.0001),
-		InputCostPerAudioToken:     ptr(0.00001),
+		InputCostPerToken:          bifrost.Ptr(0.000005),
+		OutputCostPerToken:         bifrost.Ptr(0.0),
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
+		InputCostPerAudioToken:     bifrost.Ptr(0.00001),
 	}
 	seconds := 60
 	audioDetails := &schemas.TranscriptionUsageInputTokenDetails{
@@ -508,9 +513,9 @@ func TestComputeTranscriptionCost_TokenDetailsPreferredOverDuration(t *testing.T
 func TestComputeTranscriptionCost_DurationFallbackWhenNoTokens(t *testing.T) {
 	// STT: no audio token details, no prompt tokens → falls back to per-second
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:          0.000005,
-		OutputCostPerToken:         0.000015,
-		InputCostPerAudioPerSecond: ptr(0.0001),
+		InputCostPerToken:          bifrost.Ptr(0.000005),
+		OutputCostPerToken:         bifrost.Ptr(0.000015),
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
 	}
 	seconds := 60
 	usage := &schemas.BifrostLLMUsage{
@@ -531,9 +536,9 @@ func TestComputeTranscriptionCost_DurationFallbackWhenNoTokens(t *testing.T) {
 func TestComputeImageCost_PerImage(t *testing.T) {
 	// dall-e-3 (aiml): output_cost_per_image=$0.052
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0,
-		OutputCostPerToken: 0,
-		OutputCostPerImage: ptr(0.052),
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		OutputCostPerImage: bifrost.Ptr(0.052),
 	}
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{
@@ -547,7 +552,7 @@ func TestComputeImageCost_PerImage(t *testing.T) {
 
 func TestComputeImageCost_PerImageDefaultsToOne(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		OutputCostPerImage: ptr(0.052),
+		OutputCostPerImage: bifrost.Ptr(0.052),
 	}
 	usage := &schemas.ImageUsage{} // No token details → defaults to 1 image
 	cost := computeImageCost(&p, usage, "", "", serviceTier{})
@@ -556,8 +561,8 @@ func TestComputeImageCost_PerImageDefaultsToOne(t *testing.T) {
 
 func TestComputeImageCost_TokenBased(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.000005,
-		OutputCostPerToken: 0.000015,
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.000015),
 	}
 	usage := &schemas.ImageUsage{
 		InputTokens:  1000,
@@ -571,8 +576,8 @@ func TestComputeImageCost_TokenBased(t *testing.T) {
 
 func TestComputeImageCost_TokenBasedWithDetails(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.000005,
-		OutputCostPerToken: 0.000015,
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.000015),
 	}
 	usage := &schemas.ImageUsage{
 		InputTokens:  2000,
@@ -595,14 +600,14 @@ func TestComputeImageCost_TokenBasedWithDetails(t *testing.T) {
 }
 
 func TestComputeImageCost_NilUsage(t *testing.T) {
-	p := configstoreTables.TableModelPricing{OutputCostPerImage: ptr(0.05)}
+	p := configstoreTables.TableModelPricing{OutputCostPerImage: new(0.05)}
 	assert.Equal(t, 0.0, computeImageCost(&p, nil, "", "", serviceTier{}))
 }
 
 func TestComputeImageCost_InputAndOutputPerImage(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerImage:  ptr(0.01),
-		OutputCostPerImage: ptr(0.05),
+		InputCostPerImage:  bifrost.Ptr(0.01),
+		OutputCostPerImage: bifrost.Ptr(0.05),
 	}
 	usage := &schemas.ImageUsage{
 		NumInputImages:      3,
@@ -615,7 +620,7 @@ func TestComputeImageCost_InputAndOutputPerImage(t *testing.T) {
 
 func TestComputeImageCost_PerPixelOutput(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		OutputCostPerPixel: ptr(0.000000019), // ~$0.02 for 1024x1024
+		OutputCostPerPixel: bifrost.Ptr(0.000000019), // ~$0.02 for 1024x1024
 	}
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
@@ -627,8 +632,8 @@ func TestComputeImageCost_PerPixelOutput(t *testing.T) {
 
 func TestComputeImageCost_PerPixelInputAndOutput(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerPixel:  ptr(0.00000001),
-		OutputCostPerPixel: ptr(0.00000002),
+		InputCostPerPixel:  bifrost.Ptr(0.00000001),
+		OutputCostPerPixel: bifrost.Ptr(0.00000002),
 	}
 	usage := &schemas.ImageUsage{
 		NumInputImages:      2,
@@ -644,10 +649,10 @@ func TestComputeImageCost_PerPixelInputAndOutput(t *testing.T) {
 
 func TestComputeImageCost_TokensPreferredOverPixels(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.000005,
-		OutputCostPerToken: 0.000015,
-		InputCostPerPixel:  ptr(0.00000001),
-		OutputCostPerPixel: ptr(0.00000002),
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.000015),
+		InputCostPerPixel:  bifrost.Ptr(0.00000001),
+		OutputCostPerPixel: bifrost.Ptr(0.00000002),
 	}
 	usage := &schemas.ImageUsage{
 		InputTokens:  1000,
@@ -661,8 +666,8 @@ func TestComputeImageCost_TokensPreferredOverPixels(t *testing.T) {
 
 func TestComputeImageCost_PixelsPreferredOverPerImage(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		OutputCostPerPixel: ptr(0.00000002),
-		OutputCostPerImage: ptr(999.0), // should not be used
+		OutputCostPerPixel: bifrost.Ptr(0.00000002),
+		OutputCostPerImage: bifrost.Ptr(999.0), // should not be used
 	}
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
@@ -674,8 +679,8 @@ func TestComputeImageCost_PixelsPreferredOverPerImage(t *testing.T) {
 
 func TestComputeImageCost_PerPixelFallsBackToPerImage_WhenNoSize(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		OutputCostPerPixel: ptr(0.00000002),
-		OutputCostPerImage: ptr(0.05),
+		OutputCostPerPixel: bifrost.Ptr(0.00000002),
+		OutputCostPerImage: bifrost.Ptr(0.05),
 	}
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2},
@@ -691,11 +696,11 @@ func TestComputeImageCost_QualityBasedRates(t *testing.T) {
 	}
 	// Quality-specific rates take precedence over base/size-tier
 	p := configstoreTables.TableModelPricing{
-		OutputCostPerImage:              ptr(0.01),
-		OutputCostPerImageLowQuality:    ptr(0.02),
-		OutputCostPerImageMediumQuality: ptr(0.03),
-		OutputCostPerImageHighQuality:   ptr(0.04),
-		OutputCostPerImageAutoQuality:   ptr(0.05),
+		OutputCostPerImage:              bifrost.Ptr(0.01),
+		OutputCostPerImageLowQuality:    bifrost.Ptr(0.02),
+		OutputCostPerImageMediumQuality: bifrost.Ptr(0.03),
+		OutputCostPerImageHighQuality:   bifrost.Ptr(0.04),
+		OutputCostPerImageAutoQuality:   bifrost.Ptr(0.05),
 	}
 	assert.InDelta(t, 0.02, computeImageCost(&p, usage, "", "low", serviceTier{}), 1e-12)
 	assert.InDelta(t, 0.03, computeImageCost(&p, usage, "", "medium", serviceTier{}), 1e-12)
@@ -724,9 +729,9 @@ func TestParseImagePixels(t *testing.T) {
 
 func TestComputeVideoCost_DurationBased(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:           0.000001,
-		OutputCostPerToken:          0,
-		OutputCostPerVideoPerSecond: ptr(0.001),
+		InputCostPerToken:           bifrost.Ptr(0.000001),
+		OutputCostPerToken:          bifrost.Ptr(0.0),
+		OutputCostPerVideoPerSecond: bifrost.Ptr(0.001),
 	}
 	seconds := 30
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 500, TotalTokens: 500}
@@ -739,9 +744,9 @@ func TestComputeVideoCost_DurationBased(t *testing.T) {
 
 func TestComputeVideoCost_OutputCostPerSecondFallback(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:   0,
-		OutputCostPerToken:  0,
-		OutputCostPerSecond: ptr(0.002),
+		InputCostPerToken:   bifrost.Ptr(0.0),
+		OutputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerSecond: bifrost.Ptr(0.002),
 	}
 	seconds := 10
 	cost := computeVideoCost(&p, nil, &seconds, serviceTier{})
@@ -750,8 +755,8 @@ func TestComputeVideoCost_OutputCostPerSecondFallback(t *testing.T) {
 
 func TestComputeVideoCost_NilSeconds(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:           0.000001,
-		OutputCostPerVideoPerSecond: ptr(0.001),
+		InputCostPerToken:           bifrost.Ptr(0.000001),
+		OutputCostPerVideoPerSecond: bifrost.Ptr(0.001),
 	}
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000}
 	cost := computeVideoCost(&p, usage, nil, serviceTier{})
@@ -765,23 +770,23 @@ func TestComputeVideoCost_NilSeconds(t *testing.T) {
 
 func TestTieredInputRate_BelowThreshold(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:                0.000003,
-		InputCostPerTokenAbove200kTokens: ptr(0.000006),
+		InputCostPerToken:                bifrost.Ptr(0.000003),
+		InputCostPerTokenAbove200kTokens: bifrost.Ptr(0.000006),
 	}
 	assert.Equal(t, 0.000003, tieredInputRate(&p, 100000, serviceTier{}))
 }
 
 func TestTieredInputRate_AboveThreshold(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:                0.000003,
-		InputCostPerTokenAbove200kTokens: ptr(0.000006),
+		InputCostPerToken:                bifrost.Ptr(0.000003),
+		InputCostPerTokenAbove200kTokens: bifrost.Ptr(0.000006),
 	}
 	assert.Equal(t, 0.000006, tieredInputRate(&p, 210000, serviceTier{}))
 }
 
 func TestTieredInputRate_AboveThresholdNoTieredRate(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken: 0.000003,
+		InputCostPerToken: bifrost.Ptr(0.000003),
 	}
 	// Falls back to base rate when tiered field is nil
 	assert.Equal(t, 0.000003, tieredInputRate(&p, 300000, serviceTier{}))
@@ -789,8 +794,8 @@ func TestTieredInputRate_AboveThresholdNoTieredRate(t *testing.T) {
 
 func TestTieredOutputRate_AboveThreshold(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		OutputCostPerToken:                0.000015,
-		OutputCostPerTokenAbove200kTokens: ptr(0.00003),
+		OutputCostPerToken:                bifrost.Ptr(0.000015),
+		OutputCostPerTokenAbove200kTokens: bifrost.Ptr(0.00003),
 	}
 	assert.Equal(t, 0.00003, tieredOutputRate(&p, 250000, serviceTier{}))
 }
@@ -837,9 +842,9 @@ func TestExtractCostInput_TranscriptionWithSeconds(t *testing.T) {
 		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
 			Usage: &schemas.TranscriptionUsage{
 				Seconds:      &sec,
-				InputTokens:  intPtr(1000),
-				OutputTokens: intPtr(200),
-				TotalTokens:  intPtr(1200),
+				InputTokens:  bifrost.Ptr(1000),
+				OutputTokens: bifrost.Ptr(200),
+				TotalTokens:  bifrost.Ptr(1200),
 			},
 		},
 	}
@@ -898,7 +903,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
-			InputCostPerToken: 0.000005, OutputCostPerToken: 0.000015,
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
 		},
 	})
 
@@ -907,9 +912,9 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit: true,
 					HitType:  &hitType,
@@ -918,7 +923,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -930,11 +935,11 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
-			InputCostPerToken: 0.000005, OutputCostPerToken: 0.000015,
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
 		},
 		makeKey("text-embedding-3-small", "openai", "embedding"): {
 			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
-			InputCostPerToken: 0.00000002,
+			InputCostPerToken: bifrost.Ptr(0.00000002),
 		},
 	})
 
@@ -943,9 +948,9 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit:     true,
 					HitType:      &hitType,
@@ -957,7 +962,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Only embedding cost: 500 * 0.00000002 = 0.00001
 	assert.InDelta(t, 0.00001, cost, 1e-12)
 }
@@ -970,11 +975,11 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
-			InputCostPerToken: 0.000005, OutputCostPerToken: 0.000015,
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
 		},
 		makeKey("text-embedding-3-small", "openai", "embedding"): {
 			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
-			InputCostPerToken: 0.00000002,
+			InputCostPerToken: bifrost.Ptr(0.00000002),
 		},
 	})
 
@@ -982,9 +987,9 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit:     false,
 					ProviderUsed: &embProvider,
@@ -995,7 +1000,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Base cost: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	// Embedding cost: 500 * 0.00000002 = 0.00001
 	// Total: 0.01251
@@ -1016,7 +1021,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1026,7 +1031,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 
 func TestCalculateCost_NilResponse(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	assert.Equal(t, 0.0, mc.CalculateCost(nil))
+	assert.Equal(t, 0.0, mc.CalculateCost(nil, nil))
 }
 
 func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
@@ -1043,7 +1048,7 @@ func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.99, cost)
 }
 
@@ -1053,7 +1058,7 @@ func TestCalculateCost_NoUsageData(t *testing.T) {
 	})
 
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1062,9 +1067,9 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
-			InputCostPerToken:       0.000005,
-			OutputCostPerToken:      0.000015,
-			CacheReadInputTokenCost: ptr(0.0000005),
+			InputCostPerToken:       bifrost.Ptr(0.000005),
+			OutputCostPerToken:      bifrost.Ptr(0.000015),
+			CacheReadInputTokenCost: bifrost.Ptr(0.0000005),
 		},
 	})
 
@@ -1074,7 +1079,7 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 		TotalTokens:      12000,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
@@ -1084,12 +1089,12 @@ func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock", "chat"): {
 			Model: "anthropic.claude-3-5-sonnet-20241022-v2:0", Provider: "bedrock", Mode: "chat",
-			InputCostPerToken:                 0.000003,
-			OutputCostPerToken:                0.000015,
-			CacheReadInputTokenCost:           ptr(0.0000003),
-			CacheCreationInputTokenCost:       ptr(0.00000375),
-			InputCostPerTokenAbove200kTokens:  ptr(0.000006),
-			OutputCostPerTokenAbove200kTokens: ptr(0.00003),
+			InputCostPerToken:                 bifrost.Ptr(0.000003),
+			OutputCostPerToken:                bifrost.Ptr(0.000015),
+			CacheReadInputTokenCost:           bifrost.Ptr(0.0000003),
+			CacheCreationInputTokenCost:       bifrost.Ptr(0.00000375),
+			InputCostPerTokenAbove200kTokens:  bifrost.Ptr(0.000006),
+			OutputCostPerTokenAbove200kTokens: bifrost.Ptr(0.00003),
 		},
 	})
 
@@ -1103,7 +1108,7 @@ func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Both cached read and write tokens are input-side deductions from promptTokens.
 	// Input: (5000-3000-500)*0.000003 + 3000*0.0000003 + 500*0.00000375 = 0.0045 + 0.0009 + 0.001875 = 0.007275
 	// Output: 1000*0.000015 = 0.015
@@ -1116,8 +1121,8 @@ func TestCalculateCost_Embedding(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("amazon.titan-embed-text-v1", "bedrock", "embedding"): {
 			Model: "amazon.titan-embed-text-v1", Provider: "bedrock", Mode: "embedding",
-			InputCostPerToken:  0.0000001,
-			OutputCostPerToken: 0,
+			InputCostPerToken:  bifrost.Ptr(0.0000001),
+			OutputCostPerToken: bifrost.Ptr(0.0),
 		},
 	})
 
@@ -1126,7 +1131,7 @@ func TestCalculateCost_Embedding(t *testing.T) {
 		TotalTokens:  10000,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 10000 * 0.0000001 = 0.001
 	assert.InDelta(t, 0.001, cost, 1e-12)
 }
@@ -1135,8 +1140,8 @@ func TestCalculateCost_Rerank(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("amazon.rerank-v1:0", "bedrock", "rerank"): {
 			Model: "amazon.rerank-v1:0", Provider: "bedrock", Mode: "rerank",
-			InputCostPerToken:  0,
-			OutputCostPerToken: 0,
+			InputCostPerToken:  bifrost.Ptr(0.0),
+			OutputCostPerToken: bifrost.Ptr(0.0),
 		},
 	})
 
@@ -1145,7 +1150,7 @@ func TestCalculateCost_Rerank(t *testing.T) {
 		TotalTokens:  500,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1154,7 +1159,7 @@ func TestCalculateCost_ImageGeneration(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("dall-e-3", "aiml", "image_generation"): {
 			Model: "dall-e-3", Provider: "aiml", Mode: "image_generation",
-			OutputCostPerImage: ptr(0.052),
+			OutputCostPerImage: bifrost.Ptr(0.052),
 		},
 	})
 
@@ -1162,7 +1167,7 @@ func TestCalculateCost_ImageGeneration(t *testing.T) {
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 3},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 3 * 0.052 = 0.156
 	assert.InDelta(t, 0.156, cost, 1e-12)
 }
@@ -1177,14 +1182,14 @@ func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionStreamRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
@@ -1193,7 +1198,7 @@ func TestCalculateCost_NoPricingData(t *testing.T) {
 	resp := makeChatResponse(schemas.OpenAI, "unknown-model", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
 	})
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1205,57 +1210,59 @@ func TestGetPricing_DirectLookup(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p, ok := mc.getPricing("gpt-4o", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
-	assert.Equal(t, 0.000005, p.InputCostPerToken)
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): {
 			Model: "gemini-2.0-flash", Provider: "vertex", Mode: "chat",
-			InputCostPerToken: 0.0000001, OutputCostPerToken: 0.0000004,
+			InputCostPerToken: bifrost.Ptr(0.0000001), OutputCostPerToken: bifrost.Ptr(0.0000004),
 		},
 	})
-	p, ok := mc.getPricing("gemini-2.0-flash", "gemini", schemas.ChatCompletionRequest)
-	require.True(t, ok)
-	assert.Equal(t, 0.0000001, p.InputCostPerToken)
+	p := mc.resolvePricing("gemini", "gemini-2.0-flash", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
+	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_VertexStripsProviderPrefix(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
-	p, ok := mc.getPricing("google/gemini-2.0-flash", "vertex", schemas.ChatCompletionRequest)
-	require.True(t, ok)
-	assert.Equal(t, 0.0000001, p.InputCostPerToken)
+	p := mc.resolvePricing("vertex", "google/gemini-2.0-flash", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "vertex"})
+	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_BedrockAddsAnthropicPrefix(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock", "chat"): chatPricing(0.000003, 0.000015),
 	})
-	p, ok := mc.getPricing("claude-3-5-sonnet-20241022-v2:0", "bedrock", schemas.ChatCompletionRequest)
-	require.True(t, ok)
-	assert.Equal(t, 0.000003, p.InputCostPerToken)
+	p := mc.resolvePricing("bedrock", "claude-3-5-sonnet-20241022-v2:0", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "bedrock"})
+	assert.Equal(t, 0.000003, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_ResponsesFallsBackToChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p, ok := mc.getPricing("gpt-4o", "openai", schemas.ResponsesRequest)
-	require.True(t, ok)
-	assert.Equal(t, 0.000005, p.InputCostPerToken)
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_ResponsesStreamFallsBackToChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p, ok := mc.getPricing("gpt-4o", "openai", schemas.ResponsesStreamRequest)
-	require.True(t, ok)
-	assert.Equal(t, 0.000005, p.InputCostPerToken)
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesStreamRequest, PricingLookupScopes{Provider: "openai"})
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_RealtimeFallsBackToChat(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.RealtimeRequest, PricingLookupScopes{Provider: "openai"})
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
@@ -1263,15 +1270,14 @@ func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
 	// gemini provider + responses request → try vertex + responses → try vertex + chat
-	p, ok := mc.getPricing("gemini-2.0-flash", "gemini", schemas.ResponsesRequest)
-	require.True(t, ok)
-	assert.Equal(t, 0.0000001, p.InputCostPerToken)
+	p := mc.resolvePricing("gemini", "gemini-2.0-flash", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "gemini"})
+	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_NotFound(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	_, ok := mc.getPricing("nonexistent", "openai", schemas.ChatCompletionRequest)
-	assert.False(t, ok)
+	p := mc.resolvePricing("openai", "nonexistent", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	assert.Nil(t, p)
 }
 
 // =========================================================================
@@ -1284,26 +1290,27 @@ func TestResolvePricing_DeploymentFallback(t *testing.T) {
 	})
 
 	// Model not found directly, but deployment matches
-	p := mc.resolvePricing("openai", "gpt-4o-custom", "my-deployment", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "gpt-4o-custom", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
-	assert.Equal(t, 0.000005, p.InputCostPerToken)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
-func TestResolvePricing_ModelFoundDirectly(t *testing.T) {
+func TestResolvePricing_ResolvedModelHasPriority(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"):        chatPricing(0.000005, 0.000015),
 		makeKey("my-deployment", "openai", "chat"): chatPricing(0.000001, 0.000002),
 	})
 
-	// Model found directly — doesn't fall back to deployment
-	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest)
+	// Resolved model ("my-deployment") is looked up first and has priority
+	// over the originally requested model ("gpt-4o").
+	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
-	assert.Equal(t, 0.000005, p.InputCostPerToken)
+	assert.Equal(t, 0.000001, derefF(p.InputCostPerToken))
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	p := mc.resolvePricing("openai", "unknown", "", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "unknown", "", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	assert.Nil(t, p)
 }
 
@@ -1323,6 +1330,7 @@ func TestNormalizeStreamRequestType(t *testing.T) {
 		{schemas.TranscriptionStreamRequest, schemas.TranscriptionRequest},
 		{schemas.ImageGenerationStreamRequest, schemas.ImageGenerationRequest},
 		{schemas.ImageEditStreamRequest, schemas.ImageEditRequest},
+		{schemas.RealtimeRequest, schemas.RealtimeRequest},             // realtime is its own base type
 		{schemas.ChatCompletionRequest, schemas.ChatCompletionRequest}, // non-stream unchanged
 		{schemas.EmbeddingRequest, schemas.EmbeddingRequest},           // non-stream unchanged
 	}
@@ -1392,14 +1400,14 @@ func TestCalculateCost_200kTier_EndToEnd(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock", "chat"): {
 			Model: "anthropic.claude-3-5-sonnet-20240620-v1:0", Provider: "bedrock", Mode: "chat",
-			InputCostPerToken:                          0.000003,
-			OutputCostPerToken:                         0.000015,
-			InputCostPerTokenAbove200kTokens:           ptr(0.000006),
-			OutputCostPerTokenAbove200kTokens:          ptr(0.00003),
-			CacheReadInputTokenCost:                    ptr(0.0000003),
-			CacheCreationInputTokenCost:                ptr(0.00000375),
-			CacheReadInputTokenCostAbove200kTokens:     ptr(0.0000006),
-			CacheCreationInputTokenCostAbove200kTokens: ptr(0.0000075),
+			InputCostPerToken:                          bifrost.Ptr(0.000003),
+			OutputCostPerToken:                         bifrost.Ptr(0.000015),
+			InputCostPerTokenAbove200kTokens:           bifrost.Ptr(0.000006),
+			OutputCostPerTokenAbove200kTokens:          bifrost.Ptr(0.00003),
+			CacheReadInputTokenCost:                    bifrost.Ptr(0.0000003),
+			CacheCreationInputTokenCost:                bifrost.Ptr(0.00000375),
+			CacheReadInputTokenCostAbove200kTokens:     bifrost.Ptr(0.0000006),
+			CacheCreationInputTokenCostAbove200kTokens: bifrost.Ptr(0.0000075),
 		},
 	})
 
@@ -1409,7 +1417,7 @@ func TestCalculateCost_200kTier_EndToEnd(t *testing.T) {
 		TotalTokens:      210000, // Above 200k
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Tiered rate: input=0.000006, output=0.00003
 	// 190000*0.000006 + 20000*0.00003 = 1.14 + 0.6 = 1.74
 	assert.InDelta(t, 1.74, cost, 1e-9)
@@ -1421,15 +1429,15 @@ func TestCalculateCost_272kTier_EndToEnd(t *testing.T) {
 			Model:                                  "claude-3-7-sonnet",
 			Provider:                               "anthropic",
 			Mode:                                   "chat",
-			InputCostPerToken:                      0.000003,
-			OutputCostPerToken:                     0.000015,
-			InputCostPerTokenAbove200kTokens:       ptr(0.000006),
-			OutputCostPerTokenAbove200kTokens:      ptr(0.00003),
-			InputCostPerTokenAbove272kTokens:       ptr(0.000009),
-			OutputCostPerTokenAbove272kTokens:      ptr(0.000045),
-			CacheReadInputTokenCost:                ptr(0.0000003),
-			CacheReadInputTokenCostAbove200kTokens: ptr(0.0000006),
-			CacheReadInputTokenCostAbove272kTokens: ptr(0.0000009),
+			InputCostPerToken:                      new(0.000003),
+			OutputCostPerToken:                     new(0.000015),
+			InputCostPerTokenAbove200kTokens:       new(0.000006),
+			OutputCostPerTokenAbove200kTokens:      new(0.00003),
+			InputCostPerTokenAbove272kTokens:       new(0.000009),
+			OutputCostPerTokenAbove272kTokens:      new(0.000045),
+			CacheReadInputTokenCost:                new(0.0000003),
+			CacheReadInputTokenCostAbove200kTokens: new(0.0000006),
+			CacheReadInputTokenCostAbove272kTokens: new(0.0000009),
 		},
 	})
 
@@ -1439,7 +1447,7 @@ func TestCalculateCost_272kTier_EndToEnd(t *testing.T) {
 		TotalTokens:      280000, // Above 272k
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Tiered rate: input=0.000009, output=0.000045
 	// 250000*0.000009 + 30000*0.000045 = 2.25 + 1.35 = 3.60
 	assert.InDelta(t, 3.60, cost, 1e-9)
@@ -1452,13 +1460,13 @@ func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 			Model:                                  "claude-3-7-sonnet",
 			Provider:                               "anthropic",
 			Mode:                                   "chat",
-			InputCostPerToken:                      0.000003,
-			OutputCostPerToken:                     0.000015,
-			InputCostPerTokenAbove272kTokens:       ptr(0.000009),
-			OutputCostPerTokenAbove272kTokens:      ptr(0.000045),
-			CacheReadInputTokenCost:                ptr(0.0000003),
-			CacheReadInputTokenCostAbove200kTokens: ptr(0.0000006),
-			CacheReadInputTokenCostAbove272kTokens: ptr(0.0000009),
+			InputCostPerToken:                      new(0.000003),
+			OutputCostPerToken:                     new(0.000015),
+			InputCostPerTokenAbove272kTokens:       new(0.000009),
+			OutputCostPerTokenAbove272kTokens:      new(0.000045),
+			CacheReadInputTokenCost:                new(0.0000003),
+			CacheReadInputTokenCostAbove200kTokens: new(0.0000006),
+			CacheReadInputTokenCostAbove272kTokens: new(0.0000009),
 		},
 	})
 
@@ -1471,7 +1479,7 @@ func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Non-cached input: (250000-50000) * 0.000009 = 200000 * 0.000009 = 1.80
 	// Cached read (272k rate): 50000 * 0.0000009 = 0.045
 	// Output: 30000 * 0.000045 = 1.35
@@ -1485,8 +1493,8 @@ func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 
 func TestComputeTextCost_PriorityUsesInputOutputPriorityRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1502,8 +1510,8 @@ func TestComputeTextCost_PriorityUsesInputOutputPriorityRate(t *testing.T) {
 
 func TestComputeTextCost_NonPriorityIgnoresPriorityRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1519,12 +1527,12 @@ func TestComputeTextCost_NonPriorityIgnoresPriorityRate(t *testing.T) {
 
 func TestComputeTextCost_Priority272kTier(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.InputCostPerTokenAbove272kTokensPriority = ptr(0.000012)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
-	p.OutputCostPerTokenAbove272kTokensPriority = ptr(0.00006)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.InputCostPerTokenAbove272kTokensPriority = new(0.000012)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
+	p.OutputCostPerTokenAbove272kTokensPriority = new(0.00006)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -1541,8 +1549,8 @@ func TestComputeTextCost_Priority272kTier(t *testing.T) {
 func TestComputeTextCost_Priority272kTierFallsBackToNonPriority272k(t *testing.T) {
 	// Priority flag set but no priority-specific 272k rate — fall back to non-priority 272k
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -1558,10 +1566,10 @@ func TestComputeTextCost_Priority272kTierFallsBackToNonPriority272k(t *testing.T
 
 func TestComputeTextCost_PriorityCacheReadRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
-	p.CacheReadInputTokenCost = ptr(0.0000003)
-	p.CacheReadInputTokenCostPriority = ptr(0.0000006)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
+	p.CacheReadInputTokenCost = new(0.0000003)
+	p.CacheReadInputTokenCostPriority = new(0.0000006)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1588,10 +1596,10 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 			Model:                      "gpt-4o",
 			Provider:                   "openai",
 			Mode:                       "chat",
-			InputCostPerToken:          0.000005,
-			OutputCostPerToken:         0.000015,
-			InputCostPerTokenPriority:  ptr(0.000010),
-			OutputCostPerTokenPriority: ptr(0.000030),
+			InputCostPerToken:          new(0.000005),
+			OutputCostPerToken:         new(0.000015),
+			InputCostPerTokenPriority:  new(0.000010),
+			OutputCostPerTokenPriority: new(0.000030),
 		},
 	})
 
@@ -1604,14 +1612,15 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Priority rates: 1000*0.000010 + 500*0.000030 = 0.010 + 0.015 = 0.025
 	assert.InDelta(t, 0.025, cost, 1e-12)
 }
@@ -1623,10 +1632,10 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 			Model:                      "gpt-4o",
 			Provider:                   "openai",
 			Mode:                       "chat",
-			InputCostPerToken:          0.000005,
-			OutputCostPerToken:         0.000015,
-			InputCostPerTokenPriority:  ptr(0.000010),
-			OutputCostPerTokenPriority: ptr(0.000030),
+			InputCostPerToken:          new(0.000005),
+			OutputCostPerToken:         new(0.000015),
+			InputCostPerTokenPriority:  new(0.000010),
+			OutputCostPerTokenPriority: new(0.000030),
 		},
 	})
 
@@ -1639,14 +1648,15 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Base rates (not priority): 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
@@ -1655,23 +1665,23 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 	// 272k rate takes precedence over 200k, 200k over base, base over input rate
 	t.Run("uses_272k_when_above_272k", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostAbove200kTokens = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostAbove200kTokens = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000009, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{}))
 	})
 	t.Run("uses_200k_when_between_200k_and_272k", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostAbove200kTokens = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostAbove200kTokens = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000006, tieredCacheReadInputTokenRate(&p, 230000, serviceTier{}))
 	})
 	t.Run("uses_base_cache_rate_when_below_200k", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostAbove200kTokens = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostAbove200kTokens = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000003, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{}))
 	})
 	t.Run("falls_back_to_input_rate_when_no_cache_rate_set", func(t *testing.T) {
@@ -1681,49 +1691,49 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 	})
 	t.Run("priority_uses_272k_priority_rate", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostPriority = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
-		p.CacheReadInputTokenCostAbove272kTokensPriority = ptr(0.0000012)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostPriority = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
+		p.CacheReadInputTokenCostAbove272kTokensPriority = new(0.0000012)
 		assert.Equal(t, 0.0000012, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isPriority: true}))
 	})
 	t.Run("priority_falls_back_to_272k_non_priority_when_priority_rate_missing", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000009, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isPriority: true}))
 	})
 	t.Run("priority_uses_priority_base_cache_rate_below_tiers", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostPriority = ptr(0.0000006)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostPriority = new(0.0000006)
 		assert.Equal(t, 0.0000006, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{isPriority: true}))
 	})
 	t.Run("flex_uses_flex_cache_rate", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostFlex = ptr(0.0000005)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostFlex = new(0.0000005)
 		assert.Equal(t, 0.0000005, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{isFlex: true}))
 	})
 	t.Run("flex_uses_flex_cache_rate_regardless_of_token_count", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostFlex = ptr(0.0000005)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostFlex = new(0.0000005)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		// Even above 272k, flex flat rate takes precedence
 		assert.Equal(t, 0.0000005, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isFlex: true}))
 	})
 	t.Run("flex_falls_back_to_base_cache_rate_when_no_flex_cache_rate", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
+		p.CacheReadInputTokenCost = new(0.0000003)
 		// No flex cache rate — falls back to base cache rate
 		assert.Equal(t, 0.0000003, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{isFlex: true}))
 	})
 	t.Run("flex_wins_over_272k_priority_and_priority_base_when_all_present", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(5e-7)
-		p.CacheReadInputTokenCostFlex = ptr(1.3e-7)
-		p.CacheReadInputTokenCostPriority = ptr(5e-7)
-		p.CacheReadInputTokenCostAbove272kTokensPriority = ptr(0.000001)
+		p.CacheReadInputTokenCostAbove272kTokens = new(5e-7)
+		p.CacheReadInputTokenCostFlex = new(1.3e-7)
+		p.CacheReadInputTokenCostPriority = new(5e-7)
+		p.CacheReadInputTokenCostAbove272kTokensPriority = new(0.000001)
 		// token count exceeds 272k — but flex flat rate should still win
 		assert.Equal(t, 1.3e-7, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isFlex: true}))
 	})
@@ -1767,8 +1777,8 @@ func TestTierFromString_Nil(t *testing.T) {
 
 func TestComputeTextCost_FlexUsesFlexRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1784,8 +1794,8 @@ func TestComputeTextCost_FlexUsesFlexRate(t *testing.T) {
 
 func TestComputeTextCost_NonFlexIgnoresFlexRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1802,10 +1812,10 @@ func TestComputeTextCost_NonFlexIgnoresFlexRate(t *testing.T) {
 func TestComputeTextCost_FlexIgnoresTokenTiers(t *testing.T) {
 	// Flex is a flat rate — token-count tiers (272k, 200k, 128k) do not apply.
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -1821,10 +1831,10 @@ func TestComputeTextCost_FlexIgnoresTokenTiers(t *testing.T) {
 
 func TestComputeTextCost_FlexCacheReadRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
-	p.CacheReadInputTokenCost = ptr(0.0000003)
-	p.CacheReadInputTokenCostFlex = ptr(0.0000006)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
+	p.CacheReadInputTokenCost = new(0.0000003)
+	p.CacheReadInputTokenCostFlex = new(0.0000006)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1867,10 +1877,10 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 			Model:                  "gpt-4o",
 			Provider:               "openai",
 			Mode:                   "chat",
-			InputCostPerToken:      0.000005,
-			OutputCostPerToken:     0.000015,
-			InputCostPerTokenFlex:  ptr(0.0000025),
-			OutputCostPerTokenFlex: ptr(0.0000075),
+			InputCostPerToken:      new(0.000005),
+			OutputCostPerToken:     new(0.000015),
+			InputCostPerTokenFlex:  new(0.0000025),
+			OutputCostPerTokenFlex: new(0.0000075),
 		},
 	})
 
@@ -1883,14 +1893,15 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Flex rates: 1000*0.0000025 + 500*0.0000075 = 0.0025 + 0.00375 = 0.00625
 	assert.InDelta(t, 0.00625, cost, 1e-12)
 }
@@ -1910,14 +1921,15 @@ func TestCalculateCost_FlexTier_FallsBackToBaseWhenNoFlexRate(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// No flex rates configured — falls back to base: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
@@ -1937,14 +1949,14 @@ func TestCalculateCost_ProviderCostZeroTotalStillCalculates(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
 func TestCalculateCost_AllCachedTokens(t *testing.T) {
 	// All prompt tokens are from cache
 	p := chatPricing(0.000005, 0.000015)
-	p.CacheReadInputTokenCost = ptr(0.0000005)
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1970,8 +1982,8 @@ func TestCalculateCost_ImageGeneration_NilUsage_PerImagePricing(t *testing.T) {
 		Model:              "dall-e-3",
 		Provider:           "openai",
 		Mode:               "image_generation",
-		InputCostPerToken:  0,
-		OutputCostPerImage: ptr(0.04),
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -1979,7 +1991,7 @@ func TestCalculateCost_ImageGeneration_NilUsage_PerImagePricing(t *testing.T) {
 	})
 
 	resp := makeImageResponse("openai", "dall-e-3", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 1 image * $0.04 = $0.04
 	assert.InDelta(t, 0.04, cost, 1e-12)
 }
@@ -1990,8 +2002,8 @@ func TestCalculateCost_ImageGeneration_NilUsage_InputAndOutputPerImage(t *testin
 		Model:              "test-image-model",
 		Provider:           "test",
 		Mode:               "image_generation",
-		InputCostPerImage:  ptr(0.01),
-		OutputCostPerImage: ptr(0.04),
+		InputCostPerImage:  bifrost.Ptr(0.01),
+		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -1999,7 +2011,7 @@ func TestCalculateCost_ImageGeneration_NilUsage_InputAndOutputPerImage(t *testin
 	})
 
 	resp := makeImageResponse("test", "test-image-model", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// NumInputImages is 0 (not populated from request), so only output pricing applies
 	// 1 output image * $0.04 = $0.04
 	assert.InDelta(t, 0.04, cost, 1e-12)
@@ -2011,8 +2023,8 @@ func TestCalculateCost_ImageGeneration_WithInputImages(t *testing.T) {
 		Model:              "gpt-image-1",
 		Provider:           "openai",
 		Mode:               "image_generation",
-		InputCostPerImage:  ptr(0.01),
-		OutputCostPerImage: ptr(0.04),
+		InputCostPerImage:  bifrost.Ptr(0.01),
+		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -2022,7 +2034,7 @@ func TestCalculateCost_ImageGeneration_WithInputImages(t *testing.T) {
 	resp := makeImageResponse("openai", "gpt-image-1", &schemas.ImageUsage{
 		NumInputImages: 2,
 	})
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 2 input images * $0.01 + 1 output image * $0.04 = $0.06
 	assert.InDelta(t, 0.06, cost, 1e-12)
 }
@@ -2033,7 +2045,7 @@ func TestCalculateCost_ImageGeneration_OutputCountFromData(t *testing.T) {
 		Model:              "dall-e-3",
 		Provider:           "openai",
 		Mode:               "image_generation",
-		OutputCostPerImage: ptr(0.04),
+		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -2048,13 +2060,13 @@ func TestCalculateCost_ImageGeneration_OutputCountFromData(t *testing.T) {
 				{URL: "https://example.com/img3.png", Index: 2},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ImageGenerationRequest,
-				Provider:       "openai",
-				ModelRequested: "dall-e-3",
+				RequestType:            schemas.ImageGenerationRequest,
+				Provider:               "openai",
+				OriginalModelRequested: "dall-e-3",
 			},
 		},
 	}
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 3 output images * $0.04 = $0.12
 	assert.InDelta(t, 0.12, cost, 1e-12)
 }
@@ -2065,8 +2077,8 @@ func TestCalculateCost_ImageGeneration_NilUsage_NoPerImagePricing(t *testing.T) 
 		Model:              "token-only-model",
 		Provider:           "test",
 		Mode:               "image_generation",
-		InputCostPerToken:  0.000001,
-		OutputCostPerToken: 0.000002,
+		InputCostPerToken:  bifrost.Ptr(0.000001),
+		OutputCostPerToken: bifrost.Ptr(0.000002),
 	}
 
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -2074,7 +2086,7 @@ func TestCalculateCost_ImageGeneration_NilUsage_NoPerImagePricing(t *testing.T) 
 	})
 
 	resp := makeImageResponse("test", "token-only-model", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// No per-image pricing and all tokens are zero → 0
 	assert.InDelta(t, 0.0, cost, 1e-12)
 }
@@ -2085,7 +2097,7 @@ func TestCalculateCost_ImageGeneration_EmptyUsage_PerImagePricing(t *testing.T) 
 		Model:              "dall-e-3",
 		Provider:           "openai",
 		Mode:               "image_generation",
-		OutputCostPerImage: ptr(0.04),
+		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -2093,16 +2105,16 @@ func TestCalculateCost_ImageGeneration_EmptyUsage_PerImagePricing(t *testing.T) 
 	})
 
 	resp := makeImageResponse("openai", "dall-e-3", &schemas.ImageUsage{})
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.04, cost, 1e-12)
 }
 
 func TestComputeImageCost_MixedInputTokensOutputPerImage(t *testing.T) {
 	// Input has tokens (text prompt), output has no tokens but per-image pricing
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.000005,
-		OutputCostPerToken: 0.000015,
-		OutputCostPerImage: ptr(0.04),
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.000015),
+		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 	usage := &schemas.ImageUsage{
 		InputTokens:         500,
@@ -2117,9 +2129,9 @@ func TestComputeImageCost_MixedInputTokensOutputPerImage(t *testing.T) {
 func TestComputeImageCost_MixedInputPerImageOutputTokens(t *testing.T) {
 	// Input has no tokens but per-image count, output has tokens
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.000005,
-		OutputCostPerToken: 0.000015,
-		InputCostPerImage:  ptr(0.01),
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.000015),
+		InputCostPerImage:  bifrost.Ptr(0.01),
 	}
 	usage := &schemas.ImageUsage{
 		NumInputImages: 3,
@@ -2134,10 +2146,10 @@ func TestComputeImageCost_MixedInputPerImageOutputTokens(t *testing.T) {
 func TestComputeImageCost_BothHaveTokens_IgnoresPerImage(t *testing.T) {
 	// Both sides have tokens — per-image pricing is ignored
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:  0.000005,
-		OutputCostPerToken: 0.000015,
-		InputCostPerImage:  ptr(0.01),
-		OutputCostPerImage: ptr(0.04),
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.000015),
+		InputCostPerImage:  bifrost.Ptr(0.01),
+		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 	usage := &schemas.ImageUsage{
 		InputTokens:    200,

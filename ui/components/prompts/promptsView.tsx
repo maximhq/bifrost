@@ -12,12 +12,13 @@ import PromptsViewHeader from "./components/promptsViewHeader";
 import { usePromptContext } from "./context";
 
 export default function PromptsView() {
-	const { folders, prompts, foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } = usePromptContext();
+	const { folders, prompts, foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } =
+		usePromptContext();
 
 	if (foldersLoading || promptsLoading) {
 		return <FullPageLoader />;
 	}
-	
+
 	if (foldersError || promptsError) {
 		return (
 			<div className="no-padding-parent no-border-parent p-4">
@@ -31,7 +32,7 @@ export default function PromptsView() {
 
 	if (folders.length === 0 && prompts.length === 0) {
 		return (
-			<div className="no-padding-parent no-border-parent h-[calc(100dvh_-_18px)] w-full flex items-center">
+			<div className="no-padding-parent no-border-parent flex h-[calc(100dvh_-_18px)] w-full items-center">
 				<PromptSheets />
 				<PromptsEmptyState />
 			</div>

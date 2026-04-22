@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -8,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider, NetworkConfig } from "@/lib/types/config";
+import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
 import { betaHeadersFormSchema, type BetaHeadersFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -19,19 +18,84 @@ import { toast } from "sonner";
 // Known beta headers with their prefixes, descriptions, and default support per provider.
 // This mirrors the Go ProviderFeatures map in core/providers/anthropic/types.go.
 const KNOWN_BETA_HEADERS = [
-	{ prefix: "computer-use-", label: "Computer Use", description: "Computer use client tool", defaults: { anthropic: true, vertex: true, bedrock: true, azure: true } },
-	{ prefix: "structured-outputs-", label: "Structured Outputs", description: "Strict tool validation and output_format", defaults: { anthropic: true, vertex: false, bedrock: true, azure: true } },
-	{ prefix: "advanced-tool-use-", label: "Advanced Tool Use", description: "defer_loading, input_examples, allowed_callers", defaults: { anthropic: true, vertex: false, bedrock: false, azure: true } },
-	{ prefix: "mcp-client-", label: "MCP Client", description: "MCP connector support", defaults: { anthropic: true, vertex: false, bedrock: false, azure: true } },
-	{ prefix: "prompt-caching-scope-", label: "Prompt Caching Scope", description: "Prompt caching scope control", defaults: { anthropic: true, vertex: false, bedrock: false, azure: true } },
-	{ prefix: "compact-", label: "Compaction", description: "Server-side context compaction", defaults: { anthropic: true, vertex: true, bedrock: true, azure: true } },
-	{ prefix: "context-management-", label: "Context Management", description: "Context editing (clear_tool_uses, clear_thinking)", defaults: { anthropic: true, vertex: true, bedrock: true, azure: true } },
-	{ prefix: "files-api-", label: "Files API", description: "Files API support", defaults: { anthropic: true, vertex: false, bedrock: false, azure: true } },
-	{ prefix: "interleaved-thinking-", label: "Interleaved Thinking", description: "Interleaved thinking between tool calls", defaults: { anthropic: true, vertex: true, bedrock: true, azure: true } },
-	{ prefix: "skills-", label: "Skills", description: "Agent Skills", defaults: { anthropic: true, vertex: false, bedrock: false, azure: true } },
-	{ prefix: "context-1m-", label: "Context 1M", description: "1M context window (beta for Sonnet 4.5/4)", defaults: { anthropic: true, vertex: true, bedrock: true, azure: true } },
-	{ prefix: "fast-mode-", label: "Fast Mode", description: "Fast mode (Opus 4.6 research preview)", defaults: { anthropic: true, vertex: false, bedrock: false, azure: false } },
-	{ prefix: "redact-thinking-", label: "Redact Thinking", description: "Redact thinking blocks in responses", defaults: { anthropic: true, vertex: false, bedrock: false, azure: true } },
+	{
+		prefix: "computer-use-",
+		label: "Computer Use",
+		description: "Computer use client tool",
+		defaults: { anthropic: true, vertex: true, bedrock: true, azure: true },
+	},
+	{
+		prefix: "structured-outputs-",
+		label: "Structured Outputs",
+		description: "Strict tool validation and output_format",
+		defaults: { anthropic: true, vertex: false, bedrock: true, azure: true },
+	},
+	{
+		prefix: "advanced-tool-use-",
+		label: "Advanced Tool Use",
+		description: "defer_loading, input_examples, allowed_callers",
+		defaults: { anthropic: true, vertex: false, bedrock: false, azure: true },
+	},
+	{
+		prefix: "mcp-client-",
+		label: "MCP Client",
+		description: "MCP connector support",
+		defaults: { anthropic: true, vertex: false, bedrock: false, azure: true },
+	},
+	{
+		prefix: "prompt-caching-scope-",
+		label: "Prompt Caching Scope",
+		description: "Prompt caching scope control",
+		defaults: { anthropic: true, vertex: false, bedrock: false, azure: true },
+	},
+	{
+		prefix: "compact-",
+		label: "Compaction",
+		description: "Server-side context compaction",
+		defaults: { anthropic: true, vertex: true, bedrock: true, azure: true },
+	},
+	{
+		prefix: "context-management-",
+		label: "Context Management",
+		description: "Context editing (clear_tool_uses, clear_thinking)",
+		defaults: { anthropic: true, vertex: true, bedrock: true, azure: true },
+	},
+	{
+		prefix: "files-api-",
+		label: "Files API",
+		description: "Files API support",
+		defaults: { anthropic: true, vertex: false, bedrock: false, azure: true },
+	},
+	{
+		prefix: "interleaved-thinking-",
+		label: "Interleaved Thinking",
+		description: "Interleaved thinking between tool calls",
+		defaults: { anthropic: true, vertex: true, bedrock: true, azure: true },
+	},
+	{
+		prefix: "skills-",
+		label: "Skills",
+		description: "Agent Skills",
+		defaults: { anthropic: true, vertex: false, bedrock: false, azure: true },
+	},
+	{
+		prefix: "context-1m-",
+		label: "Context 1M",
+		description: "1M context window (beta for Sonnet 4.5/4)",
+		defaults: { anthropic: true, vertex: true, bedrock: true, azure: true },
+	},
+	{
+		prefix: "fast-mode-",
+		label: "Fast Mode",
+		description: "Fast mode (Opus 4.6 research preview)",
+		defaults: { anthropic: true, vertex: false, bedrock: false, azure: false },
+	},
+	{
+		prefix: "redact-thinking-",
+		label: "Redact Thinking",
+		description: "Redact thinking blocks in responses",
+		defaults: { anthropic: true, vertex: false, bedrock: false, azure: true },
+	},
 ] as const;
 
 const KNOWN_PREFIXES = new Set<string>(KNOWN_BETA_HEADERS.map((h) => h.prefix));
@@ -112,14 +176,14 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 			}
 		}
 
-		const updatedProvider: ModelProvider = {
-			...provider,
-			network_config: {
-				...(provider.network_config ?? {} as NetworkConfig),
-				beta_header_overrides: Object.keys(cleanedOverrides).length > 0 ? cleanedOverrides : undefined,
-			},
-		};
-		updateProvider(updatedProvider)
+		updateProvider(
+			buildProviderUpdatePayload(provider, {
+				network_config: {
+					...(provider.network_config ?? ({} as NetworkConfig)),
+					beta_header_overrides: Object.keys(cleanedOverrides).length > 0 ? cleanedOverrides : undefined,
+				},
+			}),
+		)
 			.unwrap()
 			.then(() => {
 				toast.success("Beta header configuration updated successfully");
@@ -198,7 +262,8 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6" data-testid="provider-config-beta-headers-content">
 				<div className="space-y-2">
 					<p className="text-muted-foreground text-xs">
-						Configure which Anthropic beta headers are allowed for this provider. Override the defaults when a provider adds or removes support for a beta feature.
+						Configure which Anthropic beta headers are allowed for this provider. Override the defaults when a provider adds or removes
+						support for a beta feature.
 					</p>
 					<div className="rounded-md border">
 						<table className="w-full text-sm">
@@ -229,7 +294,10 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 												onValueChange={(val) => setOverride(row.prefix, val as "default" | "enabled" | "disabled")}
 												disabled={!hasUpdateProviderAccess}
 											>
-												<SelectTrigger className="h-8 text-xs" data-testid={`provider-beta-override-select-${row.prefix.replace(/-/g, "")}`}>
+												<SelectTrigger
+													className="h-8 text-xs"
+													data-testid={`provider-beta-override-select-${row.prefix.replace(/-/g, "")}`}
+												>
 													<SelectValue />
 												</SelectTrigger>
 												<SelectContent>
@@ -261,7 +329,10 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 													onValueChange={(val) => setOverride(prefix, val as "enabled" | "disabled")}
 													disabled={!hasUpdateProviderAccess}
 												>
-													<SelectTrigger className="h-8 text-xs" data-testid={`provider-beta-custom-override-select-${prefix.replace(/-/g, "")}`}>
+													<SelectTrigger
+														className="h-8 text-xs"
+														data-testid={`provider-beta-custom-override-select-${prefix.replace(/-/g, "")}`}
+													>
 														<SelectValue />
 													</SelectTrigger>
 													<SelectContent>
@@ -310,14 +381,18 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 								aria-label="Custom beta header prefix"
 								aria-describedby={newPrefixError ? "custom-prefix-error" : undefined}
 							/>
-							{newPrefixError && <p className="text-destructive mt-1 text-xs" id="custom-prefix-error">{newPrefixError}</p>}
+							{newPrefixError && (
+								<p className="text-destructive mt-1 text-xs" id="custom-prefix-error">
+									{newPrefixError}
+								</p>
+							)}
 						</div>
-						<Button 
-							type="button" 
-							variant="outline" 
-							size="sm" 
-							className="h-8" 
-							disabled={!hasUpdateProviderAccess || !newPrefix.trim()} 
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							className="h-8"
+							disabled={!hasUpdateProviderAccess || !newPrefix.trim()}
 							onClick={addCustomPrefix}
 							data-testid="provider-beta-add-prefix-btn"
 						>

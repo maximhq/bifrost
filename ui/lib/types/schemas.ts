@@ -1,6 +1,49 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { z } from "zod";
 
+// Global error map - turns Zod's default messages into readable, human-friendly ones.
+// Individual schemas can still override by passing their own message.
+z.config({
+	customError: (issue) => {
+		if (issue.code === "invalid_type") {
+			// Field is missing / undefined
+			if (issue.input === undefined || issue.input === null) {
+				return "This field is required";
+			}
+			const expected = issue.expected;
+			const received = typeof issue.input;
+			if (expected === "number") return "Must be a valid number";
+			if (expected === "string") return "Must be a valid text value";
+			if (expected === "boolean") return "Must be true or false";
+			return `Expected ${expected}, received ${received}`;
+		}
+		if (issue.code === "too_small") {
+			if (issue.origin === "string" && issue.minimum === 1) {
+				return "This field is required";
+			}
+			if (issue.origin === "number") {
+				return `Must be at least ${issue.minimum}`;
+			}
+			if (issue.origin === "array" && issue.minimum === 1) {
+				return "At least one item is required";
+			}
+		}
+		if (issue.code === "too_big") {
+			if (issue.origin === "number") {
+				return `Must be at most ${issue.maximum}`;
+			}
+			if (issue.origin === "string") {
+				return `Must be at most ${issue.maximum} characters`;
+			}
+		}
+		if (issue.code === "invalid_format") {
+			if (issue.format === "url") return "Must be a valid URL";
+			if (issue.format === "email") return "Must be a valid email";
+		}
+		return undefined; // fall back to Zod default
+	},
+});
+
 // Base Zod schemas matching the TypeScript types
 
 // Known provider schema
@@ -19,81 +62,75 @@ export const envVarSchema = z.object({
 	from_env: z.boolean().optional(),
 });
 
+// Helper to check if an envVar field has a value or env reference
+function isEnvVarSet(v: { value?: string; env_var?: string } | undefined): boolean {
+	if (!v) return false;
+	return !!v.value?.trim() || !!v.env_var?.trim();
+}
+
 // Azure key config schema
 export const azureKeyConfigSchema = z
 	.object({
-		endpoint: envVarSchema,
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+		_auth_type: z.enum(["api_key", "entra_id", "default_credential"]).optional(),
+		endpoint: envVarSchema.optional(),
 		api_version: envVarSchema.optional(),
 		client_id: envVarSchema.optional(),
 		client_secret: envVarSchema.optional(),
 		tenant_id: envVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
 	})
+	.refine((data) => isEnvVarSet(data.endpoint), {
+		message: "Endpoint is required",
+		path: ["endpoint"],
+	})
 	.refine(
 		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
+			// When using Entra ID, all three fields are required
+			if (data._auth_type === "entra_id") {
+				return isEnvVarSet(data.client_id) && isEnvVarSet(data.client_secret) && isEnvVarSet(data.tenant_id);
 			}
-			return false;
+			// Otherwise, if any Entra ID field is set, all three must be set
+			const hasClientId = isEnvVarSet(data.client_id);
+			const hasClientSecret = isEnvVarSet(data.client_secret);
+			const hasTenantId = isEnvVarSet(data.tenant_id);
+			const anyEntraField = hasClientId || hasClientSecret || hasTenantId;
+			if (!anyEntraField) return true;
+			return hasClientId && hasClientSecret && hasTenantId;
 		},
 		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
+			message: "Client ID, Client Secret, and Tenant ID are all required for Entra ID authentication",
+			path: ["client_id"],
 		},
 	);
 
 // Vertex key config schema
 export const vertexKeyConfigSchema = z
 	.object({
-		project_id: envVarSchema,
+		_auth_type: z.enum(["service_account", "service_account_json", "api_key"]).optional(),
+		project_id: envVarSchema.optional(),
 		project_number: envVarSchema.optional(),
-		region: envVarSchema,
+		region: envVarSchema.optional(),
 		auth_credentials: envVarSchema.optional(),
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+	})
+	.refine((data) => isEnvVarSet(data.project_id), {
+		message: "Project ID is required",
+		path: ["project_id"],
+	})
+	.refine((data) => isEnvVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
 	})
 	.refine(
 		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
+			// When using service_account_json auth, auth_credentials is required
+			if (data._auth_type === "service_account_json") {
+				return isEnvVarSet(data.auth_credentials);
 			}
-			return false;
+			return true;
 		},
 		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
+			message: "Auth Credentials is required for service account JSON authentication",
+			path: ["auth_credentials"],
 		},
 	);
 
@@ -111,6 +148,7 @@ export const batchS3ConfigSchema = z.object({
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
 		access_key: envVarSchema.optional(),
 		secret_key: envVarSchema.optional(),
 		session_token: envVarSchema.optional(),
@@ -119,50 +157,70 @@ export const bedrockKeyConfigSchema = z
 		external_id: envVarSchema.optional(),
 		session_name: envVarSchema.optional(),
 		arn: envVarSchema.optional(),
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
-			}
-			return false;
+			// Region is required for Bedrock
+			return isEnvVarSet(data.region);
 		},
 		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
+			message: "Region is required",
+			path: ["region"],
+		},
+	)
+	.refine(
+		(data) => {
+			// When using explicit credentials, both access_key and secret_key are required
+			if (data._auth_type === "explicit") {
+				return isEnvVarSet(data.access_key) && isEnvVarSet(data.secret_key);
+			}
+			// Otherwise, if either is set both must be set
+			const hasAccessKey = isEnvVarSet(data.access_key);
+			const hasSecretKey = isEnvVarSet(data.secret_key);
+			if (!hasAccessKey && !hasSecretKey) return true;
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
 		},
 	);
 
-// Replicate key config schema
+// VLLM key config schema
+export const vllmKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+		model_name: z.string().trim().min(1, "Model name is required"),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
+		message: "Server URL is required",
+		path: ["url"],
+	});
+
 export const replicateKeyConfigSchema = z.object({
-	deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+	use_deployments_endpoint: z.boolean(),
 });
 
-// VLLM key config schema
-export const vllmKeyConfigSchema = z.object({
-	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+// Ollama key config schema
+export const ollamaKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
 		message: "Server URL is required",
-	}),
-	model_name: z.string().trim().min(1, "Model name is required"),
-});
+		path: ["url"],
+	});
+
+// SGL key config schema
+export const sglKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
+		message: "Server URL is required",
+		path: ["url"],
+	});
 
 // Model provider key schema
 export const modelProviderKeySchema = z
@@ -170,46 +228,69 @@ export const modelProviderKeySchema = z
 		id: z.string().min(1, "Id is required"),
 		name: z.string().min(1, "Name is required"),
 		value: envVarSchema.optional(),
-		models: z.array(z.string()).default([]).optional(),
+		models: z.array(z.string()).optional().default(["*"]),
 		blacklisted_models: z.array(z.string()).default([]).optional(),
-		weight: z.union([
-			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
-			z
-				.string()
-				.transform((val) => {
-					if (val === "") return 1.0;
-					const num = parseFloat(val);
-					if (isNaN(num)) {
-						throw new z.ZodError([
-							{
-								code: "custom",
-								message: "Weight must be a valid number",
-								path: ["weight"],
-							},
-						]);
-					}
-					return num;
-				})
-				.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
-		]),
+		weight: z
+			.union([z.number(), z.string()])
+			.transform((val, ctx) => {
+				if (typeof val === "number") return val;
+				if (val.trim() === "") return 1.0;
+				// Use Number() rather than parseFloat() so that strings like "0.5abc"
+				// are rejected outright instead of silently parsing to 0.5.
+				const num = Number(val);
+				if (!Number.isFinite(num)) {
+					ctx.addIssue({
+						code: "custom",
+						message: "Weight must be a valid number between 0 and 1",
+					});
+					return z.NEVER;
+				}
+				return num;
+			})
+			.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
+		aliases: z.record(z.string(), z.string()).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
-		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
+		replicate_key_config: replicateKeyConfigSchema.optional(),
+		ollama_key_config: ollamaKeyConfigSchema.optional(),
+		sgl_key_config: sglKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		enabled: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
+			// Providers with dedicated config that never need a top-level API key
+			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Azure requires API key only when using api_key auth
+			if (data.azure_key_config) {
+				if (data.azure_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
+				return true;
+			}
+			// Bedrock only requires API key when using api_key auth
+			if (data.bedrock_key_config) {
+				if (data.bedrock_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
+				return true;
+			}
+			// Vertex requires API key only when using api_key auth
+			if (data.vertex_key_config) {
+				if (data.vertex_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
 				return true;
 			}
 			// Otherwise, value is required
-			return data.value?.value && data.value?.value?.length > 0;
+			return isEnvVarSet(data.value);
 		},
 		{
-			message: "Value is required",
+			message: "API Key is required",
 			path: ["value"],
 		},
 	);
@@ -381,6 +462,14 @@ export const proxyFormConfigSchema = z
 		},
 	);
 
+// OpenAI Config tab
+export const openaiConfigFormSchema = z.object({
+	disable_store: z.boolean(),
+	chatgpt_oauth: z.boolean(),
+});
+
+export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -399,6 +488,8 @@ export const allowedRequestsSchema = z.object({
 	image_edit: z.boolean(),
 	image_edit_stream: z.boolean(),
 	image_variation: z.boolean(),
+	ocr: z.boolean(),
+	ocr_stream: z.boolean(),
 	rerank: z.boolean(),
 	video_generation: z.boolean(),
 	video_retrieve: z.boolean(),
@@ -454,85 +545,6 @@ export const formCustomProviderConfigSchema = z
 		},
 	);
 
-export const providerPricingOverrideMatchTypeSchema = z.enum(["exact", "wildcard", "regex"]);
-
-export const providerPricingOverrideRequestTypeSchema = z.enum([
-	"text_completion",
-	"text_completion_stream",
-	"chat_completion",
-	"chat_completion_stream",
-	"responses",
-	"responses_stream",
-	"embedding",
-	"rerank",
-	"speech",
-	"speech_stream",
-	"transcription",
-	"transcription_stream",
-	"image_generation",
-	"image_generation_stream",
-]);
-
-export const providerPricingOverrideSchema = z
-	.object({
-		model_pattern: z.string().min(1, "Model pattern is required"),
-		match_type: providerPricingOverrideMatchTypeSchema,
-		request_types: z.array(providerPricingOverrideRequestTypeSchema).optional(),
-		input_cost_per_token: z.number().min(0).optional(),
-		output_cost_per_token: z.number().min(0).optional(),
-		input_cost_per_video_per_second: z.number().min(0).optional(),
-		input_cost_per_audio_per_second: z.number().min(0).optional(),
-		input_cost_per_character: z.number().min(0).optional(),
-		output_cost_per_character: z.number().min(0).optional(),
-		input_cost_per_token_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_character_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_image_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_video_per_second_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_audio_per_second_above_128k_tokens: z.number().min(0).optional(),
-		output_cost_per_token_above_128k_tokens: z.number().min(0).optional(),
-		output_cost_per_character_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_token_above_200k_tokens: z.number().min(0).optional(),
-		output_cost_per_token_above_200k_tokens: z.number().min(0).optional(),
-		cache_creation_input_token_cost_above_200k_tokens: z.number().min(0).optional(),
-		cache_read_input_token_cost_above_200k_tokens: z.number().min(0).optional(),
-		cache_read_input_token_cost: z.number().min(0).optional(),
-		cache_creation_input_token_cost: z.number().min(0).optional(),
-		input_cost_per_token_batches: z.number().min(0).optional(),
-		output_cost_per_token_batches: z.number().min(0).optional(),
-		input_cost_per_image_token: z.number().min(0).optional(),
-		output_cost_per_image_token: z.number().min(0).optional(),
-		input_cost_per_image: z.number().min(0).optional(),
-		output_cost_per_image: z.number().min(0).optional(),
-		cache_read_input_image_token_cost: z.number().min(0).optional(),
-	})
-	.superRefine((data, ctx) => {
-		if (data.match_type === "exact" && data.model_pattern.includes("*")) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["model_pattern"],
-				message: "Exact match patterns cannot include '*'",
-			});
-		}
-		if (data.match_type === "wildcard" && !data.model_pattern.includes("*")) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["model_pattern"],
-				message: "Wildcard patterns must include '*'",
-			});
-		}
-		if (data.match_type === "regex") {
-			try {
-				new RegExp(data.model_pattern);
-			} catch {
-				ctx.addIssue({
-					code: "custom",
-					path: ["model_pattern"],
-					message: "Invalid regex pattern",
-				});
-			}
-		}
-	});
-
 // Full model provider config schema
 export const modelProviderConfigSchema = z.object({
 	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
@@ -543,7 +555,6 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Model provider schema
@@ -561,7 +572,6 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Flexible model provider schema for form data - allows any string for name
@@ -580,7 +590,7 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -593,7 +603,7 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Cache config schema
@@ -608,17 +618,21 @@ const baseCacheConfigSchema = z.object({
 	updated_at: z.string().optional(),
 });
 
-const directCacheConfigSchema = baseCacheConfigSchema.extend({
-	dimension: z.literal(1),
-	keys: z.array(modelProviderKeySchema).optional(),
-}).strict();
+const directCacheConfigSchema = baseCacheConfigSchema
+	.extend({
+		dimension: z.literal(1),
+		keys: z.array(modelProviderKeySchema).optional(),
+	})
+	.strict();
 
-const providerBackedCacheConfigSchema = baseCacheConfigSchema.extend({
-	provider: modelProviderNameSchema,
-	keys: z.array(modelProviderKeySchema).optional(),
-	embedding_model: z.string().min(1, "Embedding model is required"),
-	dimension: z.number().int().min(2, "Dimension must be greater than 1 for provider-backed semantic cache"),
-}).strict();
+const providerBackedCacheConfigSchema = baseCacheConfigSchema
+	.extend({
+		provider: modelProviderNameSchema,
+		keys: z.array(modelProviderKeySchema).optional(),
+		embedding_model: z.string().min(1, "Embedding model is required"),
+		dimension: z.number().int().min(2, "Dimension must be greater than 1 for provider-backed semantic cache"),
+	})
+	.strict();
 
 export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBackedCacheConfigSchema]);
 
@@ -637,6 +651,7 @@ export const coreConfigSchema = z.object({
 	mcp_agent_depth: z.number().min(1).default(10),
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
+	mcp_disable_auto_tool_inject: z.boolean().default(false),
 });
 
 // Bifrost config schema
@@ -697,14 +712,6 @@ export const betaHeadersFormSchema = z.object({
 });
 
 export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
-
-// OpenAI Config tab
-export const openaiConfigFormSchema = z.object({
-	disable_store: z.boolean(),
-	chatgpt_oauth: z.boolean(),
-});
-
-export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
 // OTEL Configuration Schema
 export const otelConfigSchema = z
@@ -930,6 +937,7 @@ export const prometheusFormSchema = z
 export const mcpClientUpdateSchema = z.object({
 	is_code_mode_client: z.boolean().optional(),
 	is_ping_available: z.boolean().optional(),
+	allow_on_all_virtual_keys: z.boolean().optional(),
 	name: z
 		.string()
 		.min(1, "Name is required")
@@ -975,6 +983,17 @@ export const mcpClientUpdateSchema = z.object({
 		),
 	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+	allowed_extra_headers: z
+		.array(z.string())
+		.optional()
+		.refine(
+			(headers) => {
+				if (!headers || headers.length === 0) return true;
+				const hasWildcard = headers.includes("*");
+				return !hasWildcard || headers.length === 1;
+			},
+			{ message: "Wildcard '*' cannot be combined with specific header names" },
+		),
 });
 
 // Global proxy type schema
@@ -1058,6 +1077,7 @@ export const routingRuleSchema = z
 		scope_id: z.string().optional(),
 		priority: z.number().min(0, "Priority must be 0 or greater").max(1000, "Priority must be 1000 or less"),
 		enabled: z.boolean().default(true),
+		chain_rule: z.boolean().default(false),
 	})
 	.refine((data) => data.scope === "global" || (data.scope_id != null && data.scope_id.trim() !== ""), {
 		message: "Scope ID is required when scope is not global",

@@ -18,7 +18,7 @@ type mockGovernanceManagerForVK struct {
 	GovernanceManager
 }
 
-func (m *mockGovernanceManagerForVK) GetGovernanceData() *governance.GovernanceData {
+func (m *mockGovernanceManagerForVK) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	return nil
 }
 
@@ -272,7 +272,7 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 		{
 			name: "collects both IDs",
 			config: configstoreTables.TableVirtualKeyProviderConfig{
-				BudgetID:    &budgetID,
+				Budgets:     []configstoreTables.TableBudget{{ID: budgetID}},
 				RateLimitID: &rateLimitID,
 			},
 			wantBudgetIDs: []string{budgetID},
@@ -281,7 +281,7 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 		{
 			name: "appends to existing slices",
 			config: configstoreTables.TableVirtualKeyProviderConfig{
-				BudgetID:    &budgetID,
+				Budgets:     []configstoreTables.TableBudget{{ID: budgetID}},
 				RateLimitID: &rateLimitID,
 			},
 			initialBudgetIDs: []string{"budget-0"},

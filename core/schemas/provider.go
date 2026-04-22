@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"time"
@@ -409,67 +410,6 @@ type CustomProviderConfig struct {
 	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
 }
 
-type PricingOverrideMatchType string
-
-const (
-	PricingOverrideMatchExact    PricingOverrideMatchType = "exact"
-	PricingOverrideMatchWildcard PricingOverrideMatchType = "wildcard"
-	PricingOverrideMatchRegex    PricingOverrideMatchType = "regex"
-)
-
-// ProviderPricingOverride contains a partial pricing patch applied at lookup time.
-// Any nil field falls back to the base pricing data.
-type ProviderPricingOverride struct {
-	ModelPattern string                   `json:"model_pattern"`
-	MatchType    PricingOverrideMatchType `json:"match_type"`
-	RequestTypes []RequestType            `json:"request_types,omitempty"`
-
-	// Basic token pricing
-	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
-
-	// Additional pricing for media
-	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
-	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
-
-	// Character-based pricing
-	InputCostPerCharacter *float64 `json:"input_cost_per_character,omitempty"`
-
-	// Pricing above 128k tokens
-	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
-	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
-	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
-	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-
-	// Pricing above 200k tokens
-	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
-	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
-
-	// Cache and batch pricing
-	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
-	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
-
-	// Image generation pricing
-	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
-	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
-	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
-	OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
-	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
-	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
-	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
-	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
-	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
-	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
-	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
-	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
-	CacheReadInputImageTokenCost                  *float64 `json:"cache_read_input_image_token_cost,omitempty"`
-}
-
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
 func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool {
 	if cpc == nil || cpc.AllowedRequests == nil {
@@ -485,14 +425,13 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger                  Logger                    `json:"-"`
-	ProxyConfig             *ProxyConfig              `json:"proxy_config,omitempty"`     // Proxy configuration
-	SendBackRawRequest      bool                      `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse     bool                      `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
-	StoreRawRequestResponse bool                      `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
-	CustomProviderConfig    *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig            *OpenAIConfig             `json:"openai_config,omitempty"`
-	PricingOverrides        []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	Logger                  Logger                `json:"-"`
+	ProxyConfig             *ProxyConfig          `json:"proxy_config,omitempty"`     // Proxy configuration
+	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
+	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
@@ -561,16 +500,19 @@ type Provider interface {
 	ListModels(ctx *BifrostContext, keys []Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx *BifrostContext, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
-	// TextCompletionStream performs a text completion stream request
-	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostTextCompletionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	// TextCompletionStream performs a text completion stream request.
+	// postHookSpanFinalizer is invoked by the provider's stream goroutine on stream completion
+	// (or on its panic-recovery defer) to finalize aggregated post-hook spans and release the
+	// per-attempt plugin pipeline. Pass nil if the caller does not need finalization.
+	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTextCompletionRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ChatCompletion performs a chat completion request
 	ChatCompletion(ctx *BifrostContext, key Key, request *BifrostChatRequest) (*BifrostChatResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
-	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostChatRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostChatRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// Responses performs a completion request using the Responses API (uses chat completion request internally for non-openai providers)
 	Responses(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostResponsesResponse, *BifrostError)
 	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
-	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// CountTokens performs a count tokens request
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
@@ -582,21 +524,21 @@ type Provider interface {
 	// Speech performs a text to speech request
 	Speech(ctx *BifrostContext, key Key, request *BifrostSpeechRequest) (*BifrostSpeechResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
-	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostSpeechRequest) (chan *BifrostStreamChunk, *BifrostError)
+	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostSpeechRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// Transcription performs a transcription request
 	Transcription(ctx *BifrostContext, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
-	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTranscriptionRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageGeneration performs an image generation request
 	ImageGeneration(ctx *BifrostContext, key Key, request *BifrostImageGenerationRequest) (
 		*BifrostImageGenerationResponse, *BifrostError)
 	// ImageGenerationStream performs an image generation stream request
-	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
 		request *BifrostImageGenerationRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageEdit performs an image edit request
 	ImageEdit(ctx *BifrostContext, key Key, request *BifrostImageEditRequest) (*BifrostImageGenerationResponse, *BifrostError)
 	// ImageEditStream performs an image edit stream request
-	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
 		request *BifrostImageEditRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageVariation performs an image variation request
 	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
@@ -655,7 +597,7 @@ type Provider interface {
 	// Passthrough executes a non-streaming passthrough; body is fully buffered.
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
-	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
 }
 
 // WebSocketCapableProvider is an optional interface that providers can implement

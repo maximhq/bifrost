@@ -1,5 +1,3 @@
-"use client";
-
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface ModelFilterSelectProps {
@@ -10,10 +8,16 @@ interface ModelFilterSelectProps {
 	"data-testid"?: string;
 }
 
-export function ModelFilterSelect({ models, selectedModel, onModelChange, placeholder = "All Models", "data-testid": testId }: ModelFilterSelectProps) {
+export function ModelFilterSelect({
+	models,
+	selectedModel,
+	onModelChange,
+	placeholder = "All Models",
+	"data-testid": testId,
+}: ModelFilterSelectProps) {
 	return (
 		<Select value={selectedModel} onValueChange={onModelChange}>
-			<SelectTrigger className="w-[110px] text-xs sm:w-[130px] !h-7.5" data-testid={testId} size="sm">
+			<SelectTrigger className="!h-7.5 w-[110px] text-xs sm:w-[130px]" data-testid={testId} size="sm">
 				<SelectValue placeholder={placeholder} />
 			</SelectTrigger>
 			<SelectContent>

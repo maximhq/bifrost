@@ -21,7 +21,8 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 	if bindingLevel == schemas.CodeModeBindingLevelServer {
 		description = "Returns a tree structure listing all virtual .pyi stub files available for connected MCP servers. " +
 			"Each server has a corresponding file (e.g., servers/<serverName>.pyi) that contains compact Python signatures for all tools in that server. " +
-			"Use readToolFile to read a specific server file and see all available tools with their signatures. " +
+			"Safe workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
+			"Use readToolFile before executeToolCode to read a specific server file and confirm exact callable tool names and parameters. " +
 			"Use getToolDocs if you need detailed documentation for a specific tool. " +
 			"In code, access tools via: server_name.tool_name(param=value). " +
 			"The server names used in code correspond to the human-readable names shown in this listing. " +
@@ -30,7 +31,9 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 	} else {
 		description = "Returns a tree structure listing all virtual .pyi stub files available for connected MCP servers, organized by individual tool. " +
 			"Each tool has a corresponding file (e.g., servers/<serverName>/<toolName>.pyi) that contains compact Python signatures for that specific tool. " +
-			"Use readToolFile to read a specific tool file and see its signature. " +
+			"The <toolName> shown in each filename is the exact canonical identifier exposed in executeToolCode. " +
+			"Safe workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
+			"Use readToolFile before executeToolCode to confirm the exact signature and parameters for the tool you want to call. " +
 			"Use getToolDocs if you need detailed documentation for a specific tool. " +
 			"In code, access tools via: server_name.tool_name(param=value). " +
 			"The server names used in code correspond to the human-readable names shown in this listing. " +
@@ -88,12 +91,7 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 			// Tool-level: one file per tool
 			for _, tool := range tools {
 				if tool.Function != nil && tool.Function.Name != "" {
-					// Strip the client prefix from tool name (format: "client-toolname" -> "toolname")
-					// But replace - with _ for valid Python identifiers
-					toolName := stripClientPrefix(tool.Function.Name, clientName)
-					// Replace any remaining hyphens with underscores for Python compatibility
-					toolName = strings.ReplaceAll(toolName, "-", "_")
-					// Validate normalized tool name to prevent path traversal
+					toolName := getCanonicalToolName(clientName, tool.Function.Name)
 					if err := validateNormalizedToolName(toolName); err != nil {
 						s.logger.Warn("%s Skipping tool '%s' from client '%s': %v", codemcp.CodeModeLogPrefix, tool.Function.Name, clientName, err)
 						continue
@@ -112,8 +110,30 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 	}
 
 	// Build tree structure from file list
-	responseText := buildVFSTree(files)
+	responseText := buildListToolFilesResponse(files, bindingLevel)
 	return createToolResponseMessage(toolCall, responseText), nil
+}
+
+func buildListToolFilesResponse(files []string, bindingLevel schemas.CodeModeBindingLevel) string {
+	tree := buildVFSTree(files)
+	if tree == "" {
+		return ""
+	}
+
+	header := []string{
+		"# Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode",
+	}
+
+	if bindingLevel == schemas.CodeModeBindingLevelServer {
+		header = append(header, "# Read the server .pyi file before executeToolCode to confirm exact tool names and parameters.")
+	} else {
+		header = append(header,
+			"# Filenames below use the exact canonical tool identifiers available in executeToolCode.",
+			"# Still call readToolFile before executeToolCode to confirm parameters and return shape.",
+		)
+	}
+
+	return strings.Join(append(header, "", tree), "\n")
 }
 
 // VFS tree node structure for building hierarchical file structure

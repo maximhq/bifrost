@@ -308,12 +308,6 @@ You can also map any custom attributes to any entity (role, team or business uni
 - **Team and business unit mappings**: All matching rules apply — users can be placed on multiple teams and business units simultaneously.
 - **Claim values**: Can be strings, arrays, or nested objects. Bifrost resolves dotted paths (e.g., `realm_access.roles`).
 
-<Note>
-  If a user matches multiple role mapping rules, the highest privilege role is assigned. If no
-  mapping matches, the first user to sign in receives the **Admin** role, and subsequent users receive the **Viewer**
-  role.
-</Note>
-
 5. Click **Save Configuration**
 
 <Warning>After saving, you'll need to restart your Bifrost server for the changes to take effect.</Warning>

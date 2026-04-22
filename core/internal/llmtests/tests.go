@@ -120,6 +120,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunCompactionTest,
 		RunInterleavedThinkingTest,
 		RunFastModeTest,
+		RunEagerInputStreamingTest,
+		RunServerToolsViaOpenAIEndpointTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -239,6 +241,8 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"Compaction", testConfig.Scenarios.Compaction},
 		{"InterleavedThinking", testConfig.Scenarios.InterleavedThinking},
 		{"FastMode", testConfig.Scenarios.FastMode},
+		{"EagerInputStreaming", testConfig.Scenarios.EagerInputStreaming},
+		{"ServerToolsViaOpenAIEndpoint", testConfig.Scenarios.ServerToolsViaOpenAIEndpoint},
 	}
 
 	supported := 0

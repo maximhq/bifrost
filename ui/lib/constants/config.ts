@@ -27,7 +27,7 @@ function parseTrialExpiry(dateStr: string | undefined): Date | null {
 export const ModelPlaceholders = {
 	default: "e.g. gpt-4, gpt-3.5-turbo. Leave blank for all models.",
 	anthropic: "e.g. claude-3-haiku, claude-2.1",
-	azure: "e.g. gpt-4, gpt-35-turbo (must match deployment names)",
+	azure: "e.g. gpt-4, gpt-35-turbo (must match alias keys)",
 	bedrock: "e.g. claude-v2, titan-text-express-v1, ai21-j2-mid",
 	cerebras: "e.g. cerebras-2, cerebras-2-vision",
 	cohere: "e.g. command-r, command-r-plus",
@@ -194,5 +194,5 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	],
 };
 
-export const IS_ENTERPRISE = process.env.NEXT_PUBLIC_IS_ENTERPRISE === "true";
-export const TRIAL_EXPIRY = parseTrialExpiry(process.env.NEXT_PUBLIC_ENTERPRISE_TRIAL_EXPIRY);
+export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";
+export const TRIAL_EXPIRY = parseTrialExpiry(process.env.BIFROST_ENTERPRISE_TRIAL_EXPIRY);

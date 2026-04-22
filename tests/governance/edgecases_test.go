@@ -43,10 +43,10 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       "test-team-criss-cross-" + generateRandomID(),
 			CustomerID: &customerID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      teamBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -71,8 +71,10 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 			},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					Budget: &BudgetRequest{
 						MaxLimit:      0.08, // Even tighter provider budget
 						ResetDuration: "1h",

@@ -111,18 +111,17 @@ func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.TextCompletionRequest(bgCtx, bifrostTextReq)
@@ -149,18 +148,17 @@ func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ChatCompletionRequest(bgCtx, bifrostChatReq)
@@ -187,18 +185,17 @@ func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ResponsesRequest(bgCtx, bifrostResponsesReq)
@@ -221,18 +218,17 @@ func (h *AsyncHandler) asyncEmbeddings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.EmbeddingRequest(bgCtx, bifrostEmbeddingReq)
@@ -259,18 +255,17 @@ func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.SpeechRequest(bgCtx, bifrostSpeechReq)
@@ -297,18 +292,17 @@ func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.TranscriptionRequest(bgCtx, bifrostTranscriptionReq)
@@ -335,18 +329,17 @@ func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageGenerationRequest(bgCtx, bifrostReq)
@@ -373,18 +366,17 @@ func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageEditRequest(bgCtx, bifrostReq)
@@ -406,18 +398,17 @@ func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageVariationRequest(bgCtx, bifrostReq)
@@ -439,18 +430,17 @@ func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.RerankRequest(bgCtx, bifrostReq)
@@ -472,18 +462,17 @@ func (h *AsyncHandler) asyncOCR(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.OCRRequest(bgCtx, bifrostReq)
@@ -509,7 +498,7 @@ func (h *AsyncHandler) getJob(operationType schemas.RequestType) fasthttp.Reques
 		}
 
 		// Get the requesting user's VK for auth check
-		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 		if bifrostCtx == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 			return

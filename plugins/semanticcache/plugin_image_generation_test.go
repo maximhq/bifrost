@@ -129,7 +129,7 @@ func TestImageGenerationSemanticSearch(t *testing.T) {
 		Dimension:      1536,
 		Threshold:      0.5,
 		Keys: []schemas.Key{
-			{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: []string{}, Weight: 1.0},
+			{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: []string{"*"}, Weight: 1.0},
 		},
 	}
 	setup := NewTestSetupWithConfig(t, config)

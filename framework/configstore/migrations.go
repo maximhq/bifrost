@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -14,6 +15,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -69,6 +71,212 @@ func (l *migrationLock) release(ctx context.Context) {
 	// Release lock on the SAME connection that acquired it
 	_, _ = l.conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrationAdvisoryLockKey)
 	l.conn.Close()
+}
+
+// RunSingleMigration applies a single gormigrate migration on the given
+// *gorm.DB. Mirrors (*RDBConfigStore).RunMigration but takes the *gorm.DB
+// directly, so downstream consumers (bifrost-enterprise, plugins) can run
+// their migrations inside a MigrateOnFreshConnection callback without having
+// to reach the throwaway pool through the ConfigStore abstraction.
+func RunSingleMigration(ctx context.Context, db *gorm.DB, migration *migrator.Migration) error {
+	if db == nil {
+		return fmt.Errorf("db cannot be nil")
+	}
+	if migration == nil {
+		return fmt.Errorf("migration cannot be nil")
+	}
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{migration})
+	return m.Migrate()
+}
+
+type legacyBudgetVirtualKey struct {
+	tables.TableVirtualKey
+	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
+}
+
+func (legacyBudgetVirtualKey) TableName() string { return "governance_virtual_keys" }
+
+type legacyBudgetVirtualKeyProviderConfig struct {
+	tables.TableVirtualKeyProviderConfig
+	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
+}
+
+func (legacyBudgetVirtualKeyProviderConfig) TableName() string {
+	return "governance_virtual_key_provider_configs"
+}
+
+type legacyBudgetTeam struct {
+	tables.TableTeam
+	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
+}
+
+func (legacyBudgetTeam) TableName() string { return "governance_teams" }
+
+type sqliteColumnInfo struct {
+	Name string `gorm:"column:name"`
+}
+
+func legacyBudgetColumnModel(tableName string) (any, error) {
+	switch tableName {
+	case "governance_virtual_keys":
+		return &legacyBudgetVirtualKey{}, nil
+	case "governance_virtual_key_provider_configs":
+		return &legacyBudgetVirtualKeyProviderConfig{}, nil
+	case "governance_teams":
+		return &legacyBudgetTeam{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported legacy budget column drop table: %s", tableName)
+	}
+}
+
+func currentBudgetOwnerModel(tableName string) (any, error) {
+	switch tableName {
+	case "governance_virtual_keys":
+		return &tables.TableVirtualKey{}, nil
+	case "governance_virtual_key_provider_configs":
+		return &tables.TableVirtualKeyProviderConfig{}, nil
+	case "governance_teams":
+		return &tables.TableTeam{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported legacy budget column drop table: %s", tableName)
+	}
+}
+
+func quoteSQLiteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func sqliteTableColumns(tx *gorm.DB, tableName string) ([]string, error) {
+	var columns []sqliteColumnInfo
+	query := fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdentifier(tableName))
+	if err := tx.Raw(query).Scan(&columns).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]string, 0, len(columns))
+	for _, column := range columns {
+		result = append(result, column.Name)
+	}
+	return result, nil
+}
+
+func sqliteTableHasColumn(tx *gorm.DB, tableName, columnName string) (bool, error) {
+	columns, err := sqliteTableColumns(tx, tableName)
+	if err != nil {
+		return false, err
+	}
+	if slices.Contains(columns, columnName) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// sqliteDropLegacyBudgetColumn removes the legacy budget_id column from a
+// SQLite table by dumping data, recreating the table from the current GORM
+// model, and copying data back.
+//
+// Strategy: dump-data → drop-original → create-clean → restore-data.
+// We never RENAME the original table because SQLite propagates ALTER TABLE
+// RENAME into FK references in OTHER tables, corrupting them.
+func sqliteDropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
+	model, err := currentBudgetOwnerModel(tableName)
+	if err != nil {
+		return err
+	}
+
+	columns, err := sqliteTableColumns(tx, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to inspect SQLite columns for %s: %w", tableName, err)
+	}
+
+	preservedColumns := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if column != "budget_id" {
+			preservedColumns = append(preservedColumns, column)
+		}
+	}
+	if len(preservedColumns) == len(columns) {
+		return nil // budget_id column not present, nothing to do
+	}
+
+	// Build the column list for data transfer.
+	quotedColumns := make([]string, 0, len(preservedColumns))
+	for _, column := range preservedColumns {
+		quotedColumns = append(quotedColumns, quoteSQLiteIdentifier(column))
+	}
+	columnList := strings.Join(quotedColumns, ", ")
+
+	// Dump existing data into a temporary table (data-only, no constraints).
+	dumpTable := tableName + "__dump"
+	if err := tx.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteSQLiteIdentifier(dumpTable))).Error; err != nil {
+		return fmt.Errorf("failed to drop stale dump table %s: %w", dumpTable, err)
+	}
+	dumpSQL := fmt.Sprintf("CREATE TABLE %s AS SELECT %s FROM %s",
+		quoteSQLiteIdentifier(dumpTable), columnList, quoteSQLiteIdentifier(tableName))
+	if err := tx.Exec(dumpSQL).Error; err != nil {
+		return fmt.Errorf("failed to dump %s data: %w", tableName, err)
+	}
+
+	// Drop the original table. Safe because PRAGMA foreign_keys is OFF.
+	// This also removes all indexes and FK definitions cleanly.
+	if err := tx.Exec(fmt.Sprintf("DROP TABLE %s", quoteSQLiteIdentifier(tableName))).Error; err != nil {
+		return fmt.Errorf("failed to drop original SQLite table %s: %w", tableName, err)
+	}
+
+	// Recreate the table from the current GORM model (no budget_id column,
+	// proper indexes and constraints). The original table name is now free.
+	if err := tx.Migrator().CreateTable(model); err != nil {
+		return fmt.Errorf("failed to recreate SQLite table %s: %w", tableName, err)
+	}
+
+	// Restore data from the dump.
+	restoreSQL := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s",
+		quoteSQLiteIdentifier(tableName), columnList, columnList, quoteSQLiteIdentifier(dumpTable))
+	if err := tx.Exec(restoreSQL).Error; err != nil {
+		return fmt.Errorf("failed to restore data into %s: %w", tableName, err)
+	}
+
+	// Clean up the dump table.
+	if err := tx.Exec(fmt.Sprintf("DROP TABLE %s", quoteSQLiteIdentifier(dumpTable))).Error; err != nil {
+		return fmt.Errorf("failed to drop dump table %s: %w", dumpTable, err)
+	}
+	return nil
+}
+
+func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
+	mg := tx.Migrator()
+	if !mg.HasColumn(tableName, "budget_id") {
+		return nil
+	}
+
+	if tx.Dialector.Name() == "sqlite" {
+		if err := sqliteDropLegacyBudgetColumn(tx, tableName); err != nil {
+			return err
+		}
+	} else {
+		model, err := legacyBudgetColumnModel(tableName)
+		if err != nil {
+			return err
+		}
+		if err := mg.DropColumn(model, "budget_id"); err != nil {
+			return fmt.Errorf("failed to drop legacy %s.budget_id column: %w", tableName, err)
+		}
+	}
+
+	var stillExists bool
+	var err error
+	if tx.Dialector.Name() == "sqlite" {
+		stillExists, err = sqliteTableHasColumn(tx, tableName, "budget_id")
+		if err != nil {
+			return fmt.Errorf("failed to verify legacy %s.budget_id column drop: %w", tableName, err)
+		}
+	} else {
+		stillExists = mg.HasColumn(tableName, "budget_id")
+	}
+	if stillExists {
+		return fmt.Errorf("legacy %s.budget_id column still exists after migration", tableName)
+	}
+	return nil
 }
 
 // Migrate performs the necessary database migrations.
@@ -274,7 +482,7 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
+	if err := migrationReconcilePricingOverridesTable(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
@@ -316,19 +524,76 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationBackfillEmptyVirtualKeyConfigs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMakeBasePricingColumnsNullable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowOnAllVirtualKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddOpenAIConfigJSONColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddChainRuleColumnToRoutingRules(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDropDeploymentColumnsAndAddAliases(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddReplicateKeyConfigColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingChainMaxDepthColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPromptVariablesColumns(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOllamaSGLConfigColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMultiBudgetTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPerUserOAuthTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPClientDiscoveredToolsColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddWhitelistedRoutesJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationReplaceEnableLiteLLMWithCompatColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddModelPricingUniqueIndex(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDefaultCompatShouldConvertParamsFalse(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddPriorityTierPricingColumns(ctx, db); err != nil {
@@ -338,6 +603,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationNormalizeOtelTraceType(ctx, db); err != nil {
+		return err
+	}
+	if err := migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddTeamBudgetsToBudgetsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOCRPricingColumns(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -366,7 +640,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					"concurrency_buffer_json",
 					"proxy_config_json",
 					"custom_provider_config_json",
-					"pricing_overrides_json",
 					"send_back_raw_request",
 					"send_back_raw_response",
 					"store_raw_request_response",
@@ -384,7 +657,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					SendBackRawResponse:      provider.SendBackRawResponse,
 					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
 					CustomProviderConfig:     provider.CustomProviderConfig,
-					PricingOverrides:         provider.PricingOverrides,
 				}
 				// Here the default value of store_raw_request_response should be based on the default value of SendBackRawRequest and SendBackRawResponse
 				if provider.SendBackRawRequest || provider.SendBackRawResponse {
@@ -522,6 +794,11 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 					return err
 				}
 			}
+			if !migrator.HasTable(&tables.TablePricingOverride{}) {
+				if err := migrator.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return err
+				}
+			}
 			if !migrator.HasTable(&tables.TablePlugin{}) {
 				if err := migrator.CreateTable(&tables.TablePlugin{}); err != nil {
 					return err
@@ -577,6 +854,9 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TableModelPricing{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePricingOverride{}); err != nil {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TablePlugin{}); err != nil {
@@ -743,9 +1023,10 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 		ID: "add_enable_litellm_fallbacks_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
-				if err := migrator.AddColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+			// Use raw SQL since the struct field was removed in a later migration.
+			// This column is subsequently dropped by migrationReplaceEnableLiteLLMWithCompatColumns.
+			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
 			}
@@ -753,9 +1034,7 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+			if err := tx.Exec("ALTER TABLE config_client DROP COLUMN IF EXISTS enable_litellm_fallbacks").Error; err != nil {
 				return err
 			}
 			return nil
@@ -909,8 +1188,8 @@ func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB) erro
 			// Step 2: Update empty ToolsToExecuteJSON arrays to wildcard ["*"]
 			// Convert "[]" (empty array) to "[\"*\"]" (wildcard array) for backward compatibility
 			updateSQL := `
-				UPDATE config_mcp_clients 
-				SET tools_to_execute_json = '["*"]' 
+				UPDATE config_mcp_clients
+				SET tools_to_execute_json = '["*"]'
 				WHERE tools_to_execute_json = '[]' OR tools_to_execute_json = '' OR tools_to_execute_json IS NULL
 			`
 			if err := tx.Exec(updateSQL).Error; err != nil {
@@ -925,8 +1204,8 @@ func migrationCleanupMCPClientToolsConfig(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 
 			revertSQL := `
-				UPDATE config_mcp_clients 
-				SET tools_to_execute_json = '[]' 
+				UPDATE config_mcp_clients
+				SET tools_to_execute_json = '[]'
 				WHERE tools_to_execute_json = '["*"]'
 			`
 			if err := tx.Exec(revertSQL).Error; err != nil {
@@ -981,12 +1260,13 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
-			// Add BudgetID column if it doesn't exist
+			// Add budget_id and rate_limit_id columns if they don't exist
+			// Note: budget_id is added via raw SQL because the field was later removed from the struct
+			// (migrated to governance_budgets.provider_config_id in add_multi_budget_tables)
 			if migrator.HasTable(&tables.TableVirtualKeyProviderConfig{}) {
-				if !migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id") {
-					if err := migrator.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id"); err != nil {
-						return fmt.Errorf("failed to add budget_id column: %w", err)
-					}
+				if err := tx.Exec("ALTER TABLE governance_virtual_key_provider_configs ADD COLUMN IF NOT EXISTS budget_id VARCHAR(255)").Error; err != nil {
+					// Ignore error for databases that don't support IF NOT EXISTS (e.g., SQLite)
+					// The column may already exist from a previous run
 				}
 
 				// Add RateLimitID column if it doesn't exist
@@ -997,10 +1277,8 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 				}
 
 				// Create foreign key indexes for better performance
-				if !migrator.HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_provider_config_budget") {
-					if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_budget ON governance_virtual_key_provider_configs (budget_id)").Error; err != nil {
-						return fmt.Errorf("failed to create budget_id index: %w", err)
-					}
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_budget ON governance_virtual_key_provider_configs (budget_id)").Error; err != nil {
+					// Ignore - index may already exist or column may not exist yet
 				}
 
 				if !migrator.HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_provider_config_rate_limit") {
@@ -1009,12 +1287,7 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 					}
 				}
 
-				// Create FK constraints (dialect‑agnostic)
-				if !migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget") {
-					if err := migrator.CreateConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget"); err != nil {
-						return fmt.Errorf("failed to create Budget FK constraint: %w", err)
-					}
-				}
+				// Create FK constraint for RateLimit (Budget FK is no longer needed - budgets use direct FK on budget table)
 				if !migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit") {
 					if err := migrator.CreateConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit"); err != nil {
 						return fmt.Errorf("failed to create RateLimit FK constraint: %w", err)
@@ -1028,32 +1301,19 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
-			// Drop indexes first
-			if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_config_budget").Error; err != nil {
-				return fmt.Errorf("failed to drop budget_id index: %w", err)
-			}
-			if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_config_rate_limit").Error; err != nil {
-				return fmt.Errorf("failed to drop rate_limit_id index: %w", err)
-			}
+			// Drop indexes
+			_ = tx.Exec("DROP INDEX IF EXISTS idx_provider_config_budget")
+			_ = tx.Exec("DROP INDEX IF EXISTS idx_provider_config_rate_limit")
 
 			// Drop FK constraints
-			if migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget") {
-				if err := migrator.DropConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget"); err != nil {
-					return fmt.Errorf("failed to drop Budget FK constraint: %w", err)
-				}
-			}
 			if migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit") {
 				if err := migrator.DropConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit"); err != nil {
 					return fmt.Errorf("failed to drop RateLimit FK constraint: %w", err)
 				}
 			}
 
-			// Drop columns
-			if migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id") {
-				if err := migrator.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id"); err != nil {
-					return fmt.Errorf("failed to drop budget_id column: %w", err)
-				}
-			}
+			// Drop columns via raw SQL (budget_id no longer on struct)
+			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
 			if migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id") {
 				if err := migrator.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
@@ -1296,15 +1556,15 @@ func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
-// migrationAddVertexDeploymentsJSONColumn adds the vertex_deployments_json column to the key table
+// migrationAddVertexDeploymentsJSONColumn adds the vertex_deployments_json column to the key table.
+// This column is later dropped by migrationDropDeploymentColumnsAndAddAliases after data is migrated.
 func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_vertex_deployments_json_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
-				if err := migrator.AddColumn(&tables.TableKey{}, "vertex_deployments_json"); err != nil {
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN vertex_deployments_json TEXT").Error; err != nil {
 					return err
 				}
 			}
@@ -1312,15 +1572,15 @@ func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) e
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if err := migrator.DropColumn(&tables.TableKey{}, "vertex_deployments_json"); err != nil {
-				return err
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN vertex_deployments_json").Error; err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}})
-	err := m.Migrate()
-	if err != nil {
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running vertex deployments JSON migration: %s", err.Error())
 	}
 	return nil
@@ -2020,14 +2280,14 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 					if key.ConfigHash == "" {
 						// Convert to schemas.Key and generate hash
 						schemaKey := schemas.Key{
-							Name:               key.Name,
-							Value:              key.Value,
-							Models:             key.Models,
-							Weight:             getWeight(key.Weight),
-							AzureKeyConfig:     key.AzureKeyConfig,
-							VertexKeyConfig:    key.VertexKeyConfig,
-							BedrockKeyConfig:   key.BedrockKeyConfig,
-							ReplicateKeyConfig: key.ReplicateKeyConfig,
+							Name:             key.Name,
+							Value:            key.Value,
+							Models:           key.Models,
+							Weight:           getWeight(key.Weight),
+							AzureKeyConfig:   key.AzureKeyConfig,
+							VertexKeyConfig:  key.VertexKeyConfig,
+							BedrockKeyConfig: key.BedrockKeyConfig,
+							Aliases:          key.Aliases,
 						}
 						hash, err := GenerateKeyHash(schemaKey)
 						if err != nil {
@@ -2139,7 +2399,6 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 							AllowDirectKeys:         cc.AllowDirectKeys,
 							AllowedOrigins:          cc.AllowedOrigins,
 							MaxRequestBodySizeMB:    cc.MaxRequestBodySizeMB,
-							EnableLiteLLMFallbacks:  cc.EnableLiteLLMFallbacks,
 						}
 						hash, err := clientConfig.GenerateClientConfigHash()
 						if err != nil {
@@ -3496,15 +3755,15 @@ func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationAddReplicateDeploymentsJSONColumn adds the replicate_deployments_json column to the key table
+// migrationAddReplicateDeploymentsJSONColumn adds the replicate_deployments_json column to the key table.
+// This column is later dropped by migrationDropDeploymentColumnsAndAddAliases after data is migrated.
 func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_replicate_deployments_json_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
-				if err := migrator.AddColumn(&tables.TableKey{}, "replicate_deployments_json"); err != nil {
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN replicate_deployments_json TEXT").Error; err != nil {
 					return err
 				}
 			}
@@ -3512,16 +3771,178 @@ func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if err := migrator.DropColumn(&tables.TableKey{}, "replicate_deployments_json"); err != nil {
-				return err
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN replicate_deployments_json").Error; err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}})
-	err := m.Migrate()
-	if err != nil {
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running replicate deployments JSON migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropDeploymentColumnsAndAddAliases adds the unified aliases_json column, migrates
+// existing per-provider deployment data into it, then drops the legacy columns.
+// Only one deployment column will be populated per row (they were mutually exclusive).
+func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_deployment_columns_and_add_aliases",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+
+			// Add aliases_json column first
+			if !m.HasColumn(&tables.TableKey{}, "aliases_json") {
+				if err := m.AddColumn(&tables.TableKey{}, "aliases_json"); err != nil {
+					return err
+				}
+			}
+
+			// Copy data from whichever legacy deployment column is populated into aliases_json.
+			// Only rows where aliases_json is not already set are touched.
+			// Exactly one deployment column will be non-null per row (they were mutually exclusive).
+			for _, col := range []string{
+				"azure_deployments_json",
+				"vertex_deployments_json",
+				"bedrock_deployments_json",
+				"replicate_deployments_json",
+			} {
+				if !m.HasColumn(&tables.TableKey{}, col) {
+					continue
+				}
+				if err := tx.Exec(
+					"UPDATE config_keys SET aliases_json = " + col +
+						" WHERE aliases_json IS NULL AND " + col + " IS NOT NULL AND " + col + " != ''",
+				).Error; err != nil {
+					return err
+				}
+			}
+
+			// Drop legacy deployment columns
+			for _, col := range []string{
+				"azure_deployments_json",
+				"vertex_deployments_json",
+				"bedrock_deployments_json",
+				"replicate_deployments_json",
+			} {
+				if m.HasColumn(&tables.TableKey{}, col) {
+					if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN " + col).Error; err != nil {
+						return err
+					}
+				}
+			}
+
+			// Fail fast if there are encrypted rows that need fixup but encryption isn't initialized.
+			// The migration drops legacy deployment columns below, so skipping this fixup
+			// would silently lose the ability to recover those values.
+			// This case will ideally never happen
+			var encryptedAliasCount int64
+			if err := tx.Table("config_keys").
+				Where(
+					"encryption_status = ? AND aliases_json IS NOT NULL AND aliases_json != '' AND aliases_json != '{}'",
+					tables.EncryptionStatusEncrypted,
+				).
+				Count(&encryptedAliasCount).Error; err != nil {
+				return fmt.Errorf("failed to count encrypted aliases for fixup: %w", err)
+			}
+			if encryptedAliasCount > 0 && !encrypt.IsEnabled() {
+				return fmt.Errorf("encryption must be enabled before migrating encrypted aliases")
+			}
+
+			// Encrypt aliases_json for rows where encryption_status is already 'encrypted'.
+			// The raw SQL copy above preserved the original column's encryption state:
+			// - bedrock_deployments_json was encrypted -> aliases_json is already encrypted
+			// - azure/vertex/replicate were never encrypted -> aliases_json is plaintext
+			// AfterFind will try to decrypt aliases_json for encrypted rows, so we must
+			// encrypt any plaintext values first.
+			if encrypt.IsEnabled() {
+				type aliasRow struct {
+					ID          uint
+					AliasesJSON *string
+				}
+				var plainRows []aliasRow
+				if err := tx.Raw(
+					"SELECT id, aliases_json FROM config_keys WHERE encryption_status = ? AND aliases_json IS NOT NULL AND aliases_json != '' AND aliases_json != '{}'",
+					tables.EncryptionStatusEncrypted,
+				).Scan(&plainRows).Error; err != nil {
+					return fmt.Errorf("failed to fetch aliases for encryption fixup: %w", err)
+				}
+				for _, row := range plainRows {
+					if row.AliasesJSON == nil || *row.AliasesJSON == "" {
+						continue
+					}
+					// If Decrypt succeeds, the value is already encrypted — skip it (bedrock case).
+					// If Decrypt fails, the value is plaintext — encrypt it.
+					if _, err := encrypt.Decrypt(*row.AliasesJSON); err != nil {
+						if !json.Valid([]byte(*row.AliasesJSON)) {
+							return fmt.Errorf("failed to decrypt aliases for key %d: %w", row.ID, err)
+						}
+						encrypted, encErr := encrypt.Encrypt(*row.AliasesJSON)
+						if encErr != nil {
+							return fmt.Errorf("failed to encrypt aliases for key %d: %w", row.ID, encErr)
+						}
+						if err := tx.Exec(
+							"UPDATE config_keys SET aliases_json = ? WHERE id = ?",
+							encrypted, row.ID,
+						).Error; err != nil {
+							return fmt.Errorf("failed to update encrypted aliases for key %d: %w", row.ID, err)
+						}
+					}
+				}
+			}
+
+			// Recompute config_hash for keys that had aliases_json populated above,
+			// since aliases_json is part of the hash input and these rows now have stale hashes.
+			var affectedKeys []tables.TableKey
+			if err := tx.Where(
+				"aliases_json IS NOT NULL AND aliases_json != ? AND aliases_json != ?", "", "{}",
+			).Find(&affectedKeys).Error; err != nil {
+				return fmt.Errorf("failed to fetch keys for hash recomputation: %w", err)
+			}
+			for _, key := range affectedKeys {
+				schemaKey := schemas.Key{
+					Name:               key.Name,
+					Value:              key.Value,
+					Models:             key.Models,
+					BlacklistedModels:  key.BlacklistedModels,
+					Weight:             getWeight(key.Weight),
+					AzureKeyConfig:     key.AzureKeyConfig,
+					VertexKeyConfig:    key.VertexKeyConfig,
+					BedrockKeyConfig:   key.BedrockKeyConfig,
+					Aliases:            key.Aliases,
+					VLLMKeyConfig:      key.VLLMKeyConfig,
+					ReplicateKeyConfig: key.ReplicateKeyConfig,
+					Enabled:            key.Enabled,
+					UseForBatchAPI:     key.UseForBatchAPI,
+				}
+				hash, err := GenerateKeyHash(schemaKey)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for key %s: %w", key.Name, err)
+				}
+				if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for key '%s' after aliases migration", key.Name)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+			if m.HasColumn(&tables.TableKey{}, "aliases_json") {
+				if err := m.DropColumn(&tables.TableKey{}, "aliases_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running drop deployment columns and add aliases migration: %s", err.Error())
 	}
 	return nil
 }
@@ -3712,6 +4133,126 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running rate limit migration for teams and customers: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillEmptyVirtualKeyConfigs backfills existing virtual keys that have
+// empty ProviderConfigs or MCPConfigs with all available providers/MCP clients.
+// This preserves the previous "empty means all" behavior for existing VKs after
+// the semantic change to "empty means none" (deny-by-default).
+func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_empty_virtual_key_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Step 1: Backfill ProviderConfigs for VKs that have none
+			// Find all virtual keys
+			var allVKs []tables.TableVirtualKey
+			if err := tx.Find(&allVKs).Error; err != nil {
+				return fmt.Errorf("failed to query virtual keys: %w", err)
+			}
+
+			// Get all available providers
+			var allProviders []tables.TableProvider
+			if err := tx.Find(&allProviders).Error; err != nil {
+				return fmt.Errorf("failed to query providers: %w", err)
+			}
+
+			// Track which VK IDs were modified so we can recompute their config_hash
+			modifiedVKIDs := make(map[string]struct{})
+
+			for _, vk := range allVKs {
+				// Check if this VK has any provider configs
+				var providerConfigCount int64
+				if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&providerConfigCount).Error; err != nil {
+					return fmt.Errorf("failed to count provider configs for VK %s: %w", vk.ID, err)
+				}
+
+				if providerConfigCount == 0 && len(allProviders) > 0 {
+					// VK has no provider configs - backfill with all available providers
+					for _, provider := range allProviders {
+						providerConfig := tables.TableVirtualKeyProviderConfig{
+							VirtualKeyID:  vk.ID,
+							Provider:      provider.Name,
+							Weight:        bifrost.Ptr(1.0),
+							AllowedModels: []string{},
+							AllowAllKeys:  true,
+						}
+						if err := tx.Create(&providerConfig).Error; err != nil {
+							return fmt.Errorf("failed to create provider config for VK %s, provider %s: %w", vk.ID, provider.Name, err)
+						}
+					}
+					modifiedVKIDs[vk.ID] = struct{}{}
+					log.Printf("[Migration] Backfilled VK '%s' with %d provider configs", vk.Name, len(allProviders))
+				}
+			}
+
+			// Step 2: Backfill MCPConfigs for VKs that have none
+			// Get all available MCP clients
+			var allMCPClients []tables.TableMCPClient
+			if err := tx.Find(&allMCPClients).Error; err != nil {
+				return fmt.Errorf("failed to query MCP clients: %w", err)
+			}
+
+			for _, vk := range allVKs {
+				// Check if this VK has any MCP configs
+				var mcpConfigCount int64
+				if err := tx.Model(&tables.TableVirtualKeyMCPConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&mcpConfigCount).Error; err != nil {
+					return fmt.Errorf("failed to count MCP configs for VK %s: %w", vk.ID, err)
+				}
+
+				if mcpConfigCount == 0 && len(allMCPClients) > 0 {
+					// VK has no MCP configs - backfill with all available MCP clients with wildcard
+					for _, mcpClient := range allMCPClients {
+						mcpConfig := tables.TableVirtualKeyMCPConfig{
+							VirtualKeyID:   vk.ID,
+							MCPClientID:    mcpClient.ID,
+							ToolsToExecute: []string{"*"},
+						}
+						if err := tx.Create(&mcpConfig).Error; err != nil {
+							return fmt.Errorf("failed to create MCP config for VK %s, client %d: %w", vk.ID, mcpClient.ID, err)
+						}
+					}
+					modifiedVKIDs[vk.ID] = struct{}{}
+					log.Printf("[Migration] Backfilled VK '%s' with %d MCP client configs", vk.Name, len(allMCPClients))
+				}
+			}
+
+			// Step 3: Recompute and persist config_hash for every VK that was modified.
+			// Without this, subsequent config-sync diff logic would see a stale hash and
+			// attempt to re-reconcile the VK (potentially undoing the backfill).
+			for vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed - the backfilled configs are valid data
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill empty virtual key configs migration: %s", err.Error())
 	}
 	return nil
 }
@@ -3933,33 +4474,45 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
-// migrationAddProviderPricingOverridesColumn adds the pricing_overrides_json column to the config_provider table
-func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB) error {
+func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_pricing_overrides_column",
+		ID: "reconcile_pricing_overrides_table",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.AddColumn(&tables.TableProvider{}, "PricingOverridesJSON"); err != nil {
-					return fmt.Errorf("failed to add pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+
+			if !mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to create governance_pricing_overrides table: %w", err)
+				}
+				return nil
+			}
+			if err := tx.AutoMigrate(&tables.TablePricingOverride{}); err != nil {
+				return fmt.Errorf("failed to automigrate governance_pricing_overrides table: %w", err)
+			}
+			for _, indexName := range []string{"idx_pricing_override_scope", "idx_pricing_override_match"} {
+				if mgr.HasIndex(&tables.TablePricingOverride{}, indexName) {
+					continue
+				}
+				if err := mgr.CreateIndex(&tables.TablePricingOverride{}, indexName); err != nil {
+					return fmt.Errorf("failed to create pricing override index %s: %w", indexName, err)
 				}
 			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.DropColumn(&tables.TableProvider{}, "pricing_overrides_json"); err != nil {
-					return fmt.Errorf("failed to drop pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+			if mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.DropTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to drop governance_pricing_overrides table: %w", err)
 				}
 			}
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
+		return fmt.Errorf("error while running pricing overrides table reconcile migration: %s", err.Error())
 	}
 	return nil
 }
@@ -4235,6 +4788,124 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowAllKeysToProviderConfig adds the allow_all_keys column to the provider config table
+// and backfills existing rows: any provider config with no keys in the join table previously meant
+// "allow all keys" (old semantic), so they get allow_all_keys = true to preserve behaviour.
+func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_all_keys_to_provider_config",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+
+			// Add the column if it doesn't exist
+			if !migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				if err := migratorInstance.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
+					return fmt.Errorf("failed to add allow_all_keys column: %w", err)
+				}
+			}
+
+			// Backfill: find all provider configs that have no keys in the join table.
+			// These previously meant "allow all keys", so set allow_all_keys = true.
+			var allConfigs []tables.TableVirtualKeyProviderConfig
+			if err := tx.Find(&allConfigs).Error; err != nil {
+				return fmt.Errorf("failed to query provider configs: %w", err)
+			}
+
+			// Track which VK IDs were modified so we can recompute their config_hash.
+			// Without this, subsequent config-sync diff logic would see a stale hash
+			// and attempt to re-reconcile the VK (potentially undoing the backfill).
+			modifiedVKIDs := make(map[string]struct{})
+
+			for _, pc := range allConfigs {
+				var keyCount int64
+				if err := tx.Table("governance_virtual_key_provider_config_keys").
+					Where("table_virtual_key_provider_config_id = ?", pc.ID).
+					Count(&keyCount).Error; err != nil {
+					return fmt.Errorf("failed to count keys for provider config %d: %w", pc.ID, err)
+				}
+
+				if keyCount == 0 {
+					if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+						Where("id = ?", pc.ID).
+						Update("allow_all_keys", true).Error; err != nil {
+						return fmt.Errorf("failed to backfill allow_all_keys for provider config %d: %w", pc.ID, err)
+					}
+					modifiedVKIDs[pc.VirtualKeyID] = struct{}{}
+				}
+			}
+
+			// Recompute and persist config_hash for every VK that was modified.
+			for vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				if err := migratorInstance.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_all_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running allow_all_keys migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPDisableAutoToolInjectColumn adds the mcp_disable_auto_tool_inject column to the client config table.
+// When true, MCP tools are not automatically injected into requests; only explicit context filters apply.
+func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_disable_auto_tool_inject_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject") {
+				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp disable auto tool inject migration: %s", err.Error())
 	}
 	return nil
 }
@@ -4747,6 +5418,142 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationBackfillAllowedModelsWildcard converts empty allowed_models on
+// governance_virtual_key_provider_configs and empty models_json on keys to ["*"],
+// preserving the previous "empty = allow all" semantics for existing records.
+// After this migration the new convention applies: ["*"] = allow all, [] = deny all.
+func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_allowed_models_wildcard",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// --- Field 1: vk.provider_config.allowed_models ---
+			// Rows with '[]' previously meant "allow all models"; migrate to '["*"]'.
+			if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+				Where("allowed_models = ? OR allowed_models IS NULL", `[]`).
+				Update("allowed_models", `["*"]`).Error; err != nil {
+				return fmt.Errorf("failed to backfill provider_config allowed_models: %w", err)
+			}
+
+			// Recompute config_hash for all VKs that have provider configs
+			// (any of them may have had their allowed_models updated above).
+			var modifiedVKIDs []string
+			if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+				Distinct("virtual_key_id").
+				Pluck("virtual_key_id", &modifiedVKIDs).Error; err != nil {
+				return fmt.Errorf("failed to query VK IDs for hash recomputation: %w", err)
+			}
+
+			for _, vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					if err == gorm.ErrRecordNotFound {
+						// Orphaned provider config row — VK was deleted; skip.
+						continue
+					}
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s' after allowed_models backfill", vk.Name)
+			}
+
+			// --- Field 2: provider.key.models (models_json column) ---
+			// Rows with '[]' or empty string previously meant "allow all models"; migrate to '["*"]'.
+			if err := tx.Model(&tables.TableKey{}).
+				Where("models_json = ? OR models_json = ? OR models_json IS NULL", `[]`, ``).
+				Update("models_json", `["*"]`).Error; err != nil {
+				return fmt.Errorf("failed to backfill key models_json: %w", err)
+			}
+
+			// Recompute config_hash for all keys since models_json is part of the hash input.
+			var keys []tables.TableKey
+			if err := tx.Find(&keys).Error; err != nil {
+				return fmt.Errorf("failed to fetch keys for hash recomputation: %w", err)
+			}
+			for _, key := range keys {
+				schemaKey := schemas.Key{
+					Name:               key.Name,
+					Value:              key.Value,
+					Models:             key.Models,
+					Weight:             getWeight(key.Weight),
+					AzureKeyConfig:     key.AzureKeyConfig,
+					VertexKeyConfig:    key.VertexKeyConfig,
+					BedrockKeyConfig:   key.BedrockKeyConfig,
+					Aliases:            key.Aliases,
+					VLLMKeyConfig:      key.VLLMKeyConfig,
+					ReplicateKeyConfig: key.ReplicateKeyConfig,
+					OllamaKeyConfig:    key.OllamaKeyConfig,
+					SGLKeyConfig:       key.SGLKeyConfig,
+					Enabled:            key.Enabled,
+					UseForBatchAPI:     key.UseForBatchAPI,
+				}
+				hash, err := GenerateKeyHash(schemaKey)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for key %s: %w", key.Name, err)
+				}
+				if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is intentionally a no-op: reverting ["*"] back to [] would
+			// re-introduce the ambiguous "empty = allow all" semantics on downgrade.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill_allowed_models_wildcard migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientAllowedExtraHeadersJSONColumn adds the allowed_extra_headers_json column to the mcp_client table
+func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_allowed_extra_headers_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_mcp_client_allowed_extra_headers_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddPluginOrderColumns adds placement and exec_order columns to config_plugins table
 func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -4791,6 +5598,65 @@ func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationMakeBasePricingColumnsNullable drops the NOT NULL constraint on
+// input_cost_per_token and output_cost_per_token in governance_model_pricing,
+// allowing models that only have non-token pricing (image, audio, video) to be
+// stored without a placeholder zero value.
+func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "make_base_pricing_columns_nullable",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+			if err := m.AlterColumn(&tables.TableModelPricing{}, "InputCostPerToken"); err != nil {
+				return fmt.Errorf("failed to alter input_cost_per_token: %w", err)
+			}
+			if err := m.AlterColumn(&tables.TableModelPricing{}, "OutputCostPerToken"); err != nil {
+				return fmt.Errorf("failed to alter output_cost_per_token: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running make_base_pricing_columns_nullable migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowOnAllVirtualKeysColumn adds the allow_on_all_virtual_keys column to the mcp_client table
+func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_on_all_virtual_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
+					return fmt.Errorf("failed to add allow_on_all_virtual_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_on_all_virtual_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_allow_on_all_virtual_keys_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddOpenAIConfigJSONColumn adds the open_ai_config_json column to the provider table
 func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -4818,6 +5684,50 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_open_ai_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
+func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_prompt_variables_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				if err := migrator.AddColumn(&tables.TablePromptSession{}, "VariablesJSON"); err != nil {
+					return fmt.Errorf("failed to add variables_json column to prompt_sessions: %w", err)
+				}
+			}
+
+			if !migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				if err := migrator.AddColumn(&tables.TablePromptVersion{}, "VariablesJSON"); err != nil {
+					return fmt.Errorf("failed to add variables_json column to prompt_versions: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				if err := migrator.DropColumn(&tables.TablePromptSession{}, "variables_json"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				if err := migrator.DropColumn(&tables.TablePromptVersion{}, "variables_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_variables_columns migration: %s", err.Error())
 	}
 	return nil
 }
@@ -4857,16 +5767,36 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	return nil
 }
 
-// migrationAddBudgetCalendarAlignedColumn adds the calendar_aligned column to the governance_budgets table.
-func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+// migrationAddChainRuleColumnToRoutingRules adds chain_rule to routing_rules.
+// When true, the routing engine re-evaluates the full rule set after this rule matches,
+// using the resolved provider/model as the new context input.
+func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_budget_calendar_aligned_column",
+		ID: "add_chain_rule_column_to_routing_rules",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-			if !mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				if err := mg.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
-					return fmt.Errorf("failed to add calendar_aligned column: %w", err)
+			if !mg.HasColumn(&tables.TableRoutingRule{}, "chain_rule") {
+				if err := mg.AddColumn(&tables.TableRoutingRule{}, "chain_rule"); err != nil {
+					return fmt.Errorf("failed to add chain_rule column: %w", err)
+				}
+			}
+
+			// Backfill config_hash for all existing routing rules.
+			// GenerateRoutingRuleHash now includes chain_rule, so existing hashes
+			// (computed without it) are stale and must be recomputed to avoid
+			// every rule appearing as changed after this upgrade.
+			var rules []tables.TableRoutingRule
+			if err := tx.Preload("Targets").Find(&rules).Error; err != nil {
+				return fmt.Errorf("failed to load routing rules for config_hash backfill: %w", err)
+			}
+			for _, rule := range rules {
+				hash, err := GenerateRoutingRuleHash(rule)
+				if err != nil {
+					return fmt.Errorf("failed to generate config_hash for routing rule %s: %w", rule.ID, err)
+				}
+				if err := tx.Model(&tables.TableRoutingRule{}).Where("id = ?", rule.ID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for routing rule %s: %w", rule.ID, err)
 				}
 			}
 			return nil
@@ -4874,16 +5804,188 @@ func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) e
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				if err := mg.DropColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
-					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
+			if mg.HasColumn(&tables.TableRoutingRule{}, "chain_rule") {
+				if err := mg.DropColumn(&tables.TableRoutingRule{}, "chain_rule"); err != nil {
+					return fmt.Errorf("failed to drop chain_rule column: %w", err)
 				}
 			}
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_chain_rule_column_to_routing_rules migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddReplicateKeyConfigColumn adds the replicate_use_deployments_endpoint column to the key table
+func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_replicate_key_config_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint") {
+				if err := mg.AddColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
+					return err
+				}
+				// Backfill: Replicate keys that had deployments configured (now in aliases_json after
+				// migrationDropDeploymentColumnsAndAddAliases) were using the deployments endpoint.
+				trueVal := true
+				if err := tx.Model(&tables.TableKey{}).
+					Where("provider = ? AND aliases_json IS NOT NULL AND aliases_json != ? AND aliases_json != ?",
+						string(schemas.Replicate), "", "{}",
+					).
+					Update("ReplicateUseDeploymentsEndpoint", &trueVal).Error; err != nil {
+					return err
+				}
+
+				// Recompute config_hash for Replicate keys that were updated above,
+				// since replicate_use_deployments_endpoint is part of the hash input.
+				var affectedKeys []tables.TableKey
+				if err := tx.Where(
+					"provider = ? AND replicate_use_deployments_endpoint IS NOT NULL",
+					string(schemas.Replicate),
+				).Find(&affectedKeys).Error; err != nil {
+					return fmt.Errorf("failed to fetch replicate keys for hash recomputation: %w", err)
+				}
+				for _, key := range affectedKeys {
+					schemaKey := schemas.Key{
+						Name:               key.Name,
+						Value:              key.Value,
+						Models:             key.Models,
+						BlacklistedModels:  key.BlacklistedModels,
+						Weight:             getWeight(key.Weight),
+						AzureKeyConfig:     key.AzureKeyConfig,
+						VertexKeyConfig:    key.VertexKeyConfig,
+						BedrockKeyConfig:   key.BedrockKeyConfig,
+						Aliases:            key.Aliases,
+						VLLMKeyConfig:      key.VLLMKeyConfig,
+						ReplicateKeyConfig: key.ReplicateKeyConfig,
+						Enabled:            key.Enabled,
+						UseForBatchAPI:     key.UseForBatchAPI,
+					}
+					hash, err := GenerateKeyHash(schemaKey)
+					if err != nil {
+						return fmt.Errorf("failed to generate hash for key %s: %w", key.Name, err)
+					}
+					if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
+						return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
+					}
+					log.Printf("[Migration] Recomputed config_hash for replicate key '%s' after replicate config backfill", key.Name)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint") {
+				if err := mg.DropColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_replicate_key_config_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetCalendarAlignedColumn was originally for adding calendar_aligned to governance_budgets.
+// Calendar alignment is now a VK-level field (governance_virtual_keys.calendar_aligned) added in migrationAddMultiBudgetTables.
+// This migration is kept as a no-op so the migrator doesn't try to re-run it.
+func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID:       "add_budget_calendar_aligned_column",
+		Migrate:  func(tx *gorm.DB) error { return nil },
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_budget_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRoutingChainMaxDepthColumn adds routing_chain_max_depth to the client config table.
+// Defaults to 10, which is the built-in default for routing rule chain evaluation depth.
+func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_chain_max_depth_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "routing_chain_max_depth") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
+					return fmt.Errorf("failed to add routing_chain_max_depth column: %w", err)
+				}
+				// Recompute config_hash for all existing client configs that have one.
+				// RoutingChainMaxDepth is now included in the hash (when > 0), so without
+				// this recompute the stored hash would mismatch on every startup after upgrade.
+				var clientConfigs []tables.TableClientConfig
+				if err := tx.Find(&clientConfigs).Error; err != nil {
+					return fmt.Errorf("failed to fetch client configs for hash recompute: %w", err)
+				}
+				for _, cc := range clientConfigs {
+					if cc.ConfigHash == "" {
+						continue // no stored hash to invalidate
+					}
+					depth := cc.RoutingChainMaxDepth
+					if depth == 0 {
+						// Should never happen, but just in case.
+						depth = 10 // DefaultRoutingChainMaxDepth
+					}
+					clientConfig := ClientConfig{
+						DropExcessRequests:              cc.DropExcessRequests,
+						InitialPoolSize:                 cc.InitialPoolSize,
+						PrometheusLabels:                cc.PrometheusLabels,
+						EnableLogging:                   cc.EnableLogging,
+						DisableContentLogging:           cc.DisableContentLogging,
+						DisableDBPingsInHealth:          cc.DisableDBPingsInHealth,
+						LogRetentionDays:                cc.LogRetentionDays,
+						EnforceAuthOnInference:          cc.EnforceAuthOnInference,
+						AllowDirectKeys:                 cc.AllowDirectKeys,
+						AllowedOrigins:                  cc.AllowedOrigins,
+						AllowedHeaders:                  cc.AllowedHeaders,
+						MaxRequestBodySizeMB:            cc.MaxRequestBodySizeMB,
+						HideDeletedVirtualKeysInFilters: cc.HideDeletedVirtualKeysInFilters,
+						MCPAgentDepth:                   cc.MCPAgentDepth,
+						MCPToolExecutionTimeout:         cc.MCPToolExecutionTimeout,
+						MCPCodeModeBindingLevel:         cc.MCPCodeModeBindingLevel,
+						MCPToolSyncInterval:             cc.MCPToolSyncInterval,
+						MCPDisableAutoToolInject:        cc.MCPDisableAutoToolInject,
+						AsyncJobResultTTL:               cc.AsyncJobResultTTL,
+						LoggingHeaders:                  cc.LoggingHeaders,
+						RequiredHeaders:                 cc.RequiredHeaders,
+						HeaderFilterConfig:              cc.HeaderFilterConfig,
+						RoutingChainMaxDepth:            depth,
+					}
+					newHash, err := clientConfig.GenerateClientConfigHash()
+					if err != nil {
+						return fmt.Errorf("failed to generate hash for client config %d: %w", cc.ID, err)
+					}
+					if err := tx.Model(&cc).Update("config_hash", newHash).Error; err != nil {
+						return fmt.Errorf("failed to update hash for client config %d: %w", cc.ID, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "routing_chain_max_depth") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
+					return fmt.Errorf("failed to drop routing_chain_max_depth column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_routing_chain_max_depth_column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -4935,6 +6037,503 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
+// migrationAddOllamaSGLConfigColumns adds ollama_url and sgl_url columns to the key table
+func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_ollama_sgl_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "ollama_url"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "sgl_url"); err != nil {
+					return err
+				}
+			}
+
+			// Backfill: for each ollama/sgl provider with a base_url, create a key
+			// with that URL and clear base_url from network_config.
+			var providers []tables.TableProvider
+			if err := tx.Where("name IN ?", []string{"ollama", "sgl"}).Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to fetch ollama/sgl providers for URL backfill: %w", err)
+			}
+			for _, p := range providers {
+				if p.NetworkConfigJSON == "" {
+					continue
+				}
+				var nc schemas.NetworkConfig
+				if err := json.Unmarshal([]byte(p.NetworkConfigJSON), &nc); err != nil {
+					log.Printf("[Migration] Failed to parse network_config for provider %s (id=%d), skipping: %v", p.Name, p.ID, err)
+					continue
+				}
+				if nc.BaseURL == "" {
+					continue
+				}
+
+				// Create a new key with the provider's base_url
+				urlEnvVar := schemas.EnvVar{Val: nc.BaseURL}
+				enabled := true
+				weight := 1.0
+				newKey := tables.TableKey{
+					Provider:   p.Name,
+					ProviderID: p.ID,
+					KeyID:      uuid.NewString(),
+					Weight:     &weight,
+					Enabled:    &enabled,
+					Models:     schemas.WhiteList{"*"},
+				}
+				if strings.ToLower(p.Name) == "ollama" {
+					newKey.Name = "Default Ollama Key"
+					newKey.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: urlEnvVar}
+				}
+				if strings.ToLower(p.Name) == "sgl" {
+					newKey.Name = "Default SGL Key"
+					newKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: urlEnvVar}
+				}
+
+				schemaKey := schemaKeyFromTableKey(newKey)
+				hash, err := GenerateKeyHash(schemaKey)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for new key on provider %s: %w", p.Name, err)
+				}
+				newKey.ConfigHash = hash
+				if err := tx.Create(&newKey).Error; err != nil {
+					return fmt.Errorf("failed to create key for provider %s: %w", p.Name, err)
+				}
+				log.Printf("[Migration] Created key '%s' for provider '%s' from network_config.base_url", newKey.Name, p.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "ollama_url"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "sgl_url"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running ollama sgl key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMultiBudgetTables creates junction tables for multi-budget support and backfills existing data.
+func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_multi_budget_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			// Add calendar_aligned to governance_virtual_keys (VK-level setting)
+			if !mg.HasColumn(&tables.TableVirtualKey{}, "calendar_aligned") {
+				if err := mg.AddColumn(&tables.TableVirtualKey{}, "CalendarAligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to governance_virtual_keys: %w", err)
+				}
+			}
+
+			// Add FK columns on governance_budgets for multi-budget ownership
+			if !mg.HasColumn(&tables.TableBudget{}, "virtual_key_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "VirtualKeyID"); err != nil {
+					return fmt.Errorf("failed to add virtual_key_id column to governance_budgets: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "ProviderConfigID"); err != nil {
+					return fmt.Errorf("failed to add provider_config_id column to governance_budgets: %w", err)
+				}
+			}
+
+			// Create indexes on the new FK columns (AddColumn doesn't create indexes from struct tags)
+			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_virtual_key_id") {
+				if err := mg.CreateIndex(&tables.TableBudget{}, "VirtualKeyID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_budgets.virtual_key_id: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_provider_config_id") {
+				if err := mg.CreateIndex(&tables.TableBudget{}, "ProviderConfigID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_budgets.provider_config_id: %w", err)
+				}
+			}
+
+			// Backfill: set virtual_key_id from legacy VK budget_id (if column still exists)
+			if mg.HasColumn(&tables.TableVirtualKey{}, "budget_id") {
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET virtual_key_id = (
+						SELECT id FROM governance_virtual_keys
+						WHERE governance_virtual_keys.budget_id = governance_budgets.id
+					) WHERE virtual_key_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_virtual_keys
+						WHERE governance_virtual_keys.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill VK budget virtual_key_id: %w", err)
+				}
+			}
+
+			// Backfill: set provider_config_id from legacy PC budget_id (if column still exists)
+			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id") {
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET provider_config_id = (
+						SELECT id FROM governance_virtual_key_provider_configs
+						WHERE governance_virtual_key_provider_configs.budget_id = governance_budgets.id
+					) WHERE provider_config_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_virtual_key_provider_configs
+						WHERE governance_virtual_key_provider_configs.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill PC budget provider_config_id: %w", err)
+				}
+			}
+
+			// Backfill: copy calendar_aligned from legacy budget column to VK-level field
+			// (governance_budgets.calendar_aligned was added by add_budget_calendar_aligned_column on main)
+			if mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := tx.Exec(`
+					UPDATE governance_virtual_keys SET calendar_aligned = true
+					WHERE id IN (
+						SELECT DISTINCT virtual_key_id FROM governance_budgets
+						WHERE calendar_aligned = true AND virtual_key_id IS NOT NULL
+					) AND calendar_aligned = false
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill calendar_aligned from budgets to virtual keys: %w", err)
+				}
+				// Drop the legacy calendar_aligned column from governance_budgets.
+				// Plain column with no FK references — not a correctness risk if left behind,
+				// but log a warning so it's not invisible.
+				if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN IF EXISTS calendar_aligned").Error; err != nil {
+					log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
+				}
+			}
+
+			// Drop legacy budget_id columns BEFORE creating FK constraints.
+			// On SQLite, ALTER TABLE RENAME propagates into FK references in other tables.
+			// If we create FK constraints on governance_budgets first, then rename the
+			// parent table during the legacy column drop (table rebuild), SQLite updates
+			// those FK references to point at the temporary backup table name.
+			if err := dropLegacyBudgetColumn(tx, "governance_virtual_keys"); err != nil {
+				return err
+			}
+			if err := dropLegacyBudgetColumn(tx, "governance_virtual_key_provider_configs"); err != nil {
+				return err
+			}
+
+			// Create FK constraints with CASCADE delete (defined on parent structs).
+			// Must happen after legacy column drops so SQLite rename propagation
+			// cannot corrupt these FK references.
+			if !mg.HasConstraint(&tables.TableVirtualKey{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableVirtualKey{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for VirtualKey -> Budgets: %w", err)
+				}
+			}
+			if !mg.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for ProviderConfig -> Budgets: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableBudget{}, "virtual_key_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "virtual_key_id"); err != nil {
+					return err
+				}
+			}
+			if mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "provider_config_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	// SQLite workaround: GORM's CreateConstraint rebuilds the table via DROP+RENAME
+	// inside a transaction. The DROP fails when other tables have FKs pointing at the
+	// target table and foreign_keys is ON. PRAGMA foreign_keys cannot be changed inside
+	// a transaction, so we disable it before the migrator opens its transaction.
+	// This only affects SQLite — Postgres supports ALTER TABLE ADD CONSTRAINT natively.
+	if db.Dialector.Name() == "sqlite" {
+		// PRAGMA foreign_keys is per-connection in SQLite. Pin the pool to a single
+		// connection so the PRAGMA and the migration transaction share the same one.
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(0) // restore default
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_multi_budget_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTeamBudgetsToBudgetsTable pivots team budgets from a single-FK on
+// governance_teams.budget_id to multi-budget ownership via governance_budgets.team_id,
+// mirroring how VK/ProviderConfig budgets were restructured in migrationAddMultiBudgetTables.
+func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_team_budgets_to_budgets_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Add team_id FK column on governance_budgets
+			if !mg.HasColumn(&tables.TableBudget{}, "team_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "TeamID"); err != nil {
+					return fmt.Errorf("failed to add team_id column to governance_budgets: %w", err)
+				}
+			}
+
+			// Create index on the new FK column (AddColumn doesn't create indexes from struct tags)
+			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_team_id") {
+				if err := mg.CreateIndex(&tables.TableBudget{}, "TeamID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_budgets.team_id: %w", err)
+				}
+			}
+
+			// Backfill: set team_id from legacy governance_teams.budget_id (if column still exists)
+			if mg.HasColumn(&tables.TableTeam{}, "budget_id") {
+				// Preflight: raw SQL below bypasses TableBudget.BeforeSave (which now
+				// enforces exactly-one-of {TeamID, VirtualKeyID, ProviderConfigID}).
+				// Fail fast if any team-referenced budget is already owned by a VK or
+				// ProviderConfig, rather than silently producing a multi-owner row
+				// that would later be rejected by the hook on its next update.
+				var conflictCount int64
+				if err := tx.Raw(`
+					SELECT COUNT(*) FROM governance_budgets b
+					WHERE (b.virtual_key_id IS NOT NULL OR b.provider_config_id IS NOT NULL)
+					  AND EXISTS (SELECT 1 FROM governance_teams t WHERE t.budget_id = b.id)
+				`).Scan(&conflictCount).Error; err != nil {
+					return fmt.Errorf("failed to check for multi-owner team budget conflicts: %w", err)
+				}
+				if conflictCount > 0 {
+					return fmt.Errorf(
+						"cannot migrate team budgets: %d budget row(s) referenced by a team are already owned by a virtual key or provider config; resolve manually before re-running",
+						conflictCount,
+					)
+				}
+
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET team_id = (
+						SELECT id FROM governance_teams
+						WHERE governance_teams.budget_id = governance_budgets.id
+					) WHERE team_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_teams
+						WHERE governance_teams.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill team budget team_id: %w", err)
+				}
+
+				// Drop legacy budget_id column BEFORE creating FK constraint.
+				// On SQLite, ALTER TABLE RENAME propagates into FK references in other
+				// tables. Dropping first prevents the FK on governance_budgets.team_id
+				// from being corrupted by the table rebuild's rename step.
+				if err := dropLegacyBudgetColumn(tx, "governance_teams"); err != nil {
+					return err
+				}
+			}
+
+			// Create FK constraint with CASCADE delete (defined on TableTeam.Budgets).
+			// Must happen after legacy column drop so SQLite rename propagation
+			// cannot corrupt this FK reference.
+			if !mg.HasConstraint(&tables.TableTeam{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableTeam{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for Team -> Budgets: %w", err)
+				}
+			}
+
+			// Refresh config_hash for teams whose budgets just got linked. GenerateTeamHash
+			// now includes sorted budget IDs, so hashes written by the earlier
+			// migrationAddConfigHashColumn (which ran before budgets were associated)
+			// are stale and would cause phantom drift on the next config.json sync.
+			var teamsToRehash []tables.TableTeam
+			if err := tx.Preload("Budgets").Find(&teamsToRehash).Error; err != nil {
+				return fmt.Errorf("failed to fetch teams for hash refresh: %w", err)
+			}
+			for _, team := range teamsToRehash {
+				if len(team.Budgets) == 0 {
+					continue // hash did not change; skip
+				}
+				hash, err := GenerateTeamHash(team)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for team %s: %w", team.ID, err)
+				}
+				if err := tx.Model(&tables.TableTeam{}).Where("id = ?", team.ID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for team %s: %w", team.ID, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableBudget{}, "team_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "team_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(0)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_team_budgets_to_budgets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPerUserOAuthTables adds the oauth_user_sessions and oauth_user_tokens tables
+func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_per_user_oauth_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TablePerUserOAuthClient{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthClient{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_clients table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TablePerUserOAuthSession{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthSession{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_sessions table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TablePerUserOAuthCode{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthCode{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_codes table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TableOauthUserToken{}) {
+				if err := mg.CreateTable(&tables.TableOauthUserToken{}); err != nil {
+					return fmt.Errorf("failed to create oauth_user_tokens table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TableOauthUserSession{}) {
+				if err := mg.CreateTable(&tables.TableOauthUserSession{}); err != nil {
+					return fmt.Errorf("failed to create oauth_user_sessions table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TablePerUserOAuthPendingFlow{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthPendingFlow{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_pending_flows table: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, table := range []any{
+				&tables.TablePerUserOAuthPendingFlow{},
+				&tables.TablePerUserOAuthCode{},
+				&tables.TablePerUserOAuthSession{},
+				&tables.TablePerUserOAuthClient{},
+				&tables.TableOauthUserToken{},
+				&tables.TableOauthUserSession{},
+			} {
+				if mg.HasTable(table) {
+					if err := mg.DropTable(table); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_per_user_oauth_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientDiscoveredToolsColumns adds discovered_tools_json and tool_name_mapping_json columns to the mcp_client table
+func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_discovered_tools_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "discovered_tools_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_name_mapping_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "discovered_tools_json") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TableMCPClient{}, "tool_name_mapping_json") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_discovered_tools_columns migration: %s", err.Error())
+
+	}
+	return nil
+}
+
 // migrationAddPriorityTierPricingColumns adds pricing columns for the 272k token tier
 // and the 200k priority variants.
 func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) error {
@@ -4943,7 +6542,6 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) er
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-
 			columns := []string{
 				"input_cost_per_token_above_272k_tokens",
 				"input_cost_per_token_above_272k_tokens_priority",
@@ -4968,7 +6566,6 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) er
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-
 			columns := []string{
 				"input_cost_per_token_above_272k_tokens",
 				"input_cost_per_token_above_272k_tokens_priority",
@@ -5042,6 +6639,7 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running flex tier pricing columns migration: %s", err.Error())
+
 	}
 	return nil
 }
@@ -5077,6 +6675,190 @@ func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) e
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running whitelisted_routes_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationReplaceEnableLiteLLMWithCompatColumns replaces the single enable_litellm_fallbacks
+// boolean with compat feature columns. If enable_litellm_fallbacks was true,
+// only convert_text_to_chat is set to true (preserving the original behavior).
+func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "replace_enable_litellm_with_compat_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			// Add new columns
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_drop_params") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_should_drop_params"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_should_convert_params"); err != nil {
+					return err
+				}
+			}
+
+			if err := tx.Exec("UPDATE config_client SET compat_should_convert_params = FALSE").Error; err != nil {
+				return err
+			}
+
+			// Migrate data: if enable_litellm_fallbacks was true, set convert_text_to_chat = true
+			if mig.HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("UPDATE config_client SET compat_convert_text_to_chat = enable_litellm_fallbacks").Error; err != nil {
+					return err
+				}
+				if err := mig.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FALSE").Error; err != nil {
+					return err
+				}
+			}
+			if mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat") {
+				if err := tx.Exec("UPDATE config_client SET enable_litellm_fallbacks = COALESCE(compat_convert_text_to_chat, FALSE)").Error; err != nil {
+					return err
+				}
+			}
+			for _, col := range []string{
+				"compat_convert_text_to_chat",
+				"compat_convert_chat_to_responses",
+				"compat_should_drop_params",
+				"compat_should_convert_params",
+			} {
+				if mig.HasColumn(&tables.TableClientConfig{}, col) {
+					if err := mig.DropColumn(&tables.TableClientConfig{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running replace_enable_litellm_with_compat_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDefaultCompatShouldConvertParamsFalse ensures existing deployments
+// converge to the new default for compat_should_convert_params. The earlier
+// compat migration may already be marked as applied, so changing its body is not
+// sufficient for installed databases.
+func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "default_compat_should_convert_params_false",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params") {
+				return nil
+			}
+
+			if err := tx.Exec("UPDATE config_client SET compat_should_convert_params = FALSE").Error; err != nil {
+				return err
+			}
+
+			if err := mig.AlterColumn(&tables.TableClientConfig{}, "CompatShouldConvertParams"); err != nil {
+				return fmt.Errorf("failed to alter compat_should_convert_params default: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params") {
+				return nil
+			}
+
+			switch tx.Dialector.Name() {
+			case "postgres":
+				if err := tx.Exec("ALTER TABLE config_client ALTER COLUMN compat_should_convert_params SET DEFAULT FALSE").Error; err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running default_compat_should_convert_params_false migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelPricingUniqueIndex ensures the composite unique index (model, provider, mode)
+// exists on governance_model_pricing so that atomic ON CONFLICT upserts work correctly.
+func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_pricing_unique_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Remove duplicate rows before creating the unique index.
+			// The old find-then-insert path could have produced duplicates on
+			// multinode deployments, and CREATE UNIQUE INDEX will fail on a table
+			// that still contains them. Keep the row with the lowest ID for each
+			// (model, provider, mode) combination.
+			result := tx.Exec(`
+				DELETE FROM governance_model_pricing
+				WHERE id NOT IN (
+					SELECT MIN(id)
+					FROM governance_model_pricing
+					GROUP BY model, provider, mode
+				)
+			`)
+			if result.Error != nil {
+				return fmt.Errorf("failed to deduplicate model pricing rows: %w", result.Error)
+			}
+			if result.RowsAffected > 0 {
+				log.Printf("[migration] removed %d duplicate row(s) from governance_model_pricing before creating unique index", result.RowsAffected)
+			}
+
+			if !mg.HasIndex(&tables.TableModelPricing{}, "idx_model_provider_mode") {
+				if err := mg.CreateIndex(&tables.TableModelPricing{}, "idx_model_provider_mode"); err != nil {
+					return fmt.Errorf("failed to create unique index idx_model_provider_mode: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableModelPricing{}, "idx_model_provider_mode") {
+				if err := mg.DropIndex(&tables.TableModelPricing{}, "idx_model_provider_mode"); err != nil {
+					return fmt.Errorf("failed to drop unique index idx_model_provider_mode: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_pricing_unique_index migration: %s", err.Error())
 	}
 	return nil
 }
@@ -5121,6 +6903,102 @@ func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running normalize_otel_trace_type migration: %s", err.Error())
+
+	}
+	return nil
+}
+
+// migrateCalendarAlignedToBudgetsAndRateLimitsTable
+func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "migrate_calendar_aligned",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			// Adding columns first
+			if !mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to budgets: %w", err)
+				}
+			}
+			// Adding columns first
+			if !mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableRateLimit{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to rate_limits: %w", err)
+				}
+			}
+			// Prefill calendar_aligned for existing budgets and rate_limits attached to virtual keys.
+			// Use subquery-based raw SQL (compatible with both PostgreSQL and SQLite) to avoid
+			// "cached plan must not change result type" (SQLSTATE 0A000): earlier migrations in
+			// the same run added columns to these tables, invalidating pgx's prepared-statement cache.
+			if err := tx.Exec(`
+				UPDATE governance_rate_limits
+				SET calendar_aligned = true
+				WHERE id IN (
+					SELECT rate_limit_id FROM governance_virtual_keys
+					WHERE calendar_aligned = true AND rate_limit_id IS NOT NULL
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to propagate calendar_aligned to rate limits: %w", err)
+			}
+			if err := tx.Exec(`
+				UPDATE governance_budgets
+				SET calendar_aligned = true
+				WHERE virtual_key_id IN (
+					SELECT id FROM governance_virtual_keys WHERE calendar_aligned = true
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to propagate calendar_aligned to budgets: %w", err)
+			}
+			log.Printf("[Migration] Prefilled calendar_aligned field for existing budgets and rate limits")
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running migrate_calendar_aligned migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_ocr_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"ocr_cost_per_page",
+				"annotation_cost_per_page",
+			}
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"ocr_cost_per_page",
+				"annotation_cost_per_page",
+			}
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_ocr_pricing_columns migration: %s", err.Error())
 	}
 	return nil
 }

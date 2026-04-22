@@ -295,7 +295,7 @@ func TestMakeRequestWithContext_ConcurrentRequestsWithCancellation(t *testing.T)
 }
 
 func TestNewBifrostTimeoutError(t *testing.T) {
-	err := NewBifrostTimeoutError("test timeout", context.DeadlineExceeded, "openai")
+	err := NewBifrostTimeoutError("test timeout", context.DeadlineExceeded)
 
 	if !err.IsBifrostError {
 		t.Fatal("expected IsBifrostError to be true")
@@ -309,9 +309,9 @@ func TestNewBifrostTimeoutError(t *testing.T) {
 	if err.Error.Message != "test timeout" {
 		t.Fatalf("expected 'test timeout', got %s", err.Error.Message)
 	}
-	if err.ExtraFields.Provider != "openai" {
-		t.Fatalf("expected provider openai, got %s", err.ExtraFields.Provider)
-	}
+	// Note: ExtraFields.Provider is populated by bifrost.go's dispatcher via
+	// PopulateExtraFields, not by NewBifrostTimeoutError — the constructor has
+	// no provider context.
 }
 
 func TestMakeRequestWithContext_ClientError(t *testing.T) {

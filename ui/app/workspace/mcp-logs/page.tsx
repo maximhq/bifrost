@@ -1,19 +1,21 @@
-"use client";
-
+import { MCPFilterSidebar } from "@/components/filters/mcpFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
+import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { getErrorMessage, useDeleteMCPLogsMutation, useLazyGetMCPLogsQuery, useLazyGetMCPLogsStatsQuery } from "@/lib/store";
 import type { MCPToolLogEntry, MCPToolLogFilters, MCPToolLogStats, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
+import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import NumberFlow from "@number-flow/react";
 import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createMCPColumns } from "./views/columns";
 import { MCPEmptyState } from "./views/emptyState";
+import { McpHeaderView } from "./views/mcpHeaderView";
 import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
 import { MCPLogsDataTable } from "./views/mcpLogsTable";
 
@@ -70,10 +72,7 @@ export default function MCPLogsPage() {
 
 	// Derive selectedLog from URL param
 	const selectedLogId = urlState.selected_log || null;
-	const selectedLog = useMemo(
-		() => (selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null),
-		[selectedLogId, logs],
-	);
+	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
 
 	// Refresh time range defaults on page focus/visibility
 	useEffect(() => {
@@ -138,9 +137,13 @@ export default function MCPLogsPage() {
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[
-			urlState.tool_names, urlState.server_labels, urlState.status,
-			urlState.virtual_key_ids, urlState.content_search,
-			urlState.start_time, urlState.end_time,
+			urlState.tool_names,
+			urlState.server_labels,
+			urlState.status,
+			urlState.virtual_key_ids,
+			urlState.content_search,
+			urlState.start_time,
+			urlState.end_time,
 		],
 	);
 
@@ -272,7 +275,6 @@ export default function MCPLogsPage() {
 					return updatedLogs;
 				});
 
-	
 				setTotalItems((prev: number) => prev + 1);
 			}
 		} else if (operation === "update") {
@@ -301,7 +303,6 @@ export default function MCPLogsPage() {
 					return prevLogs.map((existingLog) => (existingLog.id === log.id ? log : existingLog));
 				});
 
-	
 				// Update stats for completed requests
 				if (log.status === "success" || log.status === "error") {
 					setStats((prevStats) => {
@@ -425,35 +426,61 @@ export default function MCPLogsPage() {
 		() => [
 			{
 				title: "Total Executions",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats?.total_executions.toLocaleString() || "-",
+				value: <NumberFlow value={stats?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
 			{
 				title: "Success Rate",
-				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${stats.success_rate.toFixed(2)}%` : "-",
+				value: <NumberFlow value={stats?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />,
 				icon: <CheckCircle className="size-4" />,
 			},
 			{
 				title: "Avg Latency",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `${stats.average_latency.toFixed(2)}ms` : "-",
+				value: (
+					<NumberFlow value={stats?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
+				),
 				icon: <Clock className="size-4" />,
 			},
 			{
 				title: "Total Cost",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `$${(stats.total_cost ?? 0).toFixed(4)}` : "-",
+				value: <NumberFlow value={stats?.total_cost ?? 0} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />,
 				icon: <DollarSign className="size-4" />,
 			},
 		],
-		[stats, fetchingStats],
+		[stats],
 	);
 
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
-	// Navigation for log detail sheet
-	const selectedLogIndex = useMemo(
-		() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
-		[selectedLogId, logs],
+	const columnIds = useMemo(
+		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
+		[columns],
 	);
+
+	const MCP_COLUMN_LABELS: Record<string, string> = useMemo(
+		() => ({
+			timestamp: "Time",
+			tool_name: "Tool Name",
+			server_label: "Server",
+			latency: "Latency",
+			cost: "Cost",
+		}),
+		[],
+	);
+
+	const {
+		entries: columnEntries,
+		columnOrder,
+		columnVisibility,
+		columnPinning,
+		toggleVisibility: toggleColumnVisibility,
+		togglePin: toggleColumnPin,
+		reorder: reorderColumns,
+		reset: resetColumns,
+	} = useColumnConfig({ columnIds, paramName: "mcp_cols", fixedColumns: { left: [], right: [] } });
+
+	// Navigation for log detail sheet
+	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
 	const handleLogNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -522,38 +549,56 @@ export default function MCPLogsPage() {
 					}
 				/>
 			) : (
-				<div className="mx-auto w-full space-y-6">
-					<div className="space-y-6">
-						{/* Quick Stats */}
-						<div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-							{statCards.map((card) => (
-								<Card key={card.title} className="py-4 shadow-none">
-									<CardContent className="flex items-center justify-between px-4">
-										<div className="min-w-0 w-full">
-											<div className="text-muted-foreground text-xs">{card.title}</div>
-											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
-										</div>
-									</CardContent>
-								</Card>
-							))}
-						</div>
+				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+					{/* Sidebar Filters */}
+					<MCPFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
-						{/* Error Alert */}
-						{error && (
-							<Alert variant="destructive">
-								<AlertCircle className="h-4 w-4" />
-								<AlertDescription>{error}</AlertDescription>
-							</Alert>
-						)}
+					{/* Main Content */}
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md">
+						<div className="p-4 pb-0">
+							<McpHeaderView
+								filters={filters}
+								onFiltersChange={setFilters}
+								liveEnabled={liveEnabled}
+								onLiveToggle={handleLiveToggle}
+								columnEntries={columnEntries}
+								columnLabels={MCP_COLUMN_LABELS}
+								onToggleColumnVisibility={toggleColumnVisibility}
+								onResetColumns={resetColumns}
+							/>
+						</div>
+						{/* Quick Stats */}
+						<div className="px-4">
+							<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-4">
+								{statCards.map((card) => (
+									<Card key={card.title} className="py-4 shadow-none">
+										<CardContent
+											className={`flex items-center justify-between px-4 transition-opacity duration-200 ${fetchingStats ? "opacity-50" : "opacity-100"}`}
+										>
+											<div className="w-full min-w-0">
+												<div className="text-muted-foreground text-xs">{card.title}</div>
+												<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
+											</div>
+										</CardContent>
+									</Card>
+								))}
+							</div>
+
+							{/* Error Alert */}
+							{error && (
+								<Alert variant="destructive" className="shrink-0">
+									<AlertCircle className="h-4 w-4" />
+									<AlertDescription>{error}</AlertDescription>
+								</Alert>
+							)}
+						</div>
 
 						<MCPLogsDataTable
 							columns={columns}
 							data={logs}
 							totalItems={totalItems}
 							loading={fetchingLogs}
-							filters={filters}
 							pagination={pagination}
-							onFiltersChange={setFilters}
 							onPaginationChange={setPagination}
 							onRowClick={(row, columnId) => {
 								if (columnId === "actions") return;
@@ -561,9 +606,13 @@ export default function MCPLogsPage() {
 							}}
 							isSocketConnected={isSocketConnected}
 							liveEnabled={liveEnabled}
-							onLiveToggle={handleLiveToggle}
-							fetchLogs={fetchLogs}
-							fetchStats={fetchStats}
+							columnEntries={columnEntries}
+							columnOrder={columnOrder}
+							columnVisibility={columnVisibility}
+							columnPinning={columnPinning}
+							onToggleColumnVisibility={toggleColumnVisibility}
+							onTogglePin={toggleColumnPin}
+							onReorderColumns={reorderColumns}
 						/>
 					</div>
 

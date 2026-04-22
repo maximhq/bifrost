@@ -1,5 +1,3 @@
-"use client";
-
 import type { MCPCostHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -84,7 +82,14 @@ export function MCPCostChart({ data, chartType, startTime, endTime }: MCPCostCha
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar isAnimationActive={false} dataKey="total_cost" fill={CHART_COLORS.cost} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
+						<Bar
+							isAnimationActive={false}
+							dataKey="total_cost"
+							fill={CHART_COLORS.cost}
+							fillOpacity={0.9}
+							radius={[2, 2, 0, 0]}
+							barSize={30}
+						/>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -109,7 +114,14 @@ export function MCPCostChart({ data, chartType, startTime, endTime }: MCPCostCha
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} />
-						<Area isAnimationActive={false} type="monotone" dataKey="total_cost" stroke={CHART_COLORS.cost} fill={CHART_COLORS.cost} fillOpacity={0.7} />
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="total_cost"
+							stroke={CHART_COLORS.cost}
+							fill={CHART_COLORS.cost}
+							fillOpacity={0.7}
+						/>
 					</AreaChart>
 				)}
 			</ResponsiveContainer>

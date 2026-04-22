@@ -20,10 +20,10 @@ func TestTeamBudgetExceededWithMultipleVKs(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      teamBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 

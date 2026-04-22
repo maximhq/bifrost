@@ -4,13 +4,17 @@ package logging
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
 )
+
+const realtimeMissingTranscriptText = "[Audio transcription unavailable]"
 
 // insertInitialLogEntry creates a new log entry in the database using GORM
 func (p *LoggerPlugin) insertInitialLogEntry(
@@ -39,7 +43,10 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		ToolsParsed:                 data.Tools,
 		SpeechInputParsed:           data.SpeechInput,
 		TranscriptionInputParsed:    data.TranscriptionInput,
+		OCRInputParsed:              data.OCRInput,
 		ImageGenerationInputParsed:  data.ImageGenerationInput,
+		ImageEditInputParsed:        data.ImageEditInput,
+		ImageVariationInputParsed:   data.ImageVariationInput,
 		RoutingEnginesUsed:          routingEnginesUsed,
 		MetadataParsed:              data.Metadata,
 		VideoGenerationInputParsed:  data.VideoGenerationInput,
@@ -125,49 +132,6 @@ func applySerializedLogUpdates(
 	}
 }
 
-// applySerializedStreamingLogUpdates copies serialized streaming fields from a
-// temporary log entry into the GORM update map, respecting content-logging
-// gates.
-func applySerializedStreamingLogUpdates(
-	updates map[string]interface{},
-	entry *logstore.Log,
-	streamResponse *streaming.ProcessedStreamResponse,
-	cacheDebug *schemas.BifrostCacheDebug,
-	contentLoggingEnabled bool,
-) {
-	if streamResponse.Data.TokenUsage != nil {
-		updates["token_usage"] = entry.TokenUsage
-		updates["prompt_tokens"] = streamResponse.Data.TokenUsage.PromptTokens
-		updates["completion_tokens"] = streamResponse.Data.TokenUsage.CompletionTokens
-		updates["total_tokens"] = streamResponse.Data.TokenUsage.TotalTokens
-		updates["cached_read_tokens"] = entry.CachedReadTokens
-	}
-
-	if !contentLoggingEnabled {
-		return
-	}
-
-	if streamResponse.Data.TranscriptionOutput != nil {
-		updates["transcription_output"] = entry.TranscriptionOutput
-	}
-	if streamResponse.Data.AudioOutput != nil {
-		updates["speech_output"] = entry.SpeechOutput
-	}
-	if streamResponse.Data.ImageGenerationOutput != nil {
-		updates["image_generation_output"] = entry.ImageGenerationOutput
-	}
-	if cacheDebug != nil {
-		updates["cache_debug"] = entry.CacheDebug
-	}
-	if streamResponse.Data.OutputMessage != nil {
-		updates["output_message"] = entry.OutputMessage
-		updates["content_summary"] = entry.ContentSummary
-	}
-	if streamResponse.Data.OutputMessages != nil {
-		updates["responses_output"] = entry.ResponsesOutput
-	}
-}
-
 // updateLogEntry updates an existing log entry using GORM
 func (p *LoggerPlugin) updateLogEntry(
 	ctx context.Context,
@@ -185,8 +149,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	data *UpdateLogData,
 ) error {
 	updates := make(map[string]interface{})
-	updates["selected_key_id"] = selectedKeyID
-	updates["selected_key_name"] = selectedKeyName
+	if selectedKeyID != "" {
+		updates["selected_key_id"] = selectedKeyID
+	}
+	if selectedKeyName != "" {
+		updates["selected_key_name"] = selectedKeyName
+	}
 	if latency != 0 {
 		updates["latency"] = float64(latency)
 	}
@@ -342,171 +310,6 @@ func (p *LoggerPlugin) updateLogEntry(
 	return p.store.Update(ctx, requestID, updates)
 }
 
-// updateStreamingLogEntry handles streaming updates using GORM
-func (p *LoggerPlugin) updateStreamingLogEntry(
-	ctx context.Context,
-	requestID string,
-	selectedKeyID string,
-	selectedKeyName string,
-	virtualKeyID string,
-	virtualKeyName string,
-	routingRuleID string,
-	routingRuleName string,
-	numberOfRetries int,
-	cacheDebug *schemas.BifrostCacheDebug,
-	routingEngineLogs string,
-	streamResponse *streaming.ProcessedStreamResponse,
-	isFinalChunk bool,
-	isLargePayloadRequest bool,
-	isLargePayloadResponse bool,
-) error {
-	p.logger.Debug("[logging] updating streaming log entry %s", requestID)
-	updates := make(map[string]interface{})
-	updates["selected_key_id"] = selectedKeyID
-	updates["selected_key_name"] = selectedKeyName
-	if virtualKeyID != "" {
-		updates["virtual_key_id"] = virtualKeyID
-	}
-	if virtualKeyName != "" {
-		updates["virtual_key_name"] = virtualKeyName
-	}
-	if routingRuleID != "" {
-		updates["routing_rule_id"] = routingRuleID
-	}
-	if routingRuleName != "" {
-		updates["routing_rule_name"] = routingRuleName
-	}
-	if numberOfRetries != 0 {
-		updates["number_of_retries"] = numberOfRetries
-	}
-	if routingEngineLogs != "" {
-		updates["routing_engine_logs"] = routingEngineLogs
-	}
-	// Handle error case first
-	if streamResponse.Data.ErrorDetails != nil {
-		tempEntry := &logstore.Log{}
-		tempEntry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
-		if err := tempEntry.SerializeFields(); err != nil {
-			return fmt.Errorf("failed to serialize error details: %w", err)
-		}
-		errorUpdates := map[string]interface{}{
-			"status":        "error",
-			"latency":       float64(streamResponse.Data.Latency),
-			"error_details": tempEntry.ErrorDetails,
-		}
-		if isLargePayloadRequest {
-			errorUpdates["is_large_payload_request"] = true
-		}
-		if isLargePayloadResponse {
-			errorUpdates["is_large_payload_response"] = true
-		}
-		return p.store.Update(ctx, requestID, errorUpdates)
-	}
-
-	// Always mark as streaming and update timestamp
-	updates["stream"] = true
-
-	tempEntry := &logstore.Log{}
-	updates["latency"] = float64(streamResponse.Data.Latency)
-
-	// Update model if provided
-	if streamResponse.Data.Model != "" {
-		updates["model"] = streamResponse.Data.Model
-	}
-
-	needsSerialization := false
-
-	// Update token usage if provided
-	if streamResponse.Data.TokenUsage != nil {
-		tempEntry.TokenUsageParsed = streamResponse.Data.TokenUsage
-		needsSerialization = true
-	}
-
-	// Handle cost from pricing plugin
-	if streamResponse.Data.Cost != nil {
-		updates["cost"] = *streamResponse.Data.Cost
-	}
-	// Handle finish reason - if present, mark as complete
-	if isFinalChunk {
-		updates["status"] = "success"
-	}
-
-	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
-	if contentLoggingEnabled {
-		// Handle transcription output from stream updates
-		if streamResponse.Data.TranscriptionOutput != nil {
-			tempEntry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
-			needsSerialization = true
-		}
-		// Handle speech output from stream updates
-		if streamResponse.Data.AudioOutput != nil {
-			tempEntry.SpeechOutputParsed = streamResponse.Data.AudioOutput
-			needsSerialization = true
-		}
-		// Handle image generation output from stream updates
-		if streamResponse.Data.ImageGenerationOutput != nil {
-			tempEntry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
-			needsSerialization = true
-		}
-		// Handle cache debug
-		if cacheDebug != nil {
-			tempEntry.CacheDebugParsed = cacheDebug
-			needsSerialization = true
-		}
-		// Create content summary
-		if streamResponse.Data.OutputMessage != nil {
-			tempEntry.OutputMessageParsed = streamResponse.Data.OutputMessage
-			needsSerialization = true
-		}
-		// Handle responses output from stream updates
-		if streamResponse.Data.OutputMessages != nil {
-			tempEntry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
-			needsSerialization = true
-		}
-		// Handle raw request from stream updates
-		if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
-			if isLargePayloadRequest {
-				// Large payload preview is already a string — skip sonic.Marshal to avoid
-				// double-encoding a pre-truncated preview string.
-				if str, ok := (*streamResponse.RawRequest).(string); ok {
-					updates["raw_request"] = str
-				}
-			} else {
-				rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
-				if err != nil {
-					p.logger.Error("failed to marshal raw request: %v", err)
-				} else {
-					updates["raw_request"] = string(rawRequestBytes)
-				}
-			}
-		}
-		// Handle raw response from stream updates
-		if streamResponse.Data.RawResponse != nil {
-			updates["raw_response"] = *streamResponse.Data.RawResponse
-		}
-	}
-
-	if needsSerialization {
-		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize streaming log update fields: %v", err)
-		} else {
-			applySerializedStreamingLogUpdates(updates, tempEntry, streamResponse, cacheDebug, contentLoggingEnabled)
-		}
-	}
-	// Persist large payload flags for dashboard tagging
-	if isLargePayloadRequest {
-		updates["is_large_payload_request"] = true
-	}
-	if isLargePayloadResponse {
-		updates["is_large_payload_response"] = true
-	}
-	// Only perform update if there's something to update
-	if len(updates) > 0 {
-		return p.store.Update(ctx, requestID, updates)
-	}
-	return nil
-}
-
 // makePostWriteCallback creates a callback function for use after the batch writer commits.
 // It receives the already-inserted entry directly (no DB re-read needed).
 func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(entry *logstore.Log) {
@@ -528,7 +331,8 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 }
 
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
-func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse) {
+// shouldStoreRaw gates whether raw request/response bytes are written to the entry.
+func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool) {
 	if streamResponse.Data == nil {
 		return
 	}
@@ -548,10 +352,8 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.Latency = &latF
 	}
 
-	// Update model if provided
-	if streamResponse.Data.Model != "" {
-		entry.Model = streamResponse.Data.Model
-	}
+	// Update model and alias from resolved/requested model pair.
+	applyModelAlias(entry, streamResponse.RequestedModel, streamResponse.ResolvedModel)
 
 	// Token usage
 	if streamResponse.Data.TokenUsage != nil {
@@ -591,16 +393,18 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if streamResponse.Data.OutputMessages != nil {
 			entry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
 		}
-		// Raw request
-		if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
-			rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
-			if err == nil {
-				entry.RawRequest = string(rawRequestBytes)
+		if shouldStoreRaw {
+			// Raw request
+			if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
+				rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
+				if err == nil {
+					entry.RawRequest = string(rawRequestBytes)
+				}
 			}
-		}
-		// Raw response
-		if streamResponse.Data.RawResponse != nil {
-			entry.RawResponse = *streamResponse.Data.RawResponse
+			// Raw response
+			if streamResponse.Data.RawResponse != nil {
+				entry.RawResponse = *streamResponse.Data.RawResponse
+			}
 		}
 	}
 }
@@ -614,7 +418,8 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 }
 
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
-func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
+// shouldStoreRaw gates whether raw request/response bytes are written to the entry.
+func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
 	if result == nil {
 		return
 	}
@@ -662,16 +467,18 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	// Extract raw request/response and output content
 	extraFields := result.GetExtraFields()
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
-		if extraFields.RawRequest != nil {
-			rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest)
-			if err == nil {
-				entry.RawRequest = string(rawRequestBytes)
+		if shouldStoreRaw {
+			if extraFields.RawRequest != nil {
+				rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest)
+				if err == nil {
+					entry.RawRequest = string(rawRequestBytes)
+				}
 			}
-		}
-		if extraFields.RawResponse != nil {
-			rawRespBytes, err := sonic.Marshal(extraFields.RawResponse)
-			if err == nil {
-				entry.RawResponse = string(rawRespBytes)
+			if extraFields.RawResponse != nil {
+				rawRespBytes, err := sonic.Marshal(extraFields.RawResponse)
+				if err == nil {
+					entry.RawResponse = string(rawRespBytes)
+				}
 			}
 		}
 		if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
@@ -731,6 +538,356 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	}
 }
 
+func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
+	if result == nil || result.ResponsesResponse == nil {
+		return
+	}
+
+	if usage := result.ResponsesResponse.Usage; usage != nil {
+		bifrostUsage := usage.ToBifrostLLMUsage()
+		entry.TokenUsageParsed = bifrostUsage
+		entry.PromptTokens = bifrostUsage.PromptTokens
+		entry.CompletionTokens = bifrostUsage.CompletionTokens
+		entry.TotalTokens = bifrostUsage.TotalTokens
+	}
+
+	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
+
+	if contentLoggingEnabled {
+		if outputMessage := extractRealtimeOutputMessage(result.ResponsesResponse.Output); outputMessage != nil {
+			entry.OutputMessageParsed = outputMessage
+		}
+	}
+
+	extraFields := result.GetExtraFields()
+	applyRealtimeRawRequestBackfill(entry, extraFields.RawRequest, contentLoggingEnabled, shouldStoreRaw)
+	if shouldStoreRaw && contentLoggingEnabled && extraFields.RawResponse != nil {
+		switch raw := extraFields.RawResponse.(type) {
+		case string:
+			entry.RawResponse = strings.TrimSpace(raw)
+		default:
+			if rawResponseBytes, err := sonic.Marshal(extraFields.RawResponse); err == nil {
+				entry.RawResponse = string(rawResponseBytes)
+			}
+		}
+	}
+}
+
+// applyRealtimeRawRequestBackfill writes RawRequest onto entry from an
+// ExtraFields.RawRequest value (string or marshalable) and rebuilds
+// InputHistoryParsed from any embedded realtime user/transcript events.
+// Used by both success and error paths so realtime turns that fail mid-stream
+// still surface their input transcript in logs.
+// shouldStoreRaw gates whether entry.RawRequest is populated; InputHistoryParsed
+// (parsed content) is always extracted when contentLoggingEnabled regardless.
+func applyRealtimeRawRequestBackfill(entry *logstore.Log, rawRequest any, contentLoggingEnabled bool, shouldStoreRaw bool) {
+	if !contentLoggingEnabled || rawRequest == nil {
+		return
+	}
+	var rawStr string
+	switch raw := rawRequest.(type) {
+	case string:
+		rawStr = strings.TrimSpace(raw)
+	default:
+		if rawRequestBytes, err := sonic.Marshal(rawRequest); err == nil {
+			rawStr = string(rawRequestBytes)
+		}
+	}
+	if rawStr == "" {
+		return
+	}
+	if shouldStoreRaw {
+		entry.RawRequest = rawStr
+	}
+	if inputHistory := extractRealtimeInputHistoryFromRawRequest(rawStr); len(inputHistory) > 0 {
+		entry.InputHistoryParsed = mergeRealtimeInputHistory(entry.InputHistoryParsed, inputHistory)
+	}
+}
+
+func extractRealtimeInputHistoryFromRawRequest(rawRequest string) []schemas.ChatMessage {
+	rawRequest = strings.TrimSpace(rawRequest)
+	if rawRequest == "" {
+		return nil
+	}
+
+	parts := strings.Split(rawRequest, "\n\n")
+	messages := make([]schemas.ChatMessage, 0, len(parts))
+	for _, part := range parts {
+		event, err := schemas.ParseRealtimeEvent([]byte(strings.TrimSpace(part)))
+		if err != nil || event == nil {
+			continue
+		}
+
+		switch {
+		case schemas.IsRealtimeInputTranscriptEvent(event):
+			if transcript := extractRealtimeTranscript(event); transcript != "" {
+				messages = append(messages, schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr(transcript),
+					},
+				})
+			}
+		case schemas.IsRealtimeUserInputEvent(event):
+			if content := extractRealtimeRawItemContent(event.Item); content != "" {
+				messages = append(messages, schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr(content),
+					},
+				})
+			}
+		case schemas.IsRealtimeToolOutputEvent(event):
+			if content := extractRealtimeRawItemContent(event.Item); content != "" {
+				messages = append(messages, schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleTool,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr(content),
+					},
+					ChatToolMessage: &schemas.ChatToolMessage{
+						ToolCallID: schemas.Ptr(event.Item.CallID),
+					},
+				})
+			}
+		}
+	}
+
+	if len(messages) == 0 {
+		return nil
+	}
+	return messages
+}
+
+func mergeRealtimeInputHistory(existing, backfill []schemas.ChatMessage) []schemas.ChatMessage {
+	if len(backfill) == 0 {
+		return existing
+	}
+
+	// Run dedupe even when existing is empty so duplicate events inside the
+	// same raw-event blob (same turn captured twice) collapse instead of
+	// getting written out verbatim.
+	merged := append([]schemas.ChatMessage(nil), existing...)
+	for _, candidate := range backfill {
+		if realtimeInputHistoryContainsEquivalent(merged, candidate) {
+			continue
+		}
+		if candidate.Role == schemas.ChatMessageRoleUser {
+			inserted := false
+			for idx, msg := range merged {
+				if msg.Role == schemas.ChatMessageRoleTool {
+					merged = append(merged[:idx], append([]schemas.ChatMessage{candidate}, merged[idx:]...)...)
+					inserted = true
+					break
+				}
+			}
+			if inserted {
+				continue
+			}
+		}
+		merged = append(merged, candidate)
+	}
+	return merged
+}
+
+func realtimeInputHistoryContainsEquivalent(history []schemas.ChatMessage, candidate schemas.ChatMessage) bool {
+	candidateContent := strings.TrimSpace(realtimeInputHistoryMessageContent(candidate))
+	candidateToolCallID := strings.TrimSpace(realtimeInputHistoryToolCallID(candidate))
+
+	for _, existing := range history {
+		if existing.Role != candidate.Role {
+			continue
+		}
+		if strings.TrimSpace(realtimeInputHistoryMessageContent(existing)) != candidateContent {
+			continue
+		}
+		if strings.TrimSpace(realtimeInputHistoryToolCallID(existing)) != candidateToolCallID {
+			continue
+		}
+		return true
+	}
+
+	return false
+}
+
+func realtimeInputHistoryMessageContent(message schemas.ChatMessage) string {
+	if message.Content == nil || message.Content.ContentStr == nil {
+		return ""
+	}
+	return *message.Content.ContentStr
+}
+
+func realtimeInputHistoryToolCallID(message schemas.ChatMessage) string {
+	if message.ChatToolMessage == nil || message.ChatToolMessage.ToolCallID == nil {
+		return ""
+	}
+	return *message.ChatToolMessage.ToolCallID
+}
+
+func extractRealtimeTranscript(event *schemas.BifrostRealtimeEvent) string {
+	if event == nil || event.ExtraParams == nil {
+		return realtimeMissingTranscriptText
+	}
+	raw, ok := event.ExtraParams["transcript"]
+	if !ok || len(raw) == 0 {
+		return realtimeMissingTranscriptText
+	}
+	var transcript string
+	if err := schemas.Unmarshal(raw, &transcript); err != nil {
+		return realtimeMissingTranscriptText
+	}
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
+		return realtimeMissingTranscriptText
+	}
+	return transcript
+}
+
+func extractRealtimeRawItemContent(item *schemas.RealtimeItem) string {
+	if item == nil {
+		return ""
+	}
+	if content := extractRealtimeRawContent(item.Content); content != "" {
+		return content
+	}
+	if item.Role == "user" && realtimeItemHasMissingAudioTranscript(item) {
+		return realtimeMissingTranscriptText
+	}
+	switch {
+	case strings.TrimSpace(item.Output) != "":
+		return strings.TrimSpace(item.Output)
+	case strings.TrimSpace(item.Arguments) != "":
+		return strings.TrimSpace(item.Arguments)
+	default:
+		return ""
+	}
+}
+
+func realtimeItemHasMissingAudioTranscript(item *schemas.RealtimeItem) bool {
+	if item == nil || len(item.Content) == 0 {
+		return false
+	}
+
+	var decoded []map[string]any
+	if err := sonic.Unmarshal(item.Content, &decoded); err != nil {
+		return false
+	}
+
+	for _, part := range decoded {
+		partType, _ := part["type"].(string)
+		if partType != "input_audio" {
+			continue
+		}
+		transcript, exists := part["transcript"]
+		if !exists || transcript == nil {
+			return true
+		}
+		if text, ok := transcript.(string); ok && strings.TrimSpace(text) == "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func extractRealtimeRawContent(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var decoded any
+	if err := sonic.Unmarshal(raw, &decoded); err != nil {
+		return strings.TrimSpace(string(raw))
+	}
+
+	var parts []string
+	collectRealtimeRawTextFragments(decoded, &parts)
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func collectRealtimeRawTextFragments(value any, parts *[]string) {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, field := range v {
+			switch key {
+			case "text", "transcript", "input_text", "output_text", "output", "arguments":
+				if text, ok := field.(string); ok {
+					text = strings.TrimSpace(text)
+					if text != "" {
+						*parts = append(*parts, text)
+					}
+					continue
+				}
+			}
+			collectRealtimeRawTextFragments(field, parts)
+		}
+	case []any:
+		for _, item := range v {
+			collectRealtimeRawTextFragments(item, parts)
+		}
+	}
+}
+
+func extractRealtimeOutputMessage(output []schemas.ResponsesMessage) *schemas.ChatMessage {
+	var contentParts []string
+	toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0)
+	for _, item := range output {
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeMessage:
+			if item.Role == nil || *item.Role != schemas.ResponsesInputMessageRoleAssistant {
+				continue
+			}
+			if text := extractRealtimeResponsesContent(item.Content); text != "" {
+				contentParts = append(contentParts, text)
+			}
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if item.ResponsesToolMessage == nil || item.ResponsesToolMessage.Name == nil {
+				continue
+			}
+			toolType := "function"
+			toolCall := schemas.ChatAssistantMessageToolCall{
+				Index: uint16(len(toolCalls)),
+				Type:  &toolType,
+				Function: schemas.ChatAssistantMessageToolCallFunction{
+					Name:      item.ResponsesToolMessage.Name,
+					Arguments: derefString(item.ResponsesToolMessage.Arguments),
+				},
+			}
+			if item.CallID != nil && strings.TrimSpace(*item.CallID) != "" {
+				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.CallID))
+			} else if item.ID != nil && strings.TrimSpace(*item.ID) != "" {
+				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.ID))
+			}
+			toolCalls = append(toolCalls, toolCall)
+		}
+	}
+
+	if len(contentParts) == 0 && len(toolCalls) == 0 {
+		return nil
+	}
+
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant}
+	if len(contentParts) > 0 {
+		content := strings.Join(contentParts, "\n")
+		message.Content = &schemas.ChatMessageContent{ContentStr: &content}
+	}
+	if len(toolCalls) > 0 {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			ToolCalls: toolCalls,
+		}
+	}
+	return message
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 // SearchLogs searches logs with filters and pagination using GORM
 func (p *LoggerPlugin) SearchLogs(ctx context.Context, filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	// Set default pagination if not provided
@@ -745,6 +902,25 @@ func (p *LoggerPlugin) SearchLogs(ctx context.Context, filters logstore.SearchFi
 	}
 	// Build base query with all filters applied
 	return p.store.SearchLogs(ctx, filters, pagination)
+}
+
+// GetSessionLogs returns paginated logs for a single parent_request_id session.
+func (p *LoggerPlugin) GetSessionLogs(ctx context.Context, sessionID string, pagination logstore.PaginationOptions) (*logstore.SessionDetailResult, error) {
+	if pagination.Limit == 0 {
+		pagination.Limit = 50
+	}
+	if pagination.SortBy == "" {
+		pagination.SortBy = "timestamp"
+	}
+	if pagination.Order == "" {
+		pagination.Order = "asc"
+	}
+	return p.store.GetSessionLogs(ctx, sessionID, pagination)
+}
+
+// GetSessionSummary returns aggregate totals for a single parent_request_id session.
+func (p *LoggerPlugin) GetSessionSummary(ctx context.Context, sessionID string) (*logstore.SessionSummaryResult, error) {
+	return p.store.GetSessionSummary(ctx, sessionID)
 }
 
 // GetLog retrieves a single log entry by ID including all fields (raw_request, raw_response).
@@ -812,6 +988,16 @@ func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
 	return models
 }
 
+// GetAvailableAliases returns all unique alias values from logs.
+func (p *LoggerPlugin) GetAvailableAliases(ctx context.Context) []string {
+	aliases, err := p.store.GetDistinctAliases(ctx)
+	if err != nil {
+		p.logger.Error("failed to get available aliases: %v", err)
+		return []string{}
+	}
+	return aliases
+}
+
 func (p *LoggerPlugin) GetAvailableSelectedKeys(ctx context.Context) []KeyPair {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "selected_key_id", "selected_key_name")
 	if err != nil {
@@ -837,6 +1023,68 @@ func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
 		return []KeyPair{}
 	}
 	return keyPairResultsToKeyPairs(results)
+}
+
+// GetAvailableTeams returns all unique team ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableTeams(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "team_id", "team_name")
+	if err != nil {
+		p.logger.Error("failed to get available teams: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetAvailableCustomers returns all unique customer ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableCustomers(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "customer_id", "customer_name")
+	if err != nil {
+		p.logger.Error("failed to get available customers: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetAvailableUsers returns all unique user IDs from logs.
+// Both ID and Name are set to user_id since users don't have a separate name column.
+func (p *LoggerPlugin) GetAvailableUsers(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "user_id", "user_id")
+	if err != nil {
+		p.logger.Error("failed to get available users: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "business_unit_id", "business_unit_name")
+	if err != nil {
+		p.logger.Error("failed to get available business units: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
+// Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
+func (p *LoggerPlugin) GetDimensionCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
+	return p.store.GetDimensionCostHistogram(ctx, filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
+// Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
+func (p *LoggerPlugin) GetDimensionTokenHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionTokenHistogramResult, error) {
+	return p.store.GetDimensionTokenHistogram(ctx, filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
+// Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
+func (p *LoggerPlugin) GetDimensionLatencyHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionLatencyHistogramResult, error) {
+	return p.store.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
 }
 
 // GetAvailableRoutingEngines returns all unique routing engine types used in logs.
@@ -988,11 +1236,17 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	// Build a minimal BifrostResponse matching the request type so that
 	// extractCostInput routes usage into the correct field for each compute function.
+	originalModelRequested := logEntry.Model
+	if logEntry.Alias != nil && *logEntry.Alias != "" {
+		originalModelRequested = *logEntry.Alias
+	}
+
 	extraFields := schemas.BifrostResponseExtraFields{
-		RequestType:    requestType,
-		Provider:       schemas.ModelProvider(logEntry.Provider),
-		ModelRequested: logEntry.Model,
-		CacheDebug:     cacheDebug,
+		RequestType:            requestType,
+		Provider:               schemas.ModelProvider(logEntry.Provider),
+		OriginalModelRequested: originalModelRequested,
+		ResolvedModelUsed:      logEntry.Model,
+		CacheDebug:             cacheDebug,
 	}
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields)
@@ -1038,7 +1292,8 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		resp.SpeechResponse.Usage = logEntry.SpeechOutputParsed.Usage
 	}
 
-	return p.pricingManager.CalculateCost(resp), nil
+	scopes := pricingScopesForLog(logEntry)
+	return p.pricingManager.CalculateCost(resp, &scopes), nil
 }
 
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response
@@ -1174,5 +1429,22 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				ExtraFields: extra,
 			},
 		}
+	}
+}
+
+func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScopes {
+	if logEntry == nil {
+		return modelcatalog.PricingLookupScopes{}
+	}
+
+	virtualKeyID := ""
+	if logEntry.VirtualKeyID != nil {
+		virtualKeyID = *logEntry.VirtualKeyID
+	}
+
+	return modelcatalog.PricingLookupScopes{
+		Provider:      logEntry.Provider,
+		SelectedKeyID: logEntry.SelectedKeyID,
+		VirtualKeyID:  virtualKeyID,
 	}
 }

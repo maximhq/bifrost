@@ -9,6 +9,17 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// listModelsBifrostContext returns a context for ListModels. For Replicate, sets BifrostContextKeyDirectKey
+// so only the deployments key is used (see replicateProviderTestKeys in account.go). That key must not use an
+// empty Models allowlist, or ListModelsPipeline.ShouldEarlyExit returns no models before the API runs.
+func listModelsBifrostContext(parent context.Context, provider schemas.ModelProvider) *schemas.BifrostContext {
+	bfCtx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	if provider == schemas.Replicate {
+		bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, ReplicateDirectKeyForListModels())
+	}
+	return bfCtx
+}
+
 // RunListModelsTest executes the list models test scenario
 func RunListModelsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ListModels {
@@ -59,7 +70,7 @@ func RunListModelsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		}
 
 		response, bifrostErr := WithListModelsTestRetry(t, listModelsRetryConfig, retryContext, expectations, "ListModels", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := listModelsBifrostContext(ctx, testConfig.Provider)
 			return client.ListModelsRequest(bfCtx, request)
 		})
 
@@ -154,7 +165,7 @@ func RunListModelsResponseMarshalTest(t *testing.T, client *bifrost.Bifrost, ctx
 		}
 
 		response, bifrostErr := WithListModelsTestRetry(t, listModelsRetryConfig, retryContext, expectations, "ListModelsResponseMarshal", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := listModelsBifrostContext(ctx, testConfig.Provider)
 			return client.ListModelsRequest(bfCtx, request)
 		})
 
@@ -293,7 +304,7 @@ func RunListModelsPaginationTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 		response, bifrostErr := WithListModelsTestRetry(t, listModelsRetryConfig, retryContext, expectations, "ListModelsPagination", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := listModelsBifrostContext(ctx, testConfig.Provider)
 			return client.ListModelsRequest(bfCtx, request)
 		})
 
@@ -336,7 +347,7 @@ func RunListModelsPaginationTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			}
 
 			nextPageResponse, nextPageErr := WithListModelsTestRetry(t, listModelsRetryConfig, nextPageRetryContext, expectations, "ListModelsPagination_NextPage", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				bfCtx := listModelsBifrostContext(ctx, testConfig.Provider)
 				return client.ListModelsRequest(bfCtx, nextPageRequest)
 			})
 

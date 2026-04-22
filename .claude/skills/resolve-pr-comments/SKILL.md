@@ -1,7 +1,7 @@
 
 ---
 name: resolve-pr-comments
-description: Resolve all unresolved PR comments interactively. Use when asked to resolve PR comments, address review feedback, handle CodeRabbit comments, or fix PR review issues. Invoked with /resolve-pr-comments <PR_NUMBER> or /resolve-pr-comments <owner/repo> <PR_NUMBER>.
+description: Resolve all unresolved PR comments interactively. Makes local edits only—NEVER commits or pushes. Use when asked to resolve PR comments, address review feedback, handle CodeRabbit comments, or fix PR review issues. Invoked with /resolve-pr-comments <PR_NUMBER> or /resolve-pr-comments <owner/repo> <PR_NUMBER>.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write, WebFetch, Task, AskUserQuestion, TodoWrite
 ---
 
@@ -206,7 +206,7 @@ gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments --paginate | jq '.[] | select(.
 
 ## Step 5: Execute Actions
 
-**CRITICAL: Do NOT reply to PR comments until changes are pushed to the remote.** The reviewer cannot verify fixes until the code is pushed. Collect all fixes locally first, then push, then reply.
+**CRITICAL: Do NOT reply to PR comments until changes are pushed to the remote.** The reviewer cannot verify fixes until the code is pushed. Collect all fixes locally. This skill NEVER commits or pushes—the user handles that manually.
 
 ### For FIX:
 1. Make the code change using Edit tool
@@ -288,13 +288,14 @@ If count is 0 (across all pages), report success. If comments remain:
 
 ## Important Notes
 
-1. **NEVER reply "Fixed" until code is pushed** - The reviewer cannot verify fixes until they're on the remote. Make all fixes locally, push, THEN reply.
-2. **Always read the file** before suggesting fixes - understand context
-3. **Check for existing replies** in the thread before responding
-4. **Wait for user approval** on each action - never auto-fix without confirmation
-5. **Update tracking file** after each action
-6. **Some bots are slow** - CodeRabbit may take minutes to auto-resolve after push
-7. **Push code changes** before expecting auto-resolution of FIX actions
+1. **NEVER commit or push changes** - This skill only makes local edits. The user handles `git add`, `git commit`, and `git push` themselves. Do not run any git commit or git push commands.
+2. **NEVER reply "Fixed" until code is pushed** - The reviewer cannot verify fixes until they're on the remote. Make all fixes locally. Only reply to FIX comments after the user confirms they have pushed (the user pushes manually).
+3. **Always read the file** before suggesting fixes - understand context
+4. **Check for existing replies** in the thread before responding
+5. **Wait for user approval** on each action - never auto-fix without confirmation
+6. **Update tracking file** after each action
+7. **Some bots are slow** - CodeRabbit may take minutes to auto-resolve after push
+8. **User pushes manually** - This skill never commits or pushes; the user must push code changes before expecting auto-resolution of FIX actions
 
 ## Error Handling
 

@@ -31,6 +31,42 @@ Claude Code supports multiple authentication methods. Choose the one that matche
 claude
 ```
 
+## Setup with the VS Code extension
+
+If you prefer using Claude Code inside VS Code, install the [Claude Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code) and point it to Bifrost using the same environment variables you use for the CLI.
+
+### 1. Install the extension
+
+1. Open **Extensions** in VS Code (`Cmd+Shift+X` on macOS)
+2. Search for **Claude Code**
+3. Install **Claude Code** by Anthropic
+
+### 2. Configure Bifrost endpoint
+
+Add Bifrost variables in your editor settings:
+
+```json
+{
+  "claudeCode.environmentVariables": [
+    {
+      "name": "ANTHROPIC_BASE_URL",
+      "value": "http://localhost:8080/anthropic"
+    },
+    {
+      "name": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "value": "vertex/claude-sonnet-4-6"
+    },
+    {
+      "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "value": "vertex/claude-haiku-4-5"
+    }
+  ]
+}
+```
+
+If virtual keys are enabled, also add `ANTHROPIC_API_KEY` in the same list (use your Bifrost virtual key value). If not, set it to `dummy`.
+
+
 ## Amazon Bedrock via Bifrost
 
 ### Setup

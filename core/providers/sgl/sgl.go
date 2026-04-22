@@ -3,7 +3,7 @@
 package sgl
 
 import (
-	"fmt"
+	"context"
 	"strings"
 	"time"
 
@@ -16,7 +16,8 @@ import (
 // SGLProvider implements the Provider interface for SGL's API.
 type SGLProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -48,16 +49,14 @@ func NewSGLProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SGL
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
-	// BaseURL is required for SGLang
-	if config.NetworkConfig.BaseURL == "" {
-		return nil, fmt.Errorf("base_url is required for sgl provider")
-	}
-
+	// BaseURL is optional when keys have sgl_key_config with per-key URLs
 	return &SGLProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -69,27 +68,40 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.SGL
 }
 
-// ListModels performs a list models request to SGL's API.
-func (provider *SGLProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIListModelsRequest(
+// listModelsByKey performs a list models request for a single SGL key,
+// resolving the per-key URL so each backend is queried individually.
+func (provider *SGLProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return openai.ListModelsByKey(
 		ctx,
 		provider.client,
-		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
-		keys,
+		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		key,
+		request.Unfiltered,
 		provider.networkConfig.ExtraHeaders,
-		schemas.SGL,
+		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
 }
 
-// TextCompletion is not supported by the SGL provider.
+// ListModels performs a list models request to SGL's API.
+// Requests are made concurrently per key so that each backend is queried
+// with its own URL (from sgl_key_config).
+func (provider *SGLProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return providerUtils.HandleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+	)
+}
+
+// TextCompletion performs a text completion request to the SGL API.
 func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
+		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -105,11 +117,11 @@ func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 // TextCompletionStream performs a streaming text completion request to SGL's API.
 // It formats the request, sends it to SGL, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
-func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.streamingClient,
+		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -121,6 +133,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		nil,
 		provider.logger,
+		postHookSpanFinalizer,
 	)
 }
 
@@ -129,7 +142,7 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -146,12 +159,12 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses SGL's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.streamingClient,
+		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -165,6 +178,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		nil,
 		provider.logger,
+		postHookSpanFinalizer,
 	)
 }
 
@@ -176,30 +190,28 @@ func (provider *SGLProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 	}
 
 	response := chatResponse.ToBifrostResponsesResponse()
-	response.ExtraFields.RequestType = schemas.ResponsesRequest
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.ModelRequested = request.Model
 
 	return response, nil
 }
 
 // ResponsesStream performs a streaming responses request to the SGL API.
-func (provider *SGLProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
 		postHookRunner,
+		postHookSpanFinalizer,
 		key,
 		request.ToChatRequest(),
 	)
 }
 
-// Embedding is not supported by the SGL provider.
+// Embedding performs an embedding request to the SGL API.
 func (provider *SGLProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -227,7 +239,7 @@ func (provider *SGLProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, r
 }
 
 // SpeechStream is not supported by the SGL provider.
-func (provider *SGLProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -237,7 +249,7 @@ func (provider *SGLProvider) Transcription(ctx *schemas.BifrostContext, key sche
 }
 
 // TranscriptionStream is not supported by the SGL provider.
-func (provider *SGLProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -247,7 +259,7 @@ func (provider *SGLProvider) ImageGeneration(ctx *schemas.BifrostContext, key sc
 }
 
 // ImageGenerationStream is not supported by the SGL provider.
-func (provider *SGLProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
@@ -257,7 +269,7 @@ func (provider *SGLProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.
 }
 
 // ImageEditStream is not supported by the SGL provider.
-func (provider *SGLProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
 }
 
@@ -406,6 +418,6 @@ func (provider *SGLProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Ke
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
 }
 
-func (provider *SGLProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *SGLProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

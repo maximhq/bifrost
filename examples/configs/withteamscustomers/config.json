@@ -1,0 +1,76 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./logs.db"
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "sk-dummy",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  },
+  "governance": {
+    "customers": [
+      {
+        "id": "cust-acme",
+        "name": "Acme Corporation",
+        "budget_id": "b-cust-acme",
+        "rate_limit_id": "rl-cust-acme"
+      }
+    ],
+    "teams": [
+      {
+        "id": "team-eng",
+        "name": "Engineering",
+        "customer_id": "cust-acme",
+        "budget_id": "b-team-eng"
+      },
+      {
+        "id": "team-sales",
+        "name": "Sales",
+        "customer_id": "cust-acme",
+        "budget_id": "b-team-sales"
+      }
+    ],
+    "virtual_keys": [
+      {
+        "id": "vk-eng-1",
+        "name": "Engineering VK",
+        "value": "sk-bf-eng-1",
+        "is_active": true,
+        "team_id": "team-eng",
+        "rate_limit_id": "rl-vk-eng"
+      }
+    ],
+    "budgets": [
+      {"id": "b-cust-acme",  "max_limit": 5000, "reset_duration": "1M", "calendar_aligned": true},
+      {"id": "b-team-eng",   "max_limit": 1000, "reset_duration": "1M"},
+      {"id": "b-team-sales", "max_limit": 500,  "reset_duration": "1M"}
+    ],
+    "rate_limits": [
+      {"id": "rl-cust-acme", "token_max_limit": 10000000, "token_reset_duration": "1h", "request_max_limit": 10000, "request_reset_duration": "1h"},
+      {"id": "rl-vk-eng",    "token_max_limit": 500000,   "token_reset_duration": "1h", "request_max_limit": 500,   "request_reset_duration": "1h"}
+    ],
+    "model_configs": [
+      {"id": "mc-gpt4",  "model_name": "gpt-4o",      "provider": "openai", "budget_id": "b-team-eng"},
+      {"id": "mc-gpt35", "model_name": "gpt-3.5-turbo", "provider": "openai", "rate_limit_id": "rl-vk-eng"}
+    ]
+  }
+}

@@ -54,7 +54,7 @@ func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
 	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }
 
-func parseAnthropicError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+func parseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp AnthropicError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if errorResp.Error != nil {
@@ -63,11 +63,6 @@ func parseAnthropicError(resp *fasthttp.Response, meta *providerUtils.RequestMet
 		}
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Message = errorResp.Error.Message
-	}
-	if meta != nil {
-		bifrostErr.ExtraFields.Provider = meta.Provider
-		bifrostErr.ExtraFields.ModelRequested = meta.Model
-		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 	return bifrostErr
 }

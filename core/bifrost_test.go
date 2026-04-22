@@ -3,8 +3,10 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,7 +59,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	// Test immediate success
 	t.Run("ImmediateSuccess", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 			callCount++
 			return "success", nil
 		}
@@ -66,6 +68,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			ctx,
 			config,
 			handler,
+			nil,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
@@ -87,7 +90,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	// Test success after retries
 	t.Run("SuccessAfterRetries", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 			callCount++
 			if callCount <= 2 {
 				// First two calls fail with retryable error
@@ -101,6 +104,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			ctx,
 			config,
 			handler,
+			nil,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
@@ -128,7 +132,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	logger := NewDefaultLogger(schemas.LogLevelError)
 	t.Run("ExceedsMaxRetries", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 			callCount++
 			// Always fail with retryable error
 			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
@@ -138,6 +142,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 			ctx,
 			config,
 			handler,
+			nil,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
@@ -194,7 +199,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			callCount := 0
-			handler := func() (string, *schemas.BifrostError) {
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 				callCount++
 				return "", tc.error
 			}
@@ -203,6 +208,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 				ctx,
 				config,
 				handler,
+				nil,
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
@@ -270,7 +276,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			callCount := 0
-			handler := func() (string, *schemas.BifrostError) {
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 				callCount++
 				return "", tc.error
 			}
@@ -279,6 +285,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 				ctx,
 				config,
 				handler,
+				nil,
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
@@ -509,7 +516,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	var attemptCounts []int
 	callCount := 0
 
-	handler := func() (string, *schemas.BifrostError) {
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 		callCount++
 		attemptCounts = append(attemptCounts, callCount)
 
@@ -526,6 +533,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 		ctx,
 		config,
 		handler,
+		nil,
 		schemas.ChatCompletionRequest,
 		schemas.OpenAI,
 		"gpt-4",
@@ -605,8 +613,8 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	if err.ExtraFields.RequestType != schemas.OCRRequest {
 		t.Fatalf("expected OCR request type, got %q", err.ExtraFields.RequestType)
 	}
-	if err.ExtraFields.ModelRequested != "custom-mistral/mistral-ocr-latest" {
-		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.ModelRequested)
+	if err.ExtraFields.OriginalModelRequested != "custom-mistral/mistral-ocr-latest" {
+		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.OriginalModelRequested)
 	}
 }
 
@@ -811,15 +819,15 @@ func (m *mockKVStore) Delete(key string) (bool, error) {
 	return false, nil
 }
 
-// Test selectKeyFromProviderForModel with session stickiness
+// Test selectKeyFromProviderForModelWithPool with session stickiness
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	// Use 2 keys so we hit the keySelector path (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -842,13 +850,16 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-123")
 
-	// First call: cache miss, keySelector runs, key stored
-	key1, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	// First call: cache miss, keySelector runs, key stored; returns single-element pool (canRotate=false)
+	keys1, canRotate1, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
-		t.Fatalf("first selectKeyFromProviderForModel: %v", err)
+		t.Fatalf("first selectKeyFromProviderForModelWithPool: %v", err)
 	}
-	if key1.ID != "key-a" {
-		t.Errorf("first call: expected key-a, got %s", key1.ID)
+	if canRotate1 {
+		t.Error("first call: canRotate should be false for session-sticky request")
+	}
+	if len(keys1) != 1 || keys1[0].ID != "key-a" {
+		t.Errorf("first call: expected [key-a], got %v", keys1)
 	}
 	if keySelectorCalls != 1 {
 		t.Errorf("first call: expected 1 keySelector call, got %d", keySelectorCalls)
@@ -861,26 +872,29 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	}
 
 	// Second call: cache hit, same key returned, keySelector NOT called
-	key2, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
-		t.Fatalf("second selectKeyFromProviderForModel: %v", err)
+		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
 	}
-	if key2.ID != "key-a" {
-		t.Errorf("second call: expected key-a (sticky), got %s", key2.ID)
+	if canRotate2 {
+		t.Error("second call: canRotate should be false for session-sticky request")
+	}
+	if len(keys2) != 1 || keys2[0].ID != "key-a" {
+		t.Errorf("second call: expected [key-a] (sticky), got %v", keys2)
 	}
 	if keySelectorCalls != 1 {
 		t.Errorf("second call: keySelector should not run (cache hit), got %d calls", keySelectorCalls)
 	}
 }
 
-// Test selectKeyFromProviderForModel - no stickiness when session ID absent
+// Test selectKeyFromProviderForModelWithPool - no stickiness when session ID absent
 func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -901,23 +915,102 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	}
 
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	// No session ID set
+	// No session ID set — pool is returned with canRotate=true; keySelector is called each time.
 
 	for i := 0; i < 2; i++ {
-		key, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err != nil {
-			t.Fatalf("selectKeyFromProviderForModel call %d: %v", i+1, err)
+			t.Fatalf("selectKeyFromProviderForModelWithPool call %d: %v", i+1, err)
 		}
-		if key.ID != "key-a" {
-			t.Fatalf("call %d: expected key-a, got %s", i+1, key.ID)
+		if !canRotate {
+			t.Fatalf("call %d: canRotate should be true without a session id", i+1)
+		}
+		if len(pool) == 0 {
+			t.Fatalf("call %d: expected non-empty pool", i+1)
 		}
 	}
-	if keySelectorCalls != 2 {
-		t.Errorf("expected 2 keySelector calls without a session id, got %d", keySelectorCalls)
+	if keySelectorCalls != 0 {
+		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
 	// KVStore should not have a sticky entry for an empty session id
 	if _, err := kvStore.Get(buildSessionKey(schemas.OpenAI, "", "gpt-4")); err == nil {
 		t.Error("kvstore should not have a sticky entry for an empty session id")
+	}
+}
+
+// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that when a session ID
+// is present, rate-limit retries reuse the sticky key rather than rotating to another key.
+func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T) {
+	kvStore := newMockKVStore()
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+
+	deterministicSelector := func(ctx *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+		return keys[0], nil // always picks key-a when pool includes it
+	}
+
+	ctx := context.Background()
+	bifrost, err := Init(ctx, schemas.BifrostConfig{
+		Account:     account,
+		Logger:      NewDefaultLogger(schemas.LogLevelError),
+		KVStore:     kvStore,
+		KeySelector: deterministicSelector,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-sticky")
+	bfCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	config := createTestConfig(3, 0, 0)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	// Build keyProvider the same way requestWorker does.
+	pool, canRotate, poolErr := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	if poolErr != nil {
+		t.Fatalf("pool build failed: %v", poolErr)
+	}
+	if canRotate {
+		t.Fatal("expected canRotate=false for session-sticky request")
+	}
+	if len(pool) != 1 || pool[0].ID != "key-a" {
+		t.Fatalf("expected sticky pool=[key-a], got %v", pool)
+	}
+
+	fixedKey := pool[0]
+	keyProvider := func(_ map[string]bool) (schemas.Key, error) { return fixedKey, nil }
+
+	// Simulate 3 rate-limit failures then success; all attempts must use key-a.
+	var usedKeyIDs []string
+	callCount := 0
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		usedKeyIDs = append(usedKeyIDs, k.ID)
+		callCount++
+		if callCount <= 3 {
+			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+		}
+		return "ok", nil
+	}
+
+	result, retryErr := executeRequestWithRetries(bfCtx, config, handler, keyProvider,
+		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+	if retryErr != nil {
+		t.Fatalf("expected success, got error: %v", retryErr)
+	}
+	if result != "ok" {
+		t.Errorf("expected 'ok', got %s", result)
+	}
+	for i, id := range usedKeyIDs {
+		if id != "key-a" {
+			t.Errorf("attempt %d: expected sticky key-a, got %s (full sequence: %v)", i, id, usedKeyIDs)
+		}
 	}
 }
 
@@ -939,7 +1032,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
 		})
-		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
 			t.Fatal("expected error when model is only blacklisted")
 		}
@@ -956,7 +1049,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 				BlacklistedModels: []string{"gpt-4"},
 			},
 		})
-		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
 			t.Fatal("expected error when model is both allowed and blacklisted")
 		}
@@ -965,14 +1058,200 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	t.Run("second key used when first blacklists", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
-			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1},
+			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
-		key, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if key.ID != "k2" {
-			t.Fatalf("expected k2, got %s", key.ID)
+		// After filtering, only k2 remains — single key returns canRotate=false.
+		if canRotate {
+			t.Fatal("expected canRotate=false for single-key pool after filtering")
+		}
+		if len(pool) != 1 || pool[0].ID != "k2" {
+			t.Fatalf("expected pool=[k2], got %v", pool)
+		}
+	})
+}
+
+// Test key rotation in executeRequestWithRetries on rate-limit errors
+func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
+	config := createTestConfig(3, 0, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	keys := []schemas.Key{
+		{ID: "k1", Name: "K1"},
+		{ID: "k2", Name: "K2"},
+		{ID: "k3", Name: "K3"},
+	}
+
+	t.Run("RotatesKeyOnRateLimitRetry", func(t *testing.T) {
+		var selectedKeyIDs []string
+		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+			for _, k := range keys {
+				if !usedKeyIDs[k.ID] {
+					return k, nil
+				}
+			}
+			// Fresh round
+			for id := range usedKeyIDs {
+				delete(usedKeyIDs, id)
+			}
+			return keys[0], nil
+		}
+
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			selectedKeyIDs = append(selectedKeyIDs, k.ID)
+			// First two calls rate-limit, third succeeds
+			if len(selectedKeyIDs) <= 2 {
+				return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+			}
+			return "success", nil
+		}
+
+		result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if err != nil {
+			t.Fatalf("expected success, got error: %v", err)
+		}
+		if result != "success" {
+			t.Errorf("expected 'success', got %s", result)
+		}
+		if len(selectedKeyIDs) != 3 {
+			t.Fatalf("expected 3 attempts, got %d", len(selectedKeyIDs))
+		}
+		// Each attempt should use a different key
+		seen := map[string]struct{}{}
+		for _, id := range selectedKeyIDs {
+			seen[id] = struct{}{}
+		}
+		if len(seen) != len(selectedKeyIDs) {
+			t.Errorf("expected distinct keys per rate-limit retry, got %v", selectedKeyIDs)
+		}
+	})
+
+	t.Run("SameKeyOnNetworkError", func(t *testing.T) {
+		var selectedKeyIDs []string
+		keyProviderCalls := 0
+		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+			keyProviderCalls++
+			for _, k := range keys {
+				if !usedKeyIDs[k.ID] {
+					return k, nil
+				}
+			}
+			for id := range usedKeyIDs {
+				delete(usedKeyIDs, id)
+			}
+			return keys[0], nil
+		}
+
+		callCount := 0
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			selectedKeyIDs = append(selectedKeyIDs, k.ID)
+			callCount++
+			if callCount <= 2 {
+				return "", createBifrostError(schemas.ErrProviderDoRequest, nil, nil, false)
+			}
+			return "success", nil
+		}
+
+		result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if err != nil {
+			t.Fatalf("expected success, got error: %v", err)
+		}
+		if result != "success" {
+			t.Errorf("expected 'success', got %s", result)
+		}
+		if len(selectedKeyIDs) != 3 {
+			t.Fatalf("expected 3 attempts, got %d", len(selectedKeyIDs))
+		}
+		if keyProviderCalls != 1 {
+			t.Fatalf("expected keyProvider to be called once for network retries, got %d", keyProviderCalls)
+		}
+		// All attempts should use the same key (network error = same key)
+		for i := 1; i < len(selectedKeyIDs); i++ {
+			if selectedKeyIDs[i] != selectedKeyIDs[0] {
+				t.Errorf("expected same key for all network-error retries, got %v", selectedKeyIDs)
+			}
+		}
+	})
+
+	t.Run("CyclesFreshRoundWhenPoolExhausted", func(t *testing.T) {
+		var selectedKeyIDs []string
+		// 3 keys, 6 retries — should cycle through all 3 keys twice
+		config6 := createTestConfig(5, 0, 0) // 5 retries = 6 total attempts
+		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+			available := make([]schemas.Key, 0)
+			for _, k := range keys {
+				if !usedKeyIDs[k.ID] {
+					available = append(available, k)
+				}
+			}
+			if len(available) == 0 {
+				for id := range usedKeyIDs {
+					delete(usedKeyIDs, id)
+				}
+				available = keys
+			}
+			return available[0], nil
+		}
+
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			selectedKeyIDs = append(selectedKeyIDs, k.ID)
+			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+		}
+
+		executeRequestWithRetries(ctx, config6, handler, keyProvider,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if len(selectedKeyIDs) != 6 {
+			t.Fatalf("expected 6 attempts (1 initial + 5 retries), got %d", len(selectedKeyIDs))
+		}
+		// First cycle: k1, k2, k3; second cycle: k1, k2, k3
+		expected := []string{"k1", "k2", "k3", "k1", "k2", "k3"}
+		for i, id := range selectedKeyIDs {
+			if id != expected[i] {
+				t.Errorf("attempt %d: expected key %s, got %s (full sequence: %v)", i, expected[i], id, selectedKeyIDs)
+			}
+		}
+	})
+
+	t.Run("NilKeyProviderUsesZeroKey", func(t *testing.T) {
+		cleanCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		cleanCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+		var receivedKey schemas.Key
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			receivedKey = k
+			return "ok", nil
+		}
+
+		result, err := executeRequestWithRetries(cleanCtx, config, handler, nil,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "ok" {
+			t.Errorf("expected 'ok', got %s", result)
+		}
+		if receivedKey.ID != "" {
+			t.Errorf("expected zero Key when keyProvider is nil, got ID=%s", receivedKey.ID)
+		}
+		if trail, ok := cleanCtx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
+			t.Fatalf("expected no attempt trail for nil keyProvider, got %v", trail)
+		}
+		if selectedID, _ := cleanCtx.Value(schemas.BifrostContextKeySelectedKeyID).(string); selectedID != "" {
+			t.Fatalf("expected empty selected key id, got %q", selectedID)
+		}
+		if selectedName, _ := cleanCtx.Value(schemas.BifrostContextKeySelectedKeyName).(string); selectedName != "" {
+			t.Fatalf("expected empty selected key name, got %q", selectedName)
 		}
 	})
 }
@@ -1299,4 +1578,999 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestProviderQueue_SendOnClosedChannel_Race demonstrates the TOCTOU race that
+// caused the "send on closed channel" production panic in the OLD code.
+//
+// The old code called close(pq.queue) during provider shutdown. The sequence:
+//  1. Producer calls isClosing() → false  (queue is still open)
+//  2. Concurrently: shutdown calls signalClosing() then close(pq.queue)
+//  3. Producer enters select { case pq.queue <- msg: ... case <-pq.done: ... }
+//     → PANIC: Go's selectgo iterates cases in a randomised pollorder. When the
+//     closed-channel send case is checked first, it immediately panics via
+//     goto sclose — before it can reach the done case.
+//     The case <-pq.done: guard only saves you when done happens to be checked
+//     first in that random ordering (≈50 % of the time with two cases).
+//
+// THE FIX: pq.queue is never closed. See the ProviderQueue struct comment for
+// the full explanation. This test is kept as a proof-of-concept showing why
+// closing pq.queue is unsafe; the fix is validated by TestProviderQueue_NoPanicWithoutCloseQueue.
+//
+// We run many iterations so that the panic is statistically certain to surface
+// at least once, confirming the hypothesis.
+func TestProviderQueue_SendOnClosedChannel_Race(t *testing.T) {
+	// With two select cases each iteration has a ~50 % chance of panicking.
+	// The probability of never panicking in 200 iterations is (0.5)^200 ≈ 0.
+	const iterations = 200
+	panicCount := 0
+
+	for i := 0; i < iterations; i++ {
+		func() {
+			pq := &ProviderQueue{
+				queue:      make(chan *ChannelMessage, 10),
+				done:       make(chan struct{}),
+				signalOnce: sync.Once{},
+			}
+
+			// Synchronization barriers to force the exact race interleaving.
+			passedIsClosingCheck := make(chan struct{})
+			queueClosed := make(chan struct{})
+
+			var panicked bool
+			var wg sync.WaitGroup
+			wg.Add(1)
+
+			// Producer — mirrors the hot path in tryRequest.
+			go func() {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil && fmt.Sprint(r) == "send on closed channel" {
+						panicked = true
+					}
+				}()
+
+				// Step 1: isClosing() passes — queue is open.
+				if pq.isClosing() {
+					return
+				}
+
+				// Signal: past the isClosing() gate.
+				close(passedIsClosingCheck)
+
+				// Wait for the queue to be closed. This represents the real work
+				// tryRequest does between the isClosing() check and the select
+				// (MCP setup, tracer lookup, plugin pipeline acquisition).
+				<-queueClosed
+
+				// Step 2: enter the exact select guard used in production.
+				// pq.queue is closed AND pq.done is closed.
+				// When selectgo picks the send case first in its random pollorder
+				// it hits goto sclose and panics — the done case cannot save it.
+				msg := &ChannelMessage{}
+				select {
+				case pq.queue <- msg: // panics ~50 % of iterations
+				case <-pq.done: // selected the other ~50 %
+				}
+			}()
+
+			// Closer — mirrors UpdateProvider / RemoveProvider.
+			go func() {
+				<-passedIsClosingCheck
+				pq.signalClosing() // closes done, sets closing = 1
+				close(pq.queue)
+				close(queueClosed) // release the producer into the select
+			}()
+
+			wg.Wait()
+			if panicked {
+				panicCount++
+			}
+		}()
+	}
+
+	if panicCount == 0 {
+		t.Fatalf("expected at least one 'send on closed channel' panic across %d iterations, got none", iterations)
+	}
+	t.Logf("confirmed: panic triggered in %d / %d iterations — hypothesis is correct", panicCount, iterations)
+}
+
+// =============================================================================
+// ProviderQueue Unit Tests
+//
+// These tests exercise the ProviderQueue lifecycle in isolation — no full
+// Bifrost instance required. They validate the core safety invariants that
+// prevent the "send on closed channel" panic.
+// =============================================================================
+
+// newTestChannelMessage creates a minimal ChannelMessage suitable for drain tests.
+// The Err channel is buffered (size 1) so the worker can send without blocking.
+func newTestChannelMessage(ctx *schemas.BifrostContext) *ChannelMessage {
+	return &ChannelMessage{
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4",
+			},
+		},
+		Context:  ctx,
+		Response: make(chan *schemas.BifrostResponse, 1),
+		Err:      make(chan schemas.BifrostError, 1),
+	}
+}
+
+// TestProviderQueue_IsClosingStateTransition verifies the atomic state flag:
+// isClosing() must return false before signalClosing() and true after.
+func TestProviderQueue_IsClosingStateTransition(t *testing.T) {
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, 10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	if pq.isClosing() {
+		t.Fatal("isClosing() must be false before signalClosing() is called")
+	}
+
+	pq.signalClosing()
+
+	if !pq.isClosing() {
+		t.Fatal("isClosing() must be true after signalClosing() is called")
+	}
+
+	// done channel must also be closed
+	select {
+	case <-pq.done:
+		// correct: done is closed
+	default:
+		t.Fatal("pq.done must be closed after signalClosing()")
+	}
+
+	// queue channel must remain OPEN — this is the core of the fix
+	// (sending should not panic even though done is closed)
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		select {
+		case pq.queue <- &ChannelMessage{}:
+		case <-pq.done: // done is closed so this is always ready — no panic
+		}
+	}()
+	if panicked {
+		t.Fatal("queue channel must stay open after signalClosing() — sending to it must not panic")
+	}
+}
+
+// TestProviderQueue_SignalOnceIdempotent verifies that calling signalClosing()
+// multiple times is safe. sync.Once ensures done is only closed once and the
+// atomic store only happens once — no "close of closed channel" panic.
+func TestProviderQueue_SignalOnceIdempotent(t *testing.T) {
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, 10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("unexpected panic from multiple signalClosing() calls: %v", r)
+		}
+	}()
+
+	pq.signalClosing()
+	pq.signalClosing()
+	pq.signalClosing()
+
+	if !pq.isClosing() {
+		t.Fatal("isClosing() must be true after multiple signalClosing() calls")
+	}
+}
+
+// TestProviderQueue_WorkerExitsViaDone verifies that a worker running the
+// fixed select loop exits cleanly after signalClosing() without closeQueue().
+// Before the fix, workers used `for req := range pq.queue` which required
+// the channel to be closed. After the fix, done is the exit signal.
+func TestProviderQueue_WorkerExitsViaDone(t *testing.T) {
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, 10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	workerExited := make(chan struct{})
+
+	// Minimal worker loop — mirrors the exact select pattern in requestWorker
+	go func() {
+		defer close(workerExited)
+		for {
+			select {
+			case r, ok := <-pq.queue:
+				if !ok {
+					return
+				}
+				_ = r // process (no-op in this test)
+			case <-pq.done:
+				// Drain remaining buffered items (queue is empty here)
+				for {
+					select {
+					case <-pq.queue:
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	// Worker is now blocked on the select. Signal shutdown WITHOUT closing queue.
+	pq.signalClosing()
+
+	select {
+	case <-workerExited:
+		// correct: worker exited via done
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after signalClosing() — it may be stuck on range over unclosed channel")
+	}
+}
+
+// TestProviderQueue_WorkerDrainSendsErrors verifies the drain behaviour when
+// done fires while items are still buffered: every buffered ChannelMessage must
+// receive a "provider is shutting down" error on its Err channel. No client
+// should be left blocked waiting for a response that will never come.
+//
+// This test exercises the drain path directly — same code as requestWorker's
+// case <-pq.done: branch — to avoid a non-deterministic select race between the
+// normal processing path and the done path.
+func TestProviderQueue_WorkerDrainSendsErrors(t *testing.T) {
+	const numBuffered = 5
+
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, numBuffered+2),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Pre-fill queue — simulates requests buffered when done fires
+	msgs := make([]*ChannelMessage, numBuffered)
+	for i := 0; i < numBuffered; i++ {
+		msgs[i] = newTestChannelMessage(ctx)
+		pq.queue <- msgs[i]
+	}
+
+	// Signal closing: done is now closed
+	pq.signalClosing()
+
+	// Execute the drain path synchronously — exactly what requestWorker does in
+	// the case <-pq.done: branch. This is deterministic: we know done is closed
+	// and the queue has numBuffered items.
+	<-pq.done // fires immediately since signalClosing was already called
+drainLoop:
+	for {
+		select {
+		case r := <-pq.queue:
+			provKey, mod, _ := r.GetRequestFields()
+			r.Err <- schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "provider is shutting down",
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:            r.RequestType,
+					Provider:               provKey,
+					OriginalModelRequested: mod,
+				},
+			}
+		default:
+			break drainLoop
+		}
+	}
+
+	// Verify every message received a shutdown error
+	for i, msg := range msgs {
+		select {
+		case bifrostErr := <-msg.Err:
+			if bifrostErr.Error == nil {
+				t.Errorf("message %d: received nil Error field", i)
+				continue
+			}
+			if bifrostErr.Error.Message != "provider is shutting down" {
+				t.Errorf("message %d: expected 'provider is shutting down', got %q",
+					i, bifrostErr.Error.Message)
+			}
+			if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+				t.Errorf("message %d: expected provider %s, got %s",
+					i, schemas.OpenAI, bifrostErr.ExtraFields.Provider)
+			}
+			if bifrostErr.ExtraFields.RequestType != schemas.ChatCompletionRequest {
+				t.Errorf("message %d: expected requestType %v, got %v",
+					i, schemas.ChatCompletionRequest, bifrostErr.ExtraFields.RequestType)
+			}
+		default:
+			t.Errorf("message %d: no error received — client would be left hanging indefinitely", i)
+		}
+	}
+}
+
+// TestProviderQueue_NoPanicWithoutCloseQueue verifies that the fixed hot path
+// — select { case pq.queue <- msg | case <-pq.done } — never panics when
+// signalClosing() fires but the queue channel is NOT closed.
+//
+// This is the direct inverse of TestProviderQueue_SendOnClosedChannel_Race:
+// that test proves the old code panics ~50% of the time; this test proves
+// the fixed code panics 0% of the time.
+func TestProviderQueue_NoPanicWithoutCloseQueue(t *testing.T) {
+	const iterations = 500
+
+	for i := 0; i < iterations; i++ {
+		func() {
+			pq := &ProviderQueue{
+				queue:      make(chan *ChannelMessage, 10),
+				done:       make(chan struct{}),
+				signalOnce: sync.Once{},
+			}
+
+			passedIsClosingCheck := make(chan struct{})
+			shutdownDone := make(chan struct{})
+
+			var panicked bool
+			var wg sync.WaitGroup
+			wg.Add(1)
+
+			// Producer: mirrors the tryRequest hot path after the fix.
+			// Passes isClosing(), waits for signalClosing, then sends.
+			// The queue channel is NEVER closed — only done is closed.
+			go func() {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						panicked = true
+					}
+				}()
+
+				if pq.isClosing() {
+					return
+				}
+				close(passedIsClosingCheck)
+				<-shutdownDone
+
+				msg := &ChannelMessage{}
+				select {
+				case pq.queue <- msg: // queue is open → safe to send
+				case <-pq.done: // done is closed → selected immediately
+				}
+			}()
+
+			// Closer: signal shutdown but never close the queue channel
+			go func() {
+				<-passedIsClosingCheck
+				pq.signalClosing() // closes done; does NOT close queue
+				close(shutdownDone)
+			}()
+
+			wg.Wait()
+
+			if panicked {
+				t.Errorf("iteration %d: unexpected panic — queue must not be closed in the fixed path", i)
+			}
+		}()
+
+		if t.Failed() {
+			return
+		}
+	}
+
+	t.Logf("confirmed: zero panics in %d iterations with the fix applied", iterations)
+}
+
+// =============================================================================
+// UpdateProvider Lifecycle Tests
+//
+// These tests verify the three key invariants of the UpdateProvider fix:
+//   1. New queue is stored BEFORE signalClosing fires (stale producers re-route)
+//   2. Transfer happens BEFORE signalClosing (items go to new workers, not errored)
+//   3. Concurrent producers + UpdateProvider produce zero panics
+// =============================================================================
+
+// TestUpdateProvider_StaleProducerReroutes verifies that a "stale producer" —
+// a goroutine that fetched oldPq before UpdateProvider atomically replaced it —
+// can transparently re-route to newPq when it later detects isClosing().
+//
+// The re-routing logic in tryRequest is:
+//
+//	if pq.isClosing() {
+//	    if newPq, err := bifrost.getProviderQueue(provider); err == nil && newPq != pq {
+//	        pq = newPq   // transparent re-route
+//	    }
+//	}
+//
+// This test exercises that exact sequence without a full Bifrost instance.
+func TestUpdateProvider_StaleProducerReroutes(t *testing.T) {
+	var requestQueues sync.Map
+	provider := schemas.OpenAI
+
+	oldPq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, 10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+	newPq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, 10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	// Initial state: requestQueues holds oldPq
+	requestQueues.Store(provider, oldPq)
+
+	// Stale producer: fetched its reference before UpdateProvider ran
+	stalePq := oldPq
+
+	// Simulate UpdateProvider steps 2 + 4:
+	// Step 2: atomically replace — new producers now get newPq
+	requestQueues.Store(provider, newPq)
+	// Step 4: signal old closing — stale producers will detect this
+	oldPq.signalClosing()
+
+	// --- Stale producer detects isClosing and attempts re-route ---
+	var reroutedPq *ProviderQueue
+	if stalePq.isClosing() {
+		if val, ok := requestQueues.Load(provider); ok {
+			candidate := val.(*ProviderQueue)
+			if candidate != stalePq {
+				reroutedPq = candidate
+			}
+		}
+	}
+
+	if reroutedPq == nil {
+		t.Fatal("stale producer failed to re-route: re-route returned nil (check step ordering)")
+	}
+	if reroutedPq != newPq {
+		t.Fatal("stale producer re-routed to wrong queue: expected newPq")
+	}
+	if reroutedPq.isClosing() {
+		t.Fatal("re-routed queue is already closing — re-route is useless (newPq must be fresh)")
+	}
+
+	// Verify: sending to re-routed queue succeeds without panic
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		msg := &ChannelMessage{}
+		select {
+		case reroutedPq.queue <- msg:
+		case <-reroutedPq.done:
+			t.Error("newPq.done fired — newPq should be open")
+		}
+	}()
+	if panicked {
+		t.Fatal("panic while sending to re-routed queue — queue must not be closed")
+	}
+}
+
+// TestUpdateProvider_TransferOrdering verifies the ordering invariant:
+// items are moved from oldPq to newPq BEFORE signalClosing(oldPq) is called.
+//
+// Observable consequence: during the entire transfer loop, oldPq.isClosing()
+// must remain false. Only after transfer completes does signalClosing fire.
+func TestUpdateProvider_TransferOrdering(t *testing.T) {
+	const numMessages = 8
+
+	oldPq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, numMessages+2),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+	newPq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, numMessages+2),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	// Pre-fill oldPq — simulates buffered requests at the moment UpdateProvider runs
+	for i := 0; i < numMessages; i++ {
+		oldPq.queue <- &ChannelMessage{}
+	}
+
+	// Invariant check before transfer begins
+	if oldPq.isClosing() {
+		t.Fatal("invariant violated: oldPq already closing before transfer begins")
+	}
+
+	// Perform transfer, mirroring UpdateProvider step 3.
+	// Record whether isClosing() ever fired during the loop.
+	closingDuringTransfer := false
+	transferred := 0
+	for {
+		select {
+		case msg := <-oldPq.queue:
+			if oldPq.isClosing() {
+				closingDuringTransfer = true
+			}
+			newPq.queue <- msg
+			transferred++
+		default:
+			goto transferComplete
+		}
+	}
+transferComplete:
+
+	if closingDuringTransfer {
+		t.Error("invariant violated: oldPq was already closing during transfer — " +
+			"signalClosing must fire AFTER the transfer loop completes")
+	}
+
+	// NOW signal closing, mirroring UpdateProvider step 4
+	oldPq.signalClosing()
+
+	if !oldPq.isClosing() {
+		t.Error("expected isClosing() == true after signalClosing()")
+	}
+
+	// All messages must have moved to newPq
+	if transferred != numMessages {
+		t.Errorf("expected %d messages transferred, got %d", numMessages, transferred)
+	}
+	if len(newPq.queue) != numMessages {
+		t.Errorf("expected %d messages in newPq after transfer, got %d", numMessages, len(newPq.queue))
+	}
+	if len(oldPq.queue) != 0 {
+		t.Errorf("expected 0 messages remaining in oldPq after transfer, got %d", len(oldPq.queue))
+	}
+}
+
+// TestUpdateProvider_NoPanicConcurrentAccess verifies that concurrent producers
+// sending to a queue that is being replaced (UpdateProvider-style) never cause
+// a "send on closed channel" panic.
+//
+// This test directly models the production scenario that triggered the bug:
+// many goroutines continuously send to a ProviderQueue while UpdateProvider
+// atomically swaps the queue and signals the old one closing. With the fix
+// (queue channel is never closed), the select in producers is always safe.
+func TestUpdateProvider_NoPanicConcurrentAccess(t *testing.T) {
+	const (
+		numProducers    = 10
+		numUpdates      = 30
+		producerRunTime = 300 * time.Millisecond
+	)
+
+	var requestQueues sync.Map
+	provider := schemas.OpenAI
+
+	makePq := func() *ProviderQueue {
+		return &ProviderQueue{
+			queue:      make(chan *ChannelMessage, 200),
+			done:       make(chan struct{}),
+			signalOnce: sync.Once{},
+		}
+	}
+
+	initialPq := makePq()
+	requestQueues.Store(provider, initialPq)
+
+	var panicCount int64
+	var transferDropCount int64
+
+	stop := make(chan struct{})
+	var producerWg sync.WaitGroup
+
+	// Drainer: continuously empties queues so producers never block on a full queue
+	drainStop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-drainStop:
+				return
+			default:
+				if val, ok := requestQueues.Load(provider); ok {
+					pq := val.(*ProviderQueue)
+					select {
+					case <-pq.queue:
+					default:
+					}
+				}
+				runtime.Gosched()
+			}
+		}
+	}()
+
+	// Producers: continuously simulate the tryRequest hot path
+	for i := 0; i < numProducers; i++ {
+		producerWg.Add(1)
+		go func() {
+			defer producerWg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+
+				val, ok := requestQueues.Load(provider)
+				if !ok {
+					runtime.Gosched()
+					continue
+				}
+				pq := val.(*ProviderQueue)
+
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							atomic.AddInt64(&panicCount, 1)
+						}
+					}()
+
+					// Re-route check (mirrors tryRequest)
+					if pq.isClosing() {
+						if newVal, ok2 := requestQueues.Load(provider); ok2 {
+							if candidate := newVal.(*ProviderQueue); candidate != pq {
+								pq = candidate
+							}
+						}
+						// If still closing (RemoveProvider path), just return
+						if pq.isClosing() {
+							return
+						}
+					}
+
+					msg := &ChannelMessage{}
+					select {
+					case pq.queue <- msg:
+					case <-pq.done:
+					case <-stop: // unblock immediately when the test signals stop
+					}
+				}()
+
+				runtime.Gosched()
+			}
+		}()
+	}
+
+	// Updater: repeatedly performs UpdateProvider-style queue replacements
+	var updaterWg sync.WaitGroup
+	updaterWg.Add(1)
+	go func() {
+		defer updaterWg.Done()
+		for i := 0; i < numUpdates; i++ {
+			val, ok := requestQueues.Load(provider)
+			if !ok {
+				continue
+			}
+			oldPq := val.(*ProviderQueue)
+			newPq := makePq()
+
+			// Mirror production UpdateProvider step order exactly:
+			// Step 2: expose newPq first so stale producers can re-route to it
+			// once they see oldPq is closing.
+			requestQueues.Store(provider, newPq)
+
+			// Step 3: transfer buffered messages oldPq → newPq.
+		drain:
+			for {
+				select {
+				case msg := <-oldPq.queue:
+					select {
+					case newPq.queue <- msg:
+					default:
+						// newPq full during transfer — mirrors production cancel path.
+						atomic.AddInt64(&transferDropCount, 1)
+					}
+				default:
+					break drain
+				}
+			}
+
+			// Step 4: signal closing — producers holding a stale oldPq ref now
+			// re-route to newPq (already in the map from step 2).
+			oldPq.signalClosing()
+
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(producerRunTime)
+	close(stop)
+	close(drainStop)
+	producerWg.Wait()
+	updaterWg.Wait()
+
+	if n := atomic.LoadInt64(&panicCount); n > 0 {
+		t.Errorf("detected %d panic(s) — fix did not eliminate the concurrent-access race", n)
+	} else {
+		t.Logf("confirmed: zero panics across %d producers + %d queue replacements over %v",
+			numProducers, numUpdates, producerRunTime)
+	}
+	if drops := atomic.LoadInt64(&transferDropCount); drops > 0 {
+		t.Logf("note: %d message(s) dropped during transfer (oldPq had >200 buffered items) — does not affect panic correctness", drops)
+	}
+}
+
+// =============================================================================
+// RemoveProvider Lifecycle Tests
+//
+// These tests verify the behavioral contract of RemoveProvider:
+//   1. signalClosing() blocks new producers (isClosing() → true)
+//   2. Buffered items in the queue get "provider is shutting down" errors
+//   3. Workers exit cleanly and the WaitGroup reaches zero
+// =============================================================================
+
+// TestRemoveProvider_BlocksNewProducers verifies that after signalClosing(),
+// isClosing() returns true. Producers check this flag before sending and return
+// a "provider is shutting down" error rather than trying to enqueue.
+func TestRemoveProvider_BlocksNewProducers(t *testing.T) {
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, 10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	// Sanity: before shutdown, producers can proceed
+	if pq.isClosing() {
+		t.Fatal("isClosing() must be false before RemoveProvider runs")
+	}
+
+	// RemoveProvider step 2: signal closing
+	pq.signalClosing()
+
+	// New producers must see isClosing() == true and abort
+	if !pq.isClosing() {
+		t.Fatal("isClosing() must be true after signalClosing() (RemoveProvider)")
+	}
+
+	// done must be closed so any producer blocked in the select unblocks immediately
+	select {
+	case <-pq.done:
+		// correct
+	default:
+		t.Fatal("pq.done must be closed after signalClosing() so blocking producers unblock")
+	}
+
+	// CRITICAL: queue channel must remain OPEN — closing it would cause panics in
+	// any producer that entered the select before seeing isClosing().
+	// With the fix, we NEVER close the queue channel.
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		// A select with done closed always takes the done case — safe, no panic
+		select {
+		case pq.queue <- &ChannelMessage{}:
+		case <-pq.done:
+		}
+	}()
+	if panicked {
+		t.Fatal("queue channel must stay open after signalClosing() — closing it causes panics")
+	}
+}
+
+// TestRemoveProvider_BufferedRequestsGetErrors verifies the drain contract:
+// items queued BEFORE signalClosing fires must each receive a
+// "provider is shutting down" error on their Err channel. No client should be
+// left hanging.
+//
+// This test exercises the drain logic directly — the same code path that
+// requestWorker executes in its case <-pq.done: branch — to avoid the
+// non-deterministic select race where the normal processing path can pick up
+// items before done fires.
+func TestRemoveProvider_BufferedRequestsGetErrors(t *testing.T) {
+	const numBuffered = 8
+
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, numBuffered+5),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Buffer requests — simulates requests already queued when RemoveProvider runs
+	msgs := make([]*ChannelMessage, numBuffered)
+	for i := 0; i < numBuffered; i++ {
+		msgs[i] = newTestChannelMessage(ctx)
+		pq.queue <- msgs[i]
+	}
+
+	// RemoveProvider step 2: signal closing
+	pq.signalClosing()
+
+	// Execute the drain path — exactly what requestWorker does in case <-pq.done:
+	<-pq.done // fires immediately since signalClosing was already called
+drainLoop:
+	for {
+		select {
+		case r := <-pq.queue:
+			provKey, mod, _ := r.GetRequestFields()
+			r.Err <- schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "provider is shutting down",
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:            r.RequestType,
+					Provider:               provKey,
+					OriginalModelRequested: mod,
+				},
+			}
+		default:
+			break drainLoop
+		}
+	}
+
+	// Every buffered message must have received a shutdown error
+	for i, msg := range msgs {
+		select {
+		case bifrostErr := <-msg.Err:
+			if bifrostErr.Error == nil {
+				t.Errorf("message %d: got nil Error field in BifrostError", i)
+				continue
+			}
+			if bifrostErr.Error.Message != "provider is shutting down" {
+				t.Errorf("message %d: expected 'provider is shutting down', got %q",
+					i, bifrostErr.Error.Message)
+			}
+			if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+				t.Errorf("message %d: expected provider %s, got %s",
+					i, schemas.OpenAI, bifrostErr.ExtraFields.Provider)
+			}
+			if bifrostErr.ExtraFields.RequestType != schemas.ChatCompletionRequest {
+				t.Errorf("message %d: expected requestType %v, got %v",
+					i, schemas.ChatCompletionRequest, bifrostErr.ExtraFields.RequestType)
+			}
+		default:
+			t.Errorf("message %d: no error received — client would be left hanging indefinitely", i)
+		}
+	}
+}
+
+// TestRemoveProvider_WorkerWaitGroupCompletes verifies that after signalClosing(),
+// the worker goroutine decrements the WaitGroup and wg.Wait() returns promptly.
+// This mirrors what RemoveProvider does: signal, then Wait() before cleanup.
+func TestRemoveProvider_WorkerWaitGroupCompletes(t *testing.T) {
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, 10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Worker goroutine — mirrors requestWorker's WaitGroup contract
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case r, ok := <-pq.queue:
+				if !ok {
+					return
+				}
+				_ = r
+			case <-pq.done:
+				// Drain remaining (empty in this test)
+				for {
+					select {
+					case <-pq.queue:
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	// Tiny sleep to ensure worker is parked on select before we signal
+	time.Sleep(10 * time.Millisecond)
+
+	// RemoveProvider step 2: signal closing
+	pq.signalClosing()
+
+	// RemoveProvider step 3: wait for workers — must complete promptly
+	waitReturned := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitReturned)
+	}()
+
+	select {
+	case <-waitReturned:
+		// correct: WaitGroup reached zero after signalClosing()
+	case <-time.After(2 * time.Second):
+		t.Fatal("wg.Wait() did not return after signalClosing() — worker is stuck (would deadlock RemoveProvider)")
+	}
+}
+
+// TestRemoveProvider_ConcurrentNewProducersDuringShutdown verifies that
+// concurrent producers trying to enqueue after RemoveProvider calls
+// signalClosing() all get safe "provider is shutting down" errors — none panic.
+// This tests the TOCTOU window: producer passes isClosing() check, then done fires.
+func TestRemoveProvider_ConcurrentNewProducersDuringShutdown(t *testing.T) {
+	const numProducers = 50
+
+	pq := &ProviderQueue{
+		queue:      make(chan *ChannelMessage, numProducers+10),
+		done:       make(chan struct{}),
+		signalOnce: sync.Once{},
+	}
+
+	var panicCount int64
+	var shutdownErrors int64
+	var successfulSends int64
+
+	// Gate: all producers start together after isClosing() passes
+	passedGate := make(chan struct{})
+	var gateOnce sync.Once
+	shutdownFired := make(chan struct{})
+
+	var producerWg sync.WaitGroup
+
+	for i := 0; i < numProducers; i++ {
+		producerWg.Add(1)
+		go func() {
+			defer producerWg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.AddInt64(&panicCount, 1)
+				}
+			}()
+
+			// Each producer checks isClosing() first (mirrors tryRequest)
+			if pq.isClosing() {
+				atomic.AddInt64(&shutdownErrors, 1)
+				return
+			}
+
+			// Signal that at least one producer passed the isClosing() check
+			gateOnce.Do(func() { close(passedGate) })
+
+			// Wait for shutdown to be signaled (the TOCTOU window)
+			<-shutdownFired
+
+			// Producers now enter the select — with the fix, done is closed but
+			// queue is NOT closed, so this select is always safe (no panic)
+			msg := &ChannelMessage{}
+			select {
+			case pq.queue <- msg:
+				atomic.AddInt64(&successfulSends, 1)
+			case <-pq.done:
+				atomic.AddInt64(&shutdownErrors, 1)
+			}
+		}()
+	}
+
+	// Wait for at least one producer to pass the isClosing() gate
+	select {
+	case <-passedGate:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no producer passed the isClosing() check within timeout")
+	}
+
+	// Signal shutdown (RemoveProvider step 2) — this is the TOCTOU race
+	pq.signalClosing()
+	close(shutdownFired)
+
+	producerWg.Wait()
+
+	if n := atomic.LoadInt64(&panicCount); n > 0 {
+		t.Errorf("detected %d panic(s) — queue must not be closed during concurrent shutdown", n)
+	}
+
+	t.Logf("result: %d successful sends, %d shutdown errors, %d panics across %d producers",
+		atomic.LoadInt64(&successfulSends),
+		atomic.LoadInt64(&shutdownErrors),
+		atomic.LoadInt64(&panicCount),
+		numProducers)
 }

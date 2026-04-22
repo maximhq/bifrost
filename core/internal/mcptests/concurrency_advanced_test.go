@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -533,14 +532,14 @@ func TestConcurrent_FilteringChanges(t *testing.T) {
 			if id%2 == 0 {
 				// Even: allow all tools
 				baseCtx := context.Background()
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, []string{"*"})
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, []string{"bifrostInternal-*"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, []string{"*"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, []string{"bifrostInternal-*"})
 				ctx = schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 			} else {
 				// Odd: allow only echo
 				baseCtx := context.Background()
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, []string{"*"})
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, []string{"bifrostInternal-echo"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, []string{"*"})
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, []string{"bifrostInternal-echo"})
 				ctx = schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 			}
 

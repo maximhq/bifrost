@@ -70,11 +70,19 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="p-8" onOpenAutoFocus={(e) => { e.preventDefault(); document.getElementById("name")?.focus(); }}>
+			<SheetContent
+				className="p-8"
+				onOpenAutoFocus={(e) => {
+					e.preventDefault();
+					document.getElementById("name")?.focus();
+				}}
+			>
 				<form onSubmit={handleSubmit(onSubmit)}>
 					<SheetHeader className="flex flex-col items-start">
 						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
-						<SheetDescription>{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}</SheetDescription>
+						<SheetDescription>
+							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}
+						</SheetDescription>
 					</SheetHeader>
 
 					<div className="mt-6 space-y-4">

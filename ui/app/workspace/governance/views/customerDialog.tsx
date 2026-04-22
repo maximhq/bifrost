@@ -1,21 +1,19 @@
-"use client"
-
-import FormFooter from "@/components/formFooter"
-import { Badge } from "@/components/ui/badge"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import NumberAndSelect from "@/components/ui/numberAndSelect"
-import { resetDurationOptions } from "@/lib/constants/governance"
-import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store"
-import { CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance"
-import { formatCurrency } from "@/lib/utils/governance"
-import { Validator } from "@/lib/utils/validation"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { formatDistanceToNow } from "date-fns"
-import isEqual from "lodash.isequal"
-import { useEffect, useMemo, useState } from "react"
-import { toast } from "sonner"
+import FormFooter from "@/components/formFooter";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { resetDurationOptions } from "@/lib/constants/governance";
+import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store";
+import { CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";
+import { formatCurrency } from "@/lib/utils/governance";
+import { Validator } from "@/lib/utils/validation";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { formatDistanceToNow } from "date-fns";
+import isEqual from "lodash.isequal";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 interface CustomerDialogProps {
 	customer?: Customer | null;
@@ -25,13 +23,13 @@ interface CustomerDialogProps {
 
 interface CustomerFormData {
 	name: string;
-	// Budget (stored as string to allow intermediate decimal states like "1.")
-	budgetMaxLimit: string;
+	// Budget
+	budgetMaxLimit: number | undefined;
 	budgetResetDuration: string;
-	// Rate Limit (stored as string)
-	tokenMaxLimit: string;
+	// Rate Limit
+	tokenMaxLimit: number | undefined;
 	tokenResetDuration: string;
-	requestMaxLimit: string;
+	requestMaxLimit: number | undefined;
 	requestResetDuration: string;
 	isDirty: boolean;
 }
@@ -40,33 +38,33 @@ interface CustomerFormData {
 const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, "isDirty"> => {
 	return {
 		name: customer?.name || "",
-		// Budget (stored as string)
-		budgetMaxLimit: customer?.budget ? String(customer.budget.max_limit) : "",
+		// Budget
+		budgetMaxLimit: customer?.budget?.max_limit ?? undefined,
 		budgetResetDuration: customer?.budget?.reset_duration || "1M",
-		// Rate Limit (stored as string)
-		tokenMaxLimit: customer?.rate_limit?.token_max_limit ? String(customer.rate_limit.token_max_limit) : "",
+		// Rate Limit
+		tokenMaxLimit: customer?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
-		requestMaxLimit: customer?.rate_limit?.request_max_limit ? String(customer.rate_limit.request_max_limit) : "",
+		requestMaxLimit: customer?.rate_limit?.request_max_limit ?? undefined,
 		requestResetDuration: customer?.rate_limit?.request_reset_duration || "1h",
 	};
 };
 
 export default function CustomerDialog({ customer, onSave, onCancel }: CustomerDialogProps) {
-  const isEditing = !!customer
-  const [initialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer))
-  const [formData, setFormData] = useState<CustomerFormData>({
-    ...initialState,
-    isDirty: false,
-  })
+	const isEditing = !!customer;
+	const [initialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer));
+	const [formData, setFormData] = useState<CustomerFormData>({
+		...initialState,
+		isDirty: false,
+	});
 
-  const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create)
-  const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update)
-  const hasPermission = isEditing ? hasUpdateAccess : hasCreateAccess
+	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
+	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
+	const hasPermission = isEditing ? hasUpdateAccess : hasCreateAccess;
 
-  // RTK Query hooks
-  const [createCustomer, { isLoading: isCreating }] = useCreateCustomerMutation()
-  const [updateCustomer, { isLoading: isUpdating }] = useUpdateCustomerMutation()
-  const loading = isCreating || isUpdating
+	// RTK Query hooks
+	const [createCustomer, { isLoading: isCreating }] = useCreateCustomerMutation();
+	const [updateCustomer, { isLoading: isUpdating }] = useUpdateCustomerMutation();
+	const loading = isCreating || isUpdating;
 
 	// Track isDirty state
 	useEffect(() => {
@@ -83,12 +81,21 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 			...prev,
 			isDirty: !isEqual(initialState, currentData),
 		}));
-	}, [formData.name, formData.budgetMaxLimit, formData.budgetResetDuration, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
+	}, [
+		formData.name,
+		formData.budgetMaxLimit,
+		formData.budgetResetDuration,
+		formData.tokenMaxLimit,
+		formData.tokenResetDuration,
+		formData.requestMaxLimit,
+		formData.requestResetDuration,
+		initialState,
+	]);
 
-	// Parse string values to numbers for validation and submission
-	const budgetMaxLimitNum = formData.budgetMaxLimit ? parseFloat(formData.budgetMaxLimit) : undefined;
-	const tokenMaxLimitNum = formData.tokenMaxLimit ? parseInt(formData.tokenMaxLimit) : undefined;
-	const requestMaxLimitNum = formData.requestMaxLimit ? parseInt(formData.requestMaxLimit) : undefined;
+	// Values for validation and submission (already numbers)
+	const budgetMaxLimitNum = formData.budgetMaxLimit;
+	const tokenMaxLimitNum = formData.tokenMaxLimit;
+	const requestMaxLimitNum = formData.requestMaxLimit;
 
 	// Validation
 	const validator = useMemo(
@@ -101,25 +108,25 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				Validator.custom(formData.isDirty, "No changes to save"),
 
 				// Budget validation
-				...(formData.budgetMaxLimit
+				...(formData.budgetMaxLimit !== undefined && formData.budgetMaxLimit !== null
 					? [
-							Validator.minValue(budgetMaxLimitNum || 0, 0.01, "Budget max limit must be greater than $0.01"),
+							Validator.minValue(budgetMaxLimitNum ?? 0, 0.01, "Budget max limit must be greater than $0.01"),
 							Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
 						]
 					: []),
 
 				// Rate limit validation - token limits
-				...(formData.tokenMaxLimit
+				...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 					? [
-							Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
+							Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
 							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
 						]
 					: []),
 
 				// Rate limit validation - request limits
-				...(formData.requestMaxLimit
+				...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
 					? [
-							Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
+							Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
 							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
 						]
 					: []),
@@ -148,7 +155,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 				// Detect budget changes using had/has pattern
 				const hadBudget = !!customer.budget;
-				const hasBudget = !!budgetMaxLimitNum;
+				const hasBudget = budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null;
 				if (hasBudget) {
 					updateData.budget = {
 						max_limit: budgetMaxLimitNum,
@@ -160,13 +167,16 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 				// Detect rate limit changes using had/has pattern
 				const hadRateLimit = !!customer.rate_limit;
-				const hasRateLimit = !!tokenMaxLimitNum || !!requestMaxLimitNum;
+				const hasRateLimit =
+					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
+					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
 				if (hasRateLimit) {
 					updateData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
+						request_reset_duration:
+							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {} as UpdateCustomerRequest["rate_limit"];
@@ -181,7 +191,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				};
 
 				// Add budget if enabled
-				if (budgetMaxLimitNum) {
+				if (budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null) {
 					createData.budget = {
 						max_limit: budgetMaxLimitNum,
 						reset_duration: formData.budgetResetDuration,
@@ -189,12 +199,16 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				}
 
 				// Add rate limit if enabled (token or request limits)
-				if (tokenMaxLimitNum || requestMaxLimitNum) {
+				if (
+					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
+					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)
+				) {
 					createData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
+						request_reset_duration:
+							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				}
 
@@ -274,9 +288,9 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 						{/* Current Usage Section (only shown when editing with existing limits) */}
 						{isEditing && (customer?.budget || customer?.rate_limit) && (
-							<div className="rounded-lg border bg-muted/50 p-4 space-y-4">
+							<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
 								<p className="text-sm font-medium">Current Usage</p>
-								<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+								<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
 									{customer?.budget && (
 										<div className="space-y-1">
 											<p className="text-muted-foreground text-xs">Budget</p>
@@ -301,10 +315,13 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 											<p className="text-muted-foreground text-xs">Tokens</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
-													{customer.rate_limit.token_current_usage.toLocaleString()} / {customer.rate_limit.token_max_limit.toLocaleString()}
+													{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
+													{customer.rate_limit.token_max_limit.toLocaleString()}
 												</span>
 												<Badge
-													variant={customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit ? "destructive" : "default"}
+													variant={
+														customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit ? "destructive" : "default"
+													}
 													className="text-xs"
 												>
 													{Math.round((customer.rate_limit.token_current_usage / customer.rate_limit.token_max_limit) * 100)}%
@@ -320,10 +337,13 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 											<p className="text-muted-foreground text-xs">Requests</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
-													{customer.rate_limit.request_current_usage.toLocaleString()} / {customer.rate_limit.request_max_limit.toLocaleString()}
+													{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
+													{customer.rate_limit.request_max_limit.toLocaleString()}
 												</span>
 												<Badge
-													variant={customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit ? "destructive" : "default"}
+													variant={
+														customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit ? "destructive" : "default"
+													}
 													className="text-xs"
 												>
 													{Math.round((customer.rate_limit.request_current_usage / customer.rate_limit.request_max_limit) * 100)}%
@@ -339,7 +359,14 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						)}
 					</div>
 
-					<FormFooter validator={validator} label="Customer" onCancel={onCancel} isLoading={loading} isEditing={isEditing} hasPermission={hasPermission} />
+					<FormFooter
+						validator={validator}
+						label="Customer"
+						onCancel={onCancel}
+						isLoading={loading}
+						isEditing={isEditing}
+						hasPermission={hasPermission}
+					/>
 				</form>
 			</DialogContent>
 		</Dialog>

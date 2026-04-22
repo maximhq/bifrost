@@ -1,5 +1,5 @@
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { getProviderLabel, ProviderLabels } from "@/lib/constants/logs";
+import { getProviderLabel } from "@/lib/constants/logs";
 
 interface ProviderProps {
 	provider: string;

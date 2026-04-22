@@ -65,7 +65,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	var includeClients []string
 
 	// Extract client filtering from request context
-	if existingIncludeClients, ok := ctx.Value(MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
+	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
 		includeClients = existingIncludeClients
 	}
 
@@ -381,12 +381,12 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 	// If ToolsToExecute is specified (not nil), apply filtering
 	if config.ToolsToExecute != nil {
 		// Handle empty array [] - means no tools are allowed
-		if len(config.ToolsToExecute) == 0 {
+		if config.ToolsToExecute.IsEmpty() {
 			return true // No tools allowed
 		}
 
 		// Handle wildcard "*" - if present, all tools are allowed
-		if slices.Contains(config.ToolsToExecute, "*") {
+		if config.ToolsToExecute.IsUnrestricted() {
 			return false // All tools allowed
 		}
 
@@ -396,7 +396,7 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the allowed list
-		return !slices.Contains(config.ToolsToExecute, unprefixedToolName) // Tool not in allowed list
+		return !config.ToolsToExecute.Contains(unprefixedToolName) // Tool not in allowed list
 	}
 
 	return true // Tool is skipped (nil is treated as [] - no tools)
@@ -413,12 +413,12 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// If ToolsToAutoExecute is specified (not nil), apply filtering
 	if config.ToolsToAutoExecute != nil {
 		// Handle empty array [] - means no tools are auto-executed
-		if len(config.ToolsToAutoExecute) == 0 {
+		if config.ToolsToAutoExecute.IsEmpty() {
 			return false // No tools auto-executed
 		}
 
 		// Handle wildcard "*" - if present, all tools are auto-executed
-		if slices.Contains(config.ToolsToAutoExecute, "*") {
+		if config.ToolsToAutoExecute.IsUnrestricted() {
 			return true // All tools auto-executed
 		}
 
@@ -428,7 +428,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the auto-execute list
-		return slices.Contains(config.ToolsToAutoExecute, unprefixedToolName)
+		return config.ToolsToAutoExecute.Contains(unprefixedToolName)
 	}
 
 	return false // Tool is not auto-executed (nil is treated as [] - no tools)
@@ -439,7 +439,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 // Context filtering can only NARROW the tools available, NOT expand beyond client configuration.
 // This is checked AFTER client-level filtering (shouldSkipToolForConfig).
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
-	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+	includeTools := ctx.Value(schemas.MCPContextKeyIncludeTools)
 
 	if includeTools != nil {
 		// Try []string first (preferred type)
@@ -487,6 +487,28 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// object schemas to always have a properties field, even if empty
 		properties = schemas.NewOrderedMap()
 	}
+
+	// Preserve MCP tool annotations if any are set.
+	// Clone bool pointers so Bifrost's copy is independent of the upstream mcp.Tool lifetime.
+	var annotations *schemas.MCPToolAnnotations
+	a := mcpTool.Annotations
+	if a.Title != "" || a.ReadOnlyHint != nil || a.DestructiveHint != nil || a.IdempotentHint != nil || a.OpenWorldHint != nil {
+		cloneBool := func(b *bool) *bool {
+			if b == nil {
+				return nil
+			}
+			v := *b
+			return &v
+		}
+		annotations = &schemas.MCPToolAnnotations{
+			Title:           a.Title,
+			ReadOnlyHint:    cloneBool(a.ReadOnlyHint),
+			DestructiveHint: cloneBool(a.DestructiveHint),
+			IdempotentHint:  cloneBool(a.IdempotentHint),
+			OpenWorldHint:   cloneBool(a.OpenWorldHint),
+		}
+	}
+
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
@@ -498,6 +520,7 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Required:   mcpTool.InputSchema.Required,
 			},
 		},
+		Annotations: annotations,
 	}
 }
 
@@ -754,6 +777,7 @@ func hasToolCallsForChatResponse(response *schemas.BifrostChatResponse) bool {
 		if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
 			return true
 		}
+
 		// Check if message has tool calls regardless of finish_reason.
 		// Some providers (e.g. Gemini) return finish_reason "stop" even when tool calls are present,
 		// so we cannot rely solely on finish_reason to detect tool calls.

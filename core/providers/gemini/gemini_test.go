@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -1936,6 +1937,70 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "ResponsesAPI_FunctionCallOutput_ContentBlocks",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("List browser tabs"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_tabs"),
+							Name:      schemas.Ptr("browser_tabs"),
+							Arguments: schemas.Ptr(`{"action":"list"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_tabs"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								// Output as content blocks (Anthropic Responses API format)
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeText,
+										Text: schemas.Ptr("### Open tabs\n- 0: (current) [Google] (https://google.com)\n- 1: [GitHub] (https://github.com)\n"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				// Find the Content with function response
+				var toolResponseContent *gemini.Content
+				for i := range result.Contents {
+					content := &result.Contents[i]
+					if len(content.Parts) > 0 && content.Parts[0].FunctionResponse != nil {
+						toolResponseContent = content
+						break
+					}
+				}
+
+				require.NotNil(t, toolResponseContent, "Should have a content with functionResponse")
+				require.Len(t, toolResponseContent.Parts, 1)
+
+				part := toolResponseContent.Parts[0]
+				require.NotNil(t, part.FunctionResponse, "Part must have functionResponse")
+				assert.Equal(t, "call_tabs", part.FunctionResponse.ID)
+				assert.Equal(t, "browser_tabs", part.FunctionResponse.Name)
+
+				// Verify the response data contains the tool output (not empty)
+				require.NotNil(t, part.FunctionResponse.Response, "FunctionResponse.Response must not be nil")
+				responseStr := string(part.FunctionResponse.Response)
+				assert.Contains(t, responseStr, "Open tabs", "Response should contain the tool output text")
+				assert.Contains(t, responseStr, "Google", "Response should contain tab content")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2857,4 +2922,67 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 		assert.LessOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(24576),
 			"flash effort budget must not exceed model maximum 24576")
 	})
+}
+
+// Regression: GenAI /generateContent path must not turn thinkingLevel into a derived
+// thinkingBudget (which changes Gemini 3.x behavior). Inbound should set effort only;
+// outbound for Gemini 3+ should emit thinkingLevel again.
+func TestGenAIThinkingLevel_RoundTripPreservesLevelNotBudget(t *testing.T) {
+	level := "MiNiMaL"
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3-flash-preview",
+		GenerationConfig: gemini.GenerationConfig{
+			ThinkingConfig: &gemini.GenerationConfigThinkingConfig{
+				IncludeThoughts: true,
+				ThinkingLevel:   &level,
+			},
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq.Params)
+	require.NotNil(t, bifrostReq.Params.Reasoning)
+	require.NotNil(t, bifrostReq.Params.Reasoning.Effort)
+	assert.Equal(t, "minimal", *bifrostReq.Params.Reasoning.Effort)
+	assert.Nil(t, bifrostReq.Params.Reasoning.MaxTokens, "thinkingLevel must not populate reasoning max_tokens")
+
+	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, roundTrip)
+	require.NotNil(t, roundTrip.GenerationConfig.ThinkingConfig)
+	tc := roundTrip.GenerationConfig.ThinkingConfig
+	require.NotNil(t, tc.ThinkingLevel)
+	assert.Equal(t, "minimal", *tc.ThinkingLevel)
+	assert.Nil(t, tc.ThinkingBudget, "round-trip must not synthesize thinkingBudget from level-only config")
+}
+
+// Regression: MAX_TOKENS from Gemini must survive Gemini → Bifrost → Gemini on the GenAI path
+// (StopReason used to be dropped, so clients saw STOP instead of MAX_TOKENS).
+func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T) {
+	geminiResp := &gemini.GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content: &gemini.Content{
+					Role: "model",
+					Parts: []*gemini.Part{
+						{Text: "partial essay..."},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	require.NotNil(t, bifrostResp.StopReason)
+	assert.Equal(t, "length", *bifrostResp.StopReason)
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 1)
+	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
 }

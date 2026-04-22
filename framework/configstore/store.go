@@ -9,21 +9,21 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
 
 // VirtualKeyQueryParams holds pagination, filtering, and search parameters for virtual key queries.
 type VirtualKeyQueryParams struct {
-	Limit      int
-	Offset     int
-	Search     string
-	CustomerID string
-	TeamID     string
-	SortBy     string // name, budget_spent, created_at, status (default: created_at)
-	Order      string // asc, desc (default: asc)
-	Export     bool   // When true, skip default pagination limits (caller controls limit)
+	Limit                              int
+	Offset                             int
+	Search                             string
+	CustomerID                         string
+	TeamID                             string
+	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
+	Order                              string // asc, desc (default: asc)
+	Export                             bool   // When true, skip default pagination limits (caller controls limit)
+	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles
 }
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
@@ -62,6 +62,25 @@ type CustomersQueryParams struct {
 	Search string
 }
 
+// PricingOverrideFilters holds the filters for pricing overrides.
+type PricingOverrideFilters struct {
+	ScopeKind     *string
+	VirtualKeyID  *string
+	ProviderID    *string
+	ProviderKeyID *string
+}
+
+// PricingOverridesQueryParams holds pagination, filtering, and search parameters for pricing override queries.
+type PricingOverridesQueryParams struct {
+	Limit         int
+	Offset        int
+	Search        string
+	ScopeKind     *string
+	VirtualKeyID  *string
+	ProviderID    *string
+	ProviderKeyID *string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -85,6 +104,11 @@ type ConfigStore interface {
 	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error)
+	GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error)
+	GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error)
+	CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error
+	UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error
+	DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error
 	GetProviders(ctx context.Context) ([]tables.TableProvider, error)
 	GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error
@@ -92,6 +116,7 @@ type ConfigStore interface {
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
+	GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
@@ -124,6 +149,7 @@ type ConfigStore interface {
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
+	GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string) error
@@ -136,6 +162,9 @@ type ConfigStore interface {
 
 	// Virtual key MCP config CRUD
 	GetVirtualKeyMCPConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyMCPConfig, error)
+	GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Context, mcpClientID uint) ([]tables.TableVirtualKeyMCPConfig, error)
+	GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error)
+	GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx context.Context, clientIDs []string) ([]tables.TableVirtualKeyMCPConfig, error)
 	CreateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error
 	UpdateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error
 	DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
@@ -221,8 +250,17 @@ type ConfigStore interface {
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
+	// Governance pricing overrides CRUD
+	GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error)
+	GetPricingOverridesPaginated(ctx context.Context, params PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error)
+	GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error)
+	CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
+	UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
+	DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error
+
 	// Model parameters
-	GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error)
+	GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error)
+	GetModelParametersByModel(ctx context.Context, model string) (*tables.TableModelParameters, error)
 	UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error
 
 	// Key management
@@ -270,6 +308,55 @@ type ConfigStore interface {
 	UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
 	DeleteOauthToken(ctx context.Context, id string) error
 
+	// Per-user OAuth session CRUD
+	GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error)
+	GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error)
+	ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error)
+	GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error)
+	CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
+	UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
+
+	// Per-user OAuth token CRUD
+	GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error)
+	GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error)
+	CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
+	UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
+	DeleteOauthUserToken(ctx context.Context, id string) error
+	DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error
+
+	// Per-user OAuth Authorization Server CRUD (Bifrost as OAuth server)
+	GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error)
+	CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error
+	GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error)
+	GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error)
+	CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error
+	UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error
+	DeletePerUserOAuthSession(ctx context.Context, id string) error
+	GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error)
+	ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error)
+	CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
+	UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
+
+	// Per-user OAuth consent flow (pending flows before code issuance)
+	GetPerUserOAuthPendingFlow(ctx context.Context, id string) (*tables.TablePerUserOAuthPendingFlow, error)
+	CreatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error
+	UpdatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error
+	DeletePerUserOAuthPendingFlow(ctx context.Context, id string) error
+	// ConsumePerUserOAuthPendingFlow atomically deletes a pending flow and returns the number of
+	// rows affected. Returns 0 if the flow was already consumed by a concurrent request.
+	ConsumePerUserOAuthPendingFlow(ctx context.Context, id string) (int64, error)
+	// FinalizePerUserOAuthConsent atomically consumes a pending flow, creates the session,
+	// and creates the authorization code in a single transaction. Returns (0, nil) if the
+	// flow was already consumed by a concurrent request.
+	FinalizePerUserOAuthConsent(ctx context.Context, flowID string, session *tables.TablePerUserOAuthSession, code *tables.TablePerUserOAuthCode) (int64, error)
+	// GetOauthUserTokensByGatewaySessionID returns all upstream tokens linked to a gateway session ID.
+	// Used during consent submit to discover which MCPs the user authenticated with.
+	// Queries tokens via upstream sessions matching the given gateway session ID.
+	GetOauthUserTokensByGatewaySessionID(ctx context.Context, gatewaySessionID string) ([]tables.TableOauthUserToken, error)
+	// TransferOauthUserTokensFromGatewaySession migrates upstream tokens from all flow proxy sessions
+	// (identified by gateway_session_id) to the real Bifrost session token, and sets VirtualKeyID/UserID on each record.
+	TransferOauthUserTokensFromGatewaySession(ctx context.Context, gatewaySessionID, realSessionToken, virtualKeyID, userID string) error
+
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
 
@@ -288,6 +375,7 @@ type ConfigStore interface {
 	DeletePrompt(ctx context.Context, id string) error
 
 	// Prompt Repository - Versions
+	GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error)
 	GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error)
 	GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error)
 	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
@@ -305,8 +393,25 @@ type ConfigStore interface {
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
 
-	// Migration manager
-	RunMigration(ctx context.Context, migration *migrator.Migration) error
+	// RunMigration opens a throwaway *gorm.DB against the same
+	// backing database, invokes fn with it, and closes the connection. Use
+	// this for DDL (typically downstream-consumer migrations) that must not
+	// leave cached prepared-statement plans on the runtime pool.
+	//
+	// After fn returns successfully, callers should invoke
+	// RefreshConnectionPool if the migration altered tables the runtime pool
+	// has already queried — otherwise SQLSTATE 0A000 can surface on reads
+	// whose cached plans predate the DDL.
+	//
+	// For SQLite backends, this is a pass-through that runs fn on the
+	// existing connection (no server-side plan cache, single-writer lock).
+	RunMigration(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
+
+	// RefreshConnectionPool tears down the runtime pool and opens a fresh
+	// one against the same configuration. In-flight queries on the old
+	// pool complete before it closes; subsequent DB() calls return the new
+	// pool, whose connections carry no cached plans. SQLite is a no-op.
+	RefreshConnectionPool(ctx context.Context) error
 
 	// Cleanup
 	Close(ctx context.Context) error

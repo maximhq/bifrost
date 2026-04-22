@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"sort"
 	"strconv"
 
@@ -33,6 +34,14 @@ type EnvKeyInfo struct {
 	KeyID      string                // The key ID this env var belongs to (empty for non-key configs like bedrock_config, connection_string)
 }
 
+// CompatConfig holds the compat plugin feature flags.
+type CompatConfig struct {
+	ConvertTextToChat      bool `json:"convert_text_to_chat"`
+	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
+	ShouldDropParams       bool `json:"should_drop_params"`
+	ShouldConvertParams    bool `json:"should_convert_params"`
+}
+
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
@@ -50,17 +59,19 @@ type ClientConfig struct {
 	AllowedOrigins                  []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	AllowedHeaders                  []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
 	MaxRequestBodySizeMB            int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
-	EnableLiteLLMFallbacks          bool                             `json:"enable_litellm_fallbacks"`             // Enable litellm-specific fallbacks for text completion for Groq
+	Compat                          CompatConfig                     `json:"compat"`                               // Compat plugin configuration
 	MCPAgentDepth                   int                              `json:"mcp_agent_depth"`                      // The maximum depth for MCP agent mode tool execution
 	MCPToolExecutionTimeout         int                              `json:"mcp_tool_execution_timeout"`           // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel         string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval             int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
+	MCPDisableAutoToolInject        bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
 	HeaderFilterConfig              *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL               int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
 	LoggingHeaders                  []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
 	WhitelistedRoutes               []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
+	RoutingChainMaxDepth            int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
 	ConfigHash                      string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
@@ -107,15 +118,30 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("allowDirectKeys:false"))
 	}
 
-	if c.EnableLiteLLMFallbacks {
-		hash.Write([]byte("enableLiteLLMFallbacks:true"))
-	} else {
-		hash.Write([]byte("enableLiteLLMFallbacks:false"))
+	if c.Compat.ConvertTextToChat {
+		hash.Write([]byte("compatConvertTextToChat:true"))
+	}
+	if c.Compat.ConvertChatToResponses {
+		hash.Write([]byte("compatConvertChatToResponses:true"))
+	}
+	if c.Compat.ShouldDropParams {
+		hash.Write([]byte("compatShouldDropParams:true"))
+	}
+	if c.Compat.ShouldConvertParams {
+		hash.Write([]byte("compatShouldConvertParams:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn.
 	if c.HideDeletedVirtualKeysInFilters {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
+	}
+
+	// Always hash when non-zero — explicitly setting the default (10) is a meaningful
+	// config change that should be reflected in the hash. The migration that introduces
+	// this field backfills existing rows with RoutingChainMaxDepth=10 and regenerates
+	// their config_hash so there is no hash churn on upgrade for unmodified configs.
+	if c.RoutingChainMaxDepth > 0 {
+		hash.Write([]byte("routingChainMaxDepth:" + strconv.Itoa(c.RoutingChainMaxDepth)))
 	}
 
 	if c.MCPAgentDepth > 0 {
@@ -140,6 +166,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpToolSyncInterval:" + strconv.Itoa(c.MCPToolSyncInterval)))
 	} else {
 		hash.Write([]byte("mcpToolSyncInterval:0"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPDisableAutoToolInject {
+		hash.Write([]byte("mcpDisableAutoToolInject:true"))
 	}
 
 	if c.AsyncJobResultTTL > 0 {
@@ -200,6 +231,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if err != nil {
 			return "", err
 		}
+		hash.Write(data)
+	}
+
+	// Hash LoggingHeaders (sorted for deterministic hashing)
+	if len(c.LoggingHeaders) > 0 {
+		sortedLogging := make([]string, len(c.LoggingHeaders))
+		copy(sortedLogging, c.LoggingHeaders)
+		sort.Strings(sortedLogging)
+		data, err := sonic.Marshal(sortedLogging)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("loggingHeaders:"))
 		hash.Write(data)
 	}
 
@@ -272,7 +316,6 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
-	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -293,7 +336,6 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
-		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -326,6 +368,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			enabled := *key.Enabled
 			redactedConfig.Keys[i].Enabled = &enabled
 		}
+		if key.Aliases != nil {
+			redactedConfig.Keys[i].Aliases = maps.Clone(key.Aliases)
+		}
 		redactedConfig.Keys[i].Value = *key.Value.Redacted()
 		// Add back use for batch api
 		if key.UseForBatchAPI != nil {
@@ -340,9 +385,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
-			azureConfig := &schemas.AzureKeyConfig{
-				Deployments: key.AzureKeyConfig.Deployments,
-			}
+			azureConfig := &schemas.AzureKeyConfig{}
 			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
 			if key.AzureKeyConfig.ClientID != nil {
@@ -362,9 +405,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Redact Vertex key config if present
 		if key.VertexKeyConfig != nil {
-			vertexConfig := &schemas.VertexKeyConfig{
-				Deployments: key.VertexKeyConfig.Deployments,
-			}
+			vertexConfig := &schemas.VertexKeyConfig{}
 			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
 			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
 			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
@@ -374,9 +415,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Redact Bedrock key config if present
 		if key.BedrockKeyConfig != nil {
-			bedrockConfig := &schemas.BedrockKeyConfig{
-				Deployments: key.BedrockKeyConfig.Deployments,
-			}
+			bedrockConfig := &schemas.BedrockKeyConfig{}
 			bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
 			bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
 			if key.BedrockKeyConfig.SessionToken != nil {
@@ -404,19 +443,31 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
 
-		if key.ReplicateKeyConfig != nil {
-			replicateConfig := &schemas.ReplicateKeyConfig{
-				Deployments: key.ReplicateKeyConfig.Deployments,
-			}
-			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
-		}
-
 		if key.VLLMKeyConfig != nil {
 			vllmConfig := &schemas.VLLMKeyConfig{
 				ModelName: key.VLLMKeyConfig.ModelName,
 			}
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
+		}
+
+		if key.ReplicateKeyConfig != nil {
+			replicateConfig := &schemas.ReplicateKeyConfig{
+				UseDeploymentsEndpoint: key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+			}
+			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
+		}
+
+		if key.OllamaKeyConfig != nil {
+			ollamaConfig := &schemas.OllamaKeyConfig{}
+			ollamaConfig.URL = *key.OllamaKeyConfig.URL.Redacted()
+			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
+		}
+
+		if key.SGLKeyConfig != nil {
+			sglConfig := &schemas.SGLKeyConfig{}
+			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
+			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
 	}
 	return &redactedConfig
@@ -470,15 +521,6 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
-	}
-
-	// Hash PricingOverrides
-	if p.PricingOverrides != nil {
-		data, err := sonic.Marshal(p.PricingOverrides)
 		if err != nil {
 			return "", err
 		}
@@ -569,9 +611,9 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-	// Hash ReplicateKeyConfig
-	if key.ReplicateKeyConfig != nil {
-		data, err := sonic.Marshal(key.ReplicateKeyConfig)
+	// Hash Aliases
+	if key.Aliases != nil {
+		data, err := sonic.Marshal(key.Aliases)
 		if err != nil {
 			return "", err
 		}
@@ -580,6 +622,30 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
 		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash ReplicateKeyConfig
+	if key.ReplicateKeyConfig != nil {
+		data, err := sonic.Marshal(key.ReplicateKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash OllamaKeyConfig
+	if key.OllamaKeyConfig != nil {
+		data, err := sonic.Marshal(key.OllamaKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash SGLKeyConfig
+	if key.SGLKeyConfig != nil {
+		data, err := sonic.Marshal(key.SGLKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -609,7 +675,6 @@ type VirtualKeyHashInput struct {
 	IsActive    bool
 	TeamID      *string
 	CustomerID  *string
-	BudgetID    *string
 	RateLimitID *string
 	// ProviderConfigs and MCPConfigs are hashed separately as they contain nested data
 	ProviderConfigs []VirtualKeyProviderConfigHashInput
@@ -619,9 +684,8 @@ type VirtualKeyHashInput struct {
 // VirtualKeyProviderConfigHashInput represents provider config fields for hashing
 type VirtualKeyProviderConfigHashInput struct {
 	Provider      string
-	Weight        float64
+	Weight        *float64
 	AllowedModels []string
-	BudgetID      *string
 	RateLimitID   *string
 	KeyIDs        []string // Only key IDs, not full key objects
 }
@@ -657,10 +721,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
 	}
-	// Hash BudgetID
-	if vk.BudgetID != nil {
-		hash.Write([]byte("budgetID:" + *vk.BudgetID))
-	}
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {
 		hash.Write([]byte("rateLimitID:" + *vk.RateLimitID))
@@ -674,16 +734,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			if sortedProviderConfigs[i].Provider != sortedProviderConfigs[j].Provider {
 				return sortedProviderConfigs[i].Provider < sortedProviderConfigs[j].Provider
 			}
-			bi, bj := "", ""
-			if sortedProviderConfigs[i].BudgetID != nil {
-				bi = *sortedProviderConfigs[i].BudgetID
-			}
-			if sortedProviderConfigs[j].BudgetID != nil {
-				bj = *sortedProviderConfigs[j].BudgetID
-			}
-			if bi != bj {
-				return bi < bj
-			}
 			ri, rj := "", ""
 			if sortedProviderConfigs[i].RateLimitID != nil {
 				ri = *sortedProviderConfigs[i].RateLimitID
@@ -694,7 +744,14 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			if ri != rj {
 				return ri < rj
 			}
-			return getWeight(sortedProviderConfigs[i].Weight) < getWeight(sortedProviderConfigs[j].Weight)
+			wi, wj := sortedProviderConfigs[i].Weight, sortedProviderConfigs[j].Weight
+			if (wi == nil) != (wj == nil) {
+				return wi == nil
+			}
+			if wi != nil && wj != nil && *wi != *wj {
+				return *wi < *wj
+			}
+			return false
 		})
 		// Filter out provider configs that are not available
 		providerConfigsForHash := make([]VirtualKeyProviderConfigHashInput, len(sortedProviderConfigs))
@@ -712,9 +769,8 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sort.Strings(sortedAllowedModels)
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
 				Provider:      pc.Provider,
-				Weight:        getWeight(pc.Weight),
+				Weight:        pc.Weight,
 				AllowedModels: sortedAllowedModels,
-				BudgetID:      pc.BudgetID,
 				RateLimitID:   pc.RateLimitID,
 				KeyIDs:        keyIDs,
 			}
@@ -854,9 +910,21 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 		hash.Write([]byte("customerID:" + *t.CustomerID))
 	}
 
-	// Hash BudgetID
-	if t.BudgetID != nil {
-		hash.Write([]byte("budgetID:" + *t.BudgetID))
+	// Hash sorted budget IDs — team now owns multiple budgets; slice order must not
+	// affect the hash, otherwise config-sync would flip the hash on every reload.
+	if len(t.Budgets) > 0 {
+		ids := make([]string, len(t.Budgets))
+		for i, b := range t.Budgets {
+			ids[i] = b.ID
+		}
+		sort.Strings(ids)
+		hash.Write([]byte("budgetIDs:"))
+		for i, id := range ids {
+			if i > 0 {
+				hash.Write([]byte{','})
+			}
+			hash.Write([]byte(id))
+		}
 	}
 
 	// Hash Profile - use Profile if set, else marshal ParsedProfile
@@ -992,6 +1060,13 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash ChainRule
+	if r.ChainRule {
+		hash.Write([]byte("chain_rule:true"))
+	} else {
+		hash.Write([]byte("chain_rule:false"))
+	}
+
 	// Hash Scope
 	hash.Write([]byte(r.Scope))
 
@@ -1005,6 +1080,23 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	// Hash Priority
 	hash.Write([]byte(strconv.Itoa(r.Priority)))
 
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GeneratePricingOverrideHash generates a SHA256 hash for a pricing override.
+// Skips: CreatedAt, UpdatedAt, ConfigHash (dynamic/meta fields).
+func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) {
+	hash := sha256.New()
+	hash.Write([]byte(p.ID))
+	hash.Write([]byte(p.Name))
+	hash.Write([]byte(p.ScopeKind))
+	hash.Write([]byte(derefStr(p.VirtualKeyID)))
+	hash.Write([]byte(derefStr(p.ProviderID)))
+	hash.Write([]byte(derefStr(p.ProviderKeyID)))
+	hash.Write([]byte(p.MatchType))
+	hash.Write([]byte(p.Pattern))
+	hash.Write([]byte(p.RequestTypesJSON))
+	hash.Write([]byte(p.PricingPatchJSON))
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1131,14 +1223,17 @@ type AuthConfig struct {
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
+// GovernanceConfig contains governance entities loaded from the config store or
+// reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys  []tables.TableVirtualKey  `json:"virtual_keys"`
-	Teams        []tables.TableTeam        `json:"teams"`
-	Customers    []tables.TableCustomer    `json:"customers"`
-	Budgets      []tables.TableBudget      `json:"budgets"`
-	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
-	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
-	Providers    []tables.TableProvider    `json:"providers"`
-	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
-	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
+	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams            []tables.TableTeam            `json:"teams"`
+	Customers        []tables.TableCustomer        `json:"customers"`
+	Budgets          []tables.TableBudget          `json:"budgets"`
+	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
+	Providers        []tables.TableProvider        `json:"providers"`
+	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
+	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
 }

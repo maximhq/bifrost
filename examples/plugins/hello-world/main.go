@@ -6,6 +6,12 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const (
+	transportPreHookKey  schemas.BifrostContextKey = "hello-world-plugin-transport-pre-hook"
+	transportPostHookKey schemas.BifrostContextKey = "hello-world-plugin-transport-post-hook"
+	preHookKey           schemas.BifrostContextKey = "hello-world-plugin-pre-hook"
+)
+
 func Init(config any) error {
 	fmt.Println("Init called")
 	return nil
@@ -23,8 +29,9 @@ func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest)
 	// Modify request in-place
 	req.Headers["x-hello-world-plugin"] = "transport-pre-hook-value"
 	// Store value in context for PreLLMHook/PostLLMHook
-	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"), "transport-pre-hook-value")	
+	ctx.SetValue(transportPreHookKey, "transport-pre-hook-value")
 	// Return nil to continue processing, or return &schemas.HTTPResponse{} to short-circuit
+	ctx.Log(schemas.LogLevelInfo, "HTTPTransportPreHook called")
 	return nil, nil
 }
 
@@ -33,7 +40,8 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 	// Modify response in-place
 	resp.Headers["x-hello-world-plugin"] = "transport-post-hook-value"
 	// Store value in context
-	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-post-hook"), "transport-post-hook-value")
+	ctx.Log(schemas.LogLevelInfo, "HTTPTransportPostHook called")
+	ctx.SetValue(transportPostHookKey, "transport-post-hook-value")
 	// Return nil to continue processing
 	return nil
 }
@@ -41,6 +49,7 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	fmt.Println("HTTPTransportStreamChunkHook called")
 	// Modify chunk in-place
+	ctx.Log(schemas.LogLevelInfo, "HTTPTransportStreamChunkHook called")
 	if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Choices != nil && len(chunk.BifrostChatResponse.Choices) > 0 && chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice != nil && chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice.Delta != nil && chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice.Delta.Content != nil {
 		*chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice.Delta.Content += " - modified by hello-world-plugin"
 	}
@@ -49,19 +58,21 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 }
 
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"))
+	value1 := ctx.Value(transportPreHookKey)
 	fmt.Println("value1:", value1)
-	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-pre-hook"), "pre-hook-value")
+	ctx.SetValue(preHookKey, "pre-hook-value")
+	ctx.Log(schemas.LogLevelInfo, "PreLLMHook called")
 	fmt.Println("PreLLMHook called")
 	return req, nil, nil
 }
 
 func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	fmt.Println("PostLLMHook called")
-	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"))
+	value1 := ctx.Value(transportPreHookKey)
 	fmt.Println("value1:", value1)
-	value2 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-pre-hook"))
+	value2 := ctx.Value(preHookKey)
 	fmt.Println("value2:", value2)
+	ctx.Log(schemas.LogLevelInfo, "PostLLMHook called")
 	return resp, bifrostErr, nil
 }
 

@@ -24,17 +24,17 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
-	ID            uint     `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID  string   `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider      string   `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight        *float64 `json:"weight"`
-	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // Empty means all models allowed
-	BudgetID      *string  `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
-	RateLimitID   *string  `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	ID            uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID  string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider      string            `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight        *float64          `json:"weight"`
+	AllowedModels schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
+	AllowAllKeys  bool              `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
-	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
+	Budgets   []TableBudget   `gorm:"foreignKey:ProviderConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`              // Multiple budgets with different reset intervals
 	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Empty means all keys allowed for this provider
 }
 
@@ -43,13 +43,12 @@ func (TableVirtualKeyProviderConfig) TableName() string {
 	return "governance_virtual_key_provider_configs"
 }
 
-// UnmarshalJSON custom unmarshaller to handle both "keys" ([]TableKey) and "allowed_keys" ([]string) formats
+// UnmarshalJSON custom unmarshaller to handle "key_ids" ([]string) config-file format
 func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
-	// Temporary struct to capture all fields including allowed_keys
 	type Alias TableVirtualKeyProviderConfig
 	type TempProviderConfig struct {
 		Alias
-		AllowedKeys []string `json:"allowed_keys"` // Config file format: array of key names
+		KeyIDs []string `json:"key_ids"` // Config file format: key identifiers (TableKey.KeyID); use ["*"] to allow all keys, empty denies all
 	}
 
 	var temp TempProviderConfig
@@ -60,15 +59,29 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	// Copy all standard fields
 	*pc = TableVirtualKeyProviderConfig(temp.Alias)
 
-	// If allowed_keys is provided (config file format), convert to Keys
-	// This takes precedence if Keys is empty but allowed_keys has values
-	if len(temp.AllowedKeys) > 0 && len(pc.Keys) == 0 {
-		pc.Keys = make([]TableKey, len(temp.AllowedKeys))
-		for i, keyName := range temp.AllowedKeys {
-			pc.Keys[i] = TableKey{Name: keyName}
+	// If key_ids is provided, convert to Keys or set AllowAllKeys
+	if len(temp.KeyIDs) > 0 && len(pc.Keys) == 0 {
+		// ["*"] means allow all keys
+		if len(temp.KeyIDs) == 1 && temp.KeyIDs[0] == "*" {
+			pc.AllowAllKeys = true
+			pc.Keys = nil
+		} else {
+			pc.AllowAllKeys = false
+			pc.Keys = make([]TableKey, len(temp.KeyIDs))
+			for i, keyID := range temp.KeyIDs {
+				pc.Keys[i] = TableKey{KeyID: keyID}
+			}
 		}
 	}
 
+	return nil
+}
+
+// BeforeSave validates WhiteList fields before GORM persists the record.
+func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
+	if err := pc.AllowedModels.Validate(); err != nil {
+		return fmt.Errorf("invalid allowed_models: %w", err)
+	}
 	return nil
 }
 
@@ -108,7 +121,6 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.AzureClientSecret = nil
 			key.AzureTenantID = nil
 			key.AzureScopesJSON = nil
-			key.AzureDeploymentsJSON = nil
 			key.AzureKeyConfig = nil
 
 			// Clear all Vertex-related sensitive fields
@@ -127,12 +139,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockRoleARN = nil
 			key.BedrockExternalID = nil
 			key.BedrockRoleSessionName = nil
-			key.BedrockDeploymentsJSON = nil
 			key.BedrockKeyConfig = nil
-
-			// Clear all Replicate-related sensitive fields
-			key.ReplicateDeploymentsJSON = nil
-			key.ReplicateKeyConfig = nil
 
 			pc.Keys[i] = *key
 		}
@@ -141,11 +148,11 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 }
 
 type TableVirtualKeyMCPConfig struct {
-	ID             uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID   string         `gorm:"type:varchar(255);not null;uniqueIndex:idx_vk_mcpclient" json:"virtual_key_id"`
-	MCPClientID    uint           `gorm:"not null;uniqueIndex:idx_vk_mcpclient" json:"mcp_client_id"`
-	MCPClient      TableMCPClient `gorm:"foreignKey:MCPClientID" json:"mcp_client"`
-	ToolsToExecute []string       `gorm:"type:text;serializer:json" json:"tools_to_execute"`
+	ID             uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID   string            `gorm:"type:varchar(255);not null;uniqueIndex:idx_vk_mcpclient" json:"virtual_key_id"`
+	MCPClientID    uint              `gorm:"not null;uniqueIndex:idx_vk_mcpclient" json:"mcp_client_id"`
+	MCPClient      TableMCPClient    `gorm:"foreignKey:MCPClientID" json:"mcp_client"`
+	ToolsToExecute schemas.WhiteList `gorm:"type:text;serializer:json" json:"tools_to_execute"`
 
 	// MCPClientName is used during config file parsing to resolve the MCP client by name.
 	// This field is not persisted to the database - it's only used to capture
@@ -158,6 +165,14 @@ func (TableVirtualKeyMCPConfig) TableName() string {
 	return "governance_virtual_key_mcp_configs"
 }
 
+// BeforeSave validates WhiteList fields before GORM persists the record.
+func (mc *TableVirtualKeyMCPConfig) BeforeSave(tx *gorm.DB) error {
+	if err := mc.ToolsToExecute.Validate(); err != nil {
+		return fmt.Errorf("invalid tools_to_execute: %w", err)
+	}
+	return nil
+}
+
 // UnmarshalJSON custom unmarshaller to handle both "mcp_client_id" (database format)
 // and "mcp_client_name" (config file format) for MCP client references.
 func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
@@ -167,20 +182,16 @@ func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
 		Alias
 		MCPClientName string `json:"mcp_client_name"` // Config file format: MCP client name
 	}
-
 	var temp TempMCPConfig
 	if err := json.Unmarshal(data, &temp); err != nil {
 		return err
 	}
-
 	// Copy all standard fields
 	*mc = TableVirtualKeyMCPConfig(temp.Alias)
-
 	// Capture mcp_client_name for later resolution to MCPClientID
 	if temp.MCPClientName != "" {
 		mc.MCPClientName = temp.MCPClientName
 	}
-
 	return nil
 }
 
@@ -191,20 +202,25 @@ type TableVirtualKey struct {
 	Description     string                          `gorm:"type:text" json:"description,omitempty"`
 	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"` // The virtual key value
 	IsActive        bool                            `gorm:"default:true" json:"is_active"`
-	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means all providers allowed
+	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
 	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
 	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	BudgetID    *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+
+	// Deprecated
+	// Calendar aligned is not the property of virtual key but its property of the budget and ratelimit
+	// So in the migration we will move this to the budget/ratelimit table
+	// And this won't be referred
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
-	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
+	Budgets   []TableBudget   `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

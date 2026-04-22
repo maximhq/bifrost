@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -12,7 +10,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { resetDurationOptions } from "@/lib/constants/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
-import { getErrorMessage, useCreateModelConfigMutation, useGetProvidersQuery, useLazyGetModelsQuery, useUpdateModelConfigMutation } from "@/lib/store";
+import {
+	getErrorMessage,
+	useCreateModelConfigMutation,
+	useGetProvidersQuery,
+	useLazyGetModelsQuery,
+	useUpdateModelConfigMutation,
+} from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { ModelConfig } from "@/lib/types/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -31,11 +35,11 @@ interface ModelLimitSheetProps {
 const formSchema = z.object({
 	modelName: z.string().min(1, "Model name is required"),
 	provider: z.string().optional(),
-	budgetMaxLimit: z.string().optional(),
+	budgetMaxLimit: z.number().nonnegative().optional(),
 	budgetResetDuration: z.string().optional(),
-	tokenMaxLimit: z.string().optional(),
+	tokenMaxLimit: z.number().int().nonnegative().optional(),
 	tokenResetDuration: z.string().optional(),
-	requestMaxLimit: z.string().optional(),
+	requestMaxLimit: z.number().int().nonnegative().optional(),
 	requestResetDuration: z.string().optional(),
 });
 
@@ -91,17 +95,19 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		defaultValues: {
 			modelName: modelConfig?.model_name || "",
 			provider: modelConfig?.provider || "",
-			budgetMaxLimit: modelConfig?.budget ? String(modelConfig.budget.max_limit) : "",
+			budgetMaxLimit: modelConfig?.budget?.max_limit ?? undefined,
 			budgetResetDuration: modelConfig?.budget?.reset_duration || "1M",
-			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ? String(modelConfig.rate_limit.token_max_limit) : "",
+			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
-			requestMaxLimit: modelConfig?.rate_limit?.request_max_limit ? String(modelConfig.rate_limit.request_max_limit) : "",
+			requestMaxLimit: modelConfig?.rate_limit?.request_max_limit ?? undefined,
 			requestResetDuration: modelConfig?.rate_limit?.request_reset_duration || "1h",
 		},
 	});
 
-	const parseLimit = (v: string | undefined) => { const n = parseFloat(v ?? ""); return !isNaN(n) && n > 0; };
-	const hasAnyLimit = parseLimit(form.watch("budgetMaxLimit")) || parseLimit(form.watch("tokenMaxLimit")) || parseLimit(form.watch("requestMaxLimit"));
+	const hasAnyLimit =
+		(form.watch("budgetMaxLimit") !== undefined && form.watch("budgetMaxLimit") !== null) ||
+		(form.watch("tokenMaxLimit") !== undefined && form.watch("tokenMaxLimit") !== null) ||
+		(form.watch("requestMaxLimit") !== undefined && form.watch("requestMaxLimit") !== null);
 
 	useEffect(() => {
 		if (modelConfig) {
@@ -112,11 +118,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			form.reset({
 				modelName: modelConfig.model_name || "",
 				provider: modelConfig.provider || "",
-				budgetMaxLimit: modelConfig.budget ? String(modelConfig.budget.max_limit) : "",
+				budgetMaxLimit: modelConfig.budget?.max_limit ?? undefined,
 				budgetResetDuration: modelConfig.budget?.reset_duration || "1M",
-				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ? String(modelConfig.rate_limit.token_max_limit) : "",
+				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
-				requestMaxLimit: modelConfig.rate_limit?.request_max_limit ? String(modelConfig.rate_limit.request_max_limit) : "",
+				requestMaxLimit: modelConfig.rate_limit?.request_max_limit ?? undefined,
 				requestResetDuration: modelConfig.rate_limit?.request_reset_duration || "1h",
 			});
 		}
@@ -129,21 +135,20 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		}
 
 		try {
-			const budgetMaxLimit = data.budgetMaxLimit ? parseFloat(data.budgetMaxLimit) : undefined;
-			const tokenMaxLimit = data.tokenMaxLimit ? parseInt(data.tokenMaxLimit) : undefined;
-			const requestMaxLimit = data.requestMaxLimit ? parseInt(data.requestMaxLimit) : undefined;
 			const provider = data.provider && data.provider.trim() !== "" ? data.provider : undefined;
 
 			if (isEditing && modelConfig) {
 				const hadBudget = !!modelConfig.budget;
-				const hasBudget = !!budgetMaxLimit;
+				const hasBudget = data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null;
 				const hadRateLimit = !!modelConfig.rate_limit;
-				const hasRateLimit = !!tokenMaxLimit || !!requestMaxLimit;
+				const hasRateLimit =
+					(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
+					(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null);
 
 				let budgetPayload: { max_limit?: number; reset_duration?: string } | undefined;
 				if (hasBudget) {
 					budgetPayload = {
-						max_limit: budgetMaxLimit,
+						max_limit: data.budgetMaxLimit,
 						reset_duration: data.budgetResetDuration || "1M",
 					};
 				} else if (hadBudget) {
@@ -152,18 +157,19 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 				let rateLimitPayload:
 					| {
-						token_max_limit?: number | null;
-						token_reset_duration?: string | null;
-						request_max_limit?: number | null;
-						request_reset_duration?: string | null;
-					}
+							token_max_limit?: number | null;
+							token_reset_duration?: string | null;
+							request_max_limit?: number | null;
+							request_reset_duration?: string | null;
+					  }
 					| undefined;
 				if (hasRateLimit) {
 					rateLimitPayload = {
-						token_max_limit: tokenMaxLimit ?? null,
-						token_reset_duration: tokenMaxLimit ? data.tokenResetDuration || "1h" : null,
-						request_max_limit: requestMaxLimit ?? null,
-						request_reset_duration: requestMaxLimit ? data.requestResetDuration || "1h" : null,
+						token_max_limit: data.tokenMaxLimit ?? null,
+						token_reset_duration: data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : null,
+						request_max_limit: data.requestMaxLimit ?? null,
+						request_reset_duration:
+							data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : null,
 					};
 				} else if (hadRateLimit) {
 					rateLimitPayload = {};
@@ -183,20 +189,24 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				await createModelConfig({
 					model_name: data.modelName,
 					provider,
-					budget: budgetMaxLimit
-						? {
-							max_limit: budgetMaxLimit,
-							reset_duration: data.budgetResetDuration || "1M",
-						}
-						: undefined,
-					rate_limit:
-						tokenMaxLimit || requestMaxLimit
+					budget:
+						data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null
 							? {
-								token_max_limit: tokenMaxLimit,
-								token_reset_duration: data.tokenResetDuration || "1h",
-								request_max_limit: requestMaxLimit,
-								request_reset_duration: data.requestResetDuration || "1h",
-							}
+									max_limit: data.budgetMaxLimit,
+									reset_duration: data.budgetResetDuration || "1M",
+								}
+							: undefined,
+					rate_limit:
+						(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
+						(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
+							? {
+									token_max_limit: data.tokenMaxLimit,
+									token_reset_duration:
+										data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : undefined,
+									request_max_limit: data.requestMaxLimit,
+									request_reset_duration:
+										data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : undefined,
+								}
 							: undefined,
 				}).unwrap();
 				toast.success("Model limit created successfully");
@@ -212,8 +222,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
 				className="flex w-full flex-col overflow-x-hidden p-8"
-				onInteractOutside={(e) => { if (isEditing ? form.formState.isDirty : (!!form.watch("modelName") || hasAnyLimit)) e.preventDefault(); }}
-				onEscapeKeyDown={(e) => { if (isEditing ? form.formState.isDirty : (!!form.watch("modelName") || hasAnyLimit)) e.preventDefault(); }}
+				onInteractOutside={(e) => {
+					if (isEditing ? form.formState.isDirty : !!form.watch("modelName") || hasAnyLimit) e.preventDefault();
+				}}
+				onEscapeKeyDown={(e) => {
+					if (isEditing ? form.formState.isDirty : !!form.watch("modelName") || hasAnyLimit) e.preventDefault();
+				}}
 				data-testid="model-limit-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0">
@@ -235,7 +249,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										<FormLabel>Provider</FormLabel>
 										<Select
 											value={field.value || "all"}
-											onValueChange={(value) => handleProviderChange(value === "all" ? "" : value, form.getValues("modelName"), field.onChange)}
+											onValueChange={(value) =>
+												handleProviderChange(value === "all" ? "" : value, form.getValues("modelName"), field.onChange)
+											}
 											disabled={isEditing}
 										>
 											<FormControl>
@@ -245,18 +261,20 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											</FormControl>
 											<SelectContent>
 												<SelectItem value="all">All Providers</SelectItem>
-												{availableProviders.filter((p) => p.name).map((provider) => (
-													<SelectItem key={provider.name} value={provider.name}>
-														<RenderProviderIcon
-															provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
-															size="sm"
-															className="h-4 w-4"
-														/>
-														{provider.custom_provider_config
-															? provider.name
-															: ProviderLabels[provider.name as ProviderName] || provider.name}
-													</SelectItem>
-												))}
+												{availableProviders
+													.filter((p) => p.name)
+													.map((provider) => (
+														<SelectItem key={provider.name} value={provider.name}>
+															<RenderProviderIcon
+																provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
+																size="sm"
+																className="h-4 w-4"
+															/>
+															{provider.custom_provider_config
+																? provider.name
+																: ProviderLabels[provider.name as ProviderName] || provider.name}
+														</SelectItem>
+													))}
 											</SelectContent>
 										</Select>
 										<FormMessage />
@@ -303,7 +321,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												id="modelBudgetMaxLimit"
 												labelClassName="font-normal"
 												label="Maximum Spend (USD)"
-												value={field.value || ""}
+												value={field.value}
 												selectValue={form.watch("budgetResetDuration") || "1M"}
 												onChangeNumber={(value) => field.onChange(value)}
 												onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
@@ -330,7 +348,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												id="modelTokenMaxLimit"
 												labelClassName="font-normal"
 												label="Maximum Tokens"
-												value={field.value || ""}
+												value={field.value}
 												selectValue={form.watch("tokenResetDuration") || "1h"}
 												onChangeNumber={(value) => field.onChange(value)}
 												onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
@@ -350,7 +368,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												id="modelRequestMaxLimit"
 												labelClassName="font-normal"
 												label="Maximum Requests"
-												value={field.value || ""}
+												value={field.value}
 												selectValue={form.watch("requestResetDuration") || "1h"}
 												onChangeNumber={(value) => field.onChange(value)}
 												onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
@@ -411,12 +429,28 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<span className="inline-block">
-												<Button type="submit" data-testid="model-limit-button-submit" disabled={isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit || !form.watch("modelName") || !hasAnyLimit}>
+												<Button
+													type="submit"
+													data-testid="model-limit-button-submit"
+													disabled={
+														isLoading ||
+														!form.formState.isDirty ||
+														!form.formState.isValid ||
+														!canSubmit ||
+														!form.watch("modelName") ||
+														!hasAnyLimit
+													}
+												>
 													{isLoading ? "Saving..." : isEditing ? "Save Changes" : "Create Limit"}
 												</Button>
 											</span>
 										</TooltipTrigger>
-										{(isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit || !form.watch("modelName") || !hasAnyLimit) && (
+										{(isLoading ||
+											!form.formState.isDirty ||
+											!form.formState.isValid ||
+											!canSubmit ||
+											!form.watch("modelName") ||
+											!hasAnyLimit) && (
 											<TooltipContent>
 												<p>
 													{!canSubmit

@@ -20,6 +20,13 @@ type pluginDisabledKey struct{}
 // PluginDisabledKey is the context key used to indicate a plugin is being disabled.
 var PluginDisabledKey pluginDisabledKey
 
+// badRequestError wraps a client input validation error so that outer handlers
+// can distinguish it from internal server errors and return HTTP 400.
+type badRequestError struct{ err error }
+
+func (e *badRequestError) Error() string { return e.err.Error() }
+func (e *badRequestError) Unwrap() error { return e.err }
+
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetContentType("application/json")
@@ -115,7 +122,7 @@ func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 			return true
 		}
 
-		if allowedOrigin == "*" {			
+		if allowedOrigin == "*" {
 			return true
 		}
 

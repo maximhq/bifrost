@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -26,24 +24,24 @@ interface GovernanceFormFragmentProps {
 
 const formSchema = z.object({
 	// Budget
-	budgetMaxLimit: z.string().optional(),
+	budgetMaxLimit: z.number().nonnegative().optional(),
 	budgetResetDuration: z.string().optional(),
 	// Token limits
-	tokenMaxLimit: z.string().optional(),
+	tokenMaxLimit: z.number().int().nonnegative().optional(),
 	tokenResetDuration: z.string().optional(),
 	// Request limits
-	requestMaxLimit: z.string().optional(),
+	requestMaxLimit: z.number().int().nonnegative().optional(),
 	requestResetDuration: z.string().optional(),
 });
 
 type FormData = z.infer<typeof formSchema>;
 
 const DEFAULT_GOVERNANCE_FORM_VALUES: FormData = {
-	budgetMaxLimit: "",
+	budgetMaxLimit: undefined,
 	budgetResetDuration: "1M",
-	tokenMaxLimit: "",
+	tokenMaxLimit: undefined,
 	tokenResetDuration: "1h",
-	requestMaxLimit: "",
+	requestMaxLimit: undefined,
 	requestResetDuration: "1h",
 };
 
@@ -51,7 +49,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
-	const { data: providerGovernanceData, isLoading: isLoadingGovernance } = useGetProviderGovernanceQuery(undefined, {
+	const { data: providerGovernanceData } = useGetProviderGovernanceQuery(undefined, {
 		skip: !hasViewAccess,
 		pollingInterval: 5000,
 	});
@@ -72,11 +70,11 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 		// Never reset form during polling if user is editing
 		if (providerGovernance && !form.formState.isDirty) {
 			form.reset({
-				budgetMaxLimit: providerGovernance.budget?.max_limit ? String(providerGovernance.budget.max_limit) : "",
+				budgetMaxLimit: providerGovernance.budget?.max_limit ?? undefined,
 				budgetResetDuration: providerGovernance.budget?.reset_duration || "1M",
-				tokenMaxLimit: providerGovernance.rate_limit?.token_max_limit ? String(providerGovernance.rate_limit.token_max_limit) : "",
+				tokenMaxLimit: providerGovernance.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: providerGovernance.rate_limit?.token_reset_duration || "1h",
-				requestMaxLimit: providerGovernance.rate_limit?.request_max_limit ? String(providerGovernance.rate_limit.request_max_limit) : "",
+				requestMaxLimit: providerGovernance.rate_limit?.request_max_limit ?? undefined,
 				requestResetDuration: providerGovernance.rate_limit?.request_reset_duration || "1h",
 			});
 		}
@@ -90,31 +88,27 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 		}
 		const newProvGov = providerGovernanceData?.providers?.find((p) => p.provider === provider.name);
 		form.reset({
-			budgetMaxLimit: newProvGov?.budget?.max_limit ? String(newProvGov.budget.max_limit) : "",
+			budgetMaxLimit: newProvGov?.budget?.max_limit ?? undefined,
 			budgetResetDuration: newProvGov?.budget?.reset_duration || "1M",
-			tokenMaxLimit: newProvGov?.rate_limit?.token_max_limit ? String(newProvGov.rate_limit.token_max_limit) : "",
+			tokenMaxLimit: newProvGov?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: newProvGov?.rate_limit?.token_reset_duration || "1h",
-			requestMaxLimit: newProvGov?.rate_limit?.request_max_limit ? String(newProvGov.rate_limit.request_max_limit) : "",
+			requestMaxLimit: newProvGov?.rate_limit?.request_max_limit ?? undefined,
 			requestResetDuration: newProvGov?.rate_limit?.request_reset_duration || "1h",
 		});
 	}, [provider.name, form]);
 
 	const onSubmit = async (data: FormData) => {
 		try {
-			const budgetMaxLimit = data.budgetMaxLimit ? parseFloat(data.budgetMaxLimit) : undefined;
-			const tokenMaxLimit = data.tokenMaxLimit ? parseInt(data.tokenMaxLimit) : undefined;
-			const requestMaxLimit = data.requestMaxLimit ? parseInt(data.requestMaxLimit) : undefined;
-
 			// Determine if we need to send empty objects to signal removal
 			const hadBudget = !!providerGovernance?.budget;
-			const hasBudget = !!budgetMaxLimit;
+			const hasBudget = data.budgetMaxLimit !== undefined;
 			const hadRateLimit = !!providerGovernance?.rate_limit;
-			const hasRateLimit = !!tokenMaxLimit || !!requestMaxLimit;
+			const hasRateLimit = data.tokenMaxLimit !== undefined || data.requestMaxLimit !== undefined;
 
 			let budgetPayload: { max_limit?: number; reset_duration?: string } | undefined;
 			if (hasBudget) {
 				budgetPayload = {
-					max_limit: budgetMaxLimit,
+					max_limit: data.budgetMaxLimit,
 					reset_duration: data.budgetResetDuration || "1M",
 				};
 			} else if (hadBudget) {
@@ -123,18 +117,18 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 			let rateLimitPayload:
 				| {
-					token_max_limit?: number | null;
-					token_reset_duration?: string | null;
-					request_max_limit?: number | null;
-					request_reset_duration?: string | null;
-				}
+						token_max_limit?: number | null;
+						token_reset_duration?: string | null;
+						request_max_limit?: number | null;
+						request_reset_duration?: string | null;
+				  }
 				| undefined;
 			if (hasRateLimit) {
 				rateLimitPayload = {
-					token_max_limit: tokenMaxLimit ?? null,
-					token_reset_duration: tokenMaxLimit ? data.tokenResetDuration || "1h" : null,
-					request_max_limit: requestMaxLimit ?? null,
-					request_reset_duration: requestMaxLimit ? data.requestResetDuration || "1h" : null,
+					token_max_limit: data.tokenMaxLimit ?? null,
+					token_reset_duration: data.tokenMaxLimit !== undefined ? data.tokenResetDuration || "1h" : null,
+					request_max_limit: data.requestMaxLimit ?? null,
+					request_reset_duration: data.requestMaxLimit !== undefined ? data.requestResetDuration || "1h" : null,
 				};
 			} else if (hadRateLimit) {
 				rateLimitPayload = {};
@@ -187,7 +181,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 									id="providerBudgetMaxLimit"
 									labelClassName="font-normal"
 									label="Maximum Spend (USD)"
-									value={field.value || ""}
+									value={field.value}
 									selectValue={form.watch("budgetResetDuration") || "1M"}
 									onChangeNumber={(value) => field.onChange(value)}
 									onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
@@ -213,7 +207,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 									id="providerTokenMaxLimit"
 									labelClassName="font-normal"
 									label="Maximum Tokens"
-									value={field.value || ""}
+									value={field.value}
 									selectValue={form.watch("tokenResetDuration") || "1h"}
 									onChangeNumber={(value) => field.onChange(value)}
 									onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
@@ -232,7 +226,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 									id="providerRequestMaxLimit"
 									labelClassName="font-normal"
 									label="Maximum Requests"
-									value={field.value || ""}
+									value={field.value}
 									selectValue={form.watch("requestResetDuration") || "1h"}
 									onChangeNumber={(value) => field.onChange(value)}
 									onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}

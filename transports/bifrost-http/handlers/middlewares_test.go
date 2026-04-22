@@ -71,7 +71,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -410,6 +410,69 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 	chained(ctx)
 }
 
+func TestIsInferenceWSEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/responses",
+		"/v1/realtime",
+		"/responses",
+		"/realtime",
+		"/openai/v1/responses",
+		"/openai/responses",
+		"/openai/openai/responses",
+		"/openai/v1/realtime",
+		"/openai/realtime",
+		"/openai/openai/realtime",
+	}
+
+	for _, path := range paths {
+		if !isInferenceWSEndpoint(path) {
+			t.Fatalf("expected inference websocket path %s to be recognized", path)
+		}
+	}
+
+	if isInferenceWSEndpoint("/api/ws") {
+		t.Fatal("dashboard websocket path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/openai/chat/completions") {
+		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+}
+
+func TestIsRealtimeTransportEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+		"/openai/v1/realtime",
+		"/openai/openai/realtime",
+		"/v1/realtime/calls",
+		"/realtime/calls",
+		"/openai/realtime/calls",
+		"/openai/v1/realtime/calls",
+		"/openai/openai/realtime/calls",
+	}
+
+	for _, path := range paths {
+		if !isRealtimeTransportEndpoint(path) {
+			t.Fatalf("expected realtime transport path %s to be recognized", path)
+		}
+	}
+
+	nonTransportPaths := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+		"/v1/chat/completions",
+	}
+
+	for _, path := range nonTransportPaths {
+		if isRealtimeTransportEndpoint(path) {
+			t.Fatalf("did not expect non-transport path %s to be recognized", path)
+		}
+	}
+}
+
 // Testlib.ChainMiddlewares_ShortCircuit tests that when a middleware writes a response
 // and does not call next, subsequent middlewares and handler do not execute.
 func TestChainMiddlewares_ShortCircuit(t *testing.T) {
@@ -663,6 +726,83 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	routes := []string{
+		"/v1/realtime",
+		"/openai/v1/realtime",
+		"/v1/realtime/calls?model=gpt-realtime",
+		"/openai/v1/realtime/calls?model=gpt-realtime",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatalf("expected realtime transport route %s to bypass auth", route)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_InferenceMiddleware_RealtimeMintingStillRequiresAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	routes := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if nextCalled {
+				t.Fatalf("expected realtime minting route %s to still require auth", route)
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("expected %d for route %s, got %d", fasthttp.StatusUnauthorized, route, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
 // TestAuthMiddleware_UpdateAuthConfig_NilToEnabled tests updating auth config from nil to enabled
 func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -864,7 +1004,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)

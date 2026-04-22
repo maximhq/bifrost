@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 )
-
 
 type AgentModeExecutor struct {
 	logger schemas.Logger
@@ -40,7 +40,7 @@ func (a *AgentModeExecutor) ExecuteAgentForChatRequest(
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
 	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
-	clientManager ClientManager,	
+	clientManager ClientManager,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create adapter for Chat API
 	adapter := &chatAPIAdapter{
@@ -143,7 +143,7 @@ func (a *AgentModeExecutor) executeAgent(
 	adapter agentAPIAdapter,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
 	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
-	clientManager ClientManager,	
+	clientManager ClientManager,
 ) (interface{}, *schemas.BifrostError) {
 	// Get initial response from adapter
 	currentResponse := adapter.getInitialResponse()
@@ -156,6 +156,9 @@ func (a *AgentModeExecutor) executeAgent(
 	// Track all executed tool results and tool calls across all iterations
 	allExecutedToolResults := make([]*schemas.ChatMessage, 0)
 	allExecutedToolCalls := make([]schemas.ChatAssistantMessageToolCall, 0)
+
+	// Accumulate token usage across all LLM calls in the agent loop
+	accumulatedUsage := adapter.extractUsage(currentResponse)
 
 	originalRequestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if ok {
@@ -207,14 +210,8 @@ func (a *AgentModeExecutor) executeAgent(
 						continue
 					}
 
-					// Step 1: Convert literal \n escape sequences to actual newlines for parsing
-					codeWithNewlines := strings.ReplaceAll(code, "\\n", "\n")
-					if len(codeWithNewlines) != len(code) {
-						a.logger.Debug("%s Converted literal \\n escape sequences to actual newlines", CodeModeLogPrefix)
-					}
-
-					// Step 2: Extract tool calls from code during AST formation
-					extractedToolCalls, err := extractToolCallsFromCode(codeWithNewlines)
+					// Step 1: Extract tool calls from the original source code during validation
+					extractedToolCalls, err := extractToolCallsFromCode(code)
 					if err != nil {
 						a.logger.Debug("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
@@ -289,6 +286,8 @@ func (a *AgentModeExecutor) executeAgent(
 			wg := sync.WaitGroup{}
 			wg.Add(len(autoExecutableTools))
 			channelToolResults := make(chan *schemas.ChatMessage, len(autoExecutableTools))
+			var authRequiredErr *schemas.MCPUserOAuthRequiredError
+			var authRequiredOnce sync.Once
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
 					defer wg.Done()
@@ -305,6 +304,15 @@ func (a *AgentModeExecutor) executeAgent(
 
 					mcpResponse, toolErr := executeToolFunc(toolCtx, mcpRequest)
 					if toolErr != nil {
+						// Check if this is a per-user OAuth auth-required error
+						var oauthErr *schemas.MCPUserOAuthRequiredError
+						if errors.As(toolErr, &oauthErr) {
+							authRequiredOnce.Do(func() {
+								authRequiredErr = oauthErr
+							})
+							channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
+							return
+						}
 						a.logger.Warn("Tool execution failed: %v", toolErr)
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
@@ -320,6 +328,23 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 			wg.Wait()
 			close(channelToolResults)
+
+			// If any tool required per-user OAuth, stop the agent loop and return the error
+			if authRequiredErr != nil {
+				statusCode := 401
+				errType := "mcp_auth_required"
+				return nil, &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     &statusCode,
+					Error: &schemas.ErrorField{
+						Message: authRequiredErr.Message,
+						Type:    &errType,
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						MCPAuthRequired: authRequiredErr,
+					},
+				}
+			}
 
 			// Collect tool results
 			executedToolResults = make([]*schemas.ChatMessage, 0, len(autoExecutableTools))
@@ -342,6 +367,8 @@ func (a *AgentModeExecutor) executeAgent(
 			if depth == 1 && len(allExecutedToolResults) == 0 {
 				return currentResponse, nil
 			}
+			// Apply accumulated usage before building the final response
+			adapter.applyUsage(currentResponse, accumulatedUsage)
 			// Create response with all executed tool results from all iterations, and non-auto-executable tool calls
 			return adapter.createResponseWithExecutedTools(currentResponse, allExecutedToolResults, allExecutedToolCalls, nonAutoExecutableTools), nil
 		}
@@ -364,9 +391,125 @@ func (a *AgentModeExecutor) executeAgent(
 		}
 
 		currentResponse = response
+		accumulatedUsage = mergeUsage(accumulatedUsage, adapter.extractUsage(currentResponse))
 	}
 
+	adapter.applyUsage(currentResponse, accumulatedUsage)
 	return currentResponse, nil
+}
+
+// mergeUsage sums token counts and costs from two BifrostLLMUsage values.
+// Detail sub-fields are summed when both are present; if only one is non-nil it is kept as-is.
+func mergeUsage(base, add *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
+	if add == nil {
+		return base
+	}
+	if base == nil {
+		return add
+	}
+
+	merged := &schemas.BifrostLLMUsage{
+		PromptTokens:     base.PromptTokens + add.PromptTokens,
+		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
+		TotalTokens:      base.TotalTokens + add.TotalTokens,
+	}
+
+	// Merge prompt token details
+	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {
+		bd := base.PromptTokensDetails
+		ad := add.PromptTokensDetails
+		if bd == nil {
+			bd = &schemas.ChatPromptTokensDetails{}
+		}
+		if ad == nil {
+			ad = &schemas.ChatPromptTokensDetails{}
+		}
+		merged.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			TextTokens:        bd.TextTokens + ad.TextTokens,
+			AudioTokens:       bd.AudioTokens + ad.AudioTokens,
+			ImageTokens:       bd.ImageTokens + ad.ImageTokens,
+			CachedReadTokens:  bd.CachedReadTokens + ad.CachedReadTokens,
+			CachedWriteTokens: bd.CachedWriteTokens + ad.CachedWriteTokens,
+		}
+	}
+
+	// Merge completion token details
+	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {
+		bd := base.CompletionTokensDetails
+		ad := add.CompletionTokensDetails
+		if bd == nil {
+			bd = &schemas.ChatCompletionTokensDetails{}
+		}
+		if ad == nil {
+			ad = &schemas.ChatCompletionTokensDetails{}
+		}
+		merged.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+			TextTokens:               bd.TextTokens + ad.TextTokens,
+			AcceptedPredictionTokens: bd.AcceptedPredictionTokens + ad.AcceptedPredictionTokens,
+			AudioTokens:              bd.AudioTokens + ad.AudioTokens,
+			ReasoningTokens:          bd.ReasoningTokens + ad.ReasoningTokens,
+			RejectedPredictionTokens: bd.RejectedPredictionTokens + ad.RejectedPredictionTokens,
+		}
+		if bd.CitationTokens != nil || ad.CitationTokens != nil {
+			bct := 0
+			act := 0
+			if bd.CitationTokens != nil {
+				bct = *bd.CitationTokens
+			}
+			if ad.CitationTokens != nil {
+				act = *ad.CitationTokens
+			}
+			sum := bct + act
+			merged.CompletionTokensDetails.CitationTokens = &sum
+		}
+		if bd.NumSearchQueries != nil || ad.NumSearchQueries != nil {
+			bnsq := 0
+			ansq := 0
+			if bd.NumSearchQueries != nil {
+				bnsq = *bd.NumSearchQueries
+			}
+			if ad.NumSearchQueries != nil {
+				ansq = *ad.NumSearchQueries
+			}
+			sum := bnsq + ansq
+			merged.CompletionTokensDetails.NumSearchQueries = &sum
+		}
+		if bd.ImageTokens != nil || ad.ImageTokens != nil {
+			bit := 0
+			ait := 0
+			if bd.ImageTokens != nil {
+				bit = *bd.ImageTokens
+			}
+			if ad.ImageTokens != nil {
+				ait = *ad.ImageTokens
+			}
+			sum := bit + ait
+			merged.CompletionTokensDetails.ImageTokens = &sum
+		}
+	}
+
+	// Merge cost
+	if base.Cost != nil || add.Cost != nil {
+		bc := base.Cost
+		ac := add.Cost
+		if bc == nil {
+			bc = &schemas.BifrostCost{}
+		}
+		if ac == nil {
+			ac = &schemas.BifrostCost{}
+		}
+		merged.Cost = &schemas.BifrostCost{
+			InputTokensCost:     bc.InputTokensCost + ac.InputTokensCost,
+			OutputTokensCost:    bc.OutputTokensCost + ac.OutputTokensCost,
+			ReasoningTokensCost: bc.ReasoningTokensCost + ac.ReasoningTokensCost,
+			CitationTokensCost:  bc.CitationTokensCost + ac.CitationTokensCost,
+			SearchQueriesCost:   bc.SearchQueriesCost + ac.SearchQueriesCost,
+			RequestCost:         bc.RequestCost + ac.RequestCost,
+			TotalCost:           bc.TotalCost + ac.TotalCost,
+		}
+	}
+
+	return merged
 }
 
 // extractToolCalls extracts all tool calls from a chat response.
@@ -460,25 +603,23 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 
 		// Get auto-executable tools from config
 		toolsToAutoExecute := client.ExecutionConfig.ToolsToAutoExecute
-		if len(toolsToAutoExecute) == 0 {
+		if toolsToAutoExecute.IsEmpty() {
 			// No auto-executable tools configured for this client
 			continue
 		}
 
 		// Parse tool names (as they appear in JavaScript code)
 		autoExecutableTools := []string{}
-		for _, originalToolName := range toolsToAutoExecute {
-			// Handle wildcard "*" - means all tools are auto-executable
-			if originalToolName == "*" {
-				autoExecutableTools = append(autoExecutableTools, "*")
-				continue
+		if toolsToAutoExecute.IsUnrestricted() {
+			autoExecutableTools = append(autoExecutableTools, "*")
+		} else {
+			for _, originalToolName := range toolsToAutoExecute {
+				// Replace - with _ for code mode compatibility, then parse for JS compatibility
+				toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
+				parsedToolName := parseToolName(toolNameForCode)
+				autoExecutableTools = append(autoExecutableTools, parsedToolName)
 			}
-			// Replace - with _ for code mode compatibility, then parse for JS compatibility
-			toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
-			parsedToolName := parseToolName(toolNameForCode)
-			autoExecutableTools = append(autoExecutableTools, parsedToolName)
 		}
-
 		// Add to map if there are auto-executable tools
 		if len(autoExecutableTools) > 0 {
 			allowedTools[clientName] = autoExecutableTools

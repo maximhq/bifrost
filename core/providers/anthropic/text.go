@@ -103,10 +103,6 @@ func (response *AnthropicTextResponse) ToBifrostTextCompletionResponse() *schema
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
 		},
 		Model: response.Model,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.TextCompletionRequest,
-			Provider:    schemas.Anthropic,
-		},
 	}
 }
 

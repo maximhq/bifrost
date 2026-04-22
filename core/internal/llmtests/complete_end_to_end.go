@@ -70,7 +70,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					ToolChoice: &schemas.ChatToolChoice{
 						ChatToolChoiceStr: bifrost.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
 					},
-					MaxCompletionTokens: bifrost.Ptr(150),
+					MaxCompletionTokens: bifrost.Ptr(400),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -88,7 +88,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					ToolChoice: &schemas.ResponsesToolChoice{
 						ResponsesToolChoiceStr: bifrost.Ptr(string(schemas.ResponsesToolChoiceTypeRequired)),
 					},
-					MaxOutputTokens: bifrost.Ptr(150),
+					MaxOutputTokens: bifrost.Ptr(400),
 				},
 			}
 			return client.ResponsesRequest(bfCtx, responsesReq)
@@ -205,7 +205,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    testConfig.ChatModel,
 				Input:    chatConversationHistory,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(200),
+					MaxCompletionTokens: bifrost.Ptr(400),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -219,7 +219,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    testConfig.ChatModel,
 				Input:    responsesConversationHistory,
 				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(200),
+					MaxOutputTokens: bifrost.Ptr(400),
 				},
 			}
 			return client.ResponsesRequest(bfCtx, responsesReq)
@@ -343,7 +343,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    model,
 				Input:    chatConversationHistory,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(200),
+					MaxCompletionTokens: bifrost.Ptr(400),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -357,7 +357,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    model,
 				Input:    responsesConversationHistory,
 				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(200),
+					MaxOutputTokens: bifrost.Ptr(400),
 				},
 			}
 			return client.ResponsesRequest(bfCtx, responsesReq)

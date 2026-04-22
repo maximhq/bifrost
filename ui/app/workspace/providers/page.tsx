@@ -1,5 +1,3 @@
-"use client";
-
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +18,7 @@ import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/co
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useNavigate } from "@tanstack/react-router";
 import { useQueryState } from "nuqs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -32,7 +30,7 @@ import { ProvidersEmptyState } from "./views/providersEmptyState";
 
 export default function Providers() {
 	const dispatch = useAppDispatch();
-	const router = useRouter();
+	const navigate = useNavigate();
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasSettingsOnly = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
@@ -40,9 +38,9 @@ export default function Providers() {
 	// Redirect Settings-only users to Custom pricing tab
 	useEffect(() => {
 		if (!hasProvidersAccess && hasSettingsOnly) {
-			router.replace("/workspace/custom-pricing");
+			navigate({ to: "/workspace/custom-pricing", replace: true });
 		}
-	}, [hasProvidersAccess, hasSettingsOnly, router]);
+	}, [hasProvidersAccess, hasSettingsOnly, navigate]);
 
 	const selectedProvider = useAppSelector((state) => state.provider.selectedProvider);
 	const providerFormIsDirty = useAppSelector((state) => state.provider.isDirty);
@@ -80,7 +78,7 @@ export default function Providers() {
 					dispatch(
 						setSelectedProvider({
 							name: provider as ModelProviderName,
-							keys: [],
+
 							concurrency_and_buffer_size: DefaultPerformanceConfig,
 							network_config: DefaultNetworkConfig,
 							custom_provider_config: undefined,
@@ -123,7 +121,7 @@ export default function Providers() {
 
 	const handleSelectKnownProvider = async (name: string) => {
 		try {
-			await createProvider({ provider: name as ModelProviderName, keys: [] }).unwrap();
+			await createProvider({ provider: name as ModelProviderName }).unwrap();
 			setProvider(name);
 		} catch (err: any) {
 			if (err?.status === 409) {
@@ -320,33 +318,20 @@ function KeyDiscoveryFailedBadge({
 	provider,
 }: {
 	provider: {
-		keys: Array<{ status?: string }>;
 		status?: string;
 		description?: string;
 	};
 }) {
-	const hasFailedKeys = provider.keys?.some((key) => key.status === "list_models_failed");
 	const providerFailed = provider.status === "list_models_failed";
-	const hasFailed = hasFailedKeys || providerFailed;
 
-	if (!hasFailed) return null;
-
-	// Determine the tooltip message
-	let tooltipMessage = "";
-	if (providerFailed && hasFailedKeys) {
-		tooltipMessage = "Provider and one or more keys have failed model discovery.";
-	} else if (providerFailed) {
-		tooltipMessage = provider.description || "Provider model discovery failed.";
-	} else if (hasFailedKeys) {
-		tooltipMessage = "One or more keys have failed list models. Check keys for details.";
-	}
+	if (!providerFailed) return null;
 
 	return (
 		<Tooltip>
 			<TooltipTrigger>
 				<AlertCircle className="h-3 w-3" />
 			</TooltipTrigger>
-			<TooltipContent>{tooltipMessage}</TooltipContent>
+			<TooltipContent>{provider.description || "Provider model discovery failed."}</TooltipContent>
 		</Tooltip>
 	);
 }

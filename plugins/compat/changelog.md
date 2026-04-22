@@ -1,0 +1,2 @@
+- feat: drops tools web_search and web_search_preview if model does not support it  
+- feat: flattens tool type namespace if provider does not support it

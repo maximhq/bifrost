@@ -419,3 +419,191 @@ func TestEnvVar_IsRedacted(t *testing.T) {
 		})
 	}
 }
+
+// TestEnvVar_IsSet verifies the semantic difference between GetValue() != "" and IsSet().
+// IsSet() must return true when the EnvVar references an env var (regardless of whether
+// that env var has been resolved to a non-empty Val). This is the property that the
+// BeforeSave hooks rely on so env var references survive persistence.
+func TestEnvVar_IsSet(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *EnvVar
+		expected bool
+	}{
+		{
+			name:     "nil envvar",
+			input:    nil,
+			expected: false,
+		},
+		{
+			name:     "completely empty",
+			input:    &EnvVar{},
+			expected: false,
+		},
+		{
+			name:     "only Val set (plain value)",
+			input:    &EnvVar{Val: "abc"},
+			expected: true,
+		},
+		{
+			name:     "only EnvVar reference set (env not resolved on this server)",
+			input:    &EnvVar{EnvVar: "env.MISSING", FromEnv: true},
+			expected: true,
+		},
+		{
+			name:     "Val and EnvVar both set (env was resolved)",
+			input:    &EnvVar{Val: "resolved-secret", EnvVar: "env.X", FromEnv: true},
+			expected: true,
+		},
+		{
+			name:     "FromEnv true but no reference and no value",
+			input:    &EnvVar{FromEnv: true},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.input.IsSet(); got != tt.expected {
+				t.Errorf("IsSet() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestEnvVar_MarshalJSON_AutoRedactsEnvBackedValues verifies that any EnvVar marshaled
+// to JSON with FromEnv=true is automatically masked, regardless of whether the
+// surrounding code remembered to call Redacted() explicitly. This is the defense-in-depth
+// guarantee that prevents env-resolved secrets from leaking through unredacted fields.
+func TestEnvVar_MarshalJSON_AutoRedactsEnvBackedValues(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       EnvVar
+		wantValue   string
+		wantEnvVar  string
+		wantFromEnv bool
+	}{
+		{
+			name:        "env-backed long secret is redacted",
+			input:       EnvVar{Val: "sk-1234567890abcdefghijklmnop", EnvVar: "env.OPENAI_API_KEY", FromEnv: true},
+			wantValue:   "sk-1************************mnop",
+			wantEnvVar:  "env.OPENAI_API_KEY",
+			wantFromEnv: true,
+		},
+		{
+			name:        "env-backed short secret is fully masked",
+			input:       EnvVar{Val: "12345678", EnvVar: "env.SHORT", FromEnv: true},
+			wantValue:   "********",
+			wantEnvVar:  "env.SHORT",
+			wantFromEnv: true,
+		},
+		{
+			name:        "env-backed unresolved on this server keeps empty value",
+			input:       EnvVar{Val: "", EnvVar: "env.MISSING", FromEnv: true},
+			wantValue:   "",
+			wantEnvVar:  "env.MISSING",
+			wantFromEnv: true,
+		},
+		{
+			name:        "plain value (not from env) is NOT redacted",
+			input:       EnvVar{Val: "2024-10-21", EnvVar: "", FromEnv: false},
+			wantValue:   "2024-10-21",
+			wantEnvVar:  "",
+			wantFromEnv: false,
+		},
+		{
+			name:        "empty plain value passes through",
+			input:       EnvVar{Val: "", EnvVar: "", FromEnv: false},
+			wantValue:   "",
+			wantEnvVar:  "",
+			wantFromEnv: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatalf("Marshal failed: %v", err)
+			}
+			var got struct {
+				Value   string `json:"value"`
+				EnvVar  string `json:"env_var"`
+				FromEnv bool   `json:"from_env"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal of marshaled output failed: %v", err)
+			}
+			if got.Value != tt.wantValue {
+				t.Errorf("value: got %q, want %q", got.Value, tt.wantValue)
+			}
+			if got.EnvVar != tt.wantEnvVar {
+				t.Errorf("env_var: got %q, want %q", got.EnvVar, tt.wantEnvVar)
+			}
+			if got.FromEnv != tt.wantFromEnv {
+				t.Errorf("from_env: got %v, want %v", got.FromEnv, tt.wantFromEnv)
+			}
+		})
+	}
+}
+
+// TestEnvVar_MarshalJSON_DoesNotMutateOriginal ensures the auto-redaction in MarshalJSON
+// does not mutate the receiver. The inference path calls GetValue() to build the actual
+// HTTP request to the LLM provider, so the original Val must remain intact.
+func TestEnvVar_MarshalJSON_DoesNotMutateOriginal(t *testing.T) {
+	original := EnvVar{Val: "real-secret-value", EnvVar: "env.SECRET", FromEnv: true}
+	if _, err := json.Marshal(original); err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if original.Val != "real-secret-value" {
+		t.Errorf("MarshalJSON mutated Val: got %q, want %q", original.Val, "real-secret-value")
+	}
+	if original.GetValue() != "real-secret-value" {
+		t.Errorf("GetValue() returns mutated value: got %q", original.GetValue())
+	}
+}
+
+// TestEnvVar_MarshalJSON_RoundTripIsRedacted verifies that a marshaled-then-unmarshaled
+// env-backed EnvVar is recognized as redacted. The merge logic in provider_keys.go relies
+// on this so it can detect "the UI sent back the same redacted value, don't overwrite".
+func TestEnvVar_MarshalJSON_RoundTripIsRedacted(t *testing.T) {
+	original := EnvVar{Val: "sk-1234567890abcdefghijklmnop", EnvVar: "env.KEY", FromEnv: true}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var roundTripped EnvVar
+	if err := json.Unmarshal(data, &roundTripped); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !roundTripped.IsRedacted() {
+		t.Errorf("Round-tripped env-backed value should be IsRedacted, got Val=%q", roundTripped.Val)
+	}
+	if roundTripped.EnvVar != "env.KEY" {
+		t.Errorf("env_var reference lost in round-trip: got %q, want %q", roundTripped.EnvVar, "env.KEY")
+	}
+}
+
+// TestEnvVar_MarshalJSON_DoesNotAffectGetValue is a critical safety net: marshaling an
+// EnvVar to JSON must NOT change what GetValue() returns. The inference path uses
+// GetValue() to build outgoing LLM requests; if marshaling were to mutate the value,
+// every request after a UI fetch would silently start using the redacted mask as the
+// API key.
+func TestEnvVar_MarshalJSON_DoesNotAffectGetValue(t *testing.T) {
+	os.Setenv("MY_REAL_API_KEY", "sk-real-secret-1234567890abcdef")
+	defer os.Unsetenv("MY_REAL_API_KEY")
+
+	ev := NewEnvVar("env.MY_REAL_API_KEY")
+	if ev.GetValue() != "sk-real-secret-1234567890abcdef" {
+		t.Fatalf("setup: GetValue() = %q, want resolved env value", ev.GetValue())
+	}
+
+	// Marshaling would redact in the JSON output, but must not touch the in-memory Val.
+	if _, err := json.Marshal(ev); err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	if ev.GetValue() != "sk-real-secret-1234567890abcdef" {
+		t.Errorf("GetValue() returns mutated value after MarshalJSON: got %q", ev.GetValue())
+	}
+}

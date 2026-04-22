@@ -1,24 +1,46 @@
-"use client";
-
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { HeadersTable, type CellRenderParams } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tagInput";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
-import { Info, Plus, Trash2 } from "lucide-react";
+import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
+
+/** Normalize form value (object or legacy JSON string) for the alias map editor. */
+function normalizeAliasesValue(v: Record<string, string> | string | undefined | null): Record<string, string> {
+	if (v == null) {
+		return {};
+	}
+	if (typeof v === "string") {
+		const t = v.trim();
+		if (!t) {
+			return {};
+		}
+		try {
+			const p = JSON.parse(t) as unknown;
+			if (typeof p === "object" && p !== null && !Array.isArray(p)) {
+				return Object.fromEntries(Object.entries(p as Record<string, unknown>).map(([k, val]) => [k, String(val ?? "")]));
+			}
+		} catch {
+			return {};
+		}
+		return {};
+	}
+	if (typeof v === "object" && !Array.isArray(v)) {
+		return Object.fromEntries(Object.entries(v).map(([k, val]) => [k, typeof val === "string" ? val : String(val ?? "")]));
+	}
+	return {};
+}
 
 interface Props {
 	control: Control<any>;
@@ -27,7 +49,7 @@ interface Props {
 }
 
 // Batch API form field for all providers
-function BatchAPIFormField({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormReturn<any> }) {
 	return (
 		<FormField
 			control={control}
@@ -55,6 +77,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
 	const isVLLM = providerName === "vllm";
+	const isOllama = providerName === "ollama";
+	const isSGL = providerName === "sgl";
+	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
@@ -63,48 +88,70 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	// Auth type state for Bedrock: 'iam_role', 'explicit', or 'api_key'
 	const [bedrockAuthType, setBedrockAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
 
+	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
+	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
+
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
 		if (form.formState.isDirty) return;
 		if (isAzure) {
-			const clientId = form.getValues("key.azure_key_config.client_id")?.value;
-			const clientSecret = form.getValues("key.azure_key_config.client_secret")?.value;
-			const tenantId = form.getValues("key.azure_key_config.tenant_id")?.value;
-			const apiKey = form.getValues("key.value")?.value;
-			if (clientId || clientSecret || tenantId) {
-				setAzureAuthType("entra_id");
-			} else if (!apiKey) {
-				setAzureAuthType("default_credential");
+			const clientId = form.getValues("key.azure_key_config.client_id");
+			const clientSecret = form.getValues("key.azure_key_config.client_secret");
+			const tenantId = form.getValues("key.azure_key_config.tenant_id");
+			const apiKey = form.getValues("key.value");
+			const hasEntraField =
+				clientId?.value || clientId?.env_var || clientSecret?.value || clientSecret?.env_var || tenantId?.value || tenantId?.env_var;
+			const hasApiKey = apiKey?.value || apiKey?.env_var;
+			let detected: "api_key" | "entra_id" | "default_credential" = "api_key";
+			if (hasEntraField) {
+				detected = "entra_id";
+			} else if (!hasApiKey) {
+				detected = "default_credential";
 			}
+			setAzureAuthType(detected);
+			form.setValue("key.azure_key_config._auth_type", detected);
 		}
 	}, [isAzure, form]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
-		if (isBedrock) {
-			const accessKey = form.getValues("key.bedrock_key_config.access_key")?.value;
-			const secretKey = form.getValues("key.bedrock_key_config.secret_key")?.value;
+		if (isVertex) {
+			const authCredentials = form.getValues("key.vertex_key_config.auth_credentials")?.value;
+			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.env_var;
 			const apiKey = form.getValues("key.value")?.value;
-			if (accessKey || secretKey) {
-				setBedrockAuthType("explicit");
-			} else if (apiKey) {
-				setBedrockAuthType("api_key");
+			const apiKeyEnv = form.getValues("key.value")?.env_var;
+			let detected: "service_account" | "service_account_json" | "api_key" = "service_account";
+			if (authCredentials || authCredentialsEnv) {
+				detected = "service_account_json";
+			} else if (apiKey || apiKeyEnv) {
+				detected = "api_key";
 			}
+			setVertexAuthType(detected);
+			form.setValue("key.vertex_key_config._auth_type", detected);
+		}
+	}, [isVertex, form]);
+
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isBedrock) {
+			const accessKey = form.getValues("key.bedrock_key_config.access_key");
+			const secretKey = form.getValues("key.bedrock_key_config.secret_key");
+			const apiKey = form.getValues("key.value");
+			const hasExplicitCreds = accessKey?.value || accessKey?.env_var || secretKey?.value || secretKey?.env_var;
+			const hasApiKey = apiKey?.value || apiKey?.env_var;
+			let detected: "iam_role" | "explicit" | "api_key" = "iam_role";
+			if (hasExplicitCreds) {
+				detected = "explicit";
+			} else if (hasApiKey) {
+				detected = "api_key";
+			}
+			setBedrockAuthType(detected);
+			form.setValue("key.bedrock_key_config._auth_type", detected);
 		}
 	}, [isBedrock, form]);
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
-			{isVertex && (
-				<Alert variant="default" className="-z-10">
-					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-					<AlertTitle>Authentication Methods</AlertTitle>
-					<AlertDescription>
-						You can either use service account authentication or API key authentication. Please leave API Key empty when using service
-						account authentication.
-					</AlertDescription>
-				</Alert>
-			)}
 			<div className="flex items-start gap-4">
 				<div className="flex-1">
 					<FormField
@@ -170,14 +217,14 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			{/* Hide API Key field for Azure when using Entra ID/Default Credential, and for Bedrock when not using API Key auth */}
-			{!isAzure && !isBedrock && (
+			{/* Hide API Key field for providers with dedicated auth tabs */}
+			{!isAzure && !isBedrock && !isVertex && (
 				<FormField
 					control={control}
 					name={`key.value`}
 					render={({ field }) => (
 						<FormItem>
-							<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
+							<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
 							<FormControl>
 								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 							</FormControl>
@@ -203,13 +250,39 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												</span>
 											</TooltipTrigger>
 											<TooltipContent>
-												<p>Comma-separated list of models this key applies to. Leave blank for all models.</p>
+												<p>
+													Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.
+												</p>
 											</TooltipContent>
 										</Tooltip>
 									</TooltipProvider>
 								</div>
 								<FormControl>
-									<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
+									<ModelMultiselect
+										data-testid="api-keys-models-multiselect"
+										provider={providerName}
+										allowAllOption={true}
+										value={field.value || []}
+										onChange={(models: string[]) => {
+											const hadStar = (field.value || []).includes("*");
+											const hasStar = models.includes("*");
+											if (!hadStar && hasStar) {
+												field.onChange(["*"]);
+											} else if (hadStar && hasStar && models.length > 1) {
+												field.onChange(models.filter((m: string) => m !== "*"));
+											} else {
+												field.onChange(models);
+											}
+										}}
+										placeholder={
+											(field.value || []).includes("*")
+												? "All models allowed"
+												: (field.value || []).length === 0
+													? "No models (deny all)"
+													: "Search models..."
+										}
+										unfiltered={true}
+									/>
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -221,7 +294,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						render={({ field }) => (
 							<FormItem data-testid="apikey-blacklisted-models-field">
 								<div className="flex items-center gap-2">
-									<FormLabel>Blacklisted models</FormLabel>
+									<FormLabel>Blocked Models</FormLabel>
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
@@ -231,15 +304,78 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											</TooltipTrigger>
 											<TooltipContent className="max-w-sm">
 												<p>
-													Comma-separated list of models this key must never use. If a model appears in both Allowed Models and here, the
-													blacklist wins. Leave empty if none.
+													Models this key must never serve. The denylist always wins — if a model appears in both Allowed Models and here,
+													it is blocked. Select "All Models" to block every model on this key.
 												</p>
 											</TooltipContent>
 										</Tooltip>
 									</TooltipProvider>
 								</div>
 								<FormControl>
-									<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
+									<ModelMultiselect
+										data-testid="api-keys-blocked-models-multiselect"
+										provider={providerName}
+										allowAllOption={true}
+										value={field.value || []}
+										onChange={(models: string[]) => {
+											const hadStar = (field.value || []).includes("*");
+											const hasStar = models.includes("*");
+											if (!hadStar && hasStar) {
+												field.onChange(["*"]);
+											} else if (hadStar && hasStar && models.length > 1) {
+												field.onChange(models.filter((m: string) => m !== "*"));
+											} else {
+												field.onChange(models);
+											}
+										}}
+										placeholder={
+											(field.value || []).includes("*")
+												? "All models blocked"
+												: (field.value || []).length === 0
+													? "No models blocked"
+													: "Search models..."
+										}
+										unfiltered={true}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.aliases`}
+						render={({ field }) => (
+							<FormItem data-testid="apikey-aliases-field">
+								<FormLabel>Aliases (Optional)</FormLabel>
+								<FormDescription>
+									Map each request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint
+									ID, etc.) or just a custom name, e.g. &quot;claude-sonnet-4-5&quot; -&gt; &quot;custom-claude-4.5-sonnet&quot;.
+								</FormDescription>
+								<FormControl>
+									<div data-testid="apikey-aliases-table">
+										<HeadersTable
+											label=""
+											value={normalizeAliasesValue(field.value)}
+											onChange={(next) => {
+												form.clearErrors("key.aliases");
+												field.onChange(Object.keys(next).length > 0 ? next : {});
+											}}
+											keyPlaceholder="Request model name"
+											valuePlaceholder="Deployment / profile / resource ID"
+											renderValueInput={({ value: cellValue, onChange, placeholder, disabled }: CellRenderParams) => (
+												<ModelMultiselect
+													isSingleSelect
+													provider={providerName}
+													value={cellValue}
+													onChange={onChange}
+													placeholder={placeholder ?? "Deployment / profile / resource ID"}
+													disabled={disabled}
+													unfiltered={true}
+												/>
+											)}
+										/>
+									</div>
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -257,6 +393,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							value={azureAuthType}
 							onValueChange={(v) => {
 								setAzureAuthType(v as "api_key" | "entra_id" | "default_credential");
+								form.setValue("key.azure_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
 								if (v === "entra_id" || v === "default_credential") {
 									// Clear API key when switching away from API Key
 									form.setValue("key.value", undefined, { shouldDirty: true });
@@ -271,14 +408,14 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							}}
 						>
 							<TabsList className="grid w-full grid-cols-3">
+								<TabsTrigger data-testid="apikey-azure-default-credential-tab" value="default_credential">
+									Default Credential
+								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-azure-api-key-tab" value="api_key">
 									API Key
 								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-azure-entra-id-tab" value="entra_id">
 									Entra ID (Service Principal)
-								</TabsTrigger>
-								<TabsTrigger data-testid="apikey-azure-default-credential-tab" value="default_credential">
-									Default Credential
 								</TabsTrigger>
 							</TabsList>
 						</Tabs>
@@ -412,52 +549,48 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							/>
 						</>
 					)}
-
-					<FormField
-						control={control}
-						name={`key.azure_key_config.deployments`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Required)</FormLabel>
-								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
-								<FormControl>
-									<Textarea
-										placeholder='{"gpt-4": "my-gpt4-deployment", "gpt-3.5-turbo": "my-gpt35-deployment"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											form.clearErrors("key.azure_key_config.deployments");
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
 			{isVertex && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={vertexAuthType}
+							onValueChange={(v) => {
+								setVertexAuthType(v as "service_account" | "service_account_json" | "api_key");
+								form.setValue("key.vertex_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
+								if (v === "service_account" || v === "api_key") {
+									// Clear auth credentials when switching away from service account JSON
+									form.setValue("key.vertex_key_config.auth_credentials", undefined, { shouldDirty: true });
+								}
+								if (v === "service_account" || v === "service_account_json") {
+									// Clear API key when switching away from API Key
+									form.setValue("key.value", undefined, { shouldDirty: true });
+								}
+							}}
+						>
+							<TabsList className="grid w-full grid-cols-3">
+								<TabsTrigger data-testid="apikey-vertex-service-account-tab" value="service_account">
+									Service Account (Attached)
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-vertex-service-account-json-tab" value="service_account_json">
+									Service Account (JSON)
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-vertex-api-key-tab" value="api_key">
+									API Key
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+						{vertexAuthType === "service_account" && (
+							<p className="text-muted-foreground text-sm">
+								Uses the service account attached to your environment (GCE, GKE, Cloud Run). No credentials required.
+							</p>
+						)}
+					</div>
+
 					<FormField
 						control={control}
 						name={`key.vertex_key_config.project_id`}
@@ -497,76 +630,52 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
-					<Alert variant="default" className="-z-10">
-						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-						<AlertTitle>Service Account Authentication</AlertTitle>
-						<AlertDescription>
-							Leave both API Key and Auth Credentials empty to use service account attached to your environment.
-						</AlertDescription>
-					</Alert>
-					<FormField
-						control={control}
-						name={`key.vertex_key_config.auth_credentials`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Auth Credentials</FormLabel>
-								<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
-								<FormControl>
-									<EnvVarInput
-										variant="textarea"
-										rows={4}
-										placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
-										inputClassName="font-mono text-sm"
-										{...field}
-									/>
-								</FormControl>
-								{isRedacted(field.value?.value ?? "") && (
-									<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
-										<Info className="h-3 w-3" />
-										<span>Credentials are stored securely. Edit to update.</span>
-									</div>
-								)}
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.vertex_key_config.deployments`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>JSON object mapping model names to custom fine-tuned model deployment ids</FormDescription>
-								<FormControl>
-									<Textarea
-										placeholder='{"custom-gemini-2.5-pro": "123456789", "custom-gemini-2.0-flash-001": "987654321"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
+
+					{vertexAuthType === "service_account_json" && (
+						<FormField
+							control={control}
+							name={`key.vertex_key_config.auth_credentials`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Auth Credentials (Required)</FormLabel>
+									<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
+									<FormControl>
+										<EnvVarInput
+											data-testid="apikey-vertex-auth-credentials-input"
+											variant="textarea"
+											rows={4}
+											placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
+											inputClassName="font-mono text-sm"
+											{...field}
+										/>
+									</FormControl>
+									{isRedacted(field.value?.value ?? "") && (
+										<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+											<Info className="h-3 w-3" />
+											<span>Credentials are stored securely. Edit to update.</span>
+										</div>
+									)}
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+
+					{vertexAuthType === "api_key" && (
+						<FormField
+							control={control}
+							name={`key.value`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>API Key (Supported only for gemini and fine-tuned models)</FormLabel>
+									<FormControl>
+										<EnvVarInput data-testid="apikey-vertex-api-key-input" placeholder="API Key or env.MY_KEY" type="text" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 				</div>
 			)}
 			{isReplicate && (
@@ -574,39 +683,18 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					<Separator className="my-6" />
 					<FormField
 						control={control}
-						name={`key.replicate_key_config.deployments`}
+						name="key.replicate_key_config.use_deployments_endpoint"
 						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Use Deployments Endpoint</FormLabel>
+									<FormDescription>
+										Route requests through the Replicate deployments endpoint instead of the models endpoint.
+									</FormDescription>
+								</div>
 								<FormControl>
-									<Textarea
-										placeholder='{"my-model": "my-deployment", "another-model": "another-deployment"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
+									<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
 								</FormControl>
-								<FormMessage />
 							</FormItem>
 						)}
 					/>
@@ -645,6 +733,31 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
+			{isKeylessProvider && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name={`key.${isOllama ? "ollama_key_config" : "sgl_key_config"}.url`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Server URL (Required)</FormLabel>
+								<FormDescription>
+									Base URL of the {isOllama ? "Ollama" : "SGLang"} server (e.g.{" "}
+									{isOllama ? "http://localhost:11434" : "http://localhost:30000"} or {isOllama ? "env.OLLAMA_URL" : "env.SGL_URL"})
+								</FormDescription>
+								<FormControl>
+									<EnvVarInput
+										data-testid={`key-input-${isOllama ? "ollama" : "sgl"}-url`}
+										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
 			{isBedrock && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
@@ -654,6 +767,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							value={bedrockAuthType}
 							onValueChange={(v) => {
 								setBedrockAuthType(v as "iam_role" | "explicit" | "api_key");
+								form.setValue("key.bedrock_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
 								if (v === "iam_role") {
 									// Clear explicit credentials and API key when switching to IAM Role
 									form.setValue("key.bedrock_key_config.access_key", undefined, { shouldDirty: true });
@@ -845,154 +959,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
-					<FormField
-						control={control}
-						name={`key.bedrock_key_config.deployments`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>JSON object mapping model names to inference profile names</FormDescription>
-								<FormControl>
-									<Textarea
-										placeholder='{"claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0", "claude-v2": "us.anthropic.claude-v2:1"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
-		</div>
-	);
-}
-
-// Bedrock S3 configuration section for batch operations
-function BedrockBatchS3ConfigSection({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
-	const buckets = form.watch("key.bedrock_key_config.batch_s3_config.buckets") || [];
-
-	const addBucket = () => {
-		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
-		form.setValue(
-			"key.bedrock_key_config.batch_s3_config.buckets",
-			[...currentBuckets, { bucket_name: "", prefix: "", is_default: currentBuckets.length === 0 }],
-			{ shouldDirty: true },
-		);
-	};
-
-	const removeBucket = (index: number) => {
-		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
-		const newBuckets = currentBuckets.filter((_: any, i: number) => i !== index);
-		// If we removed the default bucket and there are still buckets, make the first one default
-		if (currentBuckets[index]?.is_default && newBuckets.length > 0) {
-			newBuckets[0].is_default = true;
-		}
-		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
-	};
-
-	const setDefaultBucket = (index: number) => {
-		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
-		const newBuckets = currentBuckets.map((bucket: any, i: number) => ({
-			...bucket,
-			is_default: i === index,
-		}));
-		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
-	};
-
-	return (
-		<div className="space-y-4">
-			<Separator className="my-4" />
-			<div className="flex items-center justify-between">
-				<div>
-					<FormLabel className="text-base">S3 Bucket Configuration</FormLabel>
-					<FormDescription>Configure S3 buckets for Bedrock batch operations</FormDescription>
-				</div>
-				<Button type="button" variant="outline" size="sm" onClick={addBucket}>
-					<Plus className="mr-2 h-4 w-4" />
-					Add Bucket
-				</Button>
-			</div>
-			{buckets.length === 0 && (
-				<Alert variant="default" className="-z-10">
-					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-					<AlertTitle>No S3 Buckets Configured</AlertTitle>
-					<AlertDescription>
-						Add at least one S3 bucket to store batch job input/output files for Bedrock batch operations.
-					</AlertDescription>
-				</Alert>
-			)}
-			{buckets.map((_: any, index: number) => (
-				<div key={index} className="space-y-4 rounded-sm border p-2">
-					<div className="flex items-center justify-between">
-						<div className="flex items-center gap-2">
-							<span className="text-sm font-medium">Bucket {index + 1}</span>
-							{buckets[index]?.is_default && (
-								<span className="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium">Default</span>
-							)}
-						</div>
-						<div className="flex items-center gap-2">
-							{!buckets[index]?.is_default && buckets.length > 1 && (
-								<Button type="button" variant="ghost" size="sm" onClick={() => setDefaultBucket(index)}>
-									Set as Default
-								</Button>
-							)}
-							<Button type="button" variant="ghost" size="sm" onClick={() => removeBucket(index)}>
-								<Trash2 className="text-destructive h-4 w-4" />
-							</Button>
-						</div>
-					</div>
-					<FormField
-						control={control}
-						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.bucket_name`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Bucket Name</FormLabel>
-								<FormControl>
-									<Input placeholder="my-batch-bucket or env.S3_BUCKET_NAME" {...field} value={field.value ?? ""} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.prefix`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Prefix (Optional)</FormLabel>
-								<FormControl>
-									<Input placeholder="batch-jobs/ or env.S3_PREFIX" {...field} value={field.value ?? ""} />
-								</FormControl>
-								<FormDescription>Optional path prefix for batch files in the bucket</FormDescription>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-				</div>
-			))}
 		</div>
 	);
 }

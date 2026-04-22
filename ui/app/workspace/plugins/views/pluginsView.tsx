@@ -1,5 +1,3 @@
-"use client";
-
 import ConfirmDeletePluginDialog from "@/app/workspace/plugins/dialogs/confirmDeletePluginDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -95,7 +93,7 @@ export default function PluginsView(props: Props) {
 			if (values.hasConfig && values.config) {
 				try {
 					config = JSON.parse(values.config);
-				} catch (e) {
+				} catch {
 					toast.error("Invalid JSON in configuration");
 					return;
 				}
@@ -111,12 +109,12 @@ export default function PluginsView(props: Props) {
 			}).unwrap();
 			toast.success("Plugin updated successfully");
 			form.reset(values);
-		} catch (error) {
+		} catch {
 			toast.error("Failed to update plugin");
 		}
 	};
 
-	const onError = (errors: any) => {
+	const onError = () => {
 		toast.error("Please fix the form errors before submitting");
 	};
 
@@ -142,24 +140,10 @@ export default function PluginsView(props: Props) {
 		);
 	}
 
-	const getStatusVariant = (status?: string) => {
-		switch (status?.toLowerCase()) {
-			case "active":
-				return "success";
-			case "error":
-			case "failed":
-				return "destructive";
-			default:
-				return "secondary";
-		}
-	};
-
 	const isErrorLog = (log: string) => {
 		const errorKeywords = ["error", "failed", "exception", "panic", "fatal", "ERR"];
 		return errorKeywords.some((keyword) => log.toLowerCase().includes(keyword.toLowerCase()));
 	};
-
-
 
 	return (
 		<div className="ml-4 w-full">
@@ -189,7 +173,13 @@ export default function PluginsView(props: Props) {
 									<FormControl>
 										<div className="flex flex-wrap gap-1">
 											{selectedPlugin.status.types.map((type) => (
-												<Badge key={type} variant="outline" className={cn("h-5 px-2 text-xs font-medium uppercase", getPluginTypeColor(type))}>{type}</Badge>
+												<Badge
+													key={type}
+													variant="outline"
+													className={cn("h-5 px-2 text-xs font-medium uppercase", getPluginTypeColor(type))}
+												>
+													{type}
+												</Badge>
 											))}
 										</div>
 									</FormControl>
@@ -202,7 +192,7 @@ export default function PluginsView(props: Props) {
 								render={({ field }) => (
 									<FormItem className="flex flex-row items-center justify-between">
 										<div className="space-y-0.5">
-											<FormLabel	>Enabled</FormLabel>
+											<FormLabel>Enabled</FormLabel>
 											<FormDescription>Enable or disable this plugin</FormDescription>
 										</div>
 										<FormControl>
@@ -326,7 +316,12 @@ export default function PluginsView(props: Props) {
 							<Trash2Icon className="h-4 w-4" />
 							Delete Plugin
 						</Button>
-						<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!form.formState.isDirty || !hasUpdatePluginAccess}>
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => form.reset()}
+							disabled={!form.formState.isDirty || !hasUpdatePluginAccess}
+						>
 							Reset
 						</Button>
 						<Button type="submit" disabled={isLoading || !form.formState.isDirty || !hasUpdatePluginAccess}>

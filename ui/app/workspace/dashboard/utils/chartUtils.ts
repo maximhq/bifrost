@@ -80,7 +80,7 @@ export const LATENCY_COLORS = {
 
 // Shared CSS class constants for chart card headers
 export const CHART_HEADER_ACTIONS_CLASS = "flex min-w-0 w-full flex-col-reverse gap-2";
-export const CHART_HEADER_LEGEND_CLASS = "flex min-w-0 flex-wrap items-center gap-2 pl-2 text-xs";
+export const CHART_HEADER_LEGEND_CLASS = "flex min-h-5 min-w-0 flex-wrap items-center gap-2 pl-2 text-xs";
 export const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2";
 
 // Chart colors

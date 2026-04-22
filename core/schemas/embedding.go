@@ -116,14 +116,16 @@ type EmbeddingParameters struct {
 type EmbeddingData struct {
 	Index     int             `json:"index"`
 	Object    string          `json:"object"`    // "embedding"
-	Embedding EmbeddingStruct `json:"embedding"` // can be string, []float64 or [][]float64
+	Embedding EmbeddingStruct `json:"embedding"` // can be string, []float64, [][]float64, []int8, or []int32
 }
 
 type EmbeddingStruct struct {
 	// Embedding responses preserve provider precision in normalized API output.
-	EmbeddingStr     *string
-	EmbeddingArray   []float64
-	Embedding2DArray [][]float64
+	EmbeddingStr        *string
+	EmbeddingArray      []float64
+	Embedding2DArray    [][]float64
+	EmbeddingInt8Array  []int8  // for int8 / binary formats
+	EmbeddingInt32Array []int32 // for uint8 / ubinary formats
 }
 
 func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
@@ -135,6 +137,12 @@ func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
 	}
 	if be.Embedding2DArray != nil {
 		return MarshalSorted(be.Embedding2DArray)
+	}
+	if be.EmbeddingInt8Array != nil {
+		return Marshal(be.EmbeddingInt8Array)
+	}
+	if be.EmbeddingInt32Array != nil {
+		return Marshal(be.EmbeddingInt32Array)
 	}
 	return nil, fmt.Errorf("no embedding found")
 }
@@ -161,5 +169,19 @@ func (be *EmbeddingStruct) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return fmt.Errorf("embedding field is neither a string nor an array of float64 nor a 2D array of float64")
+	// Try to unmarshal as a direct array of int8
+	var int8Content []int8
+	if err := Unmarshal(data, &int8Content); err == nil {
+		be.EmbeddingInt8Array = int8Content
+		return nil
+	}
+
+	// Try to unmarshal as a direct array of int32
+	var int32Content []int32
+	if err := Unmarshal(data, &int32Content); err == nil {
+		be.EmbeddingInt32Array = int32Content
+		return nil
+	}
+
+	return fmt.Errorf("embedding field is neither a string, []float64, [][]float64, []int8, nor []int32")
 }

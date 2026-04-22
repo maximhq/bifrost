@@ -51,7 +51,6 @@ func TestToOpenAITextCompletionRequest_FireworksUsesCacheIsolation(t *testing.T)
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToOpenAITextCompletionRequest(bifrostReq), nil
 		},
-		schemas.Fireworks,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)

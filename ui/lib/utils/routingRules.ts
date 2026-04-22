@@ -10,30 +10,30 @@
  */
 export function isValidCELExpression(expression: string): boolean {
 	if (!expression) {
-		return true
+		return true;
 	}
-	
-	const trimmed = expression.trim()
+
+	const trimmed = expression.trim();
 	if (trimmed.length === 0 || trimmed === "true" || trimmed === "false") {
-		return true
+		return true;
 	}
 
 	// Check for basic syntax issues
 	if (trimmed.includes(";;")) {
-		return false
+		return false;
 	}
 
 	// Check for matching brackets/parentheses
-	const openBrackets = (trimmed.match(/[\[\{]/g) || []).length
-	const closeBrackets = (trimmed.match(/[\]\}]/g) || []).length
-	const openParens = (trimmed.match(/\(/g) || []).length
-	const closeParens = (trimmed.match(/\)/g) || []).length
+	const openBrackets = (trimmed.match(/[[{]/g) || []).length;
+	const closeBrackets = (trimmed.match(/[\]}]/g) || []).length;
+	const openParens = (trimmed.match(/\(/g) || []).length;
+	const closeParens = (trimmed.match(/\)/g) || []).length;
 
 	if (openBrackets !== closeBrackets || openParens !== closeParens) {
-		return false
+		return false;
 	}
 
-	return true
+	return true;
 }
 
 /**
@@ -42,9 +42,9 @@ export function isValidCELExpression(expression: string): boolean {
  * @returns Formatted fallback string
  */
 export function formatFallback(fallback: string): string {
-	if (!fallback) return ""
-	const parts = fallback.split("/")
-	return parts.length === 2 ? `${parts[0].toUpperCase()} - ${parts[1]}` : fallback
+	if (!fallback) return "";
+	const parts = fallback.split("/");
+	return parts.length === 2 ? `${parts[0].toUpperCase()} - ${parts[1]}` : fallback;
 }
 
 /**
@@ -53,10 +53,10 @@ export function formatFallback(fallback: string): string {
  * @returns Object with provider and model, or null if invalid
  */
 export function parseFallback(fallback: string): { provider: string; model: string } | null {
-	if (!fallback) return null
-	const parts = fallback.split("/")
-	if (parts.length !== 2) return null
-	return { provider: parts[0], model: parts[1] }
+	if (!fallback) return null;
+	const parts = fallback.split("/");
+	if (parts.length !== 2) return null;
+	return { provider: parts[0], model: parts[1] };
 }
 
 /**
@@ -65,8 +65,8 @@ export function parseFallback(fallback: string): { provider: string; model: stri
  * @returns Comma-separated string
  */
 export function fallbacksToString(fallbacks?: string[]): string {
-	if (!fallbacks || fallbacks.length === 0) return ""
-	return fallbacks.join(", ")
+	if (!fallbacks || fallbacks.length === 0) return "";
+	return fallbacks.join(", ");
 }
 
 /**
@@ -75,11 +75,11 @@ export function fallbacksToString(fallbacks?: string[]): string {
  * @returns Array of fallback strings
  */
 export function stringToFallbacks(str: string): string[] {
-	if (!str || str.trim().length === 0) return []
+	if (!str || str.trim().length === 0) return [];
 	return str
 		.split(",")
 		.map((s) => s.trim())
-		.filter((s) => s.length > 0)
+		.filter((s) => s.length > 0);
 }
 
 /**
@@ -93,8 +93,8 @@ export function getScopeLabel(scope: string): string {
 		team: "Team",
 		customer: "Customer",
 		virtual_key: "Virtual Key",
-	}
-	return labels[scope] || scope
+	};
+	return labels[scope] || scope;
 }
 
 /**
@@ -104,9 +104,9 @@ export function getScopeLabel(scope: string): string {
  * @returns Truncated expression with ellipsis if needed
  */
 export function truncateCELExpression(expression: string, maxLength: number = 60): string {
-	if (!expression) return ""
-	if (expression.length <= maxLength) return expression
-	return expression.substring(0, maxLength) + "..."
+	if (!expression) return "";
+	if (expression.length <= maxLength) return expression;
+	return expression.substring(0, maxLength) + "...";
 }
 
 /**
@@ -115,20 +115,19 @@ export function truncateCELExpression(expression: string, maxLength: number = 60
  * @param model - The model name (optional)
  * @returns Error message if invalid, empty string if valid
  */
-export function validateProviderModel(provider: string, model?: string): string {
+export function validateProviderModel(provider: string, _model?: string): string {
 	if (!provider || provider.trim().length === 0) {
-		return "Provider is required"
+		return "Provider is required";
 	}
-	return ""
+	return "";
 }
 
 /**
  * Generates a CSS class for priority badge color
- * @param priority - The priority value
  * @returns CSS class name for styling
  */
-export function getPriorityBadgeClass(priority: number): string {
-	return "bg-primary text-primary-foreground"
+export function getPriorityBadgeClass(): string {
+	return "bg-primary text-primary-foreground";
 }
 
 /**
@@ -137,15 +136,15 @@ export function getPriorityBadgeClass(priority: number): string {
  * @returns Array of detected operators
  */
 export function detectCELOperators(expression: string): string[] {
-	const operators: string[] = []
-	if (!expression) return operators
+	const operators: string[] = [];
+	if (!expression) return operators;
 
 	// Common CEL operators
 	const operatorPatterns = [
 		{ regex: /==/, label: "Equals" },
 		{ regex: /!=/, label: "Not equals" },
-		{ regex: />=/,label: "Greater than or equal" },
-		{ regex: /<=/,label: "Less than or equal" },
+		{ regex: />=/, label: "Greater than or equal" },
+		{ regex: /<=/, label: "Less than or equal" },
 		{ regex: />/, label: "Greater than" },
 		{ regex: /</, label: "Less than" },
 		{ regex: /&&/, label: "AND" },
@@ -156,13 +155,13 @@ export function detectCELOperators(expression: string): string[] {
 		{ regex: /.startsWith\(/, label: "StartsWith" },
 		{ regex: /.contains\(/, label: "Contains" },
 		{ regex: /.endsWith\(/, label: "EndsWith" },
-	]
+	];
 
 	operatorPatterns.forEach(({ regex, label }) => {
 		if (regex.test(expression) && !operators.includes(label)) {
-			operators.push(label)
+			operators.push(label);
 		}
-	})
+	});
 
-	return operators
+	return operators;
 }

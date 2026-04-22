@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -30,6 +31,10 @@ SELECT
     selected_key_id,
     COALESCE(virtual_key_id, '') AS virtual_key_id,
     COALESCE(routing_rule_id, '') AS routing_rule_id,
+    COALESCE(user_id, '') AS user_id,
+    COALESCE(team_id, '') AS team_id,
+    COALESCE(customer_id, '') AS customer_id,
+    COALESCE(business_unit_id, '') AS business_unit_id,
     COUNT(*) AS count,
     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
@@ -44,13 +49,13 @@ SELECT
     COALESCE(SUM(cost), 0) AS total_cost
 FROM logs
 WHERE status IN ('success', 'error')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 `
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id)
 `
 
 // mvLogsFilterdataDDL creates a materialized view of distinct filter values
@@ -67,7 +72,14 @@ SELECT DISTINCT
     COALESCE(virtual_key_name, '') AS virtual_key_name,
     COALESCE(routing_rule_id, '') AS routing_rule_id,
     COALESCE(routing_rule_name, '') AS routing_rule_name,
-    COALESCE(routing_engines_used, '') AS routing_engines_used
+    COALESCE(routing_engines_used, '') AS routing_engines_used,
+    COALESCE(user_id, '') AS user_id,
+    COALESCE(team_id, '') AS team_id,
+    COALESCE(team_name, '') AS team_name,
+    COALESCE(customer_id, '') AS customer_id,
+    COALESCE(customer_name, '') AS customer_name,
+    COALESCE(business_unit_id, '') AS business_unit_id,
+    COALESCE(business_unit_name, '') AS business_unit_name
 FROM logs
 WHERE timestamp >= NOW() - INTERVAL '60 days'
   AND model IS NOT NULL AND model != ''
@@ -77,7 +89,7 @@ WHERE timestamp >= NOW() - INTERVAL '60 days'
 // Includes both ID and name columns so renamed keys don't cause duplicate violations.
 const mvLogsFilterdataUniqueIdx = `
 CREATE UNIQUE INDEX IF NOT EXISTS mv_logs_filterdata_uniq
-ON mv_logs_filterdata (model, provider, selected_key_id, selected_key_name, virtual_key_id, virtual_key_name, routing_rule_id, routing_rule_name, routing_engines_used)
+ON mv_logs_filterdata (model, provider, selected_key_id, selected_key_name, virtual_key_id, virtual_key_name, routing_rule_id, routing_rule_name, routing_engines_used, user_id, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name)
 `
 
 // ---------------------------------------------------------------------------
@@ -138,8 +150,10 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 }
 
 // startMatViewRefresher launches a background goroutine that periodically
-// refreshes materialized views. Returns a stop function for graceful shutdown.
-func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Duration, logger schemas.Logger) func() {
+// refreshes materialized views. If readyFlag is provided and not yet true,
+// it will be set to true on the first successful refresh (recovery path when
+// the initial refresh failed). Returns a stop function for graceful shutdown.
+func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) func() {
 	stopCh := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -149,6 +163,9 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 			case <-ticker.C:
 				if err := refreshMatViews(ctx, db); err != nil {
 					logger.Warn(fmt.Sprintf("logstore: matview refresh failed: %s", err))
+				} else if readyFlag != nil && !readyFlag.Load() {
+					logger.Info("logstore: materialized views are ready (recovered)")
+					readyFlag.Store(true)
 				}
 			case <-ctx.Done():
 				return
@@ -160,10 +177,10 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 	return func() { close(stopCh) }
 }
 
-// canUseMatView returns true if the given filters can be served from
+// canUseMatViewFilters returns true if the given filters can be served from
 // mv_logs_hourly. Per-row filters (content search, metadata, numeric ranges)
 // require the raw logs table.
-func canUseMatView(f SearchFilters) bool {
+func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		len(f.MetadataFilters) == 0 &&
 		len(f.RoutingEngineUsed) == 0 &&
@@ -171,6 +188,15 @@ func canUseMatView(f SearchFilters) bool {
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
 		!f.MissingCostOnly
+}
+
+// canUseMatView checks both that materialized views are ready (created and
+// populated) and that the given filters are eligible for the matview path.
+// This prevents queries from hitting non-existent views during the startup
+// window between migration (which drops old views) and ensureMatViews (which
+// recreates them asynchronously).
+func (s *RDBLogStore) canUseMatView(f SearchFilters) bool {
+	return s.matViewsReady.Load() && canUseMatViewFilters(f)
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +231,18 @@ func applyMatViewFilters(q *gorm.DB, f SearchFilters) *gorm.DB {
 	}
 	if len(f.RoutingRuleIDs) > 0 {
 		q = q.Where("routing_rule_id IN ?", f.RoutingRuleIDs)
+	}
+	if len(f.TeamIDs) > 0 {
+		q = q.Where("team_id IN ?", f.TeamIDs)
+	}
+	if len(f.CustomerIDs) > 0 {
+		q = q.Where("customer_id IN ?", f.CustomerIDs)
+	}
+	if len(f.UserIDs) > 0 {
+		q = q.Where("user_id IN ?", f.UserIDs)
+	}
+	if len(f.BusinessUnitIDs) > 0 {
+		q = q.Where("business_unit_id IN ?", f.BusinessUnitIDs)
 	}
 	return q
 }
@@ -252,12 +290,20 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 	if result.TotalCount > 0 {
 		successRate = float64(result.SuccessCount) / float64(result.TotalCount) * 100
 	}
+
+	// User-facing success rate requires per-request fallback chain data which is not
+	// available in the materialized view. Scanning the raw logs table on large datasets
+	// (>100 GB) can take minutes, so the matview path uses the per-attempt success rate
+	// as a fast approximation. Accurate chain-level computation runs in the raw-table path.
+
 	return &SearchStats{
-		TotalRequests:  result.TotalCount,
-		SuccessRate:    successRate,
-		AverageLatency: result.AvgLatency,
-		TotalTokens:    result.TotalTokens,
-		TotalCost:      result.TotalCost,
+		TotalRequests:           result.TotalCount,
+		SuccessRate:             successRate,
+		UserFacingSuccessRate:   successRate,
+		UserFacingTotalRequests: result.TotalCount, // matview approximation; no per-chain data available
+		AverageLatency:          result.AvgLatency,
+		TotalTokens:             result.TotalTokens,
+		TotalCost:               result.TotalCost,
 	}, nil
 }
 
@@ -700,6 +746,200 @@ func (s *RDBLogStore) getProviderLatencyHistogramFromMatView(ctx context.Context
 	return &ProviderLatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Providers: providers}, nil
 }
 
+// ---------------------------------------------------------------------------
+// Generic dimension histogram queries (cost, tokens, latency grouped by any dimension)
+// ---------------------------------------------------------------------------
+
+// getDimensionCostHistogramFromMatView returns time-bucketed cost data grouped by
+// the specified dimension column from mv_logs_hourly.
+func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
+	dimCol := string(dimension)
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		DimValue        string  `gorm:"column:dim_value"`
+		Cost            float64 `gorm:"column:cost"`
+	}
+	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
+	q = applyMatViewFilters(q, filters)
+	if err := q.Select(fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+		%s AS dim_value,
+		SUM(total_cost) AS cost
+	`, bucketSizeSeconds, bucketSizeSeconds, dimCol)).
+		Group(fmt.Sprintf("bucket_timestamp, %s", dimCol)).
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type bucketAgg struct {
+		totalCost   float64
+		byDimension map[string]float64
+	}
+	grouped := make(map[int64]*bucketAgg)
+	dimSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byDimension: make(map[string]float64)}
+			grouped[r.BucketTimestamp] = a
+		}
+		a.totalCost += r.Cost
+		a.byDimension[r.DimValue] += r.Cost
+		dimSet[r.DimValue] = struct{}{}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	buckets := make([]DimensionCostHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := DimensionCostHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByDimension: make(map[string]float64)}
+		if a, ok := grouped[ts]; ok {
+			b.TotalCost = a.totalCost
+			b.ByDimension = a.byDimension
+		}
+		buckets = append(buckets, b)
+	}
+
+	dimValues := sortedStringKeys(dimSet)
+	return &DimensionCostHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+}
+
+// getDimensionTokenHistogramFromMatView returns time-bucketed token usage grouped by
+// the specified dimension column from mv_logs_hourly.
+func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
+	dimCol := string(dimension)
+	var results []struct {
+		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
+		DimValue         string `gorm:"column:dim_value"`
+		PromptTokens     int64  `gorm:"column:prompt_tokens"`
+		CompletionTokens int64  `gorm:"column:completion_tokens"`
+		TotalTokens      int64  `gorm:"column:total_tkns"`
+	}
+	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
+	q = applyMatViewFilters(q, filters)
+	if err := q.Select(fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+		%s AS dim_value,
+		SUM(total_prompt_tokens) AS prompt_tokens,
+		SUM(total_completion_tokens) AS completion_tokens,
+		SUM(total_tokens) AS total_tkns
+	`, bucketSizeSeconds, bucketSizeSeconds, dimCol)).
+		Group(fmt.Sprintf("bucket_timestamp, %s", dimCol)).
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type dimAgg struct {
+		prompt, completion, total int64
+	}
+	type bucketAgg struct {
+		byDimension map[string]*dimAgg
+	}
+	grouped := make(map[int64]*bucketAgg)
+	dimSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byDimension: make(map[string]*dimAgg)}
+			grouped[r.BucketTimestamp] = a
+		}
+		da, ok := a.byDimension[r.DimValue]
+		if !ok {
+			da = &dimAgg{}
+			a.byDimension[r.DimValue] = da
+		}
+		da.prompt += r.PromptTokens
+		da.completion += r.CompletionTokens
+		da.total += r.TotalTokens
+		dimSet[r.DimValue] = struct{}{}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	buckets := make([]DimensionTokenHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := DimensionTokenHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByDimension: make(map[string]DimensionTokenStats)}
+		if a, ok := grouped[ts]; ok {
+			for dim, da := range a.byDimension {
+				b.ByDimension[dim] = DimensionTokenStats{
+					PromptTokens:     da.prompt,
+					CompletionTokens: da.completion,
+					TotalTokens:      da.total,
+				}
+			}
+		}
+		buckets = append(buckets, b)
+	}
+
+	dimValues := sortedStringKeys(dimSet)
+	return &DimensionTokenHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+}
+
+// getDimensionLatencyHistogramFromMatView returns time-bucketed latency percentiles
+// grouped by the specified dimension column from mv_logs_hourly.
+func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
+	dimCol := string(dimension)
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		DimValue        string  `gorm:"column:dim_value"`
+		AvgLatency      float64 `gorm:"column:avg_lat"`
+		P90Latency      float64 `gorm:"column:p90_lat"`
+		P95Latency      float64 `gorm:"column:p95_lat"`
+		P99Latency      float64 `gorm:"column:p99_lat"`
+		TotalRequests   int64   `gorm:"column:total_requests"`
+	}
+	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
+	q = applyMatViewFilters(q, filters)
+	if err := q.Select(fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+		%s AS dim_value,
+		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
+		CASE WHEN SUM(count) > 0 THEN SUM(p90_latency * count) / SUM(count) ELSE 0 END AS p90_lat,
+		CASE WHEN SUM(count) > 0 THEN SUM(p95_latency * count) / SUM(count) ELSE 0 END AS p95_lat,
+		CASE WHEN SUM(count) > 0 THEN SUM(p99_latency * count) / SUM(count) ELSE 0 END AS p99_lat,
+		SUM(count) AS total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds, dimCol)).
+		Group(fmt.Sprintf("bucket_timestamp, %s", dimCol)).
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type bucketAgg struct {
+		byDimension map[string]DimensionLatencyStats
+	}
+	grouped := make(map[int64]*bucketAgg)
+	dimSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byDimension: make(map[string]DimensionLatencyStats)}
+			grouped[r.BucketTimestamp] = a
+		}
+		a.byDimension[r.DimValue] = DimensionLatencyStats{
+			AvgLatency:    r.AvgLatency,
+			P90Latency:    r.P90Latency,
+			P95Latency:    r.P95Latency,
+			P99Latency:    r.P99Latency,
+			TotalRequests: r.TotalRequests,
+		}
+		dimSet[r.DimValue] = struct{}{}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	buckets := make([]DimensionLatencyHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := DimensionLatencyHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByDimension: make(map[string]DimensionLatencyStats)}
+		if a, ok := grouped[ts]; ok {
+			b.ByDimension = a.byDimension
+		}
+		buckets = append(buckets, b)
+	}
+
+	dimValues := sortedStringKeys(dimSet)
+	return &DimensionLatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
+}
+
 // getModelRankingsFromMatView returns models ranked by usage with trend
 // comparison to the previous period of equal duration from mv_logs_hourly.
 func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
@@ -793,6 +1033,85 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		rankings = append(rankings, mrt)
 	}
 	return &ModelRankingResult{Rankings: rankings}, nil
+}
+
+// getUserRankingsFromMatView returns users ranked by usage with trend
+// comparison to the previous period of equal duration from mv_logs_hourly.
+func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
+	var results []struct {
+		UserID      string  `gorm:"column:user_id"`
+		Total       int64   `gorm:"column:total"`
+		TotalTokens int64   `gorm:"column:total_tkns"`
+		TotalCost   float64 `gorm:"column:total_cost"`
+	}
+	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
+	q = applyMatViewFilters(q, filters)
+	q = q.Where("user_id != ''")
+	if err := q.Select(`
+		user_id,
+		SUM(count) AS total,
+		SUM(total_tokens) AS total_tkns,
+		SUM(total_cost) AS total_cost
+	`).Group("user_id").
+		Order("total DESC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	// Previous period for trend (same duration, ending just before current start)
+	type prevRow struct {
+		UserID      string  `gorm:"column:user_id"`
+		Total       int64   `gorm:"column:total"`
+		TotalTokens int64   `gorm:"column:total_tkns"`
+		TotalCost   float64 `gorm:"column:total_cost"`
+	}
+	var prevResults []prevRow
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+		pq := s.db.WithContext(ctx).Table("mv_logs_hourly")
+		pq = applyMatViewFilters(pq, prevFilters)
+		pq = pq.Where("user_id != ''")
+		if err := pq.Select(`
+			user_id,
+			SUM(count) AS total,
+			SUM(total_tokens) AS total_tkns,
+			SUM(total_cost) AS total_cost
+		`).Group("user_id").Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period user rankings: %w", err)
+		}
+	}
+
+	prevMap := make(map[string]int, len(prevResults))
+	for i, r := range prevResults {
+		prevMap[r.UserID] = i
+	}
+
+	rankings := make([]UserRankingWithTrend, 0, len(results))
+	for _, r := range results {
+		entry := UserRankingEntry{
+			UserID:        r.UserID,
+			TotalRequests: r.Total,
+			TotalTokens:   r.TotalTokens,
+			TotalCost:     r.TotalCost,
+		}
+		urt := UserRankingWithTrend{UserRankingEntry: entry}
+		if idx, ok := prevMap[r.UserID]; ok {
+			prev := prevResults[idx]
+			urt.Trend = UserRankingTrend{
+				HasPreviousPeriod: true,
+				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
+				TokensTrend:       trendPct(float64(r.TotalTokens), float64(prev.TotalTokens)),
+				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+			}
+		}
+		rankings = append(rankings, urt)
+	}
+	return &UserRankingResult{Rankings: rankings}, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -25,16 +25,15 @@ func TestParseMistralError_UsesExportedConverterMetadata(t *testing.T) {
 	resp.SetStatusCode(http.StatusBadRequest)
 	resp.SetBodyString(`{"message":"invalid request","type":"invalid_request_error","code":"bad_request"}`)
 
-	bifrostErr := ParseMistralError(resp, schemas.OCRRequest, customMistralProviderName, "mistral-ocr-latest")
+	bifrostErr := ParseMistralError(resp)
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
 
 	assert.Equal(t, "invalid request", bifrostErr.Error.Message)
 	assert.Equal(t, schemas.Ptr("invalid_request_error"), bifrostErr.Error.Type)
 	assert.Equal(t, schemas.Ptr("bad_request"), bifrostErr.Error.Code)
-	assert.Equal(t, customMistralProviderName, bifrostErr.ExtraFields.Provider)
-	assert.Equal(t, schemas.OCRRequest, bifrostErr.ExtraFields.RequestType)
-	assert.Equal(t, "mistral-ocr-latest", bifrostErr.ExtraFields.ModelRequested)
+	// Note: ExtraFields.Provider is populated by bifrost.go's dispatcher via
+	// PopulateExtraFields, not by ParseMistralError called in isolation.
 }
 
 func TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetadata(t *testing.T) {
@@ -97,7 +96,7 @@ func TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetad
 		return response, err
 	}
 
-	stream, bifrostErr := provider.ChatCompletionStream(ctx, postHookRunner, schemas.Key{}, request)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, postHookRunner, nil, schemas.Key{}, request)
 	require.Nil(t, bifrostErr)
 
 	var firstResponse *schemas.BifrostChatResponse
@@ -112,7 +111,9 @@ func TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetad
 	}
 
 	require.NotNil(t, firstResponse)
-	assert.Equal(t, customMistralProviderName, firstResponse.ExtraFields.Provider)
+	// Note: ExtraFields.Provider on stream chunks is populated by bifrost.go's
+	// dispatcher via PopulateExtraFields, not by provider streaming methods
+	// called in isolation.
 
 	require.NotNil(t, capturedRequest)
 	assert.Equal(t, float64(32), capturedRequest["max_tokens"])
@@ -155,6 +156,7 @@ func TestMistralProvider_CustomAliasEmbeddingReportsAliasMetadata(t *testing.T) 
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, response)
 
-	assert.Equal(t, customMistralProviderName, response.ExtraFields.Provider)
-	assert.Equal(t, "codestral-embed", response.ExtraFields.ModelRequested)
+	// Note: ExtraFields.Provider and ResolvedModelUsed are populated by
+	// bifrost.go's dispatcher via PopulateExtraFields, not by provider
+	// methods called in isolation.
 }

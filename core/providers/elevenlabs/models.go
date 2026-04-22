@@ -1,12 +1,13 @@
 package elevenlabs
 
 import (
-	"slices"
+	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -15,35 +16,36 @@ func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(provid
 		Data: make([]schemas.Model, 0, len(*response)),
 	}
 
-	includedModels := make(map[string]bool)
-	for _, model := range *response {
-		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ModelID) {
-			continue
-		}
-		if !unfiltered && slices.Contains(blacklistedModels, model.ModelID) {
-			continue
-		}
-		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:   string(providerKey) + "/" + model.ModelID,
-			Name: schemas.Ptr(model.Name),
-		})
-		includedModels[model.ModelID] = true
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
+		return bifrostResponse
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
-		for _, allowedModel := range allowedModels {
-			if slices.Contains(blacklistedModels, allowedModel) {
-				continue
+	included := make(map[string]bool)
+
+	for _, model := range *response {
+		for _, result := range pipeline.FilterModel(model.ModelID) {
+			entry := schemas.Model{
+				ID:   string(providerKey) + "/" + result.ResolvedID,
+				Name: schemas.Ptr(model.Name),
 			}
-			if !includedModels[allowedModel] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   string(providerKey) + "/" + allowedModel,
-					Name: schemas.Ptr(allowedModel),
-				})
+			if result.AliasValue != "" {
+				entry.Alias = schemas.Ptr(result.AliasValue)
 			}
+			bifrostResponse.Data = append(bifrostResponse.Data, entry)
+			included[strings.ToLower(result.ResolvedID)] = true
 		}
 	}
+
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
 }

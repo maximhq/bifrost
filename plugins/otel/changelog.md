@@ -1,2 +1,0 @@
-- fix: sets default for `insecure` to `true` for config.json
-- fix: includes fallbacks in otel metrics

@@ -48,12 +48,12 @@ func (l *capturingLogger) append(level, msg string, args ...any) {
 	l.mu.Unlock()
 }
 
-func (l *capturingLogger) Debug(msg string, args ...any) { l.append("DEBUG", msg, args...) }
-func (l *capturingLogger) Info(msg string, args ...any)  { l.append("INFO", msg, args...) }
-func (l *capturingLogger) Warn(msg string, args ...any)  { l.append("WARN", msg, args...) }
-func (l *capturingLogger) Error(msg string, args ...any) { l.append("ERROR", msg, args...) }
-func (l *capturingLogger) Fatal(msg string, args ...any) { l.append("FATAL", msg, args...) }
-func (l *capturingLogger) SetLevel(_ schemas.LogLevel)   {}
+func (l *capturingLogger) Debug(msg string, args ...any)            { l.append("DEBUG", msg, args...) }
+func (l *capturingLogger) Info(msg string, args ...any)             { l.append("INFO", msg, args...) }
+func (l *capturingLogger) Warn(msg string, args ...any)             { l.append("WARN", msg, args...) }
+func (l *capturingLogger) Error(msg string, args ...any)            { l.append("ERROR", msg, args...) }
+func (l *capturingLogger) Fatal(msg string, args ...any)            { l.append("FATAL", msg, args...) }
+func (l *capturingLogger) SetLevel(_ schemas.LogLevel)              {}
 func (l *capturingLogger) SetOutputType(_ schemas.LoggerOutputType) {}
 func (l *capturingLogger) LogHTTPRequest(_ schemas.LogLevel, _ string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
@@ -141,12 +141,12 @@ func initWithCapture(
 func getLogger() schemas.Logger { return logger }
 
 // pt is a generic pointer helper.
-func ptStr(s string) *string  { return &s }
-func ptI64(n int64) *int64    { return &n }
+func ptStr(s string) *string   { return &s }
+func ptI64(n int64) *int64     { return &n }
 func ptF64(f float64) *float64 { return &f }
 
 // defaultSyncSecs is the production default converted to seconds.
-var defaultSyncSecs = int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
+var defaultSyncSecs = int64(modelcatalog.DefaultSyncInterval.Seconds())
 
 // =============================================================================
 // STEP 2 — Baseline: no config.json, no DB → built-in defaults
@@ -504,15 +504,17 @@ func TestPricingE2E_Step7_RuntimeInterval_StoredCorrectly(t *testing.T) {
 	SetLogger(clg)
 	defer SetLogger(prevLogger)
 
-	// Scenario A: interval=3600 s stored in modelcatalog
-	// noSyncFunc prevents real HTTP requests to pricing URL during this unit test.
+	// Scenario A: interval=3600 s stored in modelcatalog.
+	// PricingURL is intentionally left nil so Init falls back to DefaultPricingURL.
+	// The gate is installed post-Init and only blocks the background ticker, not
+	// the cold-start sync inside Init — a fake URL here would 404 and fail Init.
 	syncSeconds := int64(3600)
 	cfg := &modelcatalog.Config{
-		PricingURL:          ptStr("https://example.com/pricing.json"),
 		PricingSyncInterval: &syncSeconds,
 	}
-	mc, err := modelcatalog.Init(ctx, cfg, store, noSyncFunc, clg)
+	mc, err := modelcatalog.Init(ctx, cfg, store, clg)
 	require.NoError(t, err)
+	mc.SetShouldSyncGate(noSyncFunc)
 	defer mc.Cleanup()
 
 	// The startup Info log must reflect the correct duration.
@@ -538,8 +540,9 @@ func TestPricingE2E_Step7_RuntimeInterval_24h_Default(t *testing.T) {
 
 	// Nil PricingURL: defaults apply. noSyncFunc prevents real HTTP requests.
 	cfg := &modelcatalog.Config{}
-	mc, err := modelcatalog.Init(ctx, cfg, store, noSyncFunc, clg)
+	mc, err := modelcatalog.Init(ctx, cfg, store, clg)
 	require.NoError(t, err)
+	mc.SetShouldSyncGate(noSyncFunc)
 	defer mc.Cleanup()
 
 	// Must show 24h default.
@@ -739,9 +742,9 @@ func TestPricingE2E_Step9B_MissingEnvURL_NotReplacedWithDefault(t *testing.T) {
 func TestPricingE2E_Step10_NoNilPointers_AllInputCombinations(t *testing.T) {
 
 	type tc struct {
-		name   string
-		db     *configstoreTables.TableFrameworkConfig
-		file   *framework.FrameworkConfig
+		name string
+		db   *configstoreTables.TableFrameworkConfig
+		file *framework.FrameworkConfig
 	}
 	cases := []tc{
 		{"nil/nil", nil, nil},
@@ -905,8 +908,9 @@ func TestPricingE2E_Step10_SecondsToDurationConversion(t *testing.T) {
 	syncSeconds := int64(3600)
 	cfg := &modelcatalog.Config{PricingSyncInterval: &syncSeconds}
 	// noSyncFunc prevents real HTTP requests to the pricing URL during this unit test.
-	mc, err := modelcatalog.Init(ctx, cfg, store, noSyncFunc, clg)
+	mc, err := modelcatalog.Init(ctx, cfg, store, clg)
 	require.NoError(t, err)
+	mc.SetShouldSyncGate(noSyncFunc)
 	defer mc.Cleanup()
 
 	// The critical assertion: if the old *time.Duration bug were present,
@@ -919,8 +923,9 @@ func TestPricingE2E_Step10_SecondsToDurationConversion(t *testing.T) {
 	SetLogger(clg2)
 	syncSeconds2 := int64(7200)
 	cfg2 := &modelcatalog.Config{PricingSyncInterval: &syncSeconds2}
-	mc2, err := modelcatalog.Init(ctx, cfg2, store, noSyncFunc, clg2)
+	mc2, err := modelcatalog.Init(ctx, cfg2, store, clg2)
 	require.NoError(t, err)
+	mc2.SetShouldSyncGate(noSyncFunc)
 	defer mc2.Cleanup()
 	SetLogger(prev)
 

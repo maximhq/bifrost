@@ -24,11 +24,44 @@ Bifrost traces comprehensive information for every request, without any changes 
 - **Input Messages**: Complete conversation history and user prompts
 - **Model Parameters**: Temperature, max tokens, tools, and all other parameters
 - **Provider Context**: Which provider and model handled the request
+- **Prompt Tracking**: When the [Prompts plugin](/features/prompt-repository/prompts-plugin) is active, the log captures the selected prompt name, version number, and ID for full traceability
 
 ### **Response Data**
 - **Output Messages**: AI responses, tool calls, and function results
 - **Performance Metrics**: Latency and token usage
 - **Status Information**: Success or error details
+
+### **Retry & Key Selection** <sup>v1.5.0-prerelease4+</sup>
+
+When Bifrost retries a request (rate-limit or network error) the following fields are recorded:
+
+| Field | Meaning |
+|-------|---------|
+| `selected_key_id` / `selected_key_name` | The API key that **successfully** served the request. `null` when all attempts failed — use `attempt_trail` to see which keys were tried. |
+| `number_of_retries` | Total number of attempts minus one. **Does not indicate which key was used on each attempt.** |
+| `attempt_trail` | Ordered array of every attempt, with key used and failure reason. `fail_reason` is `null` on the final attempt. |
+
+**Example `attempt_trail`** — two rate-limit rotations then success on a third key:
+
+```json
+"attempt_trail": [
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error" },
+  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "fail_reason": "rate_limit_error" },
+  { "attempt": 2, "key_id": "key-c", "key_name": "Key C", "fail_reason": null }
+]
+```
+
+Network-error retries reuse the same key; only rate-limit errors rotate to a different key:
+
+```json
+"attempt_trail": [
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "network_error" },
+  { "attempt": 1, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error" },
+  { "attempt": 2, "key_id": "key-b", "key_name": "Key B", "fail_reason": null }
+]
+```
+
+`attempt_trail` is `null` / absent when the request succeeded on the first try without retries.
 
 ### **Custom Metadata**
 - **Logging Headers**: Capture configured request headers (e.g., `X-Tenant-ID`) into log metadata

@@ -60,7 +60,9 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": ["overview"]
+            "pages": [
+              "overview"
+            ]
           },
           {
             "group": "Quick Start",
@@ -100,12 +102,16 @@
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": ["migration-guides/v1.5.0"]
+            "pages": [
+              "migration-guides/v1.5.0"
+            ]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": ["integrations/what-is-an-integration"]
+            "pages": [
+              "integrations/what-is-an-integration"
+            ]
           },
           {
             "group": "Providers & Guides",
@@ -178,7 +184,10 @@
               {
                 "group": "Writing Plugins",
                 "icon": "code",
-                "pages": ["plugins/writing-go-plugin", "plugins/writing-wasm-plugin"]
+                "pages": [
+                  "plugins/writing-go-plugin",
+                  "plugins/writing-wasm-plugin"
+                ]
               },
               "plugins/migration-guide"
             ]
@@ -188,7 +197,7 @@
             "icon": "bolt",
             "pages": [
               "features/drop-in-replacement",
-              "features/fallbacks",
+              "features/retries-and-fallbacks",
               "features/litellm-compat",
               "features/keys-management",
               "features/async-inference",
@@ -208,12 +217,18 @@
               {
                 "group": "Prompt Repository",
                 "icon": "folder",
-                "pages": ["features/prompt-repository/playground", "features/prompt-repository/prompts-plugin"]
+                "pages": [
+                  "features/prompt-repository/playground",
+                  "features/prompt-repository/prompts-plugin"
+                ]
               },
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
-                "pages": ["features/plugins/mocker", "features/plugins/jsonparser"]
+                "pages": [
+                  "features/plugins/mocker",
+                  "features/plugins/jsonparser"
+                ]
               }
             ]
           },
@@ -228,7 +243,10 @@
               {
                 "group": "Advanced Governance",
                 "icon": "shield-check",
-                "pages": ["enterprise/advanced-governance", "enterprise/rbac"]
+                "pages": [
+                  "enterprise/advanced-governance",
+                  "enterprise/rbac"
+                ]
               },
               "enterprise/mcp-with-fa",
               "enterprise/invpc-deployments",
@@ -268,22 +286,33 @@
               {
                 "group": "OpenAI SDK",
                 "icon": "openai",
-                "pages": ["integrations/openai-sdk/overview", "integrations/openai-sdk/files-and-batch"]
+                "pages": [
+                  "integrations/openai-sdk/overview",
+                  "integrations/openai-sdk/files-and-batch"
+                ]
               },
               {
                 "group": "Anthropic SDK",
                 "icon": "asterisk",
-                "pages": ["integrations/anthropic-sdk/overview", "integrations/anthropic-sdk/files-and-batch"]
+                "pages": [
+                  "integrations/anthropic-sdk/overview",
+                  "integrations/anthropic-sdk/files-and-batch"
+                ]
               },
               {
                 "group": "Bedrock SDK",
                 "icon": "aws",
-                "pages": ["integrations/bedrock-sdk/overview", "integrations/bedrock-sdk/files-and-batch"]
+                "pages": [
+                  "integrations/bedrock-sdk/overview",
+                  "integrations/bedrock-sdk/files-and-batch"
+                ]
               },
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": ["integrations/genai-sdk/overview"]
+                "pages": [
+                  "integrations/genai-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -363,8 +392,44 @@
             "pages": [
               "deployment-guides/k8s",
               "deployment-guides/ecs",
-              "deployment-guides/helm",
               "deployment-guides/fly"
+            ]
+          },
+          {
+            "group": "Config as Code",
+            "icon": "code",
+            "pages": [
+              {
+                "group": "Helm",
+                "icon": "helicopter-symbol",
+                "pages": [
+                  "deployment-guides/helm",
+                  "deployment-guides/helm/values",
+                  "deployment-guides/helm/client",
+                  "deployment-guides/helm/providers",
+                  "deployment-guides/helm/storage",
+                  "deployment-guides/helm/plugins",
+                  "deployment-guides/helm/governance",
+                  "deployment-guides/helm/guardrails",
+                  "deployment-guides/helm/cluster",
+                  "deployment-guides/helm/troubleshooting"
+                ]
+              },
+              {
+                "group": "config.json",
+                "icon": "file-code",
+                "pages": [
+                  "deployment-guides/config-json",
+                  "deployment-guides/config-json/schema-reference",
+                  "deployment-guides/config-json/client",
+                  "deployment-guides/config-json/providers",
+                  "deployment-guides/config-json/storage",
+                  "deployment-guides/config-json/plugins",
+                  "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/cluster",
+                  "deployment-guides/config-json/guardrails"
+                ]
+              }
             ]
           },
           {
@@ -384,6 +449,7 @@
             "pages": [
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
+              "deployment-guides/how-to/nginx-reverse-proxy",
               "deployment-guides/docker-tuning"
             ]
           }
@@ -430,7 +496,9 @@
       {
         "tab": "Security",
         "icon": "shield",
-        "pages": ["security"]
+        "pages": [
+          "security"
+        ]
       },
       {
         "tab": "Benchmarks",
@@ -450,9 +518,12 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.0-prerelease5",
+              "changelogs/v1.5.0-prerelease4",
               "changelogs/v1.5.0-prerelease3",
               "changelogs/v1.5.0-prerelease2",
               "changelogs/v1.5.0-prerelease1",
+              "changelogs/v1.4.23",
               "changelogs/v1.4.22",
               "changelogs/v1.4.21",
               {
@@ -590,7 +661,10 @@
               },
               {
                 "group": "September 2025",
-                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
+                "pages": [
+                  "changelogs/v1.2.22",
+                  "changelogs/v1.2.21"
+                ]
               }
             ]
           },
@@ -627,6 +701,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/fallbacks",
+      "destination": "/features/retries-and-fallbacks"
+    },
     {
       "source": "/quickstart/gateway/cli-agents",
       "destination": "/cli-agents/overview"

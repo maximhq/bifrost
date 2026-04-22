@@ -91,6 +91,16 @@ This command will:
 
 <Note>The `make dev` command handles all setup automatically. You can skip the manual setup steps below if this works for you.</Note>
 
+#### Alternative: Using Pulse
+
+If you prefer [Pulse](https://github.com/Pratham-Mishra04/pulse) over Air for hot reloading, use:
+
+```bash
+make dev-pulse
+```
+
+This runs the same development environment but uses `pulse.yaml` for hot reloading instead of `.air.toml`.
+
 ### Manual Setup (Alternative)
 
 If you prefer to set up components manually:
@@ -154,7 +164,8 @@ The Makefile provides numerous commands for development:
 ### Development Commands
 
 ```bash
-make dev          # Start complete development environment (recommended)
+make dev          # Start complete development environment using Air for hot reloading
+make dev-pulse    # Start complete development environment using Pulse for hot reloading
 make build        # Build UI and bifrost-http binary
 make run          # Build and run (no hot reload)
 make clean        # Clean build artifacts
@@ -373,6 +384,9 @@ which air || go install github.com/air-verse/air@latest
 
 # Check if .air.toml exists in transports/bifrost-http/
 ls transports/bifrost-http/.air.toml
+
+# Alternatively, use Pulse instead of Air
+make dev-pulse
 ```
 
 ### Getting Help

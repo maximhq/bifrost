@@ -1,12 +1,10 @@
-"use client";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getExampleBaseUrl } from "@/lib/utils/port";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { getExampleBaseUrl } from "@/lib/utils/port";
 import { AlertTriangle, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -241,7 +239,7 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 	}, []);
 
 	const isUnexpectedError = error && error.includes("An unexpected error occurred");
-	
+
 	return (
 		<div className="dark:bg-card flex w-full flex-col items-center justify-center space-y-8 bg-white">
 			{error && (
@@ -253,7 +251,7 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 				</Alert>
 			)}
 
-			<div className="w-full space-y-6">
+			<div className="w-full space-y-6 p-4">
 				<div className="flex flex-row items-center gap-2">
 					<div>
 						<h3 className="text-lg font-semibold">Integrate under 60 seconds</h3>

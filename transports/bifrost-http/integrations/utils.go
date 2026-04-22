@@ -30,6 +30,13 @@ var availableIntegrations = []string{
 	"cohere",
 }
 
+// newBifrostErrorWithCode is like newBifrostError but sets an explicit HTTP status code.
+func newBifrostErrorWithCode(err error, message string, statusCode int) *schemas.BifrostError {
+	e := newBifrostError(err, message)
+	e.StatusCode = &statusCode
+	return e
+}
+
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error, message string) *schemas.BifrostError {

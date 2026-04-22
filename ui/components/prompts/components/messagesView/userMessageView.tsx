@@ -1,15 +1,14 @@
-import { Textarea } from "@/components/ui/textarea";
-import { Message, SerializedMessage, type MessageContent } from "@/lib/message";
-import { FileIcon, Mic, Paperclip, PencilIcon, XIcon } from "lucide-react";
-import { Markdown } from "@/components/ui/markdown";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import MessageRoleSwitcher from "./messageRoleSwitcher";
-import { fileToAttachment } from "../../utils/attachment";
-import { RichTextarea } from "@/components/ui/custom/richTextarea";
-import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
-import { AttachmentDisplay } from "./attachmentViews";
-import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
+import { RichTextarea } from "@/components/ui/custom/richTextarea";
+import { Markdown } from "@/components/ui/markdown";
+import { Message, SerializedMessage, type MessageContent } from "@/lib/message";
+import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
+import { isJson } from "@/lib/utils/validation";
+import { Paperclip, PencilIcon, XIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { fileToAttachment } from "../../utils/attachment";
+import { AttachmentDisplay } from "./attachmentViews";
+import MessageRoleSwitcher from "./messageRoleSwitcher";
 
 /**
  * Render an interactive user message block that supports viewing and editing content, role switching, file attachments (via picker or drag-and-drop), and special handling for JSON and Jinja-variable content.
@@ -187,7 +186,7 @@ export function UserMessageView({
 
 	return (
 		<div
-			className="group relative hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors"
+			className="group hover:border-border focus-within:border-border relative rounded-sm border border-transparent px-3 py-2 transition-colors"
 			ref={containerRef}
 			{...(canAttach
 				? {
@@ -208,7 +207,7 @@ export function UserMessageView({
 			)}
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
-				<div className="ml-auto flex items-center gap-0.5 h-5">
+				<div className="ml-auto flex h-5 items-center gap-0.5">
 					{canAttach && (
 						<>
 							<input
@@ -219,18 +218,36 @@ export function UserMessageView({
 								className="hidden"
 								onChange={handleFileSelect}
 							/>
-							<button type="button" aria-label="Attach file" data-testid="user-msg-attach" onClick={() => fileInputRef.current?.click()} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+							<button
+								type="button"
+								aria-label="Attach file"
+								data-testid="user-msg-attach"
+								onClick={() => fileInputRef.current?.click()}
+								className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+							>
 								<Paperclip className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 							</button>
 						</>
 					)}
 					{!disabled && (
-						<button type="button" aria-label="Edit message" data-testid="user-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button
+							type="button"
+							aria-label="Edit message"
+							data-testid="user-msg-edit"
+							onClick={() => setEditMode(true)}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+						>
 							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
-						<button type="button" aria-label="Delete message" data-testid="user-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button
+							type="button"
+							aria-label="Delete message"
+							data-testid="user-msg-delete"
+							onClick={onRemove}
+							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+						>
 							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
@@ -242,7 +259,7 @@ export function UserMessageView({
 					<RichTextarea
 						autoFocus
 						value={content}
-						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						className="text-muted-foreground min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent"
 						textAreaClassName="rounded-none p-0 border-none"
 						disabled={disabled}
 						onChange={(e) => {
@@ -278,7 +295,7 @@ export function UserMessageView({
 					<RichTextarea
 						readOnly
 						value={content}
-						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						className="text-muted-foreground min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent"
 						textAreaClassName="rounded-none p-0 border-none cursor-text"
 						onClick={handleReadOnlyClick}
 						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}

@@ -1,12 +1,16 @@
-"use client"
+import { createFileRoute } from "@tanstack/react-router";
+import { NoPermissionView } from "@/components/noPermissionView";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import SCIMPage from "./page";
 
-import { NoPermissionView } from "@/components/noPermissionView"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-
-export default function SCIMLayout({ children }: { children: React.ReactNode }) {
-  const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View)
-  if (!hasUserProvisioningAccess) {
-    return <NoPermissionView entity="user provisioning" />
-  }
-  return <div>{children}</div>
+function RouteComponent() {
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	if (!hasUserProvisioningAccess) {
+		return <NoPermissionView entity="user provisioning" />;
+	}
+	return <SCIMPage />;
 }
+
+export const Route = createFileRoute("/workspace/scim")({
+	component: RouteComponent,
+});

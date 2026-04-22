@@ -59,6 +59,12 @@ type agentAPIAdapter interface {
 		executedToolCalls []schemas.ChatAssistantMessageToolCall,
 		nonAutoExecutableToolCalls []schemas.ChatAssistantMessageToolCall,
 	) interface{}
+
+	// extractUsage returns the token usage from a response as BifrostLLMUsage.
+	extractUsage(response interface{}) *schemas.BifrostLLMUsage
+
+	// applyUsage sets accumulated usage on the response in place.
+	applyUsage(response interface{}, usage *schemas.BifrostLLMUsage)
 }
 
 // chatAPIAdapter implements agentAPIAdapter for Chat API
@@ -173,6 +179,14 @@ func (c *chatAPIAdapter) createResponseWithExecutedTools(
 		executedToolCalls,
 		nonAutoExecutableToolCalls,
 	)
+}
+
+func (c *chatAPIAdapter) extractUsage(response interface{}) *schemas.BifrostLLMUsage {
+	return response.(*schemas.BifrostChatResponse).Usage
+}
+
+func (c *chatAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
+	response.(*schemas.BifrostChatResponse).Usage = usage
 }
 
 // createChatResponseWithExecutedToolsAndNonAutoExecutableCalls creates a chat response
@@ -388,6 +402,14 @@ func (r *responsesAPIAdapter) createResponseWithExecutedTools(
 		executedToolCalls,
 		nonAutoExecutableToolCalls,
 	)
+}
+
+func (r *responsesAPIAdapter) extractUsage(response interface{}) *schemas.BifrostLLMUsage {
+	return response.(*schemas.BifrostResponsesResponse).Usage.ToBifrostLLMUsage()
+}
+
+func (r *responsesAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
+	response.(*schemas.BifrostResponsesResponse).Usage = usage.ToResponsesResponseUsage()
 }
 
 // createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls creates a responses response

@@ -3,8 +3,58 @@
 
 @source "../app/**/*.tsx";
 @source "../node_modules/streamdown/dist/*.js";
+@source "../../../bifrost-enterprise/ui/**/*.tsx";
 
 @custom-variant dark (&:is(.dark *));
+
+/* ─── Local Geist fonts ───────────────────────────────────────────────────
+ * Variable woff2 files self-hosted from public/static/fonts/.
+ * Self-hosted variable woff2 files, replaces @fontsource-variable/geist.
+ */
+@font-face {
+	font-family: Geist;
+	src:
+		url("/static/fonts/Geist-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/Geist-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: Geist;
+	src:
+		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: italic;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Geist Mono";
+	src:
+		url("/static/fonts/GeistMono-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/GeistMono-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Geist Mono";
+	src:
+		url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: italic;
+	font-display: swap;
+}
+
+:root {
+	--font-geist-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+	--font-geist-mono: "Geist Mono", ui-monospace, "SFMono-Regular", "Menlo", "Monaco", "Liberation Mono", monospace;
+}
 
 @theme inline {
 	--color-background: var(--background);
@@ -214,7 +264,6 @@ body {
 .query-builder-wrapper {
 	padding: 1rem;
 	padding-inline: 0.5rem;
-
 }
 
 [data-radix-scroll-area-viewport].no-table > div {
@@ -226,19 +275,92 @@ body {
 }
 
 div.content-container:has(.no-padding-parent) {
-	@apply !p-0;
+	@apply p-0!;
 }
 
 div.content-container main.content-container-inner:has(.no-padding-parent) {
-	@apply !p-0;
+	@apply p-0!;
 }
 
 div.content-container:has(.no-border-parent) {
-	@apply !border-0;
+	@apply border-0!;
+}
+
+/* ReactFlow Controls — follow Bifrost colour schema */
+
+.react-flow__controls {
+	background-color: var(--card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+}
+
+.react-flow__controls-button {
+	background-color: var(--card);
+	border-bottom: 1px solid var(--border);
+	fill: var(--foreground);
+}
+
+.react-flow__controls-button:hover {
+	background-color: var(--muted);
+}
+
+.react-flow__controls-button svg {
+	fill: var(--foreground);
+}
+
+/* Dark mode — needs !important to beat ReactFlow's bundled specificity */
+.dark .react-flow__controls {
+	background-color: var(--card) !important;
+	border-color: var(--border) !important;
+}
+
+.dark .react-flow__controls-button {
+	background-color: var(--card) !important;
+	border-bottom-color: var(--border) !important;
+	fill: var(--foreground) !important;
+}
+
+.dark .react-flow__controls-button:hover {
+	background-color: var(--muted) !important;
+}
+
+.dark .react-flow__controls-button svg {
+	fill: var(--foreground) !important;
+}
+
+/* Dynamic chain: dash period 3+5 = 8 — offset must move exactly one period per loop */
+@keyframes rf-routing-tree-dynamic-chain-dash {
+	from {
+		stroke-dashoffset: 0;
+	}
+	to {
+		stroke-dashoffset: -8;
+	}
+}
+
+.rf-chain-legend-dynamic-dash {
+	animation: rf-routing-tree-dynamic-chain-dash 0.5s linear infinite;
+}
+
+.react-flow__edge.rf-chain-edge-dynamic .react-flow__edge-path {
+	stroke-dasharray: 3 5;
+	animation: rf-routing-tree-dynamic-chain-dash 0.5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.rf-chain-legend-dynamic-dash {
+		animation: none;
+	}
+
+	.react-flow__edge.rf-chain-edge-dynamic .react-flow__edge-path {
+		animation: none;
+	}
 }
 
 /* // Custom styling for streamdown */
 
-[data-streamdown="code-block"], [data-streamdown="code-block-body"]{
-	@apply !rounded-sm;
+[data-streamdown="code-block"],
+[data-streamdown="code-block-body"] {
+	@apply rounded-sm!;
 }

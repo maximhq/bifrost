@@ -94,7 +94,7 @@ func ValidateChatResponse(t *testing.T, response *schemas.BifrostChatResponse, e
 	}
 
 	// Validate basic structure
-	validateChatBasicStructure(t, response, expectations, &result)
+	validateChatBasicStructure(t, response, expectations, &result, scenarioName)
 
 	// Validate content
 	validateChatContent(t, response, expectations, &result)
@@ -445,11 +445,17 @@ func ValidateCountTokensResponse(t *testing.T, response *schemas.BifrostCountTok
 // =============================================================================
 
 // validateChatBasicStructure checks the basic structure of the chat response
-func validateChatBasicStructure(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
-	// Check that Object field is not empty (should be "chat.completion" or "chat.completion.chunk")
-	if response.Object == "" {
-		result.Passed = false
-		result.Errors = append(result.Errors, "Object field is empty in chat completion response")
+func validateChatBasicStructure(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult, scenarioName string) {
+	// Object is a constant bifrost schema marker ("chat.completion" / "chat.completion.chunk").
+	// For streaming scenarios, per-chunk validation in chat_completion_stream.go covers this —
+	// the aggregated/consolidated response built by the harness is a synthetic construct and
+	// does not carry provider-originating semantics. Skip the check there to avoid asserting
+	// that the harness remembered to copy a constant forward.
+	if !strings.Contains(scenarioName, "Stream") {
+		if response.Object == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Object field is empty in chat completion response")
+		}
 	}
 
 	// Check choice count
@@ -859,7 +865,7 @@ func validateResponsesBasicStructure(response *schemas.BifrostResponsesResponse,
 	}
 
 	provider := response.ExtraFields.Provider
-	model := response.ExtraFields.ModelDeployment
+	model := response.ExtraFields.ResolvedModelUsed
 
 	// Verify top level status is present for OpenAI and Azure with  non-Claude models
 	if provider != "" && (provider == schemas.OpenAI || provider == schemas.Azure) && !strings.Contains(strings.ToLower(model), "claude") {
@@ -988,8 +994,7 @@ func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostRes
 
 	// Check model field
 	if expectations.ShouldHaveModel {
-		if strings.TrimSpace(response.Model) == "" &&
-			strings.TrimSpace(response.ExtraFields.ModelDeployment) == "" {
+		if strings.TrimSpace(response.Model) == "" {
 			result.Passed = false
 			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}

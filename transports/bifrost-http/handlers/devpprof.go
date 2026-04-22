@@ -26,8 +26,8 @@ const (
 	metricsCollectionInterval = 10 * time.Second
 	// Number of data points to keep (5 minutes / 10 seconds = 30 points)
 	historySize = 30
-	// Top allocations to return
-	topAllocationsCount = 5
+	// Top allocations to return per table (cumulative and in-use)
+	topAllocationsCount = 50
 )
 
 // MemoryStats represents memory statistics at a point in time
@@ -57,11 +57,12 @@ type RuntimeStats struct {
 
 // AllocationInfo represents a single allocation site
 type AllocationInfo struct {
-	Function string `json:"function"`
-	File     string `json:"file"`
-	Line     int    `json:"line"`
-	Bytes    int64  `json:"bytes"`
-	Count    int64  `json:"count"`
+	Function string   `json:"function"`
+	File     string   `json:"file"`
+	Line     int      `json:"line"`
+	Bytes    int64    `json:"bytes"`
+	Count    int64    `json:"count"`
+	Stack    []string `json:"stack"`
 }
 
 // GoroutineGroup represents a group of goroutines with the same stack trace
@@ -104,12 +105,13 @@ type HistoryPoint struct {
 
 // PprofData represents the complete pprof response
 type PprofData struct {
-	Timestamp      string           `json:"timestamp"`
-	Memory         MemoryStats      `json:"memory"`
-	CPU            CPUStats         `json:"cpu"`
-	Runtime        RuntimeStats     `json:"runtime"`
-	TopAllocations []AllocationInfo `json:"top_allocations"`
-	History        []HistoryPoint   `json:"history"`
+	Timestamp        string           `json:"timestamp"`
+	Memory           MemoryStats      `json:"memory"`
+	CPU              CPUStats         `json:"cpu"`
+	Runtime          RuntimeStats     `json:"runtime"`
+	TopAllocations   []AllocationInfo `json:"top_allocations"`
+	InuseAllocations []AllocationInfo `json:"inuse_allocations"`
+	History          []HistoryPoint   `json:"history"`
 }
 
 // cpuSample holds a CPU time sample for calculating usage
@@ -288,85 +290,138 @@ func (c *MetricsCollector) getCPUStats() CPUStats {
 	return c.currentCPU
 }
 
-// getTopAllocations analyzes heap profile to find top allocation sites
-func getTopAllocations() []AllocationInfo {
-	// Write heap profile to buffer
+// getAllocations analyzes the heap profile and returns two allocation lists
+// aggregated by full call stack:
+//   - cumulative: alloc_space / alloc_objects (total since process start)
+//   - inuse:      inuse_space / inuse_objects (currently live on the heap)
+//
+// Both are produced from a single pprof.WriteHeapProfile call.
+func getAllocations() (cumulative, inuse []AllocationInfo) {
 	var buf bytes.Buffer
 	if err := pprof.WriteHeapProfile(&buf); err != nil {
-		return []AllocationInfo{}
+		return nil, nil
 	}
 
-	// Parse the protobuf profile
 	p, err := profile.Parse(&buf)
 	if err != nil {
-		return []AllocationInfo{}
+		return nil, nil
 	}
 
-	// Find the indices for alloc_objects and alloc_space sample types
-	var allocObjectsIdx, allocSpaceIdx int
+	allocObjectsIdx, allocSpaceIdx := -1, -1
+	inuseObjectsIdx, inuseSpaceIdx := -1, -1
 	for i, st := range p.SampleType {
 		switch st.Type {
 		case "alloc_objects":
 			allocObjectsIdx = i
 		case "alloc_space":
 			allocSpaceIdx = i
+		case "inuse_objects":
+			inuseObjectsIdx = i
+		case "inuse_space":
+			inuseSpaceIdx = i
 		}
 	}
 
-	// Aggregate allocations by function (top of stack = allocation site)
 	allocMap := make(map[string]*AllocationInfo)
+	inuseMap := make(map[string]*AllocationInfo)
 
 	for _, sample := range p.Sample {
 		if len(sample.Location) == 0 {
 			continue
 		}
-		loc := sample.Location[0] // Top of stack = allocation site
-		if len(loc.Line) == 0 {
+
+		topLoc := sample.Location[0]
+		if len(topLoc.Line) == 0 {
 			continue
 		}
-		line := loc.Line[0]
-		fn := line.Function
-		if fn == nil {
+		topLine := topLoc.Line[0]
+		topFn := topLine.Function
+		if topFn == nil {
 			continue
 		}
 
-		// Skip allocations from the profiler itself
-		if isProfilerFunction(fn.Name, fn.Filename) {
+		// Filter only the top frame — filtering inner frames would drop real
+		// user allocations that merely pass through runtime/profiler code.
+		if isProfilerFunction(topFn.Name, topFn.Filename) {
 			continue
 		}
 
-		key := fn.Name
-		if existing, ok := allocMap[key]; ok {
-			existing.Bytes += sample.Value[allocSpaceIdx]
-			existing.Count += sample.Value[allocObjectsIdx]
-		} else {
-			allocMap[key] = &AllocationInfo{
-				Function: fn.Name,
-				File:     fn.Filename,
-				Line:     int(line.Line),
-				Bytes:    sample.Value[allocSpaceIdx],
-				Count:    sample.Value[allocObjectsIdx],
+		// Build full stack in goroutine-dump format: alternating "funcName" and
+		// "\tfile:line" entries, top-down. Matches GoroutineGroup.Stack so the
+		// UI can render both with the same code path.
+		stack := make([]string, 0, len(sample.Location)*2)
+		for _, loc := range sample.Location {
+			if len(loc.Line) == 0 {
+				continue
+			}
+			frame := loc.Line[0]
+			if frame.Function == nil {
+				continue
+			}
+			stack = append(stack, frame.Function.Name)
+			stack = append(stack, "\t"+frame.Function.Filename+":"+strconv.FormatInt(frame.Line, 10))
+		}
+		if len(stack) == 0 {
+			continue
+		}
+		key := strings.Join(stack, "\n")
+
+		if allocSpaceIdx >= 0 && allocObjectsIdx >= 0 {
+			b := sample.Value[allocSpaceIdx]
+			c := sample.Value[allocObjectsIdx]
+			if existing, ok := allocMap[key]; ok {
+				existing.Bytes += b
+				existing.Count += c
+			} else {
+				allocMap[key] = &AllocationInfo{
+					Function: topFn.Name,
+					File:     topFn.Filename,
+					Line:     int(topLine.Line),
+					Bytes:    b,
+					Count:    c,
+					Stack:    stack,
+				}
+			}
+		}
+
+		if inuseSpaceIdx >= 0 && inuseObjectsIdx >= 0 {
+			b := sample.Value[inuseSpaceIdx]
+			c := sample.Value[inuseObjectsIdx]
+			// Most samples have inuse=0 (already freed) — skip them so the live
+			// table isn't padded with noise.
+			if b == 0 && c == 0 {
+				continue
+			}
+			if existing, ok := inuseMap[key]; ok {
+				existing.Bytes += b
+				existing.Count += c
+			} else {
+				inuseMap[key] = &AllocationInfo{
+					Function: topFn.Name,
+					File:     topFn.Filename,
+					Line:     int(topLine.Line),
+					Bytes:    b,
+					Count:    c,
+					Stack:    stack,
+				}
 			}
 		}
 	}
 
-	// Convert map to slice
-	allocations := make([]AllocationInfo, 0, len(allocMap))
-	for _, alloc := range allocMap {
-		allocations = append(allocations, *alloc)
+	return flattenAndTopN(allocMap), flattenAndTopN(inuseMap)
+}
+
+// flattenAndTopN sorts an allocation map by bytes desc and caps it.
+func flattenAndTopN(m map[string]*AllocationInfo) []AllocationInfo {
+	out := make([]AllocationInfo, 0, len(m))
+	for _, a := range m {
+		out = append(out, *a)
 	}
-
-	// Sort by bytes descending
-	sort.Slice(allocations, func(i, j int) bool {
-		return allocations[i].Bytes > allocations[j].Bytes
-	})
-
-	// Return top N allocations
-	if len(allocations) > topAllocationsCount {
-		allocations = allocations[:topAllocationsCount]
+	sort.Slice(out, func(i, j int) bool { return out[i].Bytes > out[j].Bytes })
+	if len(out) > topAllocationsCount {
+		out = out[:topAllocationsCount]
 	}
-
-	return allocations
+	return out
 }
 
 // RegisterRoutes registers the dev pprof routes
@@ -400,9 +455,9 @@ func (h *DevPprofHandler) getPprof(ctx *fasthttp.RequestCtx) {
 			NumCPU:       runtime.NumCPU(),
 			GOMAXPROCS:   runtime.GOMAXPROCS(0),
 		},
-		TopAllocations: getTopAllocations(),
-		History:        h.collector.getHistory(),
+		History: h.collector.getHistory(),
 	}
+	data.TopAllocations, data.InuseAllocations = getAllocations()
 
 	SendJSON(ctx, data)
 }
@@ -531,13 +586,12 @@ func categorizeGoroutine(g *GoroutineGroup) {
 		"PostMCPHook",
 		"HTTPTransportPreHook",
 		"HTTPTransportPostHook",
-		"completeAndFlushTrace",
+		"CompleteAndFlushTrace",
 		"ProcessAndSend",
 		"handleProvider",
 		"Inject",                // Observability plugin inject
 		"insertInitialLogEntry", // Logging
 		"updateLogEntry",        // Logging
-		"updateStreamingLogEntry",
 		"retryOnNotFound",
 		"BroadcastLogUpdate",
 	}
@@ -688,7 +742,8 @@ var profilerPatterns = []string{
 	"profile.Parse",
 	"MetricsCollector",
 	"collectLoop",
-	"getTopAllocations",
+	"getAllocations",
+	"flattenAndTopN",
 	"parseGoroutineProfile",
 	"getGoroutines",
 	"getCPUSample",

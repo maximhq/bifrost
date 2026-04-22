@@ -26,7 +26,8 @@
               "  provider_configs: [{",
               "    provider: pm.collectionVariables.get('provider') || 'openai',",
               "    weight: 1.0,",
-              "    allowed_models: [pm.collectionVariables.get('chat_model') || 'gpt-4o']",
+              "    allowed_models: ['*'],",
+              "    key_ids: ['*']",
               "  }]",
               "};",
               "pm.request.body.raw = JSON.stringify(body);"

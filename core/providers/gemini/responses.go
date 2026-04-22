@@ -160,6 +160,30 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
+		candidate := response.Candidates[0]
+
+		// Persist finish reason as Bifrost canonical stop_reason
+		if candidate.FinishReason != "" && candidate.FinishReason != FinishReasonUnspecified {
+			stopReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+			bifrostResp.StopReason = &stopReason
+
+			if isErrorFinishReason(candidate.FinishReason) {
+				failedStatus := "failed"
+				bifrostResp.Status = &failedStatus
+
+				errMsg := candidate.FinishMessage
+				if errMsg == "" {
+					errMsg = string(candidate.FinishReason)
+				}
+				bifrostResp.Error = &schemas.ResponsesResponseError{
+					Code:    stopReason,
+					Message: errMsg,
+				}
+
+				return bifrostResp
+			}
+		}
+
 		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates)
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
@@ -409,8 +433,10 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				},
 			}
 
-			// Determine finish reason based on incomplete details
-			if bifrostResp.IncompleteDetails != nil {
+			// Determine finish reason: prefer StopReason (Bifrost canonical), fall back to IncompleteDetails
+			if bifrostResp.StopReason != nil {
+				candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.StopReason)
+			} else if bifrostResp.IncompleteDetails != nil {
 				switch bifrostResp.IncompleteDetails.Reason {
 				case "max_tokens":
 					candidate.FinishReason = FinishReasonMaxTokens
@@ -692,8 +718,12 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				streamResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Response.Usage)
 			}
 
-			// Set finish reason
-			candidate.FinishReason = FinishReasonStop
+			// Derive finish reason from StopReason when present
+			if bifrostResp.Response.StopReason != nil {
+				candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.Response.StopReason)
+			} else {
+				candidate.FinishReason = FinishReasonStop
+			}
 
 			// Attach grounding metadata if we buffered web search data
 			if state.HasWebSearch && state.WebSearchCall != nil {
@@ -3015,6 +3045,30 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							responseMap["output"] = json.RawMessage(output)
 						} else {
 							responseMap["output"] = output
+						}
+					} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+						// Handle structured output blocks (e.g. from Anthropic Responses API format
+						// where output is an array of content blocks like [{"type":"input_text","text":"..."}])
+						var textParts []string
+						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+							if block.Text != nil && *block.Text != "" {
+								textParts = append(textParts, *block.Text)
+							}
+						}
+						if len(textParts) > 0 {
+							combined := strings.Join(textParts, "\n")
+							if json.Valid([]byte(combined)) {
+								responseMap["output"] = json.RawMessage(combined)
+							} else {
+								responseMap["output"] = combined
+							}
+						} else {
+							// Fallback for non-text blocks (e.g. images, files): marshal the raw blocks
+							// so responseMap["output"] is never left empty when blocks are present
+							rawBlocks, err := providerUtils.MarshalSorted(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+							if err == nil && len(rawBlocks) > 0 {
+								responseMap["output"] = json.RawMessage(rawBlocks)
+							}
 						}
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility

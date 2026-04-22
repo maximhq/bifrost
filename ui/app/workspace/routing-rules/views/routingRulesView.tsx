@@ -3,15 +3,15 @@
  * Main orchestrator component for routing rules management
  */
 
-"use client";
-
 import { RbacOperation, RbacResource, useRbac } from "@/app/_fallbacks/enterprise/lib/contexts/rbacContext";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
-import { Plus } from "lucide-react";
+import { GitBranch, Plus } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { RoutingRuleInfoSheet } from "./routingRuleInfoSheet";
 import { RoutingRuleSheet } from "./routingRuleSheet";
 import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
 import { RoutingRulesTable } from "./routingRulesTable";
@@ -22,6 +22,8 @@ const PAGE_SIZE = 25;
 export function RoutingRulesView() {
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
+	const [infoSheetOpen, setInfoSheetOpen] = useState(false);
+	const [selectedRule, setSelectedRule] = useState<RoutingRule | null>(null);
 
 	const [search, setSearch] = useState("");
 	const [offset, setOffset] = useState(0);
@@ -68,6 +70,11 @@ export function RoutingRulesView() {
 		setDialogOpen(true);
 	};
 
+	const handleRowClick = (rule: RoutingRule) => {
+		setSelectedRule(rule);
+		setInfoSheetOpen(true);
+	};
+
 	const handleDialogOpenChange = (open: boolean) => {
 		setDialogOpen(open);
 		if (!open) {
@@ -95,17 +102,20 @@ export function RoutingRulesView() {
 					<h1 className="text-foreground text-lg font-semibold">Routing Rules</h1>
 					<p className="text-muted-foreground text-sm">Manage CEL-based routing rules for intelligent request routing across providers</p>
 				</div>
-				{canCreate && (
-					<Button
-						data-testid="create-routing-rule-btn"
-						onClick={handleCreateNew}
-						disabled={isLoading}
-						className="gap-2"
-					>
-						<Plus className="h-4 w-4" />
-						<span className="hidden sm:inline">New Rule</span>
+				<div className="flex items-center gap-2">
+					<Button variant="outline" size="sm" asChild className="gap-2">
+						<Link to="/workspace/routing-rules/tree">
+							<GitBranch className="h-4 w-4" />
+							<span className="hidden sm:inline">View Tree</span>
+						</Link>
 					</Button>
-				)}
+					{canCreate && (
+						<Button data-testid="create-routing-rule-btn" onClick={handleCreateNew} disabled={isLoading} className="gap-2">
+							<Plus className="h-4 w-4" />
+							<span className="hidden sm:inline">New Rule</span>
+						</Button>
+					)}
+				</div>
 			</div>
 
 			<RoutingRulesTable
@@ -113,6 +123,7 @@ export function RoutingRulesView() {
 				totalCount={totalCount}
 				isLoading={isLoading}
 				onEdit={handleEdit}
+				onRowClick={handleRowClick}
 				canDelete={canDelete}
 				search={search}
 				onSearchChange={setSearch}
@@ -122,6 +133,7 @@ export function RoutingRulesView() {
 			/>
 
 			<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
+			<RoutingRuleInfoSheet rule={selectedRule} open={infoSheetOpen} onOpenChange={setInfoSheetOpen} />
 		</div>
 	);
 }

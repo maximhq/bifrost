@@ -1,0 +1,155 @@
+---
+title: "v1.5.0-prerelease4"
+description: "v1.5.0-prerelease4 changelog - 2026-04-21"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.0-prerelease4
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.0-prerelease4
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.0-prerelease4
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.0-prerelease4">
+## ✨ Features
+
+- **Claude Opus 4.7** — Added compatibility for Anthropic's Claude Opus 4.7 model, including adaptive thinking, task-budgets beta header, `display` parameter handling, and "xhigh" effort mapping
+- **Anthropic Structured Outputs** — Added `response_format` and structured output support for Anthropic models across chat completions and Responses API, with order-preserving merge of additional model request fields (thanks [@emirhanmutlu-natuvion](https://github.com/emirhanmutlu-natuvion)!)
+- **MCP Tool Annotations** — Preserve MCP tool annotations (`title`, `readOnly`, `destructive`, `idempotent`, `openWorld`) in bidirectional conversion so agents can reason about tool behavior
+- **Anthropic Server Tools** — Expanded Anthropic chat schema and Responses converters to surface server-side tools (web search, code execution, computer use containers) end-to-end
+- **OCR Request Support** — Added OCR request type with stream terminal detection, full body accumulation for passthrough streams, input logging with detail view, and per-request pricing support
+- **Team Budgets** — New team budget system with per-team spending tracking, atomic ratelimit updates, and database structure support
+- **Single Log Export** — Export individual log entries from the logs view and MCP logs sheet
+- **Deny-by-Default Virtual Keys** — Virtual key provider and MCP configs now block all access when empty; automatic migration backfills existing keys to preserve behavior
+- **User Agent Detection** — Improved multi-user-agent detection with tool call reduplication fix for mixed-client environments
+- **Per-User OAuth Codemode** — OAuth server selection and validation per-user in codemode
+
+## 🐞 Fixed
+
+- **Provider Queue Shutdown Panic** — Eliminated `send on closed channel` panics in provider queue shutdown by leaving channels open and exiting workers via the done signal; stale producers transparently re-route to new queues during `UpdateProvider`
+- **OpenAI Tool Result Output** — Flatten array-form `tool_result` output into a newline-joined string for the Responses API so strict upstreams (Ollama Cloud, openai-go typed models) no longer reject with HTTP 400 (thanks [@martingiguere](https://github.com/martingiguere)!)
+- **vLLM Token Usage** — Treat `delta.content=""` the same as `nil` in streaming so the synthesis chunk retains its `finish_reason`, restoring token usage attribution in logs and UI
+- **Gemini Tool Outputs** — Handle content block tool outputs in Responses API path for `function_call_output` messages (thanks [@tom-diacono](https://github.com/tom-diacono)!)
+- **Bedrock Streaming** — Emit `message_stop` event for Anthropic invoke stream and case-insensitive `anthropic-beta` header merging (thanks [@tefimov](https://github.com/tefimov)!)
+- **Bedrock Tool Images** — Preserve image content blocks in tool results when converting Anthropic Messages to Bedrock Converse API (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- **Gemini Thinking Level** — Preserve `thinkingLevel` parameters across round-trip conversions and correct finish reason mapping
+- **Anthropic WebSearch** — Removed the Claude Code user agent restriction so WebSearch tool arguments flow for all clients
+- **Responses Streaming Errors** — Capture errors mid-stream in the Responses API so transport clients see failures instead of silent termination
+- **Anthropic Request Fallbacks** — Dropped fallback fields from outgoing Anthropic requests to avoid schema validation errors
+- **Tool Execution Header** — Remove redundant static header assignment in tool execution flow
+- **Virtual Key Configs** — Virtual key configurations cleaned up correctly on provider changes; fix key creation and management edge cases
+- **Virtual Key Management** — Fix virtual key creation validation and update handling
+- **vLLM Extra Params** — Extra parameters now properly passed through to vLLM providers
+- **OAuth Query Params** — Preserve existing query parameters when building OAuth upstream authorize URLs
+- **Streaming Timeouts** — Separate streaming clients per provider to prevent read timeout collisions
+- **Plugin Timer Concurrency** — Fix concurrent map access in plugin timer causing potential race conditions
+- **Async Context Propagation** — Preserve context values in async requests so downstream handlers retain request-scoped data
+- **Custom Providers** — Allow custom providers without a list-models endpoint to accept any model rather than restricting on virtual key registration
+- **OTel Insecure Default** — OTel plugin now defaults `insecure` to true when omitted, enabling HTTP collectors without explicit config; OTel semconv updated to v1.40.0
+- **Helm mcpClientConfig** — Fixed templating for `mcpClientConfig` (thanks [@crust3780](https://github.com/crust3780)!)
+- **Helm Chart** — Refreshed helm chart with validation fixes
+
+</Update>
+<Update label="Core" description="1.5.3">
+- feat: claude-opus-4-7 compatibility with adaptive thinking, task-budgets beta header, display parameter handling, and xhigh effort mapping
+- feat: add Anthropic structured output and response_format support across chat completions and Responses API (thanks [@emirhanmutlu-natuvion](https://github.com/emirhanmutlu-natuvion)!)
+- feat: preserve MCP tool annotations in bidirectional conversion between MCP tools and Bifrost chat tools
+- feat: expand Anthropic chat schema and Responses converters to surface server-side tools (web search, code execution, computer use containers)
+- feat: add OCR request type support with stream terminal detection and full body accumulation for passthrough streams
+- feat: add user agent detection for multiple user agents and fix tool call reduplication
+- feat: virtual key provider and MCP configs are now deny-by-default; empty configs block all access
+- fix: make provider config weight optional; null weight excludes provider from weighted routing
+- fix: use separate streaming clients per provider to prevent read timeouts
+- fix: concurrent map access in plugin timer
+- fix: extra params passthrough for vllm providers
+- fix: remove redundant static header assignment in tool execution
+- fix: add OCR request pricing support
+- fix: usage of per-user OAuth servers in codemode
+- fix: adds validation on direct api keys
+- fix: OpenAI provider - flatten array-form tool_result output for Responses API (thanks [@martingiguere](https://github.com/martingiguere)!)
+- fix: Gemini provider - handle content block tool outputs in Responses API path (thanks [@tom-diacono](https://github.com/tom-diacono)!)
+- fix: case-insensitive anthropic-beta merge in MergeBetaHeaders
+- fix: Bedrock provider - emit message_stop event for Anthropic invoke stream (thanks [@tefimov](https://github.com/tefimov)!)
+- fix: Bedrock provider - preserve image content in tool results for Converse API (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- fix: gemini preserves thinkingLevel parameters during round-trip and corrects finish reason mapping
+- fix: WebSearch tool argument handling for all clients by removing Claude Code user agent restriction
+- fix: capture responses streaming API errors
+- fix: delete fallbacks from outgoing Anthropic requests
+- fix: token usage for vllm streaming (treat delta.content="" same as nil)
+- fix: provider queue shutdown panic - eliminated send on closed channel by leaving channels open and exiting via done signal
+
+</Update>
+<Update label="Framework" description="1.3.3">
+- feat: add team budget system with per-team spending tracking, DB tables, and atomic ratelimit integration
+- feat: add access profile filter to exclude access-profile-managed virtual keys
+- feat: add OCR input logging and pricing metadata support
+- feat: add tiered and priority/flex pricing support — 272k token tier fields, 200k priority variants, and tier selection based on service_tier in responses
+- fix: use separate DB connection for migrations to prevent connection conflicts
+- fix: preserve existing query params in OAuth upstream authorize URL
+- fix: clean up virtual key configs when provider changes
+- fix: calendar_aligned propagation in v1.5.0-prerelease4 migration
+- fix: virtual key creation and management handling
+- fix: preserve context values in async requests
+- fix: capture responses streaming API errors
+- fix: allow custom providers without a list models endpoint to register any model
+- fix: don't mark OAuth config expired on transient refresh failures
+- fix: only treat invalid_grant and unauthorized_client as permanent OAuth errors
+
+</Update>
+<Update label="compat" description="0.1.2">
+- feat: add chat-to-responses conversion for models that only support the Responses API
+- refactor: integrate model catalog to determine per-model conversion requirements
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>
+<Update label="governance" description="1.5.3">
+- feat: add team budget support with per-team spending tracking and DB tables
+- feat: atomic budget and ratelimit update operations for concurrent safety
+- refactor: budget DB table restructure to support team budgets
+- fix: allow custom providers without a list models endpoint to pass in any model
+
+</Update>
+<Update label="jsonparser" description="1.5.3">
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>
+<Update label="logging" description="1.5.3">
+- feat: add OCR input logging with request type metadata and detail view
+- fix: handle stream terminal detection in logging operations
+- fix: capture responses streaming API errors
+
+</Update>
+<Update label="maxim" description="1.6.3">
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>
+<Update label="mocker" description="1.5.3">
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>
+<Update label="otel" description="1.2.3">
+- fix: update OTel semconv from v1.39.0 to v1.40.0
+- fix: default insecure to true when omitted so HTTP collectors work without explicit config
+- fix: include fallbacks in emitted OTel metrics
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>
+<Update label="prompts" description="1.0.3">
+- refactor: Updates prompt plugin flow to change the headers used, and better code quality
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>
+<Update label="semanticcache" description="1.5.3">
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>
+<Update label="telemetry" description="1.5.3">
+- chore: upgraded core to v1.5.3 and framework to v1.3.3
+
+</Update>

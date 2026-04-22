@@ -29,6 +29,58 @@ export function formatCurrency(dollars: number) {
 }
 
 /**
+ * Formats a number compactly (e.g. 10000 → "10K", 1500000 → "1.5M").
+ * Uses Intl.NumberFormat so boundary values promote correctly (999,950 → "1M", not "1000K")
+ * and trailing zeros are dropped (10,000 → "10K", not "10.0K").
+ */
+const compactNumberFormatter = new Intl.NumberFormat(undefined, {
+	notation: "compact",
+	maximumFractionDigits: 1,
+});
+
+export function formatCompactNumber(n: number): string {
+	if (Math.abs(n) >= 1_000) return compactNumberFormatter.format(n);
+	return n.toLocaleString();
+}
+
+const shortDurationLabels: Record<string, string> = {
+	"1m": "/min",
+	"5m": "/5min",
+	"15m": "/15min",
+	"30m": "/30min",
+	"1h": "/hr",
+	"6h": "/6hr",
+	"1d": "/day",
+	"1w": "/wk",
+	"1M": "/mo",
+};
+
+/**
+ * Formats rate limit into compact display lines.
+ * e.g. ["10K tokens/hr", "100 req/hr"]
+ */
+export function formatRateLimitLines(rateLimits: {
+	token_max_limit?: number | null;
+	token_reset_duration?: string | null;
+	request_max_limit?: number | null;
+	request_reset_duration?: string | null;
+} | null | undefined): string[] {
+	if (!rateLimits) return [];
+	const lines: string[] = [];
+	if (rateLimits.token_max_limit != null) {
+		const duration = rateLimits.token_reset_duration ?? "";
+		const suffix = shortDurationLabels[duration] ?? (duration ? `/${duration}` : "");
+		lines.push(`${formatCompactNumber(rateLimits.token_max_limit)} tokens${suffix}`);
+	}
+	if (rateLimits.request_max_limit != null) {
+		const duration = rateLimits.request_reset_duration ?? "";
+		const suffix = shortDurationLabels[duration] ?? (duration ? `/${duration}` : "");
+		lines.push(`${formatCompactNumber(rateLimits.request_max_limit)} req${suffix}`);
+	}
+	return lines;
+}
+
+/**
  * Calculates usage percentage for rate limits
  */
 export function calculateUsagePercentage(current: number, max: number): number {

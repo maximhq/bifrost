@@ -1,5 +1,3 @@
-"use client";
-
 import FullPageLoader from "@/components/fullPageLoader";
 import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
@@ -20,7 +18,12 @@ export default function MCPServersPage() {
 		setOffset(0);
 	}, [debouncedSearch]);
 
-	const { data: mcpClientsData, error, isLoading, refetch } = useGetMCPClientsQuery(
+	const {
+		data: mcpClientsData,
+		error,
+		isLoading,
+		refetch,
+	} = useGetMCPClientsQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,

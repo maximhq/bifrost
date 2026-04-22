@@ -9,6 +9,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 // deepCopyResponsesStreamResponse creates a deep copy of BifrostResponsesStreamResponse
@@ -890,7 +891,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
 
-	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
+	_, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	chunk := a.getResponsesStreamChunk()
@@ -929,7 +930,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCost(result)
+				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
@@ -965,20 +966,22 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		}
 
 		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: StreamTypeResponses,
-			Provider:   provider,
-			Model:      model,
-			Data:       data,
-			RawRequest: &rawRequest,
+			RequestID:      requestID,
+			StreamType:     StreamTypeResponses,
+			Provider:       provider,
+			RequestedModel: requestedModel,
+			ResolvedModel:  resolvedModel,
+			Data:           data,
+			RawRequest:     &rawRequest,
 		}, nil
 	}
 
 	return &ProcessedStreamResponse{
-		RequestID:  requestID,
-		StreamType: StreamTypeResponses,
-		Provider:   provider,
-		Model:      model,
-		Data:       nil,
+		RequestID:      requestID,
+		StreamType:     StreamTypeResponses,
+		Provider:       provider,
+		RequestedModel: requestedModel,
+		ResolvedModel:  resolvedModel,
+		Data:           nil,
 	}, nil
 }

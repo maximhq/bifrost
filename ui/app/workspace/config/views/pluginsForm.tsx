@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,7 +10,6 @@ import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetPro
 import { CacheConfig, EditorCacheConfig, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { cacheConfigSchema } from "@/lib/types/schemas";
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -76,7 +73,6 @@ interface PluginsFormProps {
 }
 
 export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) {
-	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [cacheConfig, setCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
 	const [originalCacheEnabled, setOriginalCacheEnabled] = useState<boolean>(false);
 	const [serverCacheConfig, setServerCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
@@ -129,7 +125,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 
 	const hasChanges = useMemo(() => {
 		if (originalCacheEnabled !== serverCacheEnabled) return true;
-		
+
 		return (
 			cacheConfig.provider !== serverCacheConfig.provider ||
 			cacheConfig.embedding_model !== serverCacheConfig.embedding_model ||
@@ -156,15 +152,17 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	// Save all changes
 	const handleSave = async () => {
 		if (hasInvalidProviderBackedDimension) {
-			toast.error("Provider-backed semantic cache requires the embedding model's real dimension. Use a value greater than 1, or remove the provider to keep direct-only mode.")
-			return
+			toast.error(
+				"Provider-backed semantic cache requires the embedding model's real dimension. Use a value greater than 1, or remove the provider to keep direct-only mode.",
+			);
+			return;
 		}
 
 		const parseResult = cacheConfigSchema.safeParse(normalizeCacheConfigForSave(cacheConfig));
 		if (!parseResult.success) {
-			const firstIssue = parseResult.error.issues[0]?.message ?? "Semantic cache configuration is invalid."
-			toast.error(firstIssue)
-			return
+			const firstIssue = parseResult.error.issues[0]?.message ?? "Semantic cache configuration is invalid.";
+			toast.error(firstIssue);
+			return;
 		}
 
 		const savedConfig = parseResult.data as CacheConfig;
@@ -239,7 +237,11 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							}}
 						/>
 						{(isSemanticCacheEnabled || originalCacheEnabled) && (
-							<Button onClick={handleSave} disabled={!hasChanges || isUpdating || isCreating || hasInvalidProviderBackedDimension} size="sm">
+							<Button
+								onClick={handleSave}
+								disabled={!hasChanges || isUpdating || isCreating || hasInvalidProviderBackedDimension}
+								size="sm"
+							>
 								{isUpdating || isCreating ? "Saving..." : "Save"}
 							</Button>
 						)}
@@ -282,11 +284,13 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 												<SelectValue placeholder="Select provider" />
 											</SelectTrigger>
 											<SelectContent>
-												{providers.filter((provider) => provider.name).map((provider) => (
-													<SelectItem key={provider.name} value={provider.name}>
-														{getProviderLabel(provider.name)}
-													</SelectItem>
-												))}
+												{providers
+													.filter((provider) => provider.name)
+													.map((provider) => (
+														<SelectItem key={provider.name} value={provider.name}>
+															{getProviderLabel(provider.name)}
+														</SelectItem>
+													))}
 											</SelectContent>
 										</Select>
 									</div>
@@ -312,16 +316,16 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											id="ttl"
 											type="number"
 											min="1"
-											value={cacheConfig.ttl_seconds === undefined || Number.isNaN(cacheConfig.ttl_seconds) ? '' : cacheConfig.ttl_seconds}
+											value={cacheConfig.ttl_seconds === undefined || Number.isNaN(cacheConfig.ttl_seconds) ? "" : cacheConfig.ttl_seconds}
 											onChange={(e) => {
-												const value = e.target.value
-												if (value === '') {
-													updateCacheConfigLocal({ ttl_seconds: undefined })
-													return
+												const value = e.target.value;
+												if (value === "") {
+													updateCacheConfigLocal({ ttl_seconds: undefined });
+													return;
 												}
-												const parsed = parseInt(value)
+												const parsed = parseInt(value);
 												if (!Number.isNaN(parsed)) {
-													updateCacheConfigLocal({ ttl_seconds: parsed })
+													updateCacheConfigLocal({ ttl_seconds: parsed });
 												}
 											}}
 										/>
@@ -334,16 +338,16 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											min="0"
 											max="1"
 											step="0.01"
-											value={cacheConfig.threshold === undefined || Number.isNaN(cacheConfig.threshold) ? '' : cacheConfig.threshold}
+											value={cacheConfig.threshold === undefined || Number.isNaN(cacheConfig.threshold) ? "" : cacheConfig.threshold}
 											onChange={(e) => {
-												const value = e.target.value
-												if (value === '') {
-													updateCacheConfigLocal({ threshold: undefined })
-													return
+												const value = e.target.value;
+												if (value === "") {
+													updateCacheConfigLocal({ threshold: undefined });
+													return;
 												}
-												const parsed = parseFloat(value)
+												const parsed = parseFloat(value);
 												if (!Number.isNaN(parsed)) {
-													updateCacheConfigLocal({ threshold: parsed })
+													updateCacheConfigLocal({ threshold: parsed });
 												}
 											}}
 										/>
@@ -354,16 +358,16 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											id="dimension"
 											type="number"
 											min="1"
-											value={cacheConfig.dimension === undefined || Number.isNaN(cacheConfig.dimension) ? '' : cacheConfig.dimension}
+											value={cacheConfig.dimension === undefined || Number.isNaN(cacheConfig.dimension) ? "" : cacheConfig.dimension}
 											onChange={(e) => {
-												const value = e.target.value
-												if (value === '') {
-													updateCacheConfigLocal({ dimension: undefined })
-													return
+												const value = e.target.value;
+												if (value === "") {
+													updateCacheConfigLocal({ dimension: undefined });
+													return;
 												}
-												const parsed = parseInt(value)
+												const parsed = parseInt(value);
 												if (!Number.isNaN(parsed)) {
-													updateCacheConfigLocal({ dimension: parsed })
+													updateCacheConfigLocal({ dimension: parsed });
 												}
 											}}
 										/>

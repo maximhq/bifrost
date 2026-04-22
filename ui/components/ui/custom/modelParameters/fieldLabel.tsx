@@ -16,7 +16,7 @@ interface FieldLabelProps {
 export default function FieldLabel({ label, helpText, htmlFor, onClear, children }: FieldLabelProps) {
 	return (
 		<div className="group/label flex flex-row items-center overflow-hidden">
-			<div className="flex flex-row items-center gap-1 pr-1 grow h-4">
+			<div className="flex h-4 grow flex-row items-center gap-1 pr-1">
 				<Label htmlFor={htmlFor} className="truncate">
 					{label}
 				</Label>
@@ -35,7 +35,7 @@ export default function FieldLabel({ label, helpText, htmlFor, onClear, children
 						variant="ghost"
 						size="icon"
 						onClick={onClear}
-						className="h-4 w-4 opacity-0 group-hover/label:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+						className="text-muted-foreground hover:text-foreground h-4 w-4 opacity-0 transition-opacity group-hover/label:opacity-100"
 						title={`Clear ${label}`}
 					>
 						<X className="h-4 w-4" />

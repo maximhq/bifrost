@@ -10,13 +10,36 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestParseSessionIDFromBaggage(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{name: "single member", header: "session-id=abc", want: "abc"},
+		{name: "multiple members", header: "foo=bar, session-id=abc, baz=qux", want: "abc"},
+		{name: "member with properties", header: "session-id=abc;ttl=60", want: "abc"},
+		{name: "spaces preserved around parsing", header: " foo=bar , session-id = abc123 ;ttl=60 ", want: "abc123"},
+		{name: "missing member", header: "foo=bar", want: ""},
+		{name: "malformed ignored", header: "session-id, foo=bar", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseSessionIDFromBaggage(tt.header); got != tt.want {
+				t.Fatalf("ParseSessionIDFromBaggage(%q) = %q, want %q", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	base := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	base.SetValue(schemas.BifrostContextKeyRequestID, "req-shared")
 	ctx.SetUserValue(FastHTTPUserValueBifrostContext, base)
 
-	converted, cancel := ConvertToBifrostContext(ctx, false, nil)
+	converted, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancel()
 
 	if converted == nil {
@@ -36,13 +59,13 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
-	first, cancelFirst := ConvertToBifrostContext(ctx, false, nil)
+	first, cancelFirst := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancelFirst()
 	if first == nil {
 		t.Fatal("expected first context to be non-nil")
 	}
 
-	second, cancelSecond := ConvertToBifrostContext(ctx, false, nil)
+	second, cancelSecond := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancelSecond()
 	if second == nil {
 		t.Fatal("expected second context to be non-nil")
@@ -69,7 +92,7 @@ func TestConvertToBifrostContext_StarAllowlistSecurityHeadersBlocked(t *testing.
 	ctx.Request.Header.Set("x-bf-eh-connection", "should-be-blocked")
 	ctx.Request.Header.Set("x-bf-eh-proxy-authorization", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -103,7 +126,7 @@ func TestConvertToBifrostContext_StarAllowlistDirectForwardingSecurityBlocked(t 
 	// Security headers sent directly — should be blocked
 	ctx.Request.Header.Set("proxy-authorization", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -140,7 +163,7 @@ func TestConvertToBifrostContext_PrefixWildcardDirectForwarding(t *testing.T) {
 	// Header not matching the pattern
 	ctx.Request.Header.Set("openai-version", "should-not-forward")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -168,7 +191,7 @@ func TestConvertToBifrostContext_WildcardAllowlistFiltering(t *testing.T) {
 	ctx.Request.Header.Set("x-bf-eh-anthropic-version", "2024-01-01")
 	ctx.Request.Header.Set("x-bf-eh-openai-version", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -196,7 +219,7 @@ func TestConvertToBifrostContext_WildcardDenylistBlocking(t *testing.T) {
 	ctx.Request.Header.Set("x-bf-eh-x-internal-secret", "blocked-value")
 	ctx.Request.Header.Set("x-bf-eh-custom-header", "allowed-value")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -217,12 +240,36 @@ func TestConvertToBifrostContext_NilMatcher(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("x-bf-eh-custom-header", "allowed-value")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
 
 	if _, ok := extraHeaders["custom-header"]; !ok {
 		t.Error("expected custom-header to be forwarded with nil matcher")
+	}
+}
+
+func TestConvertToBifrostContext_BaggageSessionIDSetsGrouping(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("baggage", "foo=bar, session-id=rt-123, baz=qux")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	defer cancel()
+
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "rt-123" {
+		t.Fatalf("parent request id = %q, want %q", got, "rt-123")
+	}
+}
+
+func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("baggage", "session-id=   ")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	defer cancel()
+
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID); got != nil {
+		t.Fatalf("parent request id should be unset, got %#v", got)
 	}
 }

@@ -2,8 +2,9 @@ package cohere
 
 import (
 	"encoding/json"
-	"slices"
+	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -44,7 +45,7 @@ type CohereRerankMeta struct {
 	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`
 }
 
-func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -53,37 +54,39 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
-	includedModels := make(map[string]bool)
-	for _, model := range response.Models {
-		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.Name) {
-			continue
-		}
-		if !unfiltered && slices.Contains(blacklistedModels, model.Name) {
-			continue
-		}
-		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:               string(providerKey) + "/" + model.Name,
-			Name:             schemas.Ptr(model.Name),
-			ContextLength:    schemas.Ptr(int(model.ContextLength)),
-			SupportedMethods: model.Endpoints,
-		})
-		includedModels[model.Name] = true
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
+		return bifrostResponse
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
-		for _, allowedModel := range allowedModels {
-			if slices.Contains(blacklistedModels, allowedModel) {
-				continue
+	included := make(map[string]bool)
+
+	for _, model := range response.Models {
+		// Cohere uses model.Name as the model identifier
+		for _, result := range pipeline.FilterModel(model.Name) {
+			entry := schemas.Model{
+				ID:               string(providerKey) + "/" + result.ResolvedID,
+				Name:             schemas.Ptr(model.Name),
+				ContextLength:    schemas.Ptr(int(model.ContextLength)),
+				SupportedMethods: model.Endpoints,
 			}
-			if !includedModels[allowedModel] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   string(providerKey) + "/" + allowedModel,
-					Name: schemas.Ptr(allowedModel),
-				})
+			if result.AliasValue != "" {
+				entry.Alias = schemas.Ptr(result.AliasValue)
 			}
+			bifrostResponse.Data = append(bifrostResponse.Data, entry)
+			included[strings.ToLower(result.ResolvedID)] = true
 		}
 	}
+
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
 }

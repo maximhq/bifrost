@@ -1,61 +1,66 @@
 package replicate
 
 import (
-	"slices"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ToBifrostListModelsResponse converts Replicate models and deployments to a Bifrost list models response
+// ToBifrostListModelsResponse converts Replicate deployments to a Bifrost list models response.
+// Replicate model IDs are composite: "{owner}/{name}" (e.g. "stability-ai/stable-diffusion").
 func ToBifrostListModelsResponse(
 	deploymentsResponse *ReplicateDeploymentListResponse,
 	providerKey schemas.ModelProvider,
-	allowedModels []string,
-	blacklistedModels []string,
+	allowedModels schemas.WhiteList,
+	blacklistedModels schemas.BlackList,
+	aliases map[string]string,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
 
-	includedModels := make(map[string]bool)
-	// Add deployments from /v1/deployments endpoint
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
+		return bifrostResponse
+	}
+
+	included := make(map[string]bool)
+
 	if deploymentsResponse != nil {
 		for _, deployment := range deploymentsResponse.Results {
+			// Replicate model IDs are composite owner/name
 			deploymentID := deployment.Owner + "/" + deployment.Name
 
-			modelName := schemas.Ptr(deployment.Name)
 			var created *int64
-
-			if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, deploymentID) {
-				continue
-			}
-			if !unfiltered && slices.Contains(blacklistedModels, deploymentID) {
-				continue
-			}
-
-			// Extract information from current release if available
-			if deployment.CurrentRelease != nil {
-				// Parse created timestamp
-				if deployment.CurrentRelease.CreatedAt != "" {
-					createdTimestamp := ParseReplicateTimestamp(deployment.CurrentRelease.CreatedAt)
-					if createdTimestamp > 0 {
-						created = schemas.Ptr(createdTimestamp)
-					}
+			if deployment.CurrentRelease != nil && deployment.CurrentRelease.CreatedAt != "" {
+				createdTimestamp := ParseReplicateTimestamp(deployment.CurrentRelease.CreatedAt)
+				if createdTimestamp > 0 {
+					created = schemas.Ptr(createdTimestamp)
 				}
 			}
 
-			bifrostModel := schemas.Model{
-				ID:         string(providerKey) + "/" + deploymentID,
-				Name:       modelName,
-				Deployment: modelName,
-				OwnedBy:    schemas.Ptr(deployment.Owner),
-				Created:    created,
+			for _, result := range pipeline.FilterModel(deploymentID) {
+				bifrostModel := schemas.Model{
+					ID:      string(providerKey) + "/" + result.ResolvedID,
+					Name:    schemas.Ptr(deployment.Name),
+					OwnedBy: schemas.Ptr(deployment.Owner),
+					Created: created,
+				}
+				if result.AliasValue != "" {
+					bifrostModel.Alias = schemas.Ptr(result.AliasValue)
+				}
+				bifrostResponse.Data = append(bifrostResponse.Data, bifrostModel)
+				included[strings.ToLower(result.ResolvedID)] = true
 			}
-
-			bifrostResponse.Data = append(bifrostResponse.Data, bifrostModel)
-			includedModels[deploymentID] = true
 		}
 
 		if deploymentsResponse.Next != nil {
@@ -63,58 +68,8 @@ func ToBifrostListModelsResponse(
 		}
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
-		for _, allowedModel := range allowedModels {
-			if slices.Contains(blacklistedModels, allowedModel) {
-				continue
-			}
-			if !includedModels[allowedModel] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   string(providerKey) + "/" + allowedModel,
-					Name: schemas.Ptr(allowedModel),
-				})
-			}
-		}
-	}
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
-}
-
-// ToReplicateListModelsResponse converts a Bifrost list models response to a Replicate list models response
-// This is mainly used for testing and compatibility
-func ToReplicateListModelsResponse(response *schemas.BifrostListModelsResponse) *ReplicateModelListResponse {
-	if response == nil {
-		return nil
-	}
-
-	replicateResponse := &ReplicateModelListResponse{
-		Results: make([]ReplicateModelResponse, 0, len(response.Data)),
-	}
-
-	for _, model := range response.Data {
-		modelID := strings.TrimPrefix(model.ID, string(schemas.Replicate)+"/")
-		replicateModel := ReplicateModelResponse{
-			URL:  "https://replicate.com/" + modelID,
-			Name: modelID,
-		}
-
-		if model.Description != nil {
-			replicateModel.Description = model.Description
-		}
-
-		if model.OwnedBy != nil {
-			replicateModel.Owner = *model.OwnedBy
-		}
-
-		replicateResponse.Results = append(replicateResponse.Results, replicateModel)
-	}
-
-	// Set next page token if available
-	if response.NextPageToken != "" {
-		next := response.NextPageToken
-		replicateResponse.Next = &next
-	}
-
-	return replicateResponse
 }

@@ -118,6 +118,33 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 	// This is to avoid deadlocks when the connection attempt is made
 	m.mu.Unlock()
 
+	// Per-user OAuth: skip persistent connection. Auth is per-request at runtime.
+	// The admin verifies the configuration via a sample login before this is called,
+	// and tools are populated separately via SetClientTools().
+	if configCopy.AuthType == schemas.MCPAuthTypePerUserOauth {
+		m.mu.Lock()
+		if client, exists := m.clientMap[config.ID]; exists {
+			if config.ConnectionString != nil {
+				url := config.ConnectionString.GetValue()
+				client.ConnectionInfo.ConnectionURL = &url
+			}
+			// Restore discovered tools from config (persisted in DB across restarts)
+			if len(config.DiscoveredTools) > 0 {
+				for toolName, tool := range config.DiscoveredTools {
+					client.ToolMap[toolName] = tool
+				}
+				client.ToolNameMapping = config.DiscoveredToolNameMapping
+				client.State = schemas.MCPConnectionStateConnected
+				m.logger.Info("%s Per-user OAuth MCP client '%s' restored with %d tools", MCPLogPrefix, config.Name, len(config.DiscoveredTools))
+			} else {
+				client.State = schemas.MCPConnectionStatePendingTools
+				m.logger.Info("%s Per-user OAuth MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.Name)
+			}
+		}
+		m.mu.Unlock()
+		return nil
+	}
+
 	// Connect using the copied config
 	if err := m.connectToMCPClient(configCopy); err != nil {
 		// Clean up the failed entry — this is a user-initiated action (UI/API),
@@ -129,6 +156,92 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 	}
 
 	return nil
+}
+
+// VerifyPerUserOAuthConnection creates a temporary MCP connection using the
+// provided access token to verify the server is reachable and discover available
+// tools. The connection is closed after verification. This is used during
+// per-user OAuth client setup when the admin does a test login to validate the
+// OAuth configuration before saving the MCP client.
+//
+// Parameters:
+//   - config: MCP client configuration (connection URL, name, etc.)
+//   - accessToken: temporary OAuth access token from the admin's test login
+//
+// Returns:
+//   - map[string]schemas.ChatTool: discovered tools keyed by prefixed name
+//   - map[string]string: tool name mapping (sanitized → original MCP name)
+//   - error: any error during verification
+func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error) {
+	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
+		return nil, nil, fmt.Errorf("connection URL is required for per-user OAuth verification")
+	}
+
+	// Create HTTP transport with the admin's temporary Bearer token
+	headers := map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	}
+	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(headers))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create HTTP transport for verification: %w", err)
+	}
+
+	// Create temporary MCP client
+	tempClient := client.NewClient(httpTransport)
+	ctx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
+	defer cancel()
+
+	// Start transport
+	if err := tempClient.Start(ctx); err != nil {
+		return nil, nil, fmt.Errorf("failed to start MCP connection for verification: %w", err)
+	}
+	defer tempClient.Close()
+
+	// Initialize MCP handshake
+	initRequest := mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			Capabilities:    mcp.ClientCapabilities{},
+			ClientInfo: mcp.Implementation{
+				Name:    fmt.Sprintf("Bifrost-%s-verify", config.Name),
+				Version: "1.0.0",
+			},
+		},
+	}
+	if _, err := tempClient.Initialize(ctx, initRequest); err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", err)
+	}
+
+	// Discover tools
+	tools, toolNameMapping, err := retrieveExternalTools(ctx, tempClient, config.Name, m.logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to discover tools during verification: %w", err)
+	}
+
+	m.logger.Info("%s Per-user OAuth verification succeeded for '%s': discovered %d tools", MCPLogPrefix, config.Name, len(tools))
+	return tools, toolNameMapping, nil
+}
+
+// SetClientTools updates the tool map and name mapping for an existing client.
+// This is used to populate tools discovered during per-user OAuth verification,
+// where tool discovery happens separately from client creation.
+//
+// Parameters:
+//   - clientID: ID of the client to update
+//   - tools: discovered tools keyed by prefixed name
+//   - toolNameMapping: mapping from sanitized tool names to original MCP names
+func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if client, exists := m.clientMap[clientID]; exists {
+		for toolName, tool := range tools {
+			client.ToolMap[toolName] = tool
+		}
+		client.ToolNameMapping = toolNameMapping
+		client.State = schemas.MCPConnectionStateConnected
+		m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
+	}
 }
 
 // RemoveClient removes an MCP client from the manager.
@@ -243,13 +356,15 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		ConfigHash:       client.ExecutionConfig.ConfigHash,
 		ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
 		// Updatable fields - copy from updated config with proper cloning
-		Name:               updatedConfig.Name,
-		IsCodeModeClient:   updatedConfig.IsCodeModeClient,
-		Headers:            maps.Clone(updatedConfig.Headers),
-		ToolsToExecute:     slices.Clone(updatedConfig.ToolsToExecute),
-		ToolsToAutoExecute: slices.Clone(updatedConfig.ToolsToAutoExecute),
-		IsPingAvailable:    updatedConfig.IsPingAvailable,
-		ToolSyncInterval:   updatedConfig.ToolSyncInterval,
+		Name:                  updatedConfig.Name,
+		IsCodeModeClient:      updatedConfig.IsCodeModeClient,
+		Headers:               maps.Clone(updatedConfig.Headers),
+		ToolsToExecute:        slices.Clone(updatedConfig.ToolsToExecute),
+		ToolsToAutoExecute:    slices.Clone(updatedConfig.ToolsToAutoExecute),
+		AllowedExtraHeaders:   slices.Clone(updatedConfig.AllowedExtraHeaders),
+		IsPingAvailable:       updatedConfig.IsPingAvailable,
+		ToolSyncInterval:      updatedConfig.ToolSyncInterval,
+		AllowOnAllVirtualKeys: updatedConfig.AllowOnAllVirtualKeys,
 	}
 
 	// Atomically replace the config pointer
@@ -663,7 +778,11 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	}
 
 	// Start health monitoring for the client
-	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, config.IsPingAvailable, m.logger)
+	isPingAvailable := true
+	if config.IsPingAvailable != nil {
+		isPingAvailable = *config.IsPingAvailable
+	}
+	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, isPingAvailable, m.logger)
 	m.healthMonitorManager.StartMonitoring(monitor)
 
 	// Start tool syncing for the client (skip for internal bifrost client)
