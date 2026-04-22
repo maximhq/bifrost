@@ -1065,6 +1065,7 @@
           "version": {
             "type": "integer",
             "minimum": 1,
+            "maximum": 32767,
             "description": "DB-Backed Only. Version of the plugin (default: 1). Ignored in config.json. Increment in this number will force a reload of the plugin and DB update.",
             "optional": true,
             "default": 1
