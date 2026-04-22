@@ -3981,6 +3981,10 @@
             }
           },
           "additionalProperties": false
+        },
+        "sends_done_marker": {
+          "type": "boolean",
+          "description": "Whether the provider sends the [DONE] SSE marker in streaming responses. Set to false for providers that close the stream after finish_reason without sending [DONE]. When omitted, the provider default is used (true for most providers, false for Cerebras/Perplexity/HuggingFace)."
         }
       },
       "required": ["base_provider_type"],
