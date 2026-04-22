@@ -735,6 +735,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 		{
 			ID:     fmt.Sprintf("test-key-%s", provider),
 			Value:  *schemas.NewEnvVar(fmt.Sprintf("sk-test-%s", provider)),
+			Models: schemas.WhiteList{"*"},
 			Weight: 100,
 		},
 	}
@@ -2964,6 +2965,366 @@ func TestProviderOverride(t *testing.T) {
 			t.Errorf("URL path: got %q, want %q", capturedPath, "/v1/chat/completions")
 		}
 	})
+
+	t.Run("OverrideKeyDisablesRotationOnRateLimit", func(t *testing.T) {
+		// With three keys in the static pool, a 429 on the first attempt would normally
+		// rotate to a different key on retry (canRotate=true). When a plugin injects an
+		// override key via UpdateAPIKey, selectKeyFromProviderForModelWithPool must return
+		// canRotate=false so every retry reuses the override key. The attempt trail
+		// should record the override key ID on every attempt.
+		const (
+			overrideKeyID    = "override-key-id"
+			overrideKeyName  = "override-key-name"
+			overrideKeyValue = "sk-override-no-rotate"
+		)
+
+		var (
+			mu         sync.Mutex
+			authSeen   []string
+			attemptNum int
+			failFirstN = 2
+		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			authSeen = append(authSeen, r.Header.Get("Authorization"))
+			attemptNum++
+			n := attemptNum
+			mu.Unlock()
+			if n <= failFirstN {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
+		// Three-key pool — would normally rotate on 429 retries.
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{ID: "pool-a", Name: "Pool A", Value: *schemas.NewEnvVar("sk-pool-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "pool-b", Name: "Pool B", Value: *schemas.NewEnvVar("sk-pool-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "pool-c", Name: "Pool C", Value: *schemas.NewEnvVar("sk-pool-c"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
+
+		plugin := newKeyBaseURLPluginWithID(schemas.Key{
+			ID:     overrideKeyID,
+			Name:   overrideKeyName,
+			Value:  *schemas.NewEnvVar(overrideKeyValue),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1,
+		}, server.URL)
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+
+		// Every attempt (including retries) must use the override key.
+		mu.Lock()
+		seen := append([]string(nil), authSeen...)
+		mu.Unlock()
+		if len(seen) < failFirstN+1 {
+			t.Fatalf("expected at least %d attempts, got %d (%v)", failFirstN+1, len(seen), seen)
+		}
+		wantAuth := "Bearer " + overrideKeyValue
+		for i, got := range seen {
+			if got != wantAuth {
+				t.Errorf("attempt %d Authorization: got %q, want %q — override key rotated on retry", i, got, wantAuth)
+			}
+		}
+
+		// Attempt trail must record the override key ID on every attempt.
+		trail, _ := reqCtx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+		if len(trail) != len(seen) {
+			t.Errorf("attempt trail length: got %d, want %d", len(trail), len(seen))
+		}
+		for i, rec := range trail {
+			if rec.KeyID != overrideKeyID {
+				t.Errorf("trail[%d].KeyID: got %q, want %q", i, rec.KeyID, overrideKeyID)
+			}
+		}
+	})
+
+	t.Run("OverrideRecordedInAttemptTrail", func(t *testing.T) {
+		// Single successful attempt with an override key carrying explicit ID and Name.
+		// The attempt trail must record both so downstream observability (logs, traces)
+		// attributes the request to the override credential rather than the static pool.
+		const (
+			trailKeyID    = "trail-key-id"
+			trailKeyName  = "trail-key-name"
+			trailKeyValue = "sk-trail-override"
+		)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, "http://static-should-not-be-called.invalid/v1")
+
+		plugin := newKeyBaseURLPluginWithID(schemas.Key{
+			ID:     trailKeyID,
+			Name:   trailKeyName,
+			Value:  *schemas.NewEnvVar(trailKeyValue),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1,
+		}, server.URL)
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+
+		trail, ok := reqCtx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+		if !ok || len(trail) == 0 {
+			t.Fatalf("expected non-empty attempt trail, got %v (ok=%v)", trail, ok)
+		}
+		if trail[0].KeyID != trailKeyID {
+			t.Errorf("trail[0].KeyID: got %q, want %q", trail[0].KeyID, trailKeyID)
+		}
+		if trail[0].KeyName != trailKeyName {
+			t.Errorf("trail[0].KeyName: got %q, want %q", trail[0].KeyName, trailKeyName)
+		}
+	})
+
+	t.Run("OverrideWinsOverDirectKey", func(t *testing.T) {
+		// Mirrors the precedence established by getAllSupportedKeys and
+		// getKeysForBatchAndFileOps: a per-request override injected via PreLLMHook beats
+		// a ctx-level BifrostContextKeyDirectKey. The override is a deliberate runtime
+		// decision made after all context has been gathered.
+		const (
+			directKeyValue   = "sk-direct-ctx-key"
+			overrideKeyValue = "sk-override-wins"
+		)
+
+		var capturedAuth string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKeyValue, server.URL)},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		// Set BifrostContextKeyDirectKey on the request context before the call — the
+		// override injected by the plugin must win.
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		reqCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+			Value:  *schemas.NewEnvVar(directKeyValue),
+			Models: schemas.WhiteList{"*"},
+		})
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+
+		wantAuth := "Bearer " + overrideKeyValue
+		if capturedAuth != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q — DirectKey beat the override", capturedAuth, wantAuth)
+		}
+	})
+
+	t.Run("OverrideBypassesSessionStickiness", func(t *testing.T) {
+		// An override is a per-request decision; it must not be cached as the sticky key
+		// for the session. selectKeyFromProviderForModelWithPool returns at the top for
+		// overrides, skipping the stickiness block — so the KV store stays empty for this
+		// session's sticky slot, leaving future requests free to run normal selection.
+		const overrideKeyValue = "sk-override-bypass-sticky"
+		const sessionID = "sess-bypass-sticky"
+
+		var capturedAuth string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		kvStore := newMockKVStore()
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
+		// Multi-key pool so that, absent the override, stickiness would run keySelector
+		// and persist a sticky entry in the KV store.
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{ID: "sticky-a", Name: "Sticky A", Value: *schemas.NewEnvVar("sk-sticky-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "sticky-b", Name: "Sticky B", Value: *schemas.NewEnvVar("sk-sticky-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			KVStore:    kvStore,
+			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKeyValue, server.URL)},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		reqCtx.SetValue(schemas.BifrostContextKeySessionID, sessionID)
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if capturedAuth != "Bearer "+overrideKeyValue {
+			t.Errorf("Authorization header: got %q, want Bearer %s", capturedAuth, overrideKeyValue)
+		}
+
+		// No sticky entry must exist for this session — the override short-circuits above
+		// the stickiness block. If one exists, the override would be "sticky" and the next
+		// request with the same session ID (but no override) would reuse the wrong key.
+		kvKey := buildSessionKey(schemas.OpenAI, sessionID, "gpt-4o")
+		if _, err := kvStore.Get(kvKey); err == nil {
+			t.Error("KV store should not have a sticky entry when override is in effect")
+		}
+	})
+
+	t.Run("FallbackClearsOverrideThenReselectsFromPool", func(t *testing.T) {
+		// Regression guard for prepareFallbackRequest: ProviderOverride is cleared on the
+		// fallback request so a fallback without its own PreLLMHook override falls back to
+		// the static key pool. If the primary's override leaked into the fallback, this
+		// test would see the primary override key on fallbackServer.
+		const (
+			primaryOverrideValue = "sk-primary-override"
+		)
+
+		primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+		}))
+		defer primaryServer.Close()
+
+		var fallbackAuth string
+		fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fallbackAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o-mini"))
+		}))
+		defer fallbackServer.Close()
+
+		// Primary is Anthropic (hit by override) — will 429. Fallback is OpenAI with
+		// static config and no plugin-injected override; it must use the static key pool.
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 10, 100, "http://anthropic-static-should-not-be-called.invalid")
+		account.AddProviderWithBaseURL(schemas.OpenAI, 10, 100, fallbackServer.URL+"/v1")
+
+		plugin := &primaryOnlyOverridePlugin{key: primaryOverrideValue, baseURL: primaryServer.URL}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-5-sonnet-20241022",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+			Fallbacks: []schemas.Fallback{
+				{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+			},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("expected fallback to succeed, got error: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response from fallback")
+		}
+
+		// Fallback must use the static key from OpenAI config, not the primary's override.
+		wantAuth := "Bearer sk-test-openai"
+		if fallbackAuth != wantAuth {
+			t.Errorf("fallback Authorization: got %q, want %q — primary override leaked into fallback", fallbackAuth, wantAuth)
+		}
+		if fallbackAuth == "Bearer "+primaryOverrideValue {
+			t.Errorf("fallback used primary override key %q; ProviderOverride was not cleared", primaryOverrideValue)
+		}
+	})
 }
 
 // keyBaseURLPlugin is a test helper plugin that injects a static API key and base URL
@@ -2984,6 +3345,49 @@ func (p *keyBaseURLPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.Bi
 	return req, nil, nil
 }
 func (p *keyBaseURLPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// keyBaseURLPluginWithID is like keyBaseURLPlugin but injects a full Key struct (with
+// explicit ID/Name) so tests can assert on attempt trail entries.
+type keyBaseURLPluginWithID struct {
+	key     schemas.Key
+	baseURL string
+}
+
+func newKeyBaseURLPluginWithID(key schemas.Key, baseURL string) *keyBaseURLPluginWithID {
+	return &keyBaseURLPluginWithID{key: key, baseURL: baseURL}
+}
+
+func (p *keyBaseURLPluginWithID) GetName() string { return "key-base-url-with-id-test-plugin" }
+func (p *keyBaseURLPluginWithID) Cleanup() error  { return nil }
+func (p *keyBaseURLPluginWithID) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	req.UpdateAPIKey(p.key)
+	req.UpdateProviderBaseURL(p.baseURL)
+	return req, nil, nil
+}
+func (p *keyBaseURLPluginWithID) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// primaryOnlyOverridePlugin injects override credentials only on the primary attempt
+// (FallbackIndex == 0). On fallback attempts it leaves the request unchanged so the
+// fallback provider's static key pool is used.
+type primaryOnlyOverridePlugin struct {
+	key, baseURL string
+}
+
+func (p *primaryOnlyOverridePlugin) GetName() string { return "primary-only-override-test-plugin" }
+func (p *primaryOnlyOverridePlugin) Cleanup() error  { return nil }
+func (p *primaryOnlyOverridePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+	if idx == 0 {
+		req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
+		req.UpdateProviderBaseURL(p.baseURL)
+	}
+	return req, nil, nil
+}
+func (p *primaryOnlyOverridePlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, err, nil
 }
 
