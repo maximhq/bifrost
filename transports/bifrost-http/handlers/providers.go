@@ -310,9 +310,15 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	}
 	logger.Info("Provider %s added successfully", payload.Provider)
 
-	// Attempt model discovery
-	if err := h.attemptModelDiscovery(ctx, payload.Provider, payload.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s: %v", payload.Provider, err)
+	if err := h.reloadProviderAfterCreate(ctx, payload.Provider); err != nil {
+		logger.Warn("Failed to reload provider %s after add: %v", payload.Provider, err)
+		if rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider); rollbackErr != nil {
+			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v (rollback failed: %v)", err, rollbackErr))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v", err))
+		return
 	}
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
@@ -988,6 +994,16 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, ListBaseModelsResponse{Models: baseModels, Total: total})
 }
 
+// reloadProviderAfterCreate performs a single bounded runtime reload after provider creation.
+// ReloadProvider also refreshes model discovery, so create should not invoke a second discovery pass.
+func (h *ProviderHandler) reloadProviderAfterCreate(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider) error {
+	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+	return err
+}
+
 // attemptModelDiscovery performs model discovery with timeout
 func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider, customProviderConfig *schemas.CustomProviderConfig) error {
 	// Determine if we should attempt model discovery
@@ -999,7 +1015,7 @@ func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provid
 	}
 
 	// Attempt model discovery with reasonable timeout
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
