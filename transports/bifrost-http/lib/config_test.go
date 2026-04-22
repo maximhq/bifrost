@@ -12680,6 +12680,284 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	t.Log("✓ All dashboard-added entities preserved on reload")
 }
 
+func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	callUpdate := func(
+		cfg *Config,
+		modelAdds []tables.TableModelConfig,
+		modelUpdates []tables.TableModelConfig,
+		providerAdds []tables.TableProvider,
+		providerUpdates []tables.TableProvider,
+	) error {
+		return updateGovernanceConfigInStore(
+			ctx,
+			cfg,
+			nil, nil, // budgets
+			nil, nil, // rate limits
+			nil, nil, // customers
+			nil, nil, // teams
+			nil, nil, // virtual keys
+			nil, nil, // routing rules
+			nil, nil, // pricing overrides
+			modelAdds, modelUpdates,
+			providerAdds, providerUpdates,
+		)
+	}
+
+	setupConfig := func(t *testing.T) (*Config, string, string) {
+		t.Helper()
+		tempDir := createTempDir(t)
+		store := createTestSQLiteConfigStore(t, tempDir)
+
+		budgetID := "shared-budget"
+		rateLimitID := "shared-rate-limit"
+
+		require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{
+			ID:            budgetID,
+			MaxLimit:      100,
+			ResetDuration: "1d",
+		}))
+		tokenMax := int64(1000)
+		tokenDur := "1h"
+		require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+			ID:                 rateLimitID,
+			TokenMaxLimit:      &tokenMax,
+			TokenResetDuration: &tokenDur,
+		}))
+		require.NoError(t, store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := tx.Create(&tables.TableProvider{Name: "provider-a"}).Error; err != nil {
+				return err
+			}
+			if err := tx.Create(&tables.TableProvider{Name: "provider-b"}).Error; err != nil {
+				return err
+			}
+			return nil
+		}))
+
+		return &Config{ConfigStore: store}, budgetID, rateLimitID
+	}
+
+	t.Run("model add rejects budget linked to another model", func(t *testing.T) {
+		cfg, budgetID, _ := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-existing",
+			ModelName: "gpt-existing",
+			BudgetID:  &budgetID,
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:        "model-new",
+			ModelName: "gpt-new",
+			BudgetID:  &budgetID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("model update rejects rate limit linked to another model", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:          "model-existing",
+			ModelName:   "gpt-existing",
+			RateLimitID: &rateLimitID,
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-update",
+			ModelName: "gpt-update",
+		}))
+
+		err := callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-update",
+			ModelName:   "gpt-update",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("provider add rejects budget linked to another provider", func(t *testing.T) {
+		cfg, budgetID, _ := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{"budget_id": budgetID}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:     "provider-b",
+			BudgetID: &budgetID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("provider update rejects rate limit linked to another provider", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{"rate_limit_id": rateLimitID}).Error; err != nil {
+				return err
+			}
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-b").
+				Updates(map[string]interface{}{"rate_limit_id": nil}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model add and update reject budget or rate limit linked to provider", func(t *testing.T) {
+		cfg, budgetID, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-update-target",
+			ModelName: "gpt-update-target",
+		}))
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{
+					"budget_id":     budgetID,
+					"rate_limit_id": rateLimitID,
+				}).Error
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:          "model-new",
+			ModelName:   "gpt-new",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-update-target",
+			ModelName:   "gpt-update-target",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("provider add and update reject budget or rate limit linked to model", func(t *testing.T) {
+		cfg, budgetID, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:          "model-existing",
+			ModelName:   "gpt-existing",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}))
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-b").
+				Updates(map[string]interface{}{
+					"budget_id":     nil,
+					"rate_limit_id": nil,
+				}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:        "provider-new",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+
+		err = callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model add and provider update reject rate limit linked to team", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateTeam(ctx, &tables.TableTeam{
+			ID:          "team-rl-owner",
+			Name:        "Team RL Owner",
+			RateLimitID: &rateLimitID,
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:          "model-new-team-collision",
+			ModelName:   "gpt-team-collision",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "team")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "team")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model update and provider add reject rate limit linked to virtual-key provider config", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-vk-update-target",
+			ModelName: "gpt-vk-update-target",
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID:       "vk-rl-owner",
+			Name:     "vk-rl-owner",
+			Value:    "vk-rl-owner-value",
+			IsActive: true,
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateVirtualKeyProviderConfig(ctx, &tables.TableVirtualKeyProviderConfig{
+			VirtualKeyID:  "vk-rl-owner",
+			Provider:      "openai",
+			RateLimitID:   &rateLimitID,
+			AllowedModels: []string{"*"},
+		}))
+
+		err := callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-vk-update-target",
+			ModelName:   "gpt-vk-update-target",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "virtual-key provider config")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:        "provider-new-vk-collision",
+			RateLimitID: &rateLimitID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "virtual-key provider config")
+		require.Contains(t, err.Error(), "provider")
+	})
+}
+
 // TestSQLite_Governance_PricingOverrides_Reconciliation tests that pricing overrides
 // defined in config.json are properly reconciled on reload (create, update, preserve).
 func TestSQLite_Governance_PricingOverrides_Reconciliation(t *testing.T) {

@@ -99,7 +99,7 @@ bifrost:
   # PROVIDERS
   # ==========================================================================
   # Every key entry supports the base fields:
-  #   name (required), value, weight (required), models, use_for_batch_api, aliases
+  #   name (required), value, weight (optional; defaults to 1), models, use_for_batch_api, aliases
   # Providers with nested configs add *_key_config blocks
   # (azure_key_config, vertex_key_config, bedrock_key_config, vllm_key_config,
   # ollama_key_config, sgl_key_config, replicate_key_config).

@@ -325,7 +325,23 @@ false
 {{- end }}
 {{- end }}
 {{- if .Values.bifrost.providers }}
-{{- $_ := set $config "providers" .Values.bifrost.providers }}
+{{- $providers := dict }}
+{{- range $providerName, $providerConfig := .Values.bifrost.providers }}
+{{- $providerCopy := deepCopy $providerConfig }}
+{{- if $providerConfig.keys }}
+{{- $keys := list }}
+{{- range $key := $providerConfig.keys }}
+{{- $keyCopy := deepCopy $key }}
+{{- if not (hasKey $keyCopy "weight") }}
+{{- $_ := set $keyCopy "weight" 1 }}
+{{- end }}
+{{- $keys = append $keys $keyCopy }}
+{{- end }}
+{{- $_ := set $providerCopy "keys" $keys }}
+{{- end }}
+{{- $_ := set $providers $providerName $providerCopy }}
+{{- end }}
+{{- $_ := set $config "providers" $providers }}
 {{- end }}
 {{- /* Governance */ -}}
 {{- if .Values.bifrost.governance }}

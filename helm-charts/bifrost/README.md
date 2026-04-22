@@ -427,6 +427,8 @@ vectorStore:
 
 Configure AI provider API keys:
 
+> **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+
 ```yaml
 bifrost:
   providers:
