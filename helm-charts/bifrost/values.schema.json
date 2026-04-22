@@ -1356,6 +1356,10 @@
                   ],
                   "description": "Discovery type (empty when not configured)"
                 },
+                "serviceName": {
+                  "type": "string",
+                  "description": "Service name for discovery backends (required for consul/etcd/udp; used as default for mdns)"
+                },
                 "allowedAddressSpace": {
                   "type": "array",
                   "items": {
@@ -1393,6 +1397,18 @@
                   "type": "string"
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "type": { "const": "udp" }
+                    }
+                  },
+                  "then": {
+                    "required": ["udpBroadcastPort", "allowedAddressSpace"]
+                  }
+                }
+              ],
               "if": {
                 "properties": {
                   "enabled": {

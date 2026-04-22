@@ -461,6 +461,13 @@ false
 {{- end }}
 {{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
 {{- $discovery := dict "enabled" true "type" .Values.bifrost.cluster.discovery.type }}
+{{- $serviceName := .Values.bifrost.cluster.discovery.serviceName }}
+{{- if and (not $serviceName) (or (eq .Values.bifrost.cluster.discovery.type "consul") (eq .Values.bifrost.cluster.discovery.type "etcd") (eq .Values.bifrost.cluster.discovery.type "udp")) }}
+{{- fail "ERROR: bifrost.cluster.discovery.serviceName is required for consul/etcd/udp discovery." }}
+{{- end }}
+{{- if $serviceName }}
+{{- $_ := set $discovery "service_name" $serviceName }}
+{{- end }}
 {{- if .Values.bifrost.cluster.discovery.allowedAddressSpace }}
 {{- $_ := set $discovery "allowed_address_space" .Values.bifrost.cluster.discovery.allowedAddressSpace }}
 {{- end }}
@@ -1165,6 +1172,14 @@ Call this template at the beginning of deployment/stateful templates
 {{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
 {{- if not .Values.bifrost.cluster.discovery.type }}
 {{- fail "ERROR: bifrost.cluster.discovery.type is required when cluster discovery is enabled. Supported types: kubernetes, dns, udp, consul, etcd, mdns" }}
+{{- end }}
+{{- if eq .Values.bifrost.cluster.discovery.type "udp" }}
+{{- if not .Values.bifrost.cluster.discovery.udpBroadcastPort }}
+{{- fail "ERROR: bifrost.cluster.discovery.udpBroadcastPort is required when using udp discovery." }}
+{{- end }}
+{{- if not .Values.bifrost.cluster.discovery.allowedAddressSpace }}
+{{- fail "ERROR: bifrost.cluster.discovery.allowedAddressSpace is required when using udp discovery." }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

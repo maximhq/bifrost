@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### 2.1.3
+
+- For `bifrost.cluster.discovery.type` set to `consul`, `etcd`, or `udp`, set `bifrost.cluster.discovery.serviceName` explicitly during upgrade.
+
 ### v2.1.2
 
 - Removed `encryption_key` requirement — field is now optional; Bifrost will operate without encryption when omitted

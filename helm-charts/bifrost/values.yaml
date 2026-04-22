@@ -542,6 +542,9 @@ bifrost:
       enabled: false
       # Discovery type: kubernetes, dns, udp, consul, etcd, mdns
       type: ""
+      # Service name used by consul/etcd/udp discovery and as mDNS default
+      # This must be explicitly set for consul/etcd/udp discovery.
+      serviceName: ""
       allowedAddressSpace: []
       # Kubernetes discovery
       k8sNamespace: ""
