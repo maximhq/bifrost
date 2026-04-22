@@ -1,6 +1,12 @@
 package replicate_test
 
 import (
+	"context"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +17,80 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type testLogger struct{}
+
+func (l *testLogger) Debug(string, ...any)                     {}
+func (l *testLogger) Info(string, ...any)                      {}
+func (l *testLogger) Warn(string, ...any)                      {}
+func (l *testLogger) Error(string, ...any)                     {}
+func (l *testLogger) Fatal(string, ...any)                     {}
+func (l *testLogger) SetLevel(schemas.LogLevel)               {}
+func (l *testLogger) SetOutputType(schemas.LoggerOutputType)  {}
+func (l *testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func multipartFieldOrderFromRequest(r *http.Request) ([]string, error) {
+	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return nil, err
+	}
+	if mediaType != "multipart/form-data" {
+		return nil, assert.AnError
+	}
+
+	reader := multipart.NewReader(r.Body, params["boundary"])
+	var order []string
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		order = append(order, part.FormName())
+		_, _ = io.Copy(io.Discard, part)
+		_ = part.Close()
+	}
+	return order, nil
+}
+
+func TestFileUpload_OrdersMetadataBeforeFile(t *testing.T) {
+	var (
+		order       []string
+		handlerErr error
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order, handlerErr = multipartFieldOrderFromRequest(r)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"title":"forced error"}`))
+	}))
+	defer server.Close()
+
+	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+	}, &testLogger{})
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	contentType := "application/json"
+	_, bifrostErr := provider.FileUpload(ctx, schemas.Key{}, &schemas.BifrostFileUploadRequest{
+		Provider:    schemas.Replicate,
+		File:        []byte(`{"hello":"world"}`),
+		Filename:    "payload.json",
+		ContentType: &contentType,
+		ExtraParams: map[string]interface{}{
+			"metadata": map[string]interface{}{"owner": "oss", "purpose": "test"},
+		},
+	})
+	require.NotNil(t, bifrostErr)
+	require.NoError(t, handlerErr)
+	assert.Equal(t, []string{"filename", "type", "metadata", "content"}, order)
+}
 
 func TestReplicate(t *testing.T) {
 	t.Parallel()
