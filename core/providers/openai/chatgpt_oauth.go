@@ -145,71 +145,38 @@ func chatGPTOAuthWebSocketURL(baseURL, standardPath string) string {
 	return url + chatGPTOAuthPath(standardPath)
 }
 
-// chatGPTOAuthCodexDefaultOriginator is the originator value injected when the
-// incoming Codex WS upgrade does not carry an originator header. chatgpt.com's
-// anti-abuse gate requires this header to be present and set to a recognised
-// first-party value; without it the backend stalls and closes with 1011.
-const chatGPTOAuthCodexDefaultOriginator = "codex_cli_rs"
-
-// chatGPTOAuthCodexDefaultVersion is the client_version injected when the
-// incoming Codex WS upgrade does not carry a version header. The ChatGPT
-// backend may reject or rate-limit requests without a recognisable version.
-// This mirrors the fallback used on the HTTP path (ChatGPTOAuthClientVersionFallback).
-const chatGPTOAuthCodexDefaultVersion = ChatGPTOAuthClientVersionFallback
-
-// chatGPTOAuthWebSocketHeaders builds the headers required for the ChatGPT OAuth
-// upstream WebSocket connection.
+// chatGPTOAuthWebSocketHeaders builds the OAuth-specific headers required for the
+// ChatGPT upstream WebSocket connection: Authorization (Bearer from key),
+// chatgpt-account-id (extracted from JWT), and OpenAI-Beta.
+//
+// It does NOT inject identity defaults (originator, version).  Those defaults are
+// the responsibility of the caller — mergeClientWSHeaders in wsresponses.go fills
+// them in only when the client-sent headers do not already carry those values.
+// This keeps the two concerns separate: this function owns OAuth credentials;
+// mergeClientWSHeaders owns the identity-fallback policy.
 //
 // Merge order (lowest → highest priority):
 //  1. existingExtraHeaders  — provider-level static extra headers from config
-//  2. forwardedHeaders      — first-party identity headers forwarded from the
-//     incoming Codex WS upgrade (originator, version, user-agent, session_id, …).
-//     These are filtered by wsresponses.go before reaching here (hop-by-hop and
-//     Bifrost-internal headers are stripped).
-//  3. OAuth headers         — Authorization (Bearer from key), chatgpt-account-id
+//  2. OAuth headers         — Authorization (Bearer from key), chatgpt-account-id
 //     (extracted from JWT), OpenAI-Beta.  These always win.
 //
-// When forwardedHeaders lacks "originator", the constant codex_cli_rs is injected
-// as a safe default (chatgpt.com requires it). Likewise for "version".
-// A debug log line is emitted when either default is applied so production logs
-// show which requests relied on fallback identity.
+// forwardedHeaders is accepted for API compatibility but is no longer used here;
+// pass nil or an empty map.
 func chatGPTOAuthWebSocketHeaders(key schemas.Key, existingExtraHeaders map[string]string, forwardedHeaders map[string]string, logger schemas.Logger) map[string]string {
-	// Ensure first-party identity headers exist, injecting defaults when absent.
-	// forwardedHeaders may be nil (non-Codex callers, unit tests without context).
-	effective := make(map[string]string, len(forwardedHeaders)+4)
-	for k, v := range forwardedHeaders {
-		effective[k] = v
-	}
-
-	if !mapContainsKeyCI(effective, "originator") {
-		effective["originator"] = chatGPTOAuthCodexDefaultOriginator
-		if logger != nil {
-			logger.Debug("chatgpt_oauth: injecting default originator=%s (not present in client headers)", chatGPTOAuthCodexDefaultOriginator)
-		}
-	}
-	if !mapContainsKeyCI(effective, "version") {
-		effective["version"] = chatGPTOAuthCodexDefaultVersion
-		if logger != nil {
-			logger.Debug("chatgpt_oauth: injecting default version=%s (not present in client headers)", chatGPTOAuthCodexDefaultVersion)
-		}
-	}
-
 	authHeader := map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	accountID, err := extractChatGPTAccountID(key.Value.GetValue())
 	if err != nil {
 		if logger != nil {
 			logger.Warn("chatgpt_oauth: failed to extract account ID for WebSocket: %v", err)
 		}
-		// OAuth Authorization still wins; apply merge order manually.
-		base := mergeHeadersCaseInsensitive(existingExtraHeaders, effective)
-		return mergeHeadersCaseInsensitive(base, authHeader)
+		// OAuth Authorization still wins; skip chatgpt-account-id and OpenAI-Beta.
+		return mergeHeadersCaseInsensitive(existingExtraHeaders, authHeader)
 	}
 	oauth := chatGPTOAuthExtraHeaders(accountID)
 	oauth["Authorization"] = authHeader["Authorization"]
 
-	// Apply full merge order: existingExtraHeaders → forwarded+defaults → oauth
-	base := mergeHeadersCaseInsensitive(existingExtraHeaders, effective)
-	return mergeHeadersCaseInsensitive(base, oauth)
+	// Merge order: existingExtraHeaders → oauth (oauth always wins)
+	return mergeHeadersCaseInsensitive(existingExtraHeaders, oauth)
 }
 
 // mapContainsKeyCI reports whether m contains a key that matches target

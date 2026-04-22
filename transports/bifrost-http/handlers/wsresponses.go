@@ -125,18 +125,22 @@ type authHeaders struct {
 // An allowlist would have to be updated every time Codex adds a new identity
 // header, causing silent regressions.  The blocklist is stable: it covers
 // hop-by-hop headers (which change meaning at each hop), security-sensitive
-// Bifrost-internal routing headers, and credential headers that Bifrost manages
-// itself (authorization is re-injected by the provider with the right token).
+// Bifrost-internal routing headers, credential headers that Bifrost manages
+// itself (authorization is re-injected by the provider with the right token),
+// and network-topology headers that must not be leaked to external upstreams.
 //
 // Hop-by-hop headers (RFC 7230 §6.1 + WebSocket specific):
 //
 //	connection, upgrade, sec-websocket-key, sec-websocket-version,
 //	sec-websocket-extensions, sec-websocket-protocol, keep-alive,
-//	proxy-authorization, proxy-authenticate, te, trailers, transfer-encoding
+//	proxy-authorization, proxy-authenticate, te, trailer, trailers,
+//	transfer-encoding
 //
 // Security / Bifrost-internal:
 //
 //	host            — must reflect the upstream hostname, not the client's
+//	origin          — forwarding Origin: http://localhost... would cause
+//	                  chatgpt.com to CORS-reject the connection
 //	cookie          — session cookies must not be proxied to a different origin
 //	authorization   — re-injected by the provider with the correct OAuth token
 //	x-api-key       — Bifrost routing credential; not forwarded to upstream
@@ -144,30 +148,41 @@ type authHeaders struct {
 //	x-bf-*          — Bifrost-internal routing/config headers
 //	baggage         — W3C baggage contains Bifrost session metadata (session-id)
 //
+// Network topology (must not leak internal addresses to external upstreams):
+//
+//	x-forwarded-for, x-forwarded-host, x-forwarded-proto, x-real-ip
+//
 // Content metadata (not meaningful for WS):
 //
 //	content-length, content-type
 var wsUpgradeHeaderBlocklist = map[string]bool{
 	// Hop-by-hop
-	"connection":              true,
-	"upgrade":                 true,
-	"sec-websocket-key":       true,
-	"sec-websocket-version":   true,
+	"connection":               true,
+	"upgrade":                  true,
+	"sec-websocket-key":        true,
+	"sec-websocket-version":    true,
 	"sec-websocket-extensions": true,
-	"sec-websocket-protocol":  true,
-	"keep-alive":              true,
-	"proxy-authorization":     true,
-	"proxy-authenticate":      true,
-	"te":                      true,
-	"trailers":                true,
-	"transfer-encoding":       true,
+	"sec-websocket-protocol":   true,
+	"keep-alive":               true,
+	"proxy-authorization":      true,
+	"proxy-authenticate":       true,
+	"te":                       true,
+	"trailer":                  true,
+	"trailers":                 true,
+	"transfer-encoding":        true,
 	// Security / Bifrost-internal
-	"host":          true,
-	"cookie":        true,
-	"authorization": true,
-	"x-api-key":     true,
+	"host":           true,
+	"origin":         true,
+	"cookie":         true,
+	"authorization":  true,
+	"x-api-key":      true,
 	"x-goog-api-key": true,
-	"baggage":       true,
+	"baggage":        true,
+	// Network topology — must not leak internal addresses to external upstreams
+	"x-forwarded-for":   true,
+	"x-forwarded-host":  true,
+	"x-forwarded-proto": true,
+	"x-real-ip":         true,
 	// Content metadata
 	"content-length": true,
 	"content-type":   true,
@@ -205,7 +220,8 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 }
 
 // mergeClientWSHeaders merges client-supplied first-party headers into the
-// provider-built upstream headers map.
+// provider-built upstream headers map, then injects Codex identity defaults for
+// any identity headers the client did not supply.
 //
 // Merge semantics:
 //   - Client headers (from the incoming WS upgrade, pre-filtered by captureAuthHeaders)
@@ -218,10 +234,15 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 // This is effectively: clientHeaders → providerHeaders (provider wins on conflict).
 // The wsUpgradeHeaderBlocklist already ensured clientHeaders contains no auth or
 // hop-by-hop entries, so there is no security risk from the client layer.
+//
+// Identity fallbacks (injected ONLY when the final merged map lacks the header):
+//   - originator: defaults to "codex_cli_rs"
+//   - version:    defaults to openai.ChatGPTOAuthClientVersionFallback ("0.111.0")
+//
+// These fallbacks satisfy chatgpt.com's anti-abuse gate, which requires both
+// headers to be present. A real Codex client always sends its own values, which
+// take precedence. The defaults are logged at DEBUG level when applied.
 func mergeClientWSHeaders(providerHeaders, clientHeaders map[string]string) map[string]string {
-	if len(clientHeaders) == 0 {
-		return providerHeaders
-	}
 	// Build case-insensitive lookup of provider keys so client cannot silently
 	// shadow a provider header with different capitalisation.
 	providerLower := make(map[string]bool, len(providerHeaders))
@@ -229,7 +250,7 @@ func mergeClientWSHeaders(providerHeaders, clientHeaders map[string]string) map[
 		providerLower[strings.ToLower(k)] = true
 	}
 
-	merged := make(map[string]string, len(providerHeaders)+len(clientHeaders))
+	merged := make(map[string]string, len(providerHeaders)+len(clientHeaders)+2)
 	for k, v := range clientHeaders {
 		if providerLower[strings.ToLower(k)] {
 			continue // provider header wins
@@ -239,8 +260,44 @@ func mergeClientWSHeaders(providerHeaders, clientHeaders map[string]string) map[
 	for k, v := range providerHeaders {
 		merged[k] = v
 	}
+
+	// Inject identity defaults only when neither the client nor the provider
+	// supplied the header.  Check case-insensitively to avoid duplicates.
+	if !mapContainsKeyCI(merged, "originator") {
+		merged["originator"] = chatGPTOAuthCodexDefaultOriginator
+		if logger != nil {
+			logger.Debug("chatgpt_oauth: injecting default originator=%s (not present in client headers)", chatGPTOAuthCodexDefaultOriginator)
+		}
+	}
+	if !mapContainsKeyCI(merged, "version") {
+		merged["version"] = chatGPTOAuthCodexDefaultVersionFallback
+		if logger != nil {
+			logger.Debug("chatgpt_oauth: injecting default version=%s (not present in client headers)", chatGPTOAuthCodexDefaultVersionFallback)
+		}
+	}
+
 	return merged
 }
+
+// mapContainsKeyCI reports whether m contains a key that matches target
+// case-insensitively.
+func mapContainsKeyCI(m map[string]string, target string) bool {
+	for k := range m {
+		if strings.EqualFold(k, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// chatGPTOAuthCodexDefaultOriginator is the originator value injected by
+// mergeClientWSHeaders when the client did not supply an originator header.
+const chatGPTOAuthCodexDefaultOriginator = "codex_cli_rs"
+
+// chatGPTOAuthCodexDefaultVersionFallback is the version value injected by
+// mergeClientWSHeaders when the client did not supply a version header.
+// Mirrors openai.ChatGPTOAuthClientVersionFallback.
+const chatGPTOAuthCodexDefaultVersionFallback = "0.111.0"
 
 // eventLoop reads events from the client WebSocket and processes them.
 func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, auth *authHeaders) {
@@ -718,17 +775,13 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	if auth.baggage != "" {
 		allHeaders["baggage"] = auth.baggage
 	}
-	for k, v := range auth.extraHeaders {
-		allHeaders[strings.ToLower(k)] = v
-	}
-	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
-
-	// Forward x-bf-* headers
+	// Process extraHeaders in a single pass: add to allHeaders AND handle x-bf-* context keys.
 	for k, v := range auth.extraHeaders {
 		lk := strings.ToLower(k)
+		allHeaders[lk] = v
 		switch {
 		case lk == "x-bf-vk":
-			// Already handled above
+			// Already handled above via auth.virtualKey
 		case lk == "x-bf-api-key":
 			ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, v)
 		case strings.HasPrefix(lk, "x-bf-eh-"):
@@ -741,6 +794,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, existing)
 		}
 	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
 	return ctx, cancel
 }

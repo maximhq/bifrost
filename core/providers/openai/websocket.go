@@ -8,9 +8,7 @@ import (
 
 // SupportsWebSocketMode returns true since OpenAI natively supports the Responses API WebSocket Mode.
 // This applies to both the standard OpenAI path (api.openai.com) and the ChatGPT OAuth path
-// (chatgpt.com/backend-api/codex). The ChatGPT backend does speak WebSocket but requires
-// first-party Codex identity headers (originator, version, user-agent) which are forwarded
-// from the incoming client request — see chatGPTOAuthWebSocketHeaders for details.
+// (chatgpt.com/backend-api/codex).
 func (provider *OpenAIProvider) SupportsWebSocketMode() bool {
 	return true
 }
@@ -28,14 +26,14 @@ func (provider *OpenAIProvider) WebSocketResponsesURL(key schemas.Key) string {
 	return base + "/v1/responses"
 }
 
-// WebSocketHeaders returns the base headers required for the upstream WebSocket connection to OpenAI.
-// For chatgpt_oauth, the caller (wsresponses.go / tryNativeWSUpstream) is expected to merge
-// first-party client headers BEFORE this call and then merge the result of this call on top so
-// that OAuth headers (Authorization, chatgpt-account-id, OpenAI-Beta) always win — see
-// mergeClientWSHeaders in wsresponses.go.
-// When chatgpt_oauth is enabled, forwardedHeaders (captured from the incoming Codex WS upgrade)
-// are threaded through to chatGPTOAuthWebSocketHeaders so that originator/version/user-agent
-// reach the ChatGPT backend.
+// WebSocketHeaders returns the OAuth-specific headers for the upstream WebSocket connection.
+// For chatgpt_oauth, it returns Authorization, chatgpt-account-id, and OpenAI-Beta only;
+// it does NOT inject Codex identity headers (originator, version).
+//
+// The caller (tryNativeWSUpstream in wsresponses.go) then passes these provider headers to
+// mergeClientWSHeaders, which layers the real client headers on top (so a Codex client's own
+// originator and version always win) and injects identity defaults only as a last resort if
+// neither the client nor the provider supplied them.
 func (provider *OpenAIProvider) WebSocketHeaders(key schemas.Key) map[string]string {
 	if provider.chatgptOAuth {
 		return chatGPTOAuthWebSocketHeaders(key, provider.networkConfig.ExtraHeaders, nil, provider.logger)

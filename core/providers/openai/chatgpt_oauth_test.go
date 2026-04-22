@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -724,59 +723,58 @@ func TestChatGPTOAuthWebSocketHeaders(t *testing.T) {
 	// forwardedHeaders: first-party Codex identity header passthrough
 	// -----------------------------------------------------------------
 
-	t.Run("forwarded originator and version flow through to upstream headers", func(t *testing.T) {
+	t.Run("forwardedHeaders parameter is accepted but no longer processed here", func(t *testing.T) {
+		// Identity headers (originator, version, user-agent) are now merged by
+		// mergeClientWSHeaders in wsresponses.go, not by this function.
+		// chatGPTOAuthWebSocketHeaders only returns OAuth-specific headers.
 		forwarded := map[string]string{
 			"originator": "codex_cli_rs",
 			"version":    "0.121.0",
 			"user-agent": "codex/0.121.0 (Linux; amd64)",
 		}
 		got := chatGPTOAuthWebSocketHeaders(key, nil, forwarded, nil)
-		assert.Equal(t, "codex_cli_rs", got["originator"], "originator must be forwarded")
-		assert.Equal(t, "0.121.0", got["version"], "version must be forwarded")
-		assert.Equal(t, "codex/0.121.0 (Linux; amd64)", got["user-agent"], "user-agent must be forwarded")
-		// OAuth headers still win
+		// OAuth headers must be present
 		assert.Equal(t, "Bearer "+validToken, got["Authorization"])
 		assert.Equal(t, "acct-ws", got["chatgpt-account-id"])
+		assert.Equal(t, "responses=experimental", got["OpenAI-Beta"])
+		// Identity headers are NOT in the output — they come via mergeClientWSHeaders
+		_, hasOriginator := got["originator"]
+		_, hasVersion := got["version"]
+		_, hasUserAgent := got["user-agent"]
+		assert.False(t, hasOriginator, "originator is not processed by chatGPTOAuthWebSocketHeaders")
+		assert.False(t, hasVersion, "version is not processed by chatGPTOAuthWebSocketHeaders")
+		assert.False(t, hasUserAgent, "user-agent is not processed by chatGPTOAuthWebSocketHeaders")
 	})
 
-	t.Run("forwarded authorization is overridden by OAuth token", func(t *testing.T) {
+	t.Run("forwarded authorization is ignored (forwardedHeaders no longer processed)", func(t *testing.T) {
 		forwarded := map[string]string{
-			"originator":    "codex_cli_rs",
-			"version":       "0.121.0",
-			"authorization": "Bearer client-should-not-win",
+			"authorization": "Bearer client-should-not-appear",
 		}
 		got := chatGPTOAuthWebSocketHeaders(key, nil, forwarded, nil)
 		assert.Equal(t, "Bearer "+validToken, got["Authorization"],
-			"provider OAuth token must override client authorization header")
+			"provider OAuth token must be present; forwarded authorization is not processed")
 	})
 
-	t.Run("empty forwarded map injects originator and version defaults", func(t *testing.T) {
+	t.Run("empty forwarded map does NOT inject identity defaults (caller's responsibility)", func(t *testing.T) {
+		// chatGPTOAuthWebSocketHeaders only injects OAuth headers; identity defaults
+		// (originator, version) are the responsibility of mergeClientWSHeaders in
+		// wsresponses.go so that real client values always win over any fallback.
 		log := &captureLogger{}
 		got := chatGPTOAuthWebSocketHeaders(key, nil, map[string]string{}, log)
-		assert.Equal(t, chatGPTOAuthCodexDefaultOriginator, got["originator"],
-			"default originator must be injected when not in forwarded map")
-		assert.Equal(t, chatGPTOAuthCodexDefaultVersion, got["version"],
-			"default version must be injected when not in forwarded map")
-		// Debug log must mention the injected defaults
-		foundOriginator, foundVersion := false, false
-		for _, msg := range log.debugs {
-			if strings.Contains(msg, "originator") {
-				foundOriginator = true
-			}
-			if strings.Contains(msg, "version") {
-				foundVersion = true
-			}
-		}
-		assert.True(t, foundOriginator, "debug log must mention injected originator")
-		assert.True(t, foundVersion, "debug log must mention injected version")
+		_, hasOriginator := got["originator"]
+		_, hasVersion := got["version"]
+		assert.False(t, hasOriginator, "chatGPTOAuthWebSocketHeaders must NOT inject originator default — that is mergeClientWSHeaders' job")
+		assert.False(t, hasVersion, "chatGPTOAuthWebSocketHeaders must NOT inject version default — that is mergeClientWSHeaders' job")
+		// No debug logs should be emitted from this function
+		assert.Empty(t, log.debugs, "no debug logs expected from chatGPTOAuthWebSocketHeaders")
 	})
 
-	t.Run("nil forwarded map injects originator and version defaults", func(t *testing.T) {
+	t.Run("nil forwarded map does NOT inject identity defaults (caller's responsibility)", func(t *testing.T) {
 		got := chatGPTOAuthWebSocketHeaders(key, nil, nil, nil)
-		assert.Equal(t, chatGPTOAuthCodexDefaultOriginator, got["originator"],
-			"default originator must be injected when forwardedHeaders is nil")
-		assert.Equal(t, chatGPTOAuthCodexDefaultVersion, got["version"],
-			"default version must be injected when forwardedHeaders is nil")
+		_, hasOriginator := got["originator"]
+		_, hasVersion := got["version"]
+		assert.False(t, hasOriginator, "chatGPTOAuthWebSocketHeaders must NOT inject originator default")
+		assert.False(t, hasVersion, "chatGPTOAuthWebSocketHeaders must NOT inject version default")
 	})
 }
 
