@@ -426,6 +426,7 @@
                   "deployment-guides/config-json/storage",
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/cluster",
                   "deployment-guides/config-json/guardrails"
                 ]
               }

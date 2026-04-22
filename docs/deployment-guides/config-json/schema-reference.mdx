@@ -23,6 +23,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams | [Governance](/deployment-guides/config-json/governance) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
+| `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
 | `config_store` | object | Configuration database backend — SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
 | `logs_store` | object | Request/response log database — SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache — Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
@@ -148,6 +149,22 @@ Enterprise-only. Defines access profile templates that can later be attached to 
   ]
 }
 ```
+
+---
+
+## `cluster_config`
+
+Enterprise-only clustering settings for multi-node deployments.
+
+| Sub-key | Description |
+|---------|-------------|
+| `enabled` | Enables cluster mode |
+| `region` | Region label used by enterprise clustering |
+| `peers` | Static peer list (`host:port`) |
+| `gossip` | Gossip/memberlist port + liveness thresholds |
+| `discovery` | Auto-discovery configuration (`kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns`) |
+
+Full documentation: [Cluster](/deployment-guides/config-json/cluster).
 
 ---
 

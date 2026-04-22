@@ -2968,7 +2968,7 @@
         },
         "region": {
           "type": "string",
-          "description": "AWS region for cluster deployment (default: us-east-1)"
+          "description": "Region label for cluster deployment (runtime default: unknown)"
         },
         "peers": {
           "type": "array",

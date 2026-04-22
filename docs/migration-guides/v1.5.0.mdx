@@ -276,9 +276,9 @@ Support for image editing via `/v1/images/edits` on Replicate is also being remo
 
 ---
 
-## Breaking Change 9: Provider `deployments` Removed — Migrate to `aliases`
+## Breaking Change 9: Provider `deployments` removed — migrate to `aliases`
 
-The per-provider `deployments` map has been removed from `azure_key_config`, `vertex_key_config`, `bedrock_key_config`, and `replicate_key_config`. A single top-level `aliases` field on each key replaces all of them. Aliases work across all providers and map any model name to a provider-specific identifier (deployment name, inference profile ARN, fine-tuned model ID, etc.).
+Provider deployment mappings should now live in the top-level `aliases` field on each key. Aliases work across all providers and map any model name to a provider-specific identifier (deployment name, inference profile ARN, fine-tuned model ID, etc.).
 
 The database migration runs automatically on startup, migrating existing deployment data into `aliases`. Only `config.json` files need to be updated manually.
 
@@ -325,6 +325,10 @@ The database migration runs automatically on startup, migrating existing deploym
 ```
 
 ### Bedrock
+
+<Warning>
+`bedrock_key_config.deployments` is a legacy field and is **removed** in v1.5.0 config semantics. Some setups/builds may still accept it for backward compatibility, but do not rely on it — migrate to `aliases` to avoid silent breakage and future removal.
+</Warning>
 
 **Before:**
 ```json
@@ -593,7 +597,7 @@ Replace `enable_litellm_fallbacks` with the appropriate combination of `convert_
 </Step>
 
 <Step title="Migrate provider deployments to aliases">
-Remove `deployments` from `azure_key_config`, `vertex_key_config`, `bedrock_key_config`, and `replicate_key_config`. Move those mappings to the top-level `aliases` field on each key. For Replicate, set `use_deployments_endpoint: true` if you were using the deployments endpoint.
+Move deployment mappings from provider-specific `deployments` fields into the top-level `aliases` field on each key. For Replicate, set `use_deployments_endpoint: true` if you were using the deployments endpoint.
 </Step>
 
 <Step title="Update Go SDK references to ExtraFields.ModelRequested">
