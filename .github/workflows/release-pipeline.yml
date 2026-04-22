@@ -90,12 +90,17 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            api.github.com:443
             azure.archive.ubuntu.com:80
             dl.google.com:443
             esm.ubuntu.com:443
             github.com:443
             packages.microsoft.com:443
+            proxy.golang.org:443
             registry.hub.docker.com:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -108,9 +113,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.2"
+
       - name: Detect what needs release
         id: detect
         run: ./.github/workflows/scripts/detect-all-changes.sh "auto"
+
+      - name: Validate Helm templates
+        run: |
+          chmod +x .github/workflows/scripts/validate-helm-templates.sh
+          .github/workflows/scripts/validate-helm-templates.sh
+
+      - name: Validate Helm config fields
+        run: |
+          chmod +x .github/workflows/scripts/validate-helm-config-fields.sh
+          .github/workflows/scripts/validate-helm-config-fields.sh
+
+      - name: Validate Go ↔ config.schema.json ↔ helm-chart sync (schemasync)
+        run: |
+          chmod +x .github/workflows/scripts/validate-schema-sync.sh
+          .github/workflows/scripts/validate-schema-sync.sh
 
   # Run all tests in parallel before any releases
   test-core:
