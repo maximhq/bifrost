@@ -351,10 +351,6 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.Latency = &latF
 	}
 
-	entry.Status = "success"
-	latF := float64(streamResponse.Data.Latency)
-	entry.Latency = &latF
-
 	// Update model and alias from resolved/requested model pair.
 	applyModelAlias(entry, streamResponse.RequestedModel, streamResponse.ResolvedModel)
 
@@ -399,9 +395,14 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if shouldStoreRaw {
 			// Raw request
 			if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
-				rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
-				if err == nil {
-					entry.RawRequest = string(rawRequestBytes)
+				switch raw := (*streamResponse.RawRequest).(type) {
+				case string:
+					entry.RawRequest = strings.TrimSpace(raw)
+				default:
+					rawRequestBytes, err := sonic.Marshal(raw)
+					if err == nil {
+						entry.RawRequest = string(rawRequestBytes)
+					}
 				}
 			}
 			// Raw response

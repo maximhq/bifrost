@@ -854,6 +854,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw)
 		}
+		if entry.ErrorDetails != "" || entry.ErrorDetailsParsed != nil {
+			entry.Status = "error"
+		}
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
