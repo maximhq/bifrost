@@ -68,28 +68,49 @@ func TestComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
-	raw := json.RawMessage(`{"tier_boundaries":{"simple_medium":0.18,"medium_complex":0.35,"complex_reasoning":0.60},"keywords":{"code_keywords":["function","router","endpoint"],"reasoning_keywords":["step by step"],"technical_keywords":["architecture"],"simple_keywords":["hello"]}}`)
+	cfg := &ComplexityAnalyzerConfig{
+		TierBoundaries: ComplexityTierBoundaries{
+			SimpleMedium:     0.18,
+			MediumComplex:    0.35,
+			ComplexReasoning: 0.60,
+		},
+		Keywords: ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"function", "router", "endpoint"},
+			ReasoningKeywords: []string{"step by step"},
+			TechnicalKeywords: []string{"architecture"},
+			SimpleKeywords:    []string{"hello"},
+		},
+	}
 
-	err := UpdateComplexityAnalyzerConfigRaw(ctx, store, raw)
+	err := store.UpdateComplexityAnalyzerConfig(ctx, cfg)
 	require.NoError(t, err)
 
-	loaded, err := GetComplexityAnalyzerConfigRaw(ctx, store)
+	loaded, err := store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
-
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(loaded, &parsed))
-	tb := parsed["tier_boundaries"].(map[string]interface{})
-	assert.Equal(t, 0.18, tb["simple_medium"])
+	assert.Equal(t, 0.18, loaded.TierBoundaries.SimpleMedium)
+	assert.Equal(t, []string{"function", "router", "endpoint"}, loaded.Keywords.CodeKeywords)
 }
 
 func TestGetGovernanceConfig_IncludesComplexityAnalyzerConfig(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
-	raw := json.RawMessage(`{"tier_boundaries":{"simple_medium":0.15,"medium_complex":0.35,"complex_reasoning":0.72},"keywords":{"code_keywords":["function"],"reasoning_keywords":["step by step"],"technical_keywords":["kubernetes","latency"],"simple_keywords":["hello"]}}`)
+	cfg := &ComplexityAnalyzerConfig{
+		TierBoundaries: ComplexityTierBoundaries{
+			SimpleMedium:     0.15,
+			MediumComplex:    0.35,
+			ComplexReasoning: 0.72,
+		},
+		Keywords: ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"function"},
+			ReasoningKeywords: []string{"step by step"},
+			TechnicalKeywords: []string{"kubernetes", "latency"},
+			SimpleKeywords:    []string{"hello"},
+		},
+	}
 
-	err := UpdateComplexityAnalyzerConfigRaw(ctx, store, raw)
+	err := store.UpdateComplexityAnalyzerConfig(ctx, cfg)
 	require.NoError(t, err)
 
 	governanceConfig, err := store.GetGovernanceConfig(ctx)

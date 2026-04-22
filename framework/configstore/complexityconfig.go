@@ -1,7 +1,6 @@
 package configstore
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -106,35 +105,6 @@ func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, err
 		return nil, fmt.Errorf("invalid complexity analyzer config: %w", err)
 	}
 	return &normalized, nil
-}
-
-// GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config
-// from governance_config. Returns nil with no error when the key is absent.
-func GetComplexityAnalyzerConfig(ctx context.Context, store ConfigStore) (*ComplexityAnalyzerConfig, error) {
-	raw, err := GetComplexityAnalyzerConfigRaw(ctx, store)
-	if err != nil {
-		return nil, err
-	}
-	return DecodeComplexityAnalyzerConfig(raw)
-}
-
-// UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed
-// complexity analyzer config into governance_config.
-func UpdateComplexityAnalyzerConfig(ctx context.Context, store ConfigStore, cfg *ComplexityAnalyzerConfig) error {
-	if cfg == nil {
-		return fmt.Errorf("complexity analyzer config is nil")
-	}
-
-	normalized := cfg.Normalized()
-	if err := normalized.Validate(); err != nil {
-		return err
-	}
-
-	raw, err := json.Marshal(normalized)
-	if err != nil {
-		return fmt.Errorf("failed to marshal complexity analyzer config: %w", err)
-	}
-	return UpdateComplexityAnalyzerConfigRaw(ctx, store, raw)
 }
 
 func normalizeComplexityKeywordList(values []string) []string {

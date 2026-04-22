@@ -144,6 +144,8 @@ type ConfigStore interface {
 	// Config CRUD
 	GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error)
 	UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error
+	GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error)
+	UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)

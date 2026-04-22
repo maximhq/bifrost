@@ -267,6 +267,78 @@ func TestBuildComplexityInput_ResponsesIgnoresAssistantOutputHistory(t *testing.
 	assert.Equal(t, "Review carefully", input.SystemText)
 }
 
+func TestBuildComplexityInput_SupportsStreamingRequestTypes(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestType  schemas.RequestType
+		body         map[string]any
+		wantLastUser string
+		wantSystem   string
+	}{
+		{
+			name:        "chat_completion_stream",
+			requestType: schemas.ChatCompletionStreamRequest,
+			body: map[string]any{
+				"stream": true,
+				"messages": []interface{}{
+					map[string]interface{}{
+						"role":    "system",
+						"content": "Be concise",
+					},
+					map[string]interface{}{
+						"role":    "user",
+						"content": "Explain vector clocks",
+					},
+				},
+			},
+			wantLastUser: "Explain vector clocks",
+			wantSystem:   "Be concise",
+		},
+		{
+			name:        "text_completion_stream",
+			requestType: schemas.TextCompletionStreamRequest,
+			body: map[string]any{
+				"stream": true,
+				"prompt": "Write a short summary of this changelog",
+			},
+			wantLastUser: "Write a short summary of this changelog",
+		},
+		{
+			name:        "responses_stream",
+			requestType: schemas.ResponsesStreamRequest,
+			body: map[string]any{
+				"stream":       true,
+				"instructions": "Answer carefully",
+				"input": []interface{}{
+					map[string]interface{}{
+						"role": "user",
+						"content": []interface{}{
+							map[string]interface{}{
+								"type": "input_text",
+								"text": "Compare Go channels and mutexes",
+							},
+						},
+					},
+				},
+			},
+			wantLastUser: "Compare Go channels and mutexes",
+			wantSystem:   "Answer carefully",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, tt.requestType)
+
+			input, ok := buildComplexityInput(ctx, tt.body)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantLastUser, input.LastUserText)
+			assert.Equal(t, tt.wantSystem, input.SystemText)
+		})
+	}
+}
+
 func TestBuildComplexityInput_SkipsUnsupportedRequestTypesEvenWhenTextIsPresent(t *testing.T) {
 	tests := []struct {
 		name        string

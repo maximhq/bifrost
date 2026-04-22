@@ -17,20 +17,16 @@ import (
 // must be text-only for this POC. Mixed or non-text user content is skipped so we do not
 // accidentally reroute embeddings, images, speech, or multimodal chat/responses traffic.
 //
-// Streaming request types intentionally fall through to the default case here. Complexity
-// routing only applies to the initial request payload we inspect in the transport pre-hook;
-// the streaming response path continues separately via HTTPTransportStreamChunkHook, which
-// operates on output chunks rather than rebuilding ComplexityInput from streamed content.
-// If we ever want complexity coverage for ChatCompletionStreamRequest,
-// TextCompletionStreamRequest, or ResponsesStreamRequest, add explicit handling for those
-// request types here instead of relying on the default fallthrough.
+// Streaming request types use the same initial request payload shapes as their non-streaming
+// counterparts, so complexity analysis can run before the provider call regardless of whether
+// the downstream response is streamed back over SSE.
 func buildComplexityInput(ctx *schemas.BifrostContext, body map[string]any) (complexity.ComplexityInput, bool) {
 	switch requestTypeFromContext(ctx) {
-	case schemas.ChatCompletionRequest:
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		return extractFromChatCompletion(body)
-	case schemas.TextCompletionRequest:
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		return extractFromTextCompletion(body)
-	case schemas.ResponsesRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		// OpenAI-style responses traffic uses "input", while Anthropic-native messages are routed
 		// through the same request type by the integration layer. GenAI native requests use
 		// "contents", and Bedrock Converse uses "messages" with Bedrock-style content blocks.

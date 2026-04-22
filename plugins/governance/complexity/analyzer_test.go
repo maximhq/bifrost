@@ -101,27 +101,24 @@ func TestAnalyze_OutputComplexityWithLimiter(t *testing.T) {
 	}
 }
 
-func TestAnalyze_ContributionFieldsStayInSync(t *testing.T) {
+func TestAnalyze_LastMessageScoreStaysInSync(t *testing.T) {
 	a := NewComplexityAnalyzer(nil)
 
 	result := a.Analyze(ComplexityInput{
 		LastUserText: "Write a Python function that compares mutexes and channels in Go step by step",
 	})
 
-	if result.Contributions.Code != result.CodePresence*codeWeight {
-		t.Fatalf("expected code contribution %.6f, got %.6f", result.CodePresence*codeWeight, result.Contributions.Code)
-	}
-	if result.Contributions.Reasoning != result.ReasoningMarkers*reasoningWeight {
-		t.Fatalf("expected reasoning contribution %.6f, got %.6f", result.ReasoningMarkers*reasoningWeight, result.Contributions.Reasoning)
-	}
-	if result.Contributions.Technical != result.TechnicalTerms*technicalWeight {
-		t.Fatalf("expected technical contribution %.6f, got %.6f", result.TechnicalTerms*technicalWeight, result.Contributions.Technical)
-	}
-	if result.Contributions.SimplePenalty != -(result.SimpleIndicators * result.SimpleWeightApplied) {
-		t.Fatalf("expected simple penalty %.6f, got %.6f", -(result.SimpleIndicators * result.SimpleWeightApplied), result.Contributions.SimplePenalty)
-	}
-	if result.Contributions.TokenCount != result.TokenCount*tokenCountWeight {
-		t.Fatalf("expected token contribution %.6f, got %.6f", result.TokenCount*tokenCountWeight, result.Contributions.TokenCount)
+	expected := clamp(
+		(result.CodePresence*codeWeight)+
+			(result.ReasoningMarkers*reasoningWeight)+
+			(result.TechnicalTerms*technicalWeight)-
+			(result.SimpleIndicators*result.SimpleWeightApplied)+
+			(result.TokenCount*tokenCountWeight),
+		0,
+		1,
+	)
+	if result.LastMessageScore != expected {
+		t.Fatalf("expected last-message score %.6f, got %.6f", expected, result.LastMessageScore)
 	}
 }
 

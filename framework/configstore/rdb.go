@@ -4215,7 +4215,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 			}
 		}
 	}
-	complexityAnalyzerConfig, err := GetComplexityAnalyzerConfig(ctx, s)
+	complexityAnalyzerConfig, err := s.GetComplexityAnalyzerConfig(ctx)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("failed to load complexity analyzer config from governance_config: %v", err)
@@ -4237,15 +4237,10 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	}, nil
 }
 
-// GetComplexityAnalyzerConfigRaw retrieves the raw JSON bytes for the complexity
-// analyzer config from governance_config. Returns nil with no error when the key
-// is absent or empty. Callers are responsible for decoding and validating.
-func GetComplexityAnalyzerConfigRaw(ctx context.Context, store ConfigStore) (json.RawMessage, error) {
-	if store == nil {
-		return nil, fmt.Errorf("config store is nil")
-	}
-
-	configEntry, err := store.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigKey)
+// GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config
+// from governance_config. Returns nil with no error when the key is absent.
+func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
+	configEntry, err := s.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigKey)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, nil
@@ -4256,21 +4251,27 @@ func GetComplexityAnalyzerConfigRaw(ctx context.Context, store ConfigStore) (jso
 		return nil, nil
 	}
 
-	return json.RawMessage(configEntry.Value), nil
+	return DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
 }
 
-// UpdateComplexityAnalyzerConfigRaw upserts raw JSON bytes for the complexity
-// analyzer config into the governance config store. Callers are responsible for
-// normalizing and validating before calling this.
-func UpdateComplexityAnalyzerConfigRaw(ctx context.Context, store ConfigStore, raw json.RawMessage) error {
-	if store == nil {
-		return fmt.Errorf("config store is nil")
-	}
-	if len(raw) == 0 {
-		return fmt.Errorf("complexity analyzer config data is empty")
+// UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed
+// complexity analyzer config into governance_config.
+func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig) error {
+	if config == nil {
+		return fmt.Errorf("complexity analyzer config is nil")
 	}
 
-	return store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return fmt.Errorf("failed to marshal complexity analyzer config: %w", err)
+	}
+
+	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
 		Key:   tables.ConfigComplexityAnalyzerConfigKey,
 		Value: string(raw),
 	})

@@ -454,7 +454,7 @@ func (h *GovernanceHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		return
 	}
 
-	cfg, err := configstore.GetComplexityAnalyzerConfig(ctx, h.configStore)
+	cfg, err := h.configStore.GetComplexityAnalyzerConfig(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get complexity analyzer config: %v", err))
 		return
@@ -491,19 +491,24 @@ func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.Request
 		return
 	}
 
-	previousRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, h.configStore)
+	previousConfigEntry, err := getComplexityAnalyzerConfigEntry(ctx, h.configStore)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read existing complexity analyzer config: %v", err))
 		return
 	}
 
-	if err := configstore.UpdateComplexityAnalyzerConfig(ctx, h.configStore, normalized); err != nil {
+	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
+		return
+	}
+	writtenConfigEntry, err := getComplexityAnalyzerConfigEntry(ctx, h.configStore)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read updated complexity analyzer config: %v", err))
 		return
 	}
 
 	if err := h.governanceManager.ReloadComplexityAnalyzerConfig(ctx, normalized); err != nil {
-		if rollbackErr := rollbackComplexityAnalyzerConfig(ctx, h.configStore, previousRaw); rollbackErr != nil {
+		if rollbackErr := rollbackComplexityAnalyzerConfig(ctx, h.configStore, writtenConfigEntry, previousConfigEntry); rollbackErr != nil {
 			logger.Error("failed to rollback complexity analyzer config after reload failure: %v", rollbackErr)
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config: %v", err))
@@ -523,19 +528,24 @@ func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestC
 
 	defaults := complexity.DefaultAnalyzerConfig()
 
-	previousRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, h.configStore)
+	previousConfigEntry, err := getComplexityAnalyzerConfigEntry(ctx, h.configStore)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read existing complexity analyzer config: %v", err))
 		return
 	}
 
-	if err := configstore.UpdateComplexityAnalyzerConfig(ctx, h.configStore, &defaults); err != nil {
+	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to persist default complexity analyzer config: %v", err))
+		return
+	}
+	writtenConfigEntry, err := getComplexityAnalyzerConfigEntry(ctx, h.configStore)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read reset complexity analyzer config: %v", err))
 		return
 	}
 
 	if err := h.governanceManager.ReloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
-		if rollbackErr := rollbackComplexityAnalyzerConfig(ctx, h.configStore, previousRaw); rollbackErr != nil {
+		if rollbackErr := rollbackComplexityAnalyzerConfig(ctx, h.configStore, writtenConfigEntry, previousConfigEntry); rollbackErr != nil {
 			logger.Error("failed to rollback complexity analyzer config after reset reload failure: %v", rollbackErr)
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config: %v", err))
@@ -545,14 +555,52 @@ func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestC
 	SendJSON(ctx, &defaults)
 }
 
-func rollbackComplexityAnalyzerConfig(ctx context.Context, store configstore.ConfigStore, previousRaw json.RawMessage) error {
-	if len(previousRaw) == 0 {
+func getComplexityAnalyzerConfigEntry(ctx context.Context, store configstore.ConfigStore) (*configstoreTables.TableGovernanceConfig, error) {
+	configEntry, err := store.GetConfig(ctx, configstoreTables.ConfigComplexityAnalyzerConfigKey)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return configEntry, nil
+}
+
+func rollbackComplexityAnalyzerConfig(
+	ctx context.Context,
+	store configstore.ConfigStore,
+	writtenConfigEntry *configstoreTables.TableGovernanceConfig,
+	previousConfigEntry *configstoreTables.TableGovernanceConfig,
+) error {
+	currentConfigEntry, err := getComplexityAnalyzerConfigEntry(ctx, store)
+	if err != nil {
+		return fmt.Errorf("failed to read current complexity analyzer config for rollback: %w", err)
+	}
+	if !sameComplexityAnalyzerConfigValue(currentConfigEntry, writtenConfigEntry) {
+		return nil
+	}
+	if previousConfigEntry == nil || previousConfigEntry.Value == "" {
 		return store.UpdateConfig(ctx, &configstoreTables.TableGovernanceConfig{
 			Key:   configstoreTables.ConfigComplexityAnalyzerConfigKey,
 			Value: "",
 		})
 	}
-	return configstore.UpdateComplexityAnalyzerConfigRaw(ctx, store, previousRaw)
+	return store.UpdateConfig(ctx, &configstoreTables.TableGovernanceConfig{
+		Key:   configstoreTables.ConfigComplexityAnalyzerConfigKey,
+		Value: previousConfigEntry.Value,
+	})
+}
+
+func sameComplexityAnalyzerConfigValue(a, b *configstoreTables.TableGovernanceConfig) bool {
+	aValue := ""
+	if a != nil {
+		aValue = a.Value
+	}
+	bValue := ""
+	if b != nil {
+		bValue = b.Value
+	}
+	return aValue == bValue
 }
 
 // Virtual Key CRUD Operations

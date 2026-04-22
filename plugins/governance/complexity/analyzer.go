@@ -137,35 +137,28 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 	tier := a.classifyTier(finalScore)
 	overrideReason := ""
 	if strongCount >= 2 {
-		if tier != "REASONING" {
-			overrideReason = "strong_reasoning_count"
+		if tier != TierReasoning {
+			overrideReason = TierOverrideReasonStrongReasoningCount
 		}
-		tier = "REASONING"
+		tier = TierReasoning
 	} else if strongCount >= 1 && (userCodeScore > 0.5 || userTechnicalScore > 0.5) {
-		if tier != "REASONING" {
-			overrideReason = "strong_reasoning_with_signal"
+		if tier != TierReasoning {
+			overrideReason = TierOverrideReasonStrongReasoningWithSignal
 		}
-		tier = "REASONING"
+		tier = TierReasoning
 	}
 
 	return &ComplexityResult{
-		Score:              finalScore,
-		Tier:               tier,
-		CodePresence:       codeScore,
-		ReasoningMarkers:   reasoningScore,
-		TechnicalTerms:     technicalScore,
-		SimpleIndicators:   simpleScore,
-		TokenCount:         tokenScore,
-		ConversationCtx:    convScore,
-		SystemPromptSignal: systemLexicalContribution,
-		OutputComplexity:   outputScore,
-		Contributions: ComplexityContributions{
-			Code:          codeContribution,
-			Reasoning:     reasoningContribution,
-			Technical:     technicalContribution,
-			SimplePenalty: simplePenalty,
-			TokenCount:    tokenContribution,
-		},
+		Score:               finalScore,
+		Tier:                tier,
+		CodePresence:        codeScore,
+		ReasoningMarkers:    reasoningScore,
+		TechnicalTerms:      technicalScore,
+		SimpleIndicators:    simpleScore,
+		TokenCount:          tokenScore,
+		ConversationCtx:     convScore,
+		SystemPromptSignal:  systemLexicalContribution,
+		OutputComplexity:    outputScore,
 		CodeMatchCount:      lastSignals.codeCount,
 		ReasoningMatchCount: lastSignals.reasoningCount,
 		TechnicalMatchCount: lastSignals.technicalCount,
@@ -239,12 +232,12 @@ func isReferentialFollowup(signals textSignalCounts, lastMsgScore, convScore flo
 func (a *ComplexityAnalyzer) classifyTier(score float64) string {
 	switch {
 	case score < a.tierBoundaries.SimpleMedium:
-		return "SIMPLE"
+		return TierSimple
 	case score < a.tierBoundaries.MediumComplex:
-		return "MEDIUM"
+		return TierMedium
 	case score < a.tierBoundaries.ComplexReasoning:
-		return "COMPLEX"
+		return TierComplex
 	default:
-		return "REASONING"
+		return TierReasoning
 	}
 }

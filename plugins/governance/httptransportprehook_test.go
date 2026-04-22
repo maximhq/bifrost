@@ -390,7 +390,7 @@ func TestHTTPTransportPreHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
 					Targets: []configstoreTables.TableRoutingTarget{
 						{Provider: &provider, Model: &model, Weight: 1.0},
 					},
-					Enabled:  true,
+					Enabled:  bifrost.Ptr(true),
 					Scope:    "global",
 					Priority: 0,
 				},
@@ -442,12 +442,11 @@ func TestResolveAnalyzerConfigFromStoreOrArg_PrefersConfiguredArgOverStoredConfi
 		},
 	}, logger)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
 
 	storedCfg := complexity.DefaultAnalyzerConfig()
 	storedCfg.TierBoundaries.SimpleMedium = 0.22
-	storedRaw, err := json.Marshal(storedCfg)
-	require.NoError(t, err)
-	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, store, storedRaw))
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, &storedCfg))
 
 	argCfg := complexity.DefaultAnalyzerConfig()
 	argCfg.TierBoundaries.SimpleMedium = 0.11
@@ -471,12 +470,11 @@ func TestResolveAnalyzerConfigFromStoreOrArg_InvalidConfiguredArgFallsBackToStor
 		},
 	}, logger)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
 
 	storedCfg := complexity.DefaultAnalyzerConfig()
 	storedCfg.TierBoundaries.SimpleMedium = 0.22
-	storedRaw, err := json.Marshal(storedCfg)
-	require.NoError(t, err)
-	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, store, storedRaw))
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, &storedCfg))
 
 	// Invalid config: SimpleMedium > MediumComplex violates ordering constraint
 	argCfg := complexity.DefaultAnalyzerConfig()
@@ -501,12 +499,11 @@ func TestResolveAnalyzerConfigFromStoreOrArg_FallsBackToStoredConfigWhenArgMissi
 		},
 	}, logger)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
 
 	storedCfg := complexity.DefaultAnalyzerConfig()
 	storedCfg.TierBoundaries.SimpleMedium = 0.22
-	storedRaw, err := json.Marshal(storedCfg)
-	require.NoError(t, err)
-	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, store, storedRaw))
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, &storedCfg))
 
 	resolved := resolveAnalyzerConfigFromStoreOrArg(ctx, logger, store, &configstore.GovernanceConfig{})
 	require.NotNil(t, resolved)
@@ -532,7 +529,7 @@ func TestHTTPTransportPreHook_ComplexityAnalyzerFeedsCELVariable_ForGenAIContent
 					Targets: []configstoreTables.TableRoutingTarget{
 						{Provider: &provider, Model: &model, Weight: 1.0},
 					},
-					Enabled:  true,
+					Enabled:  bifrost.Ptr(true),
 					Scope:    "global",
 					Priority: 0,
 				},
@@ -586,7 +583,7 @@ func TestHTTPTransportPreHook_ComplexityAnalyzerFeedsCELVariable_ForBedrockTextB
 					Targets: []configstoreTables.TableRoutingTarget{
 						{Provider: &provider, Model: &model, Weight: 1.0},
 					},
-					Enabled:  true,
+					Enabled:  bifrost.Ptr(true),
 					Scope:    "global",
 					Priority: 0,
 				},
@@ -644,7 +641,7 @@ func TestHTTPTransportPreHook_InvalidComplexityConfigFallsBackToDefaults(t *test
 					Targets: []configstoreTables.TableRoutingTarget{
 						{Provider: &provider, Model: &model, Weight: 1.0},
 					},
-					Enabled:  true,
+					Enabled:  bifrost.Ptr(true),
 					Scope:    "global",
 					Priority: 0,
 				},
@@ -678,7 +675,11 @@ func TestHTTPTransportPreHook_InvalidComplexityConfigFallsBackToDefaults(t *test
 	}
 	require.NoError(t, json.Unmarshal(req.Body, &payload))
 	require.Equal(t, "openai/gpt-4o-mini", payload.Model)
-	require.NotEmpty(t, logger.warnings)
+	require.Contains(
+		t,
+		strings.Join(logger.warnings, "\n"),
+		"invalid complexity analyzer config from provided governance config",
+	)
 }
 
 func TestHTTPTransportPreHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
@@ -701,7 +702,7 @@ func TestHTTPTransportPreHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing
 					Targets: []configstoreTables.TableRoutingTarget{
 						{Provider: &provider, Model: &model, Weight: 1.0},
 					},
-					Enabled:  true,
+					Enabled:  bifrost.Ptr(true),
 					Scope:    "global",
 					Priority: 0,
 				},

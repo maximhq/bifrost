@@ -2000,7 +2000,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
 			if current == nil || !reflect.DeepEqual(current, normalized) {
 				if config.ConfigStore != nil {
-					if err := configstore.UpdateComplexityAnalyzerConfig(ctx, config.ConfigStore, normalized); err != nil {
+					if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 						logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
 					}
 				}

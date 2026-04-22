@@ -11,7 +11,6 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/routing"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
@@ -185,7 +184,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				}
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
-				referencesComplexity := routing.CELExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
 
 				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
 				if routingCtx.Complexity == nil && routingCtx.computeComplexity != nil && referencesComplexity {
@@ -390,7 +389,7 @@ func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables
-func evaluateCELExpression(program cel.Program, variables map[string]any) (bool, error) {
+func evaluateCELExpression(program cel.Program, variables map[string]any, unknowns ...*cel.AttributePatternType) (bool, error) {
 	if program == nil {
 		return false, fmt.Errorf("CEL program is nil")
 	}

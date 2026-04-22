@@ -9,7 +9,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	routingutil "github.com/maximhq/bifrost/framework/routing"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,7 +64,7 @@ func TestCELExpressionReferencesComplexityTierIdentifierOnly(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, routingutil.CELExpressionReferencesIdentifier(tt.expression, "complexity_tier"))
+			assert.Equal(t, tt.expected, celExpressionReferencesIdentifier(tt.expression, "complexity_tier"))
 		})
 	}
 }
@@ -373,7 +372,7 @@ func complexityRoutingRule(id string, expression string) *configstoreTables.Tabl
 	return &configstoreTables.TableRoutingRule{
 		ID:            id,
 		Name:          id,
-		Enabled:       true,
+		Enabled:       boolPtr(true),
 		CelExpression: expression,
 		Scope:         "global",
 		Priority:      1,

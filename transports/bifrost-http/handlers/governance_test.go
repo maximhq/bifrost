@@ -52,10 +52,14 @@ type mockGovernanceManagerForBoundaries struct {
 	GovernanceManager
 	reloadAnalyzerCalls int
 	reloadErr           error
+	onReload            func(*complexity.AnalyzerConfig)
 }
 
 func (m *mockGovernanceManagerForBoundaries) ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
 	m.reloadAnalyzerCalls++
+	if m.onReload != nil {
+		m.onReload(config)
+	}
 	return m.reloadErr
 }
 
@@ -80,6 +84,29 @@ func (m *mockConfigStoreForBoundaries) GetConfig(_ context.Context, key string) 
 		return nil, err
 	}
 	return &configstoreTables.TableGovernanceConfig{Key: key, Value: string(raw)}, nil
+}
+
+func (m *mockConfigStoreForBoundaries) GetComplexityAnalyzerConfig(_ context.Context) (*configstore.ComplexityAnalyzerConfig, error) {
+	if m.analyzerConfig == nil {
+		return nil, nil
+	}
+	normalized, err := complexity.ValidateAndNormalize(m.analyzerConfig)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func (m *mockConfigStoreForBoundaries) UpdateComplexityAnalyzerConfig(_ context.Context, cfg *configstore.ComplexityAnalyzerConfig) error {
+	if cfg == nil {
+		return errors.New("complexity analyzer config is nil")
+	}
+	normalized, err := complexity.ValidateAndNormalize(cfg)
+	if err != nil {
+		return err
+	}
+	m.analyzerConfig = normalized
+	return nil
 }
 
 func (m *mockConfigStoreForBoundaries) UpdateConfig(_ context.Context, cfg *configstoreTables.TableGovernanceConfig, _ ...*gorm.DB) error {
@@ -1428,6 +1455,78 @@ func TestUpdateComplexityAnalyzerConfig_RollsBackStoreWhenReloadFails(t *testing
 	require.Equal(t, previous.Keywords.ReasoningKeywords, store.analyzerConfig.Keywords.ReasoningKeywords)
 	require.Equal(t, previous.Keywords.TechnicalKeywords, store.analyzerConfig.Keywords.TechnicalKeywords)
 	require.Equal(t, previous.Keywords.SimpleKeywords, store.analyzerConfig.Keywords.SimpleKeywords)
+}
+
+func TestUpdateComplexityAnalyzerConfig_DoesNotRollbackOverNewerStoredConfig(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	previous := complexity.AnalyzerConfig{
+		TierBoundaries: complexity.TierBoundaries{
+			SimpleMedium:     0.15,
+			MediumComplex:    0.35,
+			ComplexReasoning: 0.65,
+		},
+		Keywords: complexity.EditableKeywordConfig{
+			CodeKeywords:      []string{"function", "api"},
+			ReasoningKeywords: []string{"analyze"},
+			TechnicalKeywords: []string{"latency"},
+			SimpleKeywords:    []string{"what is"},
+		},
+	}
+	newer := complexity.AnalyzerConfig{
+		TierBoundaries: complexity.TierBoundaries{
+			SimpleMedium:     0.33,
+			MediumComplex:    0.55,
+			ComplexReasoning: 0.88,
+		},
+		Keywords: complexity.EditableKeywordConfig{
+			CodeKeywords:      []string{"router"},
+			ReasoningKeywords: []string{"reason"},
+			TechnicalKeywords: []string{"kubernetes"},
+			SimpleKeywords:    []string{"define"},
+		},
+	}
+	newerNormalized, err := complexity.ValidateAndNormalize(&newer)
+	require.NoError(t, err)
+
+	store := &mockConfigStoreForBoundaries{analyzerConfig: &previous}
+	manager := &mockGovernanceManagerForBoundaries{
+		reloadErr: errors.New("boom"),
+		onReload: func(_ *complexity.AnalyzerConfig) {
+			store.analyzerConfig = newerNormalized
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	payload := `{
+		"tier_boundaries":{"simple_medium":0.22,"medium_complex":0.44,"complex_reasoning":0.77},
+		"keywords":{
+			"code_keywords":["function","endpoint","router"],
+			"reasoning_keywords":["step by step"],
+			"technical_keywords":["kubernetes","latency"],
+			"simple_keywords":["what is"]
+		}
+	}`
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("PUT")
+	ctx.Request.SetRequestURI("/api/governance/complexity")
+	ctx.Request.SetBodyString(payload)
+
+	h.updateComplexityAnalyzerConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Contains(t, string(ctx.Response.Body()), "failed to reload complexity analyzer config")
+	require.Equal(t, 1, manager.reloadAnalyzerCalls)
+	require.NotNil(t, store.analyzerConfig)
+	require.Equal(t, newerNormalized.TierBoundaries, store.analyzerConfig.TierBoundaries)
+	require.Equal(t, newerNormalized.Keywords.CodeKeywords, store.analyzerConfig.Keywords.CodeKeywords)
+	require.Equal(t, newerNormalized.Keywords.ReasoningKeywords, store.analyzerConfig.Keywords.ReasoningKeywords)
+	require.Equal(t, newerNormalized.Keywords.TechnicalKeywords, store.analyzerConfig.Keywords.TechnicalKeywords)
+	require.Equal(t, newerNormalized.Keywords.SimpleKeywords, store.analyzerConfig.Keywords.SimpleKeywords)
 }
 
 // Ensure mockLogger satisfies schemas.Logger (already defined in middlewares_test.go

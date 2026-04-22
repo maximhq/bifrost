@@ -1,4 +1,4 @@
-package routing
+package governance
 
 import (
 	"sync"
@@ -11,10 +11,7 @@ import (
 
 var celExpressionIdentifierRefCache sync.Map
 
-// CELExpressionReferencesIdentifier reports whether expr reads the given CEL identifier.
-// It ignores string literals, field names, and comprehension-local variables that shadow
-// the identifier name.
-func CELExpressionReferencesIdentifier(expr string, identifier string) bool {
+func celExpressionReferencesIdentifier(expr string, identifier string) bool {
 	if expr == "" || identifier == "" {
 		return false
 	}
@@ -46,8 +43,7 @@ func CELExpressionReferencesIdentifier(expr string, identifier string) bool {
 	return result
 }
 
-// CELAstReferencesIdentifier reports whether the compiled CEL AST reads the given identifier.
-func CELAstReferencesIdentifier(ast *cel.Ast, identifier string) bool {
+func celASTReferencesIdentifier(ast *cel.Ast, identifier string) bool {
 	if ast == nil || ast.NativeRep() == nil || identifier == "" {
 		return false
 	}

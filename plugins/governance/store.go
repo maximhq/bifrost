@@ -3261,7 +3261,7 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *con
 	// leaking an empty-string sentinel.
 	var program cel.Program
 	var err error
-	if routing.CELAstReferencesIdentifier(ast, "complexity_tier") {
+	if celASTReferencesIdentifier(ast, "complexity_tier") {
 		program, err = gs.routingCELEnv.Program(ast, cel.EvalOptions(cel.OptPartialEval))
 	} else {
 		program, err = gs.routingCELEnv.Program(ast)

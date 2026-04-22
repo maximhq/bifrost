@@ -381,14 +381,6 @@ import (
 	"gorm.io/gorm"
 )
 
-func mustMarshalComplexityAnalyzerConfig(t *testing.T, cfg complexity.AnalyzerConfig) json.RawMessage {
-	t.Helper()
-
-	raw, err := json.Marshal(cfg)
-	require.NoError(t, err)
-	return raw
-}
-
 // MockConfigStore implements the ConfigStore interface for testing
 type MockConfigStore struct {
 	clientConfig     *configstore.ClientConfig
@@ -651,6 +643,32 @@ func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) 
 // Governance config
 func (m *MockConfigStore) GetGovernanceConfig(ctx context.Context) (*configstore.GovernanceConfig, error) {
 	return m.governanceConfig, nil
+}
+
+func (m *MockConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*configstore.ComplexityAnalyzerConfig, error) {
+	if m.governanceConfig == nil || m.governanceConfig.ComplexityAnalyzerConfig == nil {
+		return nil, nil
+	}
+	normalized := m.governanceConfig.ComplexityAnalyzerConfig.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return nil, err
+	}
+	return &normalized, nil
+}
+
+func (m *MockConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *configstore.ComplexityAnalyzerConfig) error {
+	if config == nil {
+		return errors.New("complexity analyzer config is nil")
+	}
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+	if m.governanceConfig == nil {
+		m.governanceConfig = &configstore.GovernanceConfig{}
+	}
+	m.governanceConfig.ComplexityAnalyzerConfig = &normalized
+	return nil
 }
 
 func (m *MockConfigStore) CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
@@ -12611,9 +12629,7 @@ func TestSQLite_ComplexityAnalyzerConfig_FileSeeded(t *testing.T) {
 	require.Equal(t, 0.18, loadedConfig.TierBoundaries.SimpleMedium)
 	require.Equal(t, []string{"kubernetes", "latency"}, loadedConfig.Keywords.TechnicalKeywords)
 
-	storedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config.ConfigStore)
-	require.NoError(t, err)
-	stored, err := complexity.DecodeAndValidate(storedRaw)
+	stored, err := config.ConfigStore.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.73, stored.TierBoundaries.ComplexReasoning)
@@ -12636,16 +12652,14 @@ func TestSQLite_ComplexityAnalyzerConfig_UpdatePersists(t *testing.T) {
 	cfg.TierBoundaries.SimpleMedium = 0.20
 	cfg.TierBoundaries.MediumComplex = 0.40
 	cfg.TierBoundaries.ComplexReasoning = 0.70
-	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, config1.ConfigStore, mustMarshalComplexityAnalyzerConfig(t, cfg)))
+	require.NoError(t, config1.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, &cfg))
 	config1.Close(ctx)
 
 	config2, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 
-	storedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config2.ConfigStore)
-	require.NoError(t, err)
-	stored, err := complexity.DecodeAndValidate(storedRaw)
+	stored, err := config2.ConfigStore.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.20, stored.TierBoundaries.SimpleMedium)
@@ -12673,9 +12687,7 @@ func TestSQLite_ComplexityAnalyzerConfig_FileWinsOnRestartWhenPresent(t *testing
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
 
-	storedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config1.ConfigStore)
-	require.NoError(t, err)
-	stored, err := complexity.DecodeAndValidate(storedRaw)
+	stored, err := config1.ConfigStore.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, stored, "DB should be seeded from file")
 	require.Equal(t, 0.15, stored.TierBoundaries.SimpleMedium)
@@ -12685,7 +12697,7 @@ func TestSQLite_ComplexityAnalyzerConfig_FileWinsOnRestartWhenPresent(t *testing
 	edited.TierBoundaries.SimpleMedium = 0.20
 	edited.TierBoundaries.MediumComplex = 0.45
 	edited.TierBoundaries.ComplexReasoning = 0.75
-	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, config1.ConfigStore, mustMarshalComplexityAnalyzerConfig(t, edited)))
+	require.NoError(t, config1.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, &edited))
 	config1.Close(ctx)
 
 	// Step 3: Restart with same file still present — file should win
@@ -12700,9 +12712,7 @@ func TestSQLite_ComplexityAnalyzerConfig_FileWinsOnRestartWhenPresent(t *testing
 	require.Equal(t, 0.35, reloadedConfig.TierBoundaries.MediumComplex)
 	require.Equal(t, 0.60, reloadedConfig.TierBoundaries.ComplexReasoning)
 
-	reloadedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config2.ConfigStore)
-	require.NoError(t, err)
-	reloaded, err := complexity.DecodeAndValidate(reloadedRaw)
+	reloaded, err := config2.ConfigStore.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 0.15, reloaded.TierBoundaries.SimpleMedium, "DB should be resynced from file when file config is present")
 }
