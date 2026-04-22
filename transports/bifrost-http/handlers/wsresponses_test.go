@@ -305,6 +305,103 @@ func TestMergeClientWSHeaders_NonOAuthPathNoDefaultsInjected(t *testing.T) {
 // createBifrostContextFromAuth: verify BifrostContextKeyRequestHeaders is set
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// extractStreamEventType: lightweight type field extraction
+// ---------------------------------------------------------------------------
+
+func TestExtractStreamEventType_ValidTerminal(t *testing.T) {
+	got := extractStreamEventType([]byte(`{"type":"response.completed","sequence_number":5}`))
+	if got != schemas.ResponsesStreamResponseTypeCompleted {
+		t.Errorf("got %q, want %q", got, schemas.ResponsesStreamResponseTypeCompleted)
+	}
+}
+
+func TestExtractStreamEventType_ValidNonTerminal(t *testing.T) {
+	got := extractStreamEventType([]byte(`{"type":"response.output_text.delta","delta":"hello"}`))
+	if got != schemas.ResponsesStreamResponseTypeOutputTextDelta {
+		t.Errorf("got %q, want %q", got, schemas.ResponsesStreamResponseTypeOutputTextDelta)
+	}
+}
+
+func TestExtractStreamEventType_MalformedJSON(t *testing.T) {
+	got := extractStreamEventType([]byte(`not json at all`))
+	if got != "" {
+		t.Errorf("expected empty string for malformed JSON, got %q", got)
+	}
+}
+
+func TestExtractStreamEventType_MissingTypeField(t *testing.T) {
+	got := extractStreamEventType([]byte(`{"sequence_number":1,"delta":"hello"}`))
+	if got != "" {
+		t.Errorf("expected empty string for missing type field, got %q", got)
+	}
+}
+
+func TestExtractStreamEventType_UnknownExtraFields(t *testing.T) {
+	// Simulates a chatgpt.com codex.rate_limits event with unknown nested structure
+	raw := []byte(`{"type":"codex.rate_limits","rate_limits":{"primary":{"requests":{"limit":50,"remaining":48}}},"code_review_rate_limits":null}`)
+	got := extractStreamEventType(raw)
+	if got != schemas.ResponsesStreamResponseType("codex.rate_limits") {
+		t.Errorf("got %q, want %q", got, "codex.rate_limits")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// synthesizeTerminalStreamResponse: minimal struct construction
+// ---------------------------------------------------------------------------
+
+func TestSynthesizeTerminalStreamResponse_FieldsPopulated(t *testing.T) {
+	resp := synthesizeTerminalStreamResponse(schemas.OpenAI, "gpt-4o", schemas.ResponsesStreamResponseTypeCompleted)
+	if resp == nil {
+		t.Fatal("got nil response")
+	}
+	if resp.Type != schemas.ResponsesStreamResponseTypeCompleted {
+		t.Errorf("Type = %q, want %q", resp.Type, schemas.ResponsesStreamResponseTypeCompleted)
+	}
+	if resp.ExtraFields.Provider != schemas.OpenAI {
+		t.Errorf("Provider = %q, want %q", resp.ExtraFields.Provider, schemas.OpenAI)
+	}
+	if resp.ExtraFields.OriginalModelRequested != "gpt-4o" {
+		t.Errorf("OriginalModelRequested = %q, want %q", resp.ExtraFields.OriginalModelRequested, "gpt-4o")
+	}
+	if resp.ExtraFields.RequestType != schemas.ResponsesStreamRequest {
+		t.Errorf("RequestType = %v, want %v", resp.ExtraFields.RequestType, schemas.ResponsesStreamRequest)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isTerminalStreamType: terminal detection
+// ---------------------------------------------------------------------------
+
+func TestIsTerminalStreamType_TerminalTypes(t *testing.T) {
+	terminals := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeFailed,
+		schemas.ResponsesStreamResponseTypeIncomplete,
+		schemas.ResponsesStreamResponseTypeError,
+	}
+	for _, tt := range terminals {
+		if !isTerminalStreamType(tt) {
+			t.Errorf("expected %q to be terminal", tt)
+		}
+	}
+}
+
+func TestIsTerminalStreamType_NonTerminalTypes(t *testing.T) {
+	nonTerminals := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseType("codex.rate_limits"),
+		schemas.ResponsesStreamResponseType(""),
+	}
+	for _, tt := range nonTerminals {
+		if isTerminalStreamType(tt) {
+			t.Errorf("expected %q to be non-terminal", tt)
+		}
+	}
+}
+
 func TestCreateBifrostContextFromAuth_RequestHeadersPopulated(t *testing.T) {
 	auth := &authHeaders{
 		authorization: "Bearer some-token",
