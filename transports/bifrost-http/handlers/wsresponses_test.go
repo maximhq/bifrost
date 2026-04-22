@@ -171,7 +171,7 @@ func TestMergeClientWSHeaders_ClientHeadersFlowThrough(t *testing.T) {
 		"version":    "0.121.0",
 		"user-agent": "codex/0.121.0 (Linux; amd64)",
 	}
-	got := mergeClientWSHeaders(provider, client)
+	got := mergeClientWSHeaders(provider, client, true)
 
 	// Client identity headers must flow through unchanged.
 	if got["originator"] != "codex_cli_rs" {
@@ -203,7 +203,7 @@ func TestMergeClientWSHeaders_DefaultsInjectedWhenClientSendsNeither(t *testing.
 	client := map[string]string{
 		"user-agent": "some-agent/1.0",
 	}
-	got := mergeClientWSHeaders(provider, client)
+	got := mergeClientWSHeaders(provider, client, true)
 
 	if got["originator"] != chatGPTOAuthCodexDefaultOriginator {
 		t.Errorf("originator = %q, want default %q", got["originator"], chatGPTOAuthCodexDefaultOriginator)
@@ -223,7 +223,7 @@ func TestMergeClientWSHeaders_ClientOriginatorWinsOverDefault(t *testing.T) {
 		"originator": "something-else",
 		"version":    "9.9.9",
 	}
-	got := mergeClientWSHeaders(provider, client)
+	got := mergeClientWSHeaders(provider, client, true)
 
 	if got["originator"] != "something-else" {
 		t.Errorf("originator = %q, want %q (client value must win)", got["originator"], "something-else")
@@ -243,7 +243,7 @@ func TestMergeClientWSHeaders_ProviderHeadersWinOnConflict(t *testing.T) {
 		"Authorization": "Bearer client-should-lose",
 		"originator":    "codex_cli_rs",
 	}
-	got := mergeClientWSHeaders(provider, client)
+	got := mergeClientWSHeaders(provider, client, true)
 
 	if got["Authorization"] != "Bearer oauth-token" {
 		t.Errorf("Authorization = %q, want provider value %q", got["Authorization"], "Bearer oauth-token")
@@ -259,7 +259,7 @@ func TestMergeClientWSHeaders_EmptyClientHeadersGetDefaultsInjected(t *testing.T
 	provider := map[string]string{
 		"Authorization": "Bearer tok",
 	}
-	got := mergeClientWSHeaders(provider, nil)
+	got := mergeClientWSHeaders(provider, nil, true)
 	if got["Authorization"] != "Bearer tok" {
 		t.Errorf("Authorization = %q, want %q", got["Authorization"], "Bearer tok")
 	}
@@ -268,6 +268,36 @@ func TestMergeClientWSHeaders_EmptyClientHeadersGetDefaultsInjected(t *testing.T
 	}
 	if got["version"] != chatGPTOAuthCodexDefaultVersionFallback {
 		t.Errorf("version = %q, want default %q", got["version"], chatGPTOAuthCodexDefaultVersionFallback)
+	}
+}
+
+// TestMergeClientWSHeaders_NonOAuthPathNoDefaultsInjected verifies that when
+// injectCodexDefaults is false (standard api.openai.com, non-OAuth provider),
+// mergeClientWSHeaders does NOT inject the chatgpt.com-specific originator or
+// version headers even when the client sends none.
+func TestMergeClientWSHeaders_NonOAuthPathNoDefaultsInjected(t *testing.T) {
+	// Standard OpenAI provider headers — no OAuth headers.
+	provider := map[string]string{
+		"Authorization": "Bearer sk-abc123",
+	}
+	// Client sends no identity headers.
+	client := map[string]string{
+		"user-agent": "myapp/1.0",
+	}
+	got := mergeClientWSHeaders(provider, client, false)
+
+	if _, hasOriginator := got["originator"]; hasOriginator {
+		t.Errorf("originator must NOT be injected on non-OAuth path, but found %q", got["originator"])
+	}
+	if _, hasVersion := got["version"]; hasVersion {
+		t.Errorf("version must NOT be injected on non-OAuth path, but found %q", got["version"])
+	}
+	// Provider and client headers must still be merged correctly.
+	if got["Authorization"] != "Bearer sk-abc123" {
+		t.Errorf("Authorization = %q, want %q", got["Authorization"], "Bearer sk-abc123")
+	}
+	if got["user-agent"] != "myapp/1.0" {
+		t.Errorf("user-agent = %q, want %q", got["user-agent"], "myapp/1.0")
 	}
 }
 

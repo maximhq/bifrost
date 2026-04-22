@@ -26,6 +26,13 @@ func (provider *OpenAIProvider) WebSocketResponsesURL(key schemas.Key) string {
 	return base + "/v1/responses"
 }
 
+// ChatGPTOAuthEnabled reports whether this provider instance was configured with
+// chatgpt_oauth enabled.  Used by the transport layer to decide whether to inject
+// Codex identity defaults (originator, version) into the upstream WS connection.
+func (provider *OpenAIProvider) ChatGPTOAuthEnabled() bool {
+	return provider.chatgptOAuth
+}
+
 // WebSocketHeaders returns the OAuth-specific headers for the upstream WebSocket connection.
 // For chatgpt_oauth, it returns Authorization, chatgpt-account-id, and OpenAI-Beta only;
 // it does NOT inject Codex identity headers (originator, version).

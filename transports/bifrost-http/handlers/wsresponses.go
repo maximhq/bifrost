@@ -8,6 +8,7 @@ import (
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -220,8 +221,8 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 }
 
 // mergeClientWSHeaders merges client-supplied first-party headers into the
-// provider-built upstream headers map, then injects Codex identity defaults for
-// any identity headers the client did not supply.
+// provider-built upstream headers map, and optionally injects Codex identity
+// defaults for any identity headers the client did not supply.
 //
 // Merge semantics:
 //   - Client headers (from the incoming WS upgrade, pre-filtered by captureAuthHeaders)
@@ -235,14 +236,19 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 // The wsUpgradeHeaderBlocklist already ensured clientHeaders contains no auth or
 // hop-by-hop entries, so there is no security risk from the client layer.
 //
-// Identity fallbacks (injected ONLY when the final merged map lacks the header):
+// Identity fallbacks (injected ONLY when injectCodexDefaults is true AND the final
+// merged map lacks the header):
 //   - originator: defaults to "codex_cli_rs"
 //   - version:    defaults to openai.ChatGPTOAuthClientVersionFallback ("0.111.0")
+//
+// injectCodexDefaults must only be true on the ChatGPT OAuth path
+// (provider is OpenAI + chatgpt_oauth enabled).  Standard api.openai.com connections
+// must not have these chatgpt.com-specific identity markers injected.
 //
 // These fallbacks satisfy chatgpt.com's anti-abuse gate, which requires both
 // headers to be present. A real Codex client always sends its own values, which
 // take precedence. The defaults are logged at DEBUG level when applied.
-func mergeClientWSHeaders(providerHeaders, clientHeaders map[string]string) map[string]string {
+func mergeClientWSHeaders(providerHeaders, clientHeaders map[string]string, injectCodexDefaults bool) map[string]string {
 	// Build case-insensitive lookup of provider keys so client cannot silently
 	// shadow a provider header with different capitalisation.
 	providerLower := make(map[string]bool, len(providerHeaders))
@@ -259,6 +265,10 @@ func mergeClientWSHeaders(providerHeaders, clientHeaders map[string]string) map[
 	}
 	for k, v := range providerHeaders {
 		merged[k] = v
+	}
+
+	if !injectCodexDefaults {
+		return merged
 	}
 
 	// Inject identity defaults only when neither the client nor the provider
@@ -441,7 +451,12 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		// in captureAuthHeaders: only non-blocked client headers are merged, so
 		// the provider's OAuth token can never be overwritten by the client.
 		baseHeaders := wsProvider.WebSocketHeaders(key)
-		headers := mergeClientWSHeaders(baseHeaders, auth.clientHeaders)
+		// Inject Codex identity defaults (originator, version) only on the ChatGPT OAuth
+		// path — those are chatgpt.com-specific anti-abuse markers that must not be sent
+		// to the standard api.openai.com endpoint.
+		openaiProvider, _ := provider.(*openai.OpenAIProvider)
+		injectCodexDefaults := openaiProvider != nil && openaiProvider.ChatGPTOAuthEnabled()
+		headers := mergeClientWSHeaders(baseHeaders, auth.clientHeaders, injectCodexDefaults)
 		poolKey := bfws.PoolKey{
 			Provider: req.Provider,
 			KeyID:    key.ID,
