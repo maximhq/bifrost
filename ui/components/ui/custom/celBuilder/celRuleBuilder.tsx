@@ -11,6 +11,7 @@ import { Check, Copy, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Field, QueryBuilder, RuleGroupType } from "react-querybuilder";
 import "react-querybuilder/dist/query-builder.css";
+import { normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { ActionButton } from "./actionButton";
 import { CombinatorSelector } from "./combinatorSelector";
 import { FieldSelector } from "./fieldSelector";
@@ -75,10 +76,13 @@ export function CELRuleBuilder({
 		hideCELExpression: false,
 	},
 }: CELRuleBuilderProps) {
-	const [query, setQuery] = useState<RuleGroupType>(initialQuery || defaultQuery);
+	const normalizedInitial = normalizeRoutingRuleGroupQuery(initialQuery ?? defaultQuery);
+	const [query, setQuery] = useState<RuleGroupType>(normalizedInitial);
 	const [celExpression, setCelExpression] = useState("");
 	const onChangeRef = useRef(onChange);
 	const convertToCELRef = useRef(convertToCEL);
+	/** Skip notifying parent on the first run so opening the editor does not clear an existing CEL from the form when query is empty or invalid. */
+	const skipOnChangeOnMount = useRef(true);
 	const { copy, copied } = useCopyToClipboard();
 
 	// Keep refs updated so the query effect always invokes the latest callbacks
@@ -100,6 +104,10 @@ export function CELRuleBuilder({
 	useEffect(() => {
 		const expression = convertToCELRef.current(query);
 		setCelExpression(expression);
+		if (skipOnChangeOnMount.current) {
+			skipOnChangeOnMount.current = false;
+			return;
+		}
 		onChangeRef.current?.(expression, query);
 	}, [query]);
 
