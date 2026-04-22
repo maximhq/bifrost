@@ -376,7 +376,6 @@ false
 {{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
-{{- if .budget_id }}{{- $_ := set $vk "budget_id" .budget_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}

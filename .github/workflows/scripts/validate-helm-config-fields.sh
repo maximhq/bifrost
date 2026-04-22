@@ -379,6 +379,10 @@ bifrost:
       - id: "budget-1"
         max_limit: 100
         reset_duration: "1M"
+      - id: "budget-vk-1"
+        max_limit: 50
+        reset_duration: "1M"
+        virtual_key_id: "vk-1"
     rateLimits:
       - id: "rl-1"
         token_max_limit: 50000
@@ -410,14 +414,12 @@ bifrost:
         is_active: true
         team_id: "team-1"
         customer_id: "cust-1"
-        budget_id: "budget-1"
         rate_limit_id: "rl-1"
         provider_configs:
           - provider: "openai"
             weight: 1.0
             allowed_models:
               - "gpt-4o"
-            budget_id: "budget-1"
             rate_limit_id: "rl-1"
             keys:
               - key_id: "key-uuid-1"
@@ -478,6 +480,8 @@ render_config "$TMPDIR/values-governance.yaml"
 assert_field_value 'governance.budgets[0].id' '.governance.budgets.[0].id' '"budget-1"'
 assert_field_value 'governance.budgets[0].max_limit' '.governance.budgets.[0].max_limit' '100'
 assert_field_value 'governance.budgets[0].reset_duration' '.governance.budgets.[0].reset_duration' '"1M"'
+assert_field_value 'governance.budgets[1].id' '.governance.budgets.[1].id' '"budget-vk-1"'
+assert_field_value 'governance.budgets[1].virtual_key_id' '.governance.budgets.[1].virtual_key_id' '"vk-1"'
 
 # Rate limits
 assert_field_value 'governance.rate_limits[0].id' '.governance.rate_limits.[0].id' '"rl-1"'
@@ -510,7 +514,6 @@ assert_field_value 'governance.virtual_keys[0].description' '.governance.virtual
 assert_field_value 'governance.virtual_keys[0].is_active' '.governance.virtual_keys.[0].is_active' 'true'
 assert_field_value 'governance.virtual_keys[0].team_id' '.governance.virtual_keys.[0].team_id' '"team-1"'
 assert_field_value 'governance.virtual_keys[0].customer_id' '.governance.virtual_keys.[0].customer_id' '"cust-1"'
-assert_field_value 'governance.virtual_keys[0].budget_id' '.governance.virtual_keys.[0].budget_id' '"budget-1"'
 assert_field_value 'governance.virtual_keys[0].rate_limit_id' '.governance.virtual_keys.[0].rate_limit_id' '"rl-1"'
 assert_field 'governance.virtual_keys[0].provider_configs' '.governance.virtual_keys.[0].provider_configs'
 assert_field_value 'governance.virtual_keys[0].provider_configs[0].provider' '.governance.virtual_keys.[0].provider_configs.[0].provider' '"openai"'

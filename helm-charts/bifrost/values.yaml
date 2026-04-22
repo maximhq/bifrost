@@ -480,14 +480,12 @@ bifrost:
       #   is_active: true
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
-      #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
       #   # Provider-specific configurations (empty means all providers allowed)
       #   provider_configs:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
-      #       budget_id: ""
       #       rate_limit_id: ""
       #       keys:
       #         - key_id: "uuid-of-key"
