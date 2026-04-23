@@ -1,0 +1,4 @@
+- fix: concurrent map panic in PluginPipeline during streaming — guarded postHookTimings with streamingMu and fixed double-pool-release race
+- feat: auto-resolve incoming model for provider-only fallbacks in routing rules
+- fix: drops empty thinking blocks from Anthropic requests to prevent HTTP 400 errors on Claude Code requests
+- feat: adds dedicated streaming HTTP client per provider to eliminate timeouts on long-lived SSE connections
