@@ -1174,9 +1174,9 @@
                           "type": "string",
                           "description": "Target model name"
                         },
-                        "key_id": {
+                        "provider_key_name": {
                           "type": "string",
-                          "description": "Optional API key UUID to pin for this target"
+                          "description": "Optional provider key name. Resolved to internal key_id at config load time."
                         },
                         "weight": {
                           "type": "number",
@@ -1281,8 +1281,8 @@
                     "description": "Scope level for this override"
                   },
                   "virtual_key_id": { "type": "string", "description": "Virtual key ID (required for virtual_key* scopes)" },
-                  "provider_id": { "type": "string", "description": "Provider ID (required for provider* scopes)" },
-                  "provider_key_id": { "type": "string", "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)" },
+                  "provider_id": { "type": "string", "description": "Provider name (required for provider* scopes; field key remains provider_id for compatibility)" },
+                  "provider_key_name": { "type": "string", "description": "Provider key name alias. Resolved to internal provider key ID at config load time." },
                   "match_type": {
                     "type": "string",
                     "enum": ["exact", "wildcard"],

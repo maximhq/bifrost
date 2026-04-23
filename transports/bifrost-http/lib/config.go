@@ -1125,6 +1125,12 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 
 // loadGovernanceConfig loads and merges governance config from file
 func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	if configData.Governance != nil {
+		if err := resolveGovernanceKeyReferences(ctx, config, configData.Governance); err != nil {
+			logger.Fatal("failed to resolve governance key references: %v", err)
+		}
+	}
+
 	var governanceConfig *configstore.GovernanceConfig
 	var err error
 	// Checking from the store
@@ -1154,6 +1160,127 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 	} else {
 		logger.Debug("no governance config in store or config file")
 	}
+}
+
+func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governanceConfig *configstore.GovernanceConfig) error {
+	if governanceConfig == nil {
+		return nil
+	}
+
+	usesNameRefs := false
+	for i := range governanceConfig.RoutingRules {
+		for j := range governanceConfig.RoutingRules[i].Targets {
+			target := &governanceConfig.RoutingRules[i].Targets[j]
+			if target.ProviderKeyName != nil && strings.TrimSpace(*target.ProviderKeyName) != "" {
+				usesNameRefs = true
+				break
+			}
+		}
+		if usesNameRefs {
+			break
+		}
+	}
+	if !usesNameRefs {
+		for i := range governanceConfig.PricingOverrides {
+			override := &governanceConfig.PricingOverrides[i]
+			if override.ProviderKeyName != nil && strings.TrimSpace(*override.ProviderKeyName) != "" {
+				usesNameRefs = true
+				break
+			}
+		}
+	}
+	if !usesNameRefs {
+		return nil
+	}
+	if config.ConfigStore == nil {
+		return fmt.Errorf("provider_key_name references require config store for key lookup")
+	}
+
+	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		resolveProviderKeyIDByProviderAndName := func(provider string, keyName string) (string, error) {
+			var key configstoreTables.TableKey
+			err := tx.WithContext(ctx).
+				Model(&configstoreTables.TableKey{}).
+				Select("key_id").
+				Where("LOWER(provider) = LOWER(?) AND name = ?", provider, keyName).
+				First(&key).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", fmt.Errorf("provider key not found for provider=%q name=%q", provider, keyName)
+			}
+			if err != nil {
+				return "", err
+			}
+			return key.KeyID, nil
+		}
+
+		resolveProviderKeyIDByName := func(keyName string) (string, error) {
+			var key configstoreTables.TableKey
+			err := tx.WithContext(ctx).
+				Model(&configstoreTables.TableKey{}).
+				Select("key_id").
+				Where("name = ?", keyName).
+				First(&key).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", fmt.Errorf("provider key not found for name=%q", keyName)
+			}
+			if err != nil {
+				return "", err
+			}
+			return key.KeyID, nil
+		}
+
+		for i := range governanceConfig.RoutingRules {
+			for j := range governanceConfig.RoutingRules[i].Targets {
+				target := &governanceConfig.RoutingRules[i].Targets[j]
+				keyName := ""
+				if target.ProviderKeyName != nil {
+					keyName = strings.TrimSpace(*target.ProviderKeyName)
+				}
+				if keyName == "" {
+					target.ProviderKeyName = nil
+					continue
+				}
+				if target.KeyID != nil && strings.TrimSpace(*target.KeyID) != "" {
+					return fmt.Errorf("routing rule %q target cannot set key_id together with provider_key_name", governanceConfig.RoutingRules[i].ID)
+				}
+				if target.Provider == nil || strings.TrimSpace(*target.Provider) == "" {
+					return fmt.Errorf("routing rule %q target provider_key_name requires provider to be set", governanceConfig.RoutingRules[i].ID)
+				}
+
+				keyID, err := resolveProviderKeyIDByProviderAndName(*target.Provider, keyName)
+				if err != nil {
+					return fmt.Errorf("routing rule %q target provider_key_name resolution failed: %w", governanceConfig.RoutingRules[i].ID, err)
+				}
+				target.KeyID = bifrost.Ptr(keyID)
+				target.ProviderKeyName = nil
+			}
+		}
+
+		for i := range governanceConfig.PricingOverrides {
+			override := &governanceConfig.PricingOverrides[i]
+			if override.ProviderKeyName == nil {
+				continue
+			}
+
+			keyName := strings.TrimSpace(*override.ProviderKeyName)
+			if keyName == "" {
+				override.ProviderKeyName = nil
+				continue
+			}
+			if override.ProviderKeyID != nil && strings.TrimSpace(*override.ProviderKeyID) != "" {
+				return fmt.Errorf("pricing override %q cannot set both provider_key_id and provider_key_name", override.ID)
+			}
+
+			keyID, err := resolveProviderKeyIDByName(keyName)
+			if err != nil {
+				return fmt.Errorf("pricing override %q provider_key_name resolution failed: %w", override.ID, err)
+			}
+			override.ProviderKeyID = bifrost.Ptr(keyID)
+			override.ProviderKeyName = nil
+		}
+
+		return nil
+	})
 }
 
 // mergeGovernanceConfig merges governance config from file with store
