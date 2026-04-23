@@ -21,7 +21,7 @@ import {
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { MCPLogFilters } from "./filters";
 
@@ -296,7 +296,7 @@ export function MCPLogsDataTable({
             data-testid="prev-page"
             aria-label="Previous page"
           >
-            <ChevronLeft className="size-3" />
+            {loading ? <Loader2 className="size-3 animate-spin" /> : <ChevronLeft className="size-3" />}
           </Button>
 
           <div className="flex items-center gap-1">
@@ -313,7 +313,7 @@ export function MCPLogsDataTable({
             data-testid="next-page"
             aria-label="Next page"
           >
-            <ChevronRight className="size-3" />
+            {loading ? <Loader2 className="size-3 animate-spin" /> : <ChevronRight className="size-3" />}
           </Button>
         </div>
       </div>

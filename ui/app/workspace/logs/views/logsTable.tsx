@@ -320,11 +320,11 @@ export function LogsDataTable({
             variant="ghost"
             size="sm"
             onClick={() => goToPage(currentPage - 1)}
-            disabled={currentPage <= 1}
+            disabled={currentPage <= 1 || loading}
             data-testid="prev-page"
             aria-label="Previous page"
           >
-            <ChevronLeft className="size-3" />
+            {loading ? <Loader2 className="size-3 animate-spin" /> : <ChevronLeft className="size-3" />}
           </Button>
 
           <div className="flex items-center gap-1">
@@ -337,11 +337,11 @@ export function LogsDataTable({
             variant="ghost"
             size="sm"
             onClick={() => goToPage(currentPage + 1)}
-            disabled={totalPages === 0 || currentPage >= totalPages}
+            disabled={totalPages === 0 || currentPage >= totalPages || loading}
             data-testid="next-page"
             aria-label="Next page"
           >
-            <ChevronRight className="size-3" />
+            {loading ? <Loader2 className="size-3 animate-spin" /> : <ChevronRight className="size-3" />}
           </Button>
         </div>
       </div>

@@ -100,6 +100,33 @@ export default function LogsPage() {
     },
   );
 
+  const polling = urlState.polling;
+  const period = urlState.period;
+
+  // Ref holds the interval ID; on each tick, push fresh timestamps into URL state
+  // (with replace) so filters recomputes and RTK sees new args without extra re-renders.
+  const periodPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (periodPollRef.current) {
+      clearInterval(periodPollRef.current);
+      periodPollRef.current = null;
+    }
+    if (!period || !polling) return;
+    periodPollRef.current = setInterval(() => {
+      const { from, to } = getRangeForPeriod(period);
+      setUrlState(
+        {
+          start_time: Math.floor(from.getTime() / 1000),
+          end_time: Math.floor(to.getTime() / 1000),
+        },
+        { history: "replace" },
+      );
+    }, 5000);
+    return () => {
+      if (periodPollRef.current) clearInterval(periodPollRef.current);
+    };
+  }, [period, polling, setUrlState]);
+
   // Convert URL state to filters and pagination for API calls
   const filters: LogFilters = useMemo(
     () => ({
@@ -151,9 +178,6 @@ export default function LogsPage() {
     }),
     [urlState.limit, urlState.offset, urlState.sort_by, urlState.order],
   );
-
-  const polling = urlState.polling;
-  const period = urlState.period;
 
   // RTK Query hooks with polling
   const {
