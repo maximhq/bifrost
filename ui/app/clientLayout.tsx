@@ -14,7 +14,7 @@ import { RbacProvider } from "@enterprise/lib/contexts/rbacContext";
 import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { CookiesProvider } from "react-cookie";
 import { toast, Toaster } from "sonner";
 
@@ -40,9 +40,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
 			<CookiesProvider>
 				<StoreSyncInitializer />
 				<SidebarProvider>
-					<Sidebar />
-					<div className="dark:bg-card custom-scrollbar my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800 content-container">
-						<main className="custom-scrollbar relative mx-auto flex flex-col overflow-y-hidden p-4 content-container-inner">
+					<Suspense>
+						<Sidebar />
+					</Suspense>
+					<div className="dark:bg-card custom-scrollbar content-container my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800">
+						<main className="custom-scrollbar content-container-inner relative mx-auto flex flex-col overflow-y-hidden p-4">
 							{isLoading ? <FullPageLoader /> : <FullPage config={bifrostConfig}>{children}</FullPage>}
 						</main>
 					</div>
