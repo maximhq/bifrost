@@ -148,7 +148,7 @@ export default function MCPLogsPage() {
 			const { from, to } = getRangeForPeriod(urlState.period);
 			const freshEnd = Math.floor(to.getTime() / 1000);
 			if (Math.abs(urlState.end_time - freshEnd) > 60) {
-				setUrlState({ start_time: Math.floor(from.getTime() / 1000), end_time: freshEnd });
+				setUrlState({ start_time: Math.floor(from.getTime() / 1000), end_time: freshEnd }, { history: "replace" });
 			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,7 +160,7 @@ export default function MCPLogsPage() {
 			// If there's a period set, update timestamps to keep the window fresh
 			if (urlState.period) {
 				const { from, to } = getRangeForPeriod(urlState.period);
-				setUrlState({ start_time: Math.floor(from.getTime() / 1000), end_time: Math.floor(to.getTime() / 1000) });
+				setUrlState({ start_time: Math.floor(from.getTime() / 1000), end_time: Math.floor(to.getTime() / 1000) }, { history: "replace" });
 				return;
 			}
 
@@ -181,7 +181,7 @@ export default function MCPLogsPage() {
 					setUrlState({
 						start_time: defaults.startTime,
 						end_time: defaults.endTime,
-					});
+					}, { history: "replace" });
 					initialDefaults.current.startTime = defaults.startTime;
 					initialDefaults.current.endTime = defaults.endTime;
 				}
