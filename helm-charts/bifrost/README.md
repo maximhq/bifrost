@@ -494,6 +494,23 @@ bifrost:
 | `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
 | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout in seconds | `30` |
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
+| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
+| `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |
+| `bifrost.mcp.toolSyncInterval` | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended. | `10m` |
+
+#### MCP Migration Guide (`client.mcp*` -> `mcp.*`)
+
+Prefer MCP settings under `bifrost.mcp` going forward. Older `bifrost.client.mcp*`
+keys are retained for backward compatibility, but new configs should migrate to the
+`mcp.toolManagerConfig` and `mcp.toolSyncInterval` fields.
+
+| Old key | New key |
+|---------|---------|
+| `bifrost.client.mcpAgentDepth` | `bifrost.mcp.toolManagerConfig.maxAgentDepth` |
+| `bifrost.client.mcpToolExecutionTimeout` | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` |
+| `bifrost.client.mcpCodeModeBindingLevel` | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` |
+| `bifrost.client.mcpDisableAutoToolInject` | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` |
+| `bifrost.client.mcpToolSyncInterval` | `bifrost.mcp.toolSyncInterval` |
 
 ### Ingress Configuration
 

@@ -8,6 +8,7 @@ These examples are split into composable value files so you can combine them wit
 - `values-storage-sqlite.yaml` - Storage layer for SQLite StatefulSet mode
 - `values-storage-postgres.yaml` - Storage layer for Postgres mode (chart-managed Postgres)
 - `values-providers.yaml` - Provider keys layer (`openai` + `anthropic`)
+- `values-mcp-routing.yaml` - MCP + routing layer (latest `mcp.*` globals, MCP client config, chain rule/fallback examples)
 - `values-governance-teams.yaml` - Governance base layer (budgets, rate limits, customers, teams)
 - `values-with-routing-rules-pricing.yaml` - Advanced governance layer (virtual keys, routing rules, pricing overrides, access profile)
 - `values-with-pod-label.yaml` - Pod label overlay for StatefulSet template change testing
@@ -85,6 +86,16 @@ helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   -f examples/k8s/examples/values-providers.yaml \
   -f examples/k8s/examples/values-governance-teams.yaml \
   -f examples/k8s/examples/values-with-routing-rules-pricing.yaml \
+  --wait \
+  --timeout 5m
+
+# MCP + routing stack (SQLite + providers + MCP/routing overlay)
+helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
+  --namespace "${NAMESPACE}" \
+  -f examples/k8s/examples/values.yaml \
+  -f examples/k8s/examples/values-storage-sqlite.yaml \
+  -f examples/k8s/examples/values-providers.yaml \
+  -f examples/k8s/examples/values-mcp-routing.yaml \
   --wait \
   --timeout 5m
 

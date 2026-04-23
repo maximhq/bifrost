@@ -41,6 +41,16 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error) {
+	if interval < 0 {
+		return 0, fmt.Errorf("tool_sync_interval must be non-negative, got %q", interval.String())
+	}
+	if interval%time.Second != 0 {
+		return 0, fmt.Errorf("tool_sync_interval must be a whole number of seconds, got %q", interval.String())
+	}
+	return int(interval / time.Second), nil
+}
+
 // schemaKeyFromTableKey converts a database key to a schema key.
 func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
@@ -1212,7 +1222,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Headers:                   dbClient.Headers,
 					AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 					IsPingAvailable:           dbClient.IsPingAvailable,
-					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
 					AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 					DiscoveredTools:           dbClient.DiscoveredTools,
@@ -1251,7 +1261,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			Headers:                   dbClient.Headers,
 			AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 			IsPingAvailable:           dbClient.IsPingAvailable,
-			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
@@ -1335,7 +1345,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		Headers:                   dbClient.Headers,
 		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 		IsPingAvailable:           dbClient.IsPingAvailable,
-		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
@@ -1368,6 +1378,10 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			return err
 		}
 		// Create new client
+		toolSyncIntervalSec, err := toolSyncIntervalDurationToStoredSeconds(clientConfigCopy.ToolSyncInterval)
+		if err != nil {
+			return err
+		}
 		dbClient := tables.TableMCPClient{
 			ClientID:              clientConfigCopy.ID,
 			Name:                  clientConfigCopy.Name,
@@ -1382,7 +1396,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			Headers:               clientConfigCopy.Headers,
 			AllowedExtraHeaders:   clientConfigCopy.AllowedExtraHeaders,
 			IsPingAvailable:       clientConfigCopy.IsPingAvailable,
-			ToolSyncInterval:      int(clientConfigCopy.ToolSyncInterval.Minutes()),
+			ToolSyncInterval:      toolSyncIntervalSec,
 			AllowOnAllVirtualKeys: clientConfigCopy.AllowOnAllVirtualKeys,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
@@ -1452,6 +1466,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal allowed_extra_headers: %w", err)
 		}
+		var stdioConfigJSON *string
+		if clientConfigCopy.StdioConfig != nil {
+			stdioData, marshalErr := json.Marshal(clientConfigCopy.StdioConfig)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal stdio_config: %w", marshalErr)
+			}
+			stdioStr := string(stdioData)
+			stdioConfigJSON = &stdioStr
+		}
 
 		if clientConfigCopy.ToolPricing == nil {
 			clientConfigCopy.ToolPricing = map[string]float64{}
@@ -1486,6 +1509,29 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		if encrypt.IsEnabled() {
 			updates["encryption_status"] = encryptionStatusEncrypted
+		}
+		// Config-file driven reconciliation passes ConfigHash. In this mode we should
+		// also sync connection/auth metadata from config.json and persist the hash.
+		if clientConfigCopy.ConfigHash != "" {
+			connectionStringToPersist := clientConfigCopy.ConnectionString
+			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
+				!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
+				// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
+				cs := *connectionStringToPersist
+				encryptedConnString, encErr := encrypt.Encrypt(cs.Val)
+				if encErr != nil {
+					return fmt.Errorf("failed to encrypt mcp connection string: %w", encErr)
+				}
+				cs.Val = encryptedConnString
+				connectionStringToPersist = &cs
+			}
+
+			updates["config_hash"] = clientConfigCopy.ConfigHash
+			updates["connection_type"] = clientConfigCopy.ConnectionType
+			updates["connection_string"] = connectionStringToPersist
+			updates["stdio_config_json"] = stdioConfigJSON
+			updates["auth_type"] = clientConfigCopy.AuthType
+			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)

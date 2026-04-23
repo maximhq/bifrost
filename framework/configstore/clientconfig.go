@@ -1138,12 +1138,9 @@ func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) 
 
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
-// Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
+// Skips: ID (autoIncrement), ClientID (system-assigned), CreatedAt, UpdatedAt (dynamic fields)
 func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	hash := sha256.New()
-
-	// Hash ClientID
-	hash.Write([]byte(m.ClientID))
 
 	// Hash Name
 	hash.Write([]byte(m.Name))
