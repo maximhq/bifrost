@@ -1,0 +1,58 @@
+# Client configuration example layer (non-MCP, non-model settings).
+# Merge with examples/k8s/examples/values.yaml when testing.
+bifrost:
+  # Dashboard/API auth (password protect dashboard) using env-backed credentials.
+  # The chart renders these into config.json auth_config.admin_username/admin_password.
+  authConfig:
+    isEnabled: true
+    disableAuthOnInference: false
+    adminUsername: "env.BIFROST_ADMIN_USERNAME"
+    adminPassword: "env.BIFROST_ADMIN_PASSWORD"
+
+  client:
+    dropExcessRequests: true
+    disableDbPingsInHealth: true
+    initialPoolSize: 301
+    allowedOrigins:
+      - "*"
+      - "https://app.example.com"
+    enableLogging: true
+    disableContentLogging: false
+    logRetentionDays: 365
+    # Deprecated in transport schema; prefer enforceAuthOnInference.
+    enforceSCIMAuth: false
+    allowDirectKeys: true
+    maxRequestBodySizeMb: 101
+    compat:
+      convertTextToChat: true
+      convertChatToResponses: true
+      shouldDropParams: true
+      shouldConvertParams: true
+    prometheusLabels:
+      - "env:dev"
+      - "team:platform"
+    headerFilterConfig:
+      allowlist:
+        - "x-trace-id"
+      denylist:
+        - "authorization"
+    asyncJobResultTTL: 3623
+    requiredHeaders:
+      - "x-request-id"
+    loggingHeaders:
+      - "x-request-id"
+      - "x-session-id"
+    whitelistedRoutes:
+      - "/health"
+      - "/readyz"
+    hideDeletedVirtualKeysInFilters: true
+    allowedHeaders:
+      - "x-request-id"
+      - "x-session-id"
+      - "x-correlation-id"
+    routingChainMaxDepth: 10
+
+# Inject dashboard auth env vars used by bifrost.authConfig above.
+envFrom:
+  - secretRef:
+      name: bifrost-admin-auth

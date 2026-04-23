@@ -3004,7 +3004,7 @@
           ]
         },
         "url": {
-          "oneOf": [
+          "anyOf": [
             {
               "type": "string",
               "pattern": "^env\\.[A-Za-z0-9_]+$"

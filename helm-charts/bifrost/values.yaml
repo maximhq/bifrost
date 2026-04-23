@@ -869,8 +869,8 @@ vectorStore:
 
     # Redis image configuration
     image:
-      repository: redis
-      tag: "7-alpine"
+      repository: redis/redis-stack-server
+      tag: "7.2.0-v20"
       pullPolicy: IfNotPresent
 
     # Redis subchart configuration (when redis.enabled is true)
