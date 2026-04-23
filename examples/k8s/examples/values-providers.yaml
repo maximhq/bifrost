@@ -1,0 +1,120 @@
+bifrost:
+  providers:
+    # Primary provider
+    openai:
+      network_config:
+        base_url: "https://api.openai.com/v1"
+        default_request_timeout_in_seconds: 58
+        stream_idle_timeout_in_seconds: 59
+        max_retries: 7
+        retry_backoff_initial_ms: 100
+        retry_backoff_max_ms: 70000
+        max_conns_per_host: 8000
+        enforce_http2: true
+        insecure_skip_verify: false
+        # Optional for secure TLS verification with a custom CA (inline PEM or env-backed).
+        ca_cert_pem: "env.OPENAI_CA_CERT_PEM"
+        # Header key/value pairs forwarded to provider requests.
+        extra_headers:
+          x-bf-example-header-enabled: "true"
+          x-bf-example-header-value: "example"
+        # Per-beta-header support overrides (true/false).
+        beta_header_overrides:
+          output-128k-2025-02-19: true
+      # Debug/response visibility controls
+      send_back_raw_request: true
+      send_back_raw_response: true
+      # Persist raw request/response in internal logs only.
+      store_raw_request_response: true
+      concurrency_and_buffer_size:
+        concurrency: 100
+        buffer_size: 1000
+      # Proxy options:
+      # - type: "http" and url: "http://proxy.example:8080"
+      # - type: "socks5" and url: "socks5://proxy.example:1080"
+      # - type: "environment" to use HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+      proxy_config:
+        type: "http"
+        url: "env.OPENAI_PROXY_URL"
+        username: "env.OPENAI_PROXY_USERNAME"
+        password: "env.OPENAI_PROXY_PASSWORD"
+        ca_cert_pem: "env.OPENAI_PROXY_CA_CERT_PEM"
+      keys:
+        - name: "openai-key"
+          value: "env.OPENAI_API_KEY"
+          weight: 1
+          models:
+            - "*"
+          use_for_batch_api: true
+          aliases: {
+            gpt-4o-mini: "gpt-4o-mini-2024-07-18"
+          }
+          # Optional key-scoped config blocks (provider specific)
+          # azure_key_config:
+          #   endpoint: "https://your-resource.openai.azure.com"
+          #   api_version: "2024-02-15-preview"
+          # bedrock_key_config:
+          #   region: "us-east-1"
+          # vertex_key_config:
+          #   project_id: "your-gcp-project-id"
+          #   region: "us-central1"
+          # vllm_key_config:
+          #   url: "http://vllm.default.svc.cluster.local:8000/v1"
+          #   model_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    # Secondary provider
+    anthropic:
+      network_config: {}
+      send_back_raw_request: false
+      send_back_raw_response: false
+      store_raw_request_response: false
+      # Optional provider-level blocks:
+      # concurrency_and_buffer_size:
+      #   concurrency: 100
+      #   buffer_size: 1000
+      # proxy_config:
+      #   type: "none"
+      # custom_provider_config:
+      #   base_provider_type: "anthropic"
+      keys:
+        - name: "anthropic-key"
+          value: "env.ANTHROPIC_API_KEY"
+          weight: 1
+          models:
+            - "*"
+          use_for_batch_api: false
+          aliases: {}
+          # Optional key-scoped config blocks (provider specific)
+          # azure_key_config:
+          #   endpoint: "https://your-resource.openai.azure.com"
+          #   api_version: "2024-02-15-preview"
+          # bedrock_key_config:
+          #   region: "us-east-1"
+          # vertex_key_config:
+          #   project_id: "your-gcp-project-id"
+          #   region: "us-central1"
+          # vllm_key_config:
+          #   url: "http://vllm.default.svc.cluster.local:8000/v1"
+          #   model_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+  # Governance examples: max spend + reset period + rate limits.
+  governance:
+    budgets:
+      - id: "budget-provider-openai"
+        max_limit: 500
+        reset_duration: "1M"
+    rateLimits:
+      - id: "rl-provider-openai"
+        token_max_limit: 120000
+        token_reset_duration: "1d"
+        request_max_limit: 2500
+        request_reset_duration: "1h"
+    providers:
+      - name: "openai"
+        budget_id: "budget-provider-openai"
+        rate_limit_id: "rl-provider-openai"
+
+# Inject provider/proxy env vars from a Kubernetes Secret.
+# Apply examples/k8s/examples/secrets-providers-sample.yaml first.
+envFrom:
+  - secretRef:
+      name: bifrost-provider-secrets-sample

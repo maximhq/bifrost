@@ -96,17 +96,21 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	// Apply TLS settings from NetworkConfig
-	if config.NetworkConfig.InsecureSkipVerify || config.NetworkConfig.CACertPEM != "" {
+	caCertPEM := ""
+	if config.NetworkConfig.CACertPEM != nil {
+		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
+	}
+	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 		if config.NetworkConfig.InsecureSkipVerify {
 			tlsConfig.InsecureSkipVerify = true
 		}
-		if config.NetworkConfig.CACertPEM != "" {
+		if caCertPEM != "" {
 			certPool, err := x509.SystemCertPool()
 			if err != nil {
 				certPool = x509.NewCertPool()
 			}
-			if !certPool.AppendCertsFromPEM([]byte(config.NetworkConfig.CACertPEM)) {
+			if !certPool.AppendCertsFromPEM([]byte(caCertPEM)) {
 				return nil, fmt.Errorf("failed to parse CA certificate PEM")
 			}
 			tlsConfig.RootCAs = certPool

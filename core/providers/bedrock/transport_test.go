@@ -637,7 +637,7 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			DefaultRequestTimeoutInSeconds: 30,
-			CACertPEM:                      testCACert,
+			CACertPEM:                      schemas.NewEnvVar(testCACert),
 			EnforceHTTP2:                   true,
 		},
 	}

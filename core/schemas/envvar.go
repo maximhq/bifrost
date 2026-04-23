@@ -95,8 +95,8 @@ func (e *EnvVar) IsRedacted() bool {
 			return true
 		}
 	}
-	// Check if its string <redacted>
-	if e.Val == "<redacted>" {
+	// Check for <redacted> sentinel (case-insensitive for compatibility)
+	if strings.EqualFold(e.Val, "<redacted>") {
 		return true
 	}
 	return false
