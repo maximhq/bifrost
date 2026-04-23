@@ -44,7 +44,7 @@ import {
   RoutingEngineUsedLabels,
   Status
 } from "@/lib/constants/logs";
-import { LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { ContentBlock, LogEntry, ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { Link } from "@tanstack/react-router";
@@ -1490,6 +1490,22 @@ export function LogDetailView({
                         audioFormat={audioFormat}
                       />
                     )}
+                    {text &&
+                      Array.isArray(message.content) &&
+                      (message.content as ContentBlock[])
+                        .filter((b) => b.type === "image_url")
+                        .map((b, i) => {
+                          const src = b.image_url?.url;
+                          if (!src) return null;
+                          return (
+                            <img
+                              key={`${i}-${src}`}
+                              src={src}
+                              alt="Attached image"
+                              className="mt-2 max-w-full rounded border"
+                            />
+                          );
+                        })}
                     {hasToolCalls && text ? (
                       <div className="text-muted-foreground mt-2 text-[11px]">
                         {message.tool_calls!
@@ -1596,6 +1612,12 @@ export function LogDetailView({
                           {msg.type || "—"}
                         </div>
                       )}
+                      {Array.isArray(msg.content) &&
+                        msg.content
+                          .filter((b) => b?.type === "input_image" && b.image_url)
+                          .map((b, i) => (
+                            <img key={`${i}-${b.image_url}`} src={b.image_url} alt="Attached image" className="mt-2 max-w-full rounded border" />
+                          ))}
                     </MessageRow>
                   );
                 })}
