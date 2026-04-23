@@ -187,29 +187,29 @@
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum depth for MCP agent mode tool execution",
+          "description": "DEPRECATED: Maximum depth for MCP agent mode tool execution. Use mcp.tool_manager_config.max_agent_depth.",
           "default": 10
         },
         "mcp_tool_execution_timeout": {
           "type": "integer",
           "minimum": 1,
-          "description": "Timeout for individual MCP tool execution in seconds",
+          "description": "DEPRECATED: Timeout for individual MCP tool execution in seconds. Use mcp.tool_manager_config.tool_execution_timeout.",
           "default": 30
         },
         "mcp_code_mode_binding_level": {
           "type": "string",
           "enum": ["server", "tool"],
-          "description": "Code mode binding level for MCP tools"
+          "description": "DEPRECATED: Code mode binding level for MCP tools. Use mcp.tool_manager_config.code_mode_binding_level."
         },
         "mcp_tool_sync_interval": {
           "type": "integer",
           "minimum": 0,
-          "description": "Global tool sync interval in minutes (0 = disabled)",
+          "description": "DEPRECATED: Global tool sync interval in minutes (0 = disabled). Use mcp.tool_sync_interval.",
           "default": 10
         },
         "mcp_disable_auto_tool_inject": {
           "type": "boolean",
-          "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
+          "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
         "routing_chain_max_depth": {
@@ -678,8 +678,16 @@
           "$ref": "#/$defs/mcp_tool_manager_config"
         },
         "tool_sync_interval": {
-          "type": "string",
-          "description": "Global default interval for syncing tools from MCP servers (Go duration, e.g. '10m', '1h')"
+          "description": "Global default interval for syncing tools from MCP servers (Go duration string, e.g. '10m', '1h', '0s' to use runtime default). Legacy numeric nanoseconds are also supported for backward compatibility.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -2674,8 +2682,16 @@
           "description": "Auto-execute list of tools. ['*'] means all, [] means none."
         },
         "tool_sync_interval": {
-          "type": "string",
-          "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
+          "description": "Per-client override for tool sync interval. Prefer Go duration strings (e.g. '10m', '-1s', '0s' = use global). Legacy integer nanoseconds are also supported for backward compatibility.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
         },
         "allowed_extra_headers": {
           "type": "array",

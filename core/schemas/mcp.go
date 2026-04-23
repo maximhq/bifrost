@@ -4,8 +4,14 @@
 package schemas
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +66,51 @@ type MCPConfig struct {
 	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
 	// This should be called after the plugin pipeline is no longer needed.
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
+}
+
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
+// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+func (c *MCPConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPConfig
+	aux := &struct {
+		ToolSyncInterval *json.Number `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(aux); err == nil {
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return errors.New("trailing JSON data")
+		}
+		if aux.ToolSyncInterval == nil {
+			return nil
+		}
+		dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
+		if parseErr != nil {
+			return parseErr
+		}
+		c.ToolSyncInterval = dur
+		return nil
+	}
+
+	// Allow Go duration strings while keeping numeric tokens as json.Number.
+	auxStr := &struct {
+		ToolSyncInterval *string `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, auxStr); err != nil {
+		return err
+	}
+	if auxStr.ToolSyncInterval == nil {
+		return nil
+	}
+	dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
+	if err != nil {
+		return err
+	}
+	c.ToolSyncInterval = dur
+	return nil
 }
 
 type MCPToolManagerConfig struct {
@@ -128,6 +179,102 @@ type MCPClientConfig struct {
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+}
+
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
+// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPClientConfig
+	aux := &struct {
+		ToolSyncInterval *json.Number `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(aux); err == nil {
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return errors.New("trailing JSON data")
+		}
+		if aux.ToolSyncInterval == nil {
+			return nil
+		}
+		dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
+		if parseErr != nil {
+			return parseErr
+		}
+		c.ToolSyncInterval = dur
+		return nil
+	}
+
+	// Allow Go duration strings while keeping numeric tokens as json.Number.
+	auxStr := &struct {
+		ToolSyncInterval *string `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, auxStr); err != nil {
+		return err
+	}
+	if auxStr.ToolSyncInterval == nil {
+		return nil
+	}
+	dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
+	if err != nil {
+		return err
+	}
+	c.ToolSyncInterval = dur
+	return nil
+}
+
+func parseFlexibleDurationField(v any, fieldName string) (time.Duration, error) {
+	switch t := v.(type) {
+	case string:
+		d, err := time.ParseDuration(strings.TrimSpace(t))
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s duration %q: %w", fieldName, t, err)
+		}
+		return d, nil
+	case json.Number:
+		raw := strings.TrimSpace(t.String())
+		if raw == "" {
+			return 0, fmt.Errorf("invalid %s: empty numeric value", fieldName)
+		}
+		if strings.Contains(raw, ".") {
+			return 0, fmt.Errorf("invalid %s value %q: fractional numeric values are not allowed; use an integer nanosecond value or a duration string like \"10m\"", fieldName, raw)
+		}
+
+		// Keep parity with JavaScript-safe integer range for config interchange.
+		const maxSafeJSONInt int64 = 9007199254740991
+		const minSafeJSONInt int64 = -9007199254740991
+
+		var ns int64
+		if strings.ContainsAny(raw, "eE") {
+			rat := new(big.Rat)
+			if _, ok := rat.SetString(raw); !ok {
+				return 0, fmt.Errorf("invalid %s value %q: expected an integer nanosecond value", fieldName, raw)
+			}
+			if rat.Denom().Cmp(big.NewInt(1)) != 0 {
+				return 0, fmt.Errorf("invalid %s value %q: fractional numeric values are not allowed; use an integer nanosecond value or a duration string like \"10m\"", fieldName, raw)
+			}
+			if !rat.Num().IsInt64() {
+				return 0, fmt.Errorf("invalid %s value %q: out of int64 range for nanoseconds", fieldName, raw)
+			}
+			ns = rat.Num().Int64()
+		} else {
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid %s value %q: expected an integer nanosecond value", fieldName, raw)
+			}
+			ns = parsed
+		}
+
+		if ns < minSafeJSONInt || ns > maxSafeJSONInt {
+			return 0, fmt.Errorf("invalid %s value %q: exceeds safe integer range", fieldName, raw)
+		}
+		return time.Duration(ns), nil
+	default:
+		return 0, fmt.Errorf("invalid %s type %T: expected duration string (e.g. \"10m\") or number", fieldName, v)
+	}
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
