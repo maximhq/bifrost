@@ -5,19 +5,15 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getErrorMessage, useDeleteMCPLogsMutation } from "@/lib/store";
-import {
-	useGetMCPLogsQuery,
-	useGetMCPLogsStatsQuery,
-	useLazyGetMCPLogsQuery,
-} from "@/lib/store/apis/mcpLogsApi";
+import { useGetMCPLogsQuery, useGetMCPLogsStatsQuery, useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { createMCPColumns } from "./views/columns";
 import { MCPEmptyState } from "./views/emptyState";
 import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
@@ -84,9 +80,13 @@ export default function MCPLogsPage() {
 			end_time: dateUtils.toISOString(urlState.end_time),
 		}),
 		[
-			urlState.tool_names, urlState.server_labels, urlState.status,
-			urlState.virtual_key_ids, urlState.content_search,
-			urlState.start_time, urlState.end_time,
+			urlState.tool_names,
+			urlState.server_labels,
+			urlState.status,
+			urlState.virtual_key_ids,
+			urlState.content_search,
+			urlState.start_time,
+			urlState.end_time,
 		],
 	);
 
@@ -104,21 +104,28 @@ export default function MCPLogsPage() {
 	const period = urlState.period;
 
 	// RTK Query hooks with polling
-	const { data: logsData, isLoading: logsIsLoading, isFetching: logsIsFetching, refetch: refetchLogs } =
-		useGetMCPLogsQuery(
-			{ filters, pagination },
-			{
-				pollingInterval: showEmptyState ? 3000 : (polling && !period ? 5000 : 0),
-				refetchOnMountOrArgChange: true,
-				skipPollingIfUnfocused: true,
-			}
-		);
+	const {
+		data: logsData,
+		isLoading: logsIsLoading,
+		isFetching: logsIsFetching,
+		refetch: refetchLogs,
+	} = useGetMCPLogsQuery(
+		{ filters, pagination },
+		{
+			pollingInterval: showEmptyState ? 3000 : polling ? 5000 : 0,
+			refetchOnMountOrArgChange: true,
+			skipPollingIfUnfocused: true,
+		},
+	);
 
-	const { data: statsData, isFetching: statsIsFetching, refetch: refetchStats } =
-		useGetMCPLogsStatsQuery(
-			{ filters },
-			{ pollingInterval: polling && !period ? 5000 : 0, refetchOnMountOrArgChange: true, skipPollingIfUnfocused: true }
-		);
+	const {
+		data: statsData,
+		isFetching: statsIsFetching,
+		refetch: refetchStats,
+	} = useGetMCPLogsStatsQuery(
+		{ filters },
+		{ pollingInterval: polling ? 5000 : 0, refetchOnMountOrArgChange: true, skipPollingIfUnfocused: true },
+	);
 
 	const logs = logsData?.logs ?? [];
 	const totalItems = logsData?.stats?.total_executions ?? 0;
@@ -134,24 +141,6 @@ export default function MCPLogsPage() {
 			setShowEmptyState(false);
 		}
 	}, [logsData, showEmptyState]);
-
-	// Period polling interval — slides the URL timestamps so the time window stays fresh
-	const periodRef = useRef(period);
-	periodRef.current = period;
-	useEffect(() => {
-		if (!polling || !period) return;
-		const interval = setInterval(() => {
-			const { from, to } = getRangeForPeriod(periodRef.current);
-			setUrlState(
-				{
-					start_time: Math.floor(from.getTime() / 1000),
-					end_time: Math.floor(to.getTime() / 1000),
-				},
-				{ history: "replace" },
-			);
-		}, 5000);
-		return () => clearInterval(interval);
-	}, [polling, period, setUrlState]);
 
 	// Freshen period timestamps on mount
 	useEffect(() => {
@@ -219,10 +208,7 @@ export default function MCPLogsPage() {
 
 	// Derive selectedLog from URL param
 	const selectedLogId = urlState.selected_log || null;
-	const selectedLog = useMemo(
-		() => (selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null),
-		[selectedLogId, logs],
-	);
+	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
 
 	// Helper to update filters in URL
 	const setFilters = useCallback(
@@ -338,10 +324,7 @@ export default function MCPLogsPage() {
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
 	// Navigation for log detail sheet
-	const selectedLogIndex = useMemo(
-		() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
-		[selectedLogId, logs],
-	);
+	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
 	const handleLogNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -404,7 +387,7 @@ export default function MCPLogsPage() {
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
-										<div className="min-w-0 w-full">
+										<div className="w-full min-w-0">
 											<div className="text-muted-foreground text-xs">{card.title}</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
 										</div>

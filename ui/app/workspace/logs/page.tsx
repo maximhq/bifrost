@@ -147,7 +147,7 @@ export default function LogsPage() {
 		useGetLogsQuery(
 			{ filters, pagination },
 			{
-				pollingInterval: showEmptyState ? 3000 : (polling && !period ? 5000 : 0),
+				pollingInterval: showEmptyState ? 3000 : (polling ? 5000 : 0),
 				refetchOnMountOrArgChange: true,
 				skipPollingIfUnfocused: true,
 			}
@@ -156,13 +156,13 @@ export default function LogsPage() {
 	const { data: statsData, isFetching: statsIsFetching, refetch: refetchStats } =
 		useGetLogsStatsQuery(
 			{ filters },
-			{ pollingInterval: polling && !period ? 5000 : 0, refetchOnMountOrArgChange: true, skipPollingIfUnfocused: true }
+			{ pollingInterval: polling ? 5000 : 0, refetchOnMountOrArgChange: true, skipPollingIfUnfocused: true }
 		);
 
 	const { data: histogram, isFetching: histogramIsFetching, refetch: refetchHistogram } =
 		useGetLogsHistogramQuery(
 			{ filters },
-			{ pollingInterval: polling && !period ? 5000 : 0, refetchOnMountOrArgChange: true, skipPollingIfUnfocused: true }
+			{ pollingInterval: polling ? 5000 : 0, refetchOnMountOrArgChange: true, skipPollingIfUnfocused: true }
 		);
 
 	const logs = logsData?.logs ?? [];
@@ -180,24 +180,6 @@ export default function LogsPage() {
 			setShowEmptyState(false);
 		}
 	}, [logsData, showEmptyState]);
-
-	// Period polling interval — slides the URL timestamps so the time window stays fresh
-	const periodRef = useRef(period);
-	periodRef.current = period;
-	useEffect(() => {
-		if (!polling || !period) return;
-		const interval = setInterval(() => {
-			const { from, to } = getRangeForPeriod(periodRef.current);
-			setUrlState(
-				{
-					start_time: Math.floor(from.getTime() / 1000),
-					end_time: Math.floor(to.getTime() / 1000),
-				},
-				{ history: "replace" },
-			);
-		}, 5000);
-		return () => clearInterval(interval);
-	}, [polling, period, setUrlState]);
 
 	// Freshen period timestamps on mount
 	useEffect(() => {
