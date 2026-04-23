@@ -320,6 +320,34 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 	}
 }
 
+func TestValidateRoutingFallbacks(t *testing.T) {
+	tests := []struct {
+		name    string
+		fbs     []string
+		wantErr bool
+	}{
+		{name: "nil", fbs: nil, wantErr: false},
+		{name: "empty", fbs: []string{}, wantErr: false},
+		{name: "provider model", fbs: []string{"openai/gpt-4o"}, wantErr: false},
+		{name: "provider slash incoming model", fbs: []string{"azure/"}, wantErr: false},
+		{name: "bare known provider name rejected", fbs: []string{"openrouter"}, wantErr: true},
+		{name: "bare model rejected", fbs: []string{"gpt-4o"}, wantErr: true},
+		{name: "empty element", fbs: []string{"openai/gpt-4o", ""}, wantErr: true},
+		{name: "huggingface namespace not a provider prefix", fbs: []string{"meta-llama/Llama-3.1-8B"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRoutingFallbacks(tt.fbs)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func bifrostFloat(v float64) *float64 {
 	return &v
 }

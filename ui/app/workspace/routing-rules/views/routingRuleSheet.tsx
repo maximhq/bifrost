@@ -507,7 +507,11 @@ export function RoutingRuleSheet({
 					{/* Fallbacks */}
 					<div className="space-y-3">
 						<div className="flex items-center justify-between">
-							<Label>Fallbacks</Label>
+							<div>
+								<Label>Fallbacks</Label>								<p className="text-muted-foreground text-xs mt-0.5">
+									Provider is required, but model is optional. Leave model empty to use the incoming request value.
+								</p>
+							</div>
 							<Button
 								type="button"
 								variant="outline"
@@ -578,7 +582,7 @@ export function RoutingRuleSheet({
 													provider={fbProvider || undefined}
 													value={fbModel}
 													onChange={handleModelChange}
-													placeholder="Select model..."
+													placeholder="Incoming (optional)"
 													isSingleSelect
 													disabled={!fbProvider}
 													className="!h-9 !min-h-9 w-full"
