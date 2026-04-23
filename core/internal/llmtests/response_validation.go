@@ -584,6 +584,24 @@ func validateChatToolCalls(t *testing.T, response *schemas.BifrostChatResponse, 
 
 // validateChatTechnicalFields checks technical aspects of the chat response
 func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Strict checks: these fields must always be populated
+	if response.ExtraFields.RequestType == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.RequestType is empty")
+	}
+	if response.ExtraFields.Provider == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.Provider is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.OriginalModelRequested) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.OriginalModelRequested is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.ResolvedModelUsed) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.ResolvedModelUsed is empty")
+	}
+
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
@@ -976,6 +994,24 @@ func validateResponsesToolCalls(t *testing.T, response *schemas.BifrostResponses
 
 // validateResponsesTechnicalFields checks technical aspects of the Responses API response
 func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Strict checks: these fields must always be populated
+	if response.ExtraFields.RequestType == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.RequestType is empty")
+	}
+	if response.ExtraFields.Provider == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.Provider is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.OriginalModelRequested) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.OriginalModelRequested is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.ResolvedModelUsed) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.ResolvedModelUsed is empty")
+	}
+
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
