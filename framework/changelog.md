@@ -1,0 +1,1 @@
+- fix: Fixes OTEL exporting in `framework/tracing/llmspan.go` to show input and output messages correctly
