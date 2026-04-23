@@ -708,6 +708,11 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}
+		// Strip thinking blocks with empty "thinking" field — Anthropic rejects them.
+		jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
 		// Sanitize raw-body fields the target provider does not support.
 		// Behavioural parity with StripUnsupportedAnthropicFields on the typed path.
 		// Feature gating keyed to schemas.Anthropic (not providerName) to match
@@ -1068,6 +1073,36 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 		"web_fetch_",     // No web fetch on Bedrock
 		"code_execution", // No code execution on Bedrock
 	},
+}
+
+// StripEmptyThinkingBlocks removes thinking content blocks where
+// "thinking" is an empty string. Anthropic rejects such blocks with a 400.
+func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return jsonBody, nil
+	}
+	var err error
+	for mi, msg := range messagesResult.Array() {
+		contentResult := msg.Get("content")
+		if !contentResult.Exists() || !contentResult.IsArray() {
+			continue
+		}
+		var toStrip []int
+		for ci, block := range contentResult.Array() {
+			if block.Get("type").String() == "thinking" && block.Get("thinking").String() == "" {
+				toStrip = append(toStrip, ci)
+			}
+		}
+		for i := len(toStrip) - 1; i >= 0; i-- {
+			path := fmt.Sprintf("messages.%d.content.%d", mi, toStrip[i])
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+			if err != nil {
+				return nil, fmt.Errorf("failed to strip empty thinking block at %s: %w", path, err)
+			}
+		}
+	}
+	return jsonBody, nil
 }
 
 // StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
