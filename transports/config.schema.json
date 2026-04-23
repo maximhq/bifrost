@@ -900,7 +900,14 @@
                     "default": 50
                   }
                 },
-                "required": ["host", "port", "user", "password", "db_name", "ssl_mode"],
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
                 "additionalProperties": false
               }
             }
@@ -991,7 +998,14 @@
                     "default": 50
                   }
                 },
-                "required": ["host", "port", "user", "password", "db_name", "ssl_mode"],
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
                 "additionalProperties": false
               }
             }
@@ -2593,7 +2607,7 @@
           "description": "API keys for this provider"
         },
         "network_config": {
-          "$ref": "#/$defs/network_config_without_base_url"
+          "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_and_buffer_size"
@@ -2617,7 +2631,6 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_sgl_config": {
@@ -2632,7 +2645,7 @@
           "description": "API keys for this provider"
         },
         "network_config": {
-          "$ref": "#/$defs/network_config_without_base_url"
+          "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_and_buffer_size"
@@ -2656,7 +2669,6 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": ["keys"],
       "additionalProperties": false
     },
     "mcp_client_config": {
@@ -2899,14 +2911,10 @@
             },
             "oneOf": [
               {
-                "required": [
-                  "mcp_client_id"
-                ]
+                "required": ["mcp_client_id"]
               },
               {
-                "required": [
-                  "mcp_client_name"
-                ]
+                "required": ["mcp_client_name"]
               }
             ],
             "additionalProperties": false
@@ -3225,7 +3233,11 @@
                   "description": "Number of failed probes before marking as failed"
                 }
               },
-              "required": ["timeout_seconds", "success_threshold", "failure_threshold"],
+              "required": [
+                "timeout_seconds",
+                "success_threshold",
+                "failure_threshold"
+              ],
               "additionalProperties": false
             }
           },
@@ -3639,11 +3651,7 @@
           "description": "Reset window, e.g. \"1M\", \"1h\""
         }
       },
-      "required": [
-        "id",
-        "max_limit",
-        "reset_duration"
-      ],
+      "required": ["id", "max_limit", "reset_duration"],
       "additionalProperties": false
     },
     "rate_limit_line": {
@@ -3735,9 +3743,7 @@
           }
         }
       },
-      "required": [
-        "name"
-      ],
+      "required": ["name"],
       "additionalProperties": false
     },
     "access_profile_provider_config": {
@@ -3769,9 +3775,7 @@
           "$ref": "#/$defs/rate_limit_line"
         }
       },
-      "required": [
-        "provider_name"
-      ],
+      "required": ["provider_name"],
       "additionalProperties": false
     },
     "access_profile_mcp_tool_group": {
@@ -3783,9 +3787,7 @@
           "description": "MCP tool group ID"
         }
       },
-      "required": [
-        "tool_group_id"
-      ],
+      "required": ["tool_group_id"],
       "additionalProperties": false
     },
     "access_profile_mcp_server": {
@@ -3796,9 +3798,7 @@
           "description": "MCP server identifier"
         }
       },
-      "required": [
-        "mcp_server_id"
-      ],
+      "required": ["mcp_server_id"],
       "additionalProperties": false
     },
     "access_profile_mcp_tool_override": {
@@ -3818,11 +3818,7 @@
           "description": "Override action"
         }
       },
-      "required": [
-        "mcp_client_id",
-        "tool_name",
-        "action"
-      ],
+      "required": ["mcp_client_id", "tool_name", "action"],
       "additionalProperties": false
     },
     "audit_logs_config": {
@@ -4000,7 +3996,14 @@
           "description": "Internal hash for change detection (auto-managed)"
         }
       },
-      "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"],
+      "required": [
+        "id",
+        "name",
+        "scope_kind",
+        "match_type",
+        "pattern",
+        "request_types"
+      ],
       "additionalProperties": false
     },
     "pricing_override_match_type": {
