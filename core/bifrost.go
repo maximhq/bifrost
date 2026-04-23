@@ -4103,6 +4103,9 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 		if IsFinalChunk(ctx) {
 			drainAndAttachPluginLogs(ctx)
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
+				tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
+			}
 		}
 		return resp, bifrostErr
 	}
