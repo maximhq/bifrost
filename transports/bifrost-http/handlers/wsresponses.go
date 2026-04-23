@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -346,6 +348,32 @@ func (h *WSResponsesHandler) upstreamWSIdleTimeout(provider schemas.ModelProvide
 	return time.Duration(nc.StreamIdleTimeoutInSeconds) * time.Second
 }
 
+// wsFramePreview returns a preview string of the first 600 bytes of data.
+// For valid UTF-8 payloads it returns the raw string; for binary it returns a
+// hex dump of the first 300 bytes (which expands to at most 600 chars).
+// The second return value is true when the payload was truncated.
+func wsFramePreview(data []byte) (string, bool) {
+	const maxPreviewBytes = 600
+	const maxHexInputBytes = 300 // hex.EncodeToString doubles length → 600 chars max
+
+	truncated := len(data) > maxPreviewBytes
+	preview := data
+	if len(preview) > maxPreviewBytes {
+		preview = preview[:maxPreviewBytes]
+	}
+
+	if utf8.Valid(preview) {
+		return string(preview), truncated
+	}
+
+	// Binary: hex-dump up to maxHexInputBytes of the raw payload
+	raw := data
+	if len(raw) > maxHexInputBytes {
+		raw = raw[:maxHexInputBytes]
+	}
+	return hex.EncodeToString(raw), truncated
+}
+
 // eventLoop reads events from the client WebSocket and processes them.
 func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, auth *authHeaders) {
 	for {
@@ -527,20 +555,39 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		return true
 	}
 
-	// Forward the raw event to upstream
-	if err := upstream.WriteMessage(ws.TextMessage, rawEvent); err != nil {
-		logger.Warn("upstream WS write failed for %s: %v, falling back to HTTP bridge", req.Provider, err)
-		h.pool.Discard(upstream)
-		session.SetUpstream(nil)
-		return false
-	}
-
 	// Retrieve tracer and traceID for chunk accumulation
 	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 
 	// Determine the per-read idle deadline from provider config (or fallback constant).
 	idleTimeout := h.upstreamWSIdleTimeout(req.Provider)
+
+	// DIAGNOSTIC: track frames and exit reason for end-of-stream summary log.
+	// Logged at debug level; silent at LOG_LEVEL=info (default). Enable with LOG_LEVEL=debug.
+	diagFrameIndex := 0
+	diagExitReason := "unknown"
+	diagTerminalType := ""
+	defer func() {
+		args := []any{
+			"provider", string(req.Provider),
+			"model", req.Model,
+			"frames_forwarded", diagFrameIndex,
+			"exit_reason", diagExitReason,
+		}
+		if diagTerminalType != "" {
+			args = append(args, "terminal_type", diagTerminalType)
+		}
+		logger.Debug("ws upstream stream ended", args...)
+	}()
+
+	// Forward the raw event to upstream
+	if err := upstream.WriteMessage(ws.TextMessage, rawEvent); err != nil {
+		logger.Warn("upstream WS write failed for %s: %v, falling back to HTTP bridge", req.Provider, err)
+		h.pool.Discard(upstream)
+		session.SetUpstream(nil)
+		diagExitReason = "upstream_dial_or_write_failed"
+		return false
+	}
 
 	// Read response events from upstream and relay to client, running post-hooks per chunk
 	forwardedAny := false
@@ -560,6 +607,24 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		// reads start their own fresh idle window.
 		if readErr == nil {
 			_ = upstream.SetReadDeadline(time.Time{})
+		}
+
+		// DIAGNOSTIC: log each raw upstream frame at debug level (silent at LOG_LEVEL=info).
+		if readErr == nil {
+			diagFrameIndex++
+			preview, truncated := wsFramePreview(data)
+			frameArgs := []any{
+				"provider", string(req.Provider),
+				"model", req.Model,
+				"msg_type", msgType,
+				"len", len(data),
+				"frame_index", diagFrameIndex,
+				"preview", preview,
+			}
+			if truncated {
+				frameArgs = append(frameArgs, "truncated", true)
+			}
+			logger.Debug("ws upstream frame", frameArgs...)
 		}
 
 		if readErr != nil {
@@ -594,12 +659,14 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 					hooks.PostHookRunner(ctx, synthResp, bifrostErr) //nolint:errcheck
 				}
 				writeWSError(session, 504, "upstream_timeout", timeoutMsg)
+				diagExitReason = "idle_timeout"
 				return true
 			}
 
 			if !forwardedAny {
 				// Nothing was forwarded yet: fall through to HTTP bridge.
 				logger.Warn("upstream WS read failed for %s (no data forwarded): %v, falling back to HTTP bridge", req.Provider, readErr)
+				diagExitReason = "upstream_dial_or_write_failed"
 				return false
 			}
 
@@ -619,6 +686,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 						tracer.AddStreamingChunk(traceID, synthResp)
 					}
 					hooks.PostHookRunner(ctx, synthResp, nil) //nolint:errcheck
+					diagExitReason = "clean_close"
 				} else {
 					// Abnormal close: still finalize as error so the UI
 					// doesn't stay "processing" forever.
@@ -631,6 +699,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 					}
 					hooks.PostHookRunner(ctx, synthResp, nil) //nolint:errcheck
 					writeWSError(session, 502, "upstream_connection_error", "upstream websocket stream interrupted")
+					diagExitReason = "abnormal_close"
 				}
 			}
 			return true
@@ -673,6 +742,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 				h.pool.Discard(upstream)
 				session.SetUpstream(nil)
 				writeWSBifrostError(session, postErr)
+				diagExitReason = "post_hook_error"
 				return true
 			}
 			if isTerminal {
@@ -683,12 +753,17 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		if writeErr := session.WriteMessage(msgType, data); writeErr != nil {
 			h.pool.Discard(upstream)
 			session.SetUpstream(nil)
+			diagExitReason = "client_write_failed"
 			return true
 		}
 		forwardedAny = true
 
 		if isTerminal {
 			h.trackResponseID(session, data)
+			diagExitReason = "terminal_event_detected"
+			if streamResp != nil {
+				diagTerminalType = string(streamResp.Type)
+			}
 			return true
 		}
 	}
