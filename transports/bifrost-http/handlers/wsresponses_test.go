@@ -3,6 +3,7 @@ package handlers
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
@@ -426,5 +427,28 @@ func TestCreateBifrostContextFromAuth_RequestHeadersPopulated(t *testing.T) {
 	}
 	if headers["authorization"] != "Bearer some-token" {
 		t.Errorf("authorization = %q, want %q", headers["authorization"], "Bearer some-token")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// upstreamWSIdleTimeout: config resolution
+// ---------------------------------------------------------------------------
+
+// TestUpstreamWSIdleTimeout_FallbackWhenConfigNil verifies that the default
+// 60 s constant is returned when h.config is nil (no per-provider override).
+func TestUpstreamWSIdleTimeout_FallbackWhenConfigNil(t *testing.T) {
+	h := &WSResponsesHandler{config: nil}
+	got := h.upstreamWSIdleTimeout(schemas.OpenAI)
+	if got != wsUpstreamIdleTimeout {
+		t.Errorf("upstreamWSIdleTimeout = %v, want %v (wsUpstreamIdleTimeout)", got, wsUpstreamIdleTimeout)
+	}
+}
+
+// TestUpstreamWSIdleTimeout_DefaultIs60s verifies the constant value itself is
+// 60 s so that documentation comments remain accurate.
+func TestUpstreamWSIdleTimeout_DefaultIs60s(t *testing.T) {
+	want := 60 * time.Second
+	if wsUpstreamIdleTimeout != want {
+		t.Errorf("wsUpstreamIdleTimeout = %v, want %v", wsUpstreamIdleTimeout, want)
 	}
 }
