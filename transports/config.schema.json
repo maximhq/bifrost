@@ -1852,12 +1852,12 @@
         },
         "retry_backoff_initial": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Initial retry backoff in milliseconds"
         },
         "retry_backoff_max": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Maximum retry backoff in milliseconds"
         },
         "enforce_http2": {
@@ -1870,7 +1870,7 @@
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA). Supports inline PEM or env.VAR_NAME."
         },
         "stream_idle_timeout_in_seconds": {
           "type": "integer",
@@ -1916,12 +1916,12 @@
         },
         "retry_backoff_initial": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Initial retry backoff in milliseconds"
         },
         "retry_backoff_max": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Maximum retry backoff in milliseconds"
         },
         "enforce_http2": {
@@ -2980,21 +2980,29 @@
           "description": "Type of proxy to use"
         },
         "url": {
-          "type": "string",
-          "format": "uri",
-          "description": "URL of the proxy server"
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            {
+              "type": "string",
+              "format": "uri"
+            }
+          ],
+          "description": "URL of the proxy server (supports env.VAR_NAME or a literal URI)"
         },
         "username": {
           "type": "string",
-          "description": "Username for proxy authentication"
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
         },
         "password": {
           "type": "string",
-          "description": "Password for proxy authentication"
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies)"
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, supports env.VAR_NAME)"
         }
       },
       "required": ["type"],

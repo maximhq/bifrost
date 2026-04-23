@@ -2937,19 +2937,19 @@
         },
         "retry_backoff_initial_ms": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 100
         },
         "retry_backoff_max_ms": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 100
         },
         "insecure_skip_verify": {
           "type": "boolean",
-          "description": "Disable TLS certificate verification for provider connections"
+          "description": "Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments."
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for provider endpoint connections"
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections. Supports inline PEM or env.VAR_NAME."
         },
         "stream_idle_timeout_in_seconds": {
           "type": "integer",
@@ -2962,6 +2962,10 @@
           "minimum": 1,
           "maximum": 10000,
           "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
+        },
+        "enforce_http2": {
+          "type": "boolean",
+          "description": "Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)."
         },
         "beta_header_overrides": {
           "type": "object",
@@ -3000,17 +3004,32 @@
           ]
         },
         "url": {
-          "type": "string",
-          "format": "uri"
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\.[A-Za-z0-9_]+$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "not": {
+                "pattern": "^env\\.[A-Za-z0-9_]+$"
+              }
+            }
+          ],
+          "description": "URL of the proxy server (supports env.VAR_NAME)"
         },
         "username": {
-          "type": "string"
+          "type": "string",
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
         },
         "password": {
-          "type": "string"
+          "type": "string",
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
         },
         "ca_cert_pem": {
-          "type": "string"
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.VAR_NAME)"
         }
       },
       "required": [

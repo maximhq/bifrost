@@ -2285,7 +2285,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 		SendBackRawResponse: true,
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: schemas.HTTPProxy,
-			URL:  "http://proxy.example.com:8080",
+			URL:  schemas.NewEnvVar("http://proxy.example.com:8080"),
 		},
 	}
 
@@ -2974,7 +2974,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewEnvVar("sk-123"), Weight: 1}},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -3052,7 +3052,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType: "openai",
@@ -3295,7 +3295,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3312,7 +3312,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3335,7 +3335,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		// ConcurrencyAndBufferSize: nil (removed)
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3384,7 +3384,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: false, // Changed to false
 	}
@@ -3408,7 +3408,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -13586,7 +13586,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("ProxyConfig_GORMRoundTrip", func(t *testing.T) {
 		proxyConfig := &schemas.ProxyConfig{
 			Type: schemas.HTTPProxy,
-			URL:  "http://proxy.example.com:8080",
+			URL:  schemas.NewEnvVar("http://proxy.example.com:8080"),
 		}
 
 		providerToSave := tables.TableProvider{

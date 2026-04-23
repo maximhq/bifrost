@@ -1,0 +1,35 @@
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+    type: postgres
+  logsStore:
+    enabled: true
+    type: postgres
+
+postgresql:
+  enabled: true
+  external:
+    enabled: false
+  auth:
+    username: "bifrost"
+    password: "bifrost"
+    database: "bifrost"
+  primary:
+    persistence:
+      enabled: true
+      size: 2Gi
+
+# Prevent Bifrost from starting before Postgres is ready.
+initContainers:
+  - name: wait-for-postgresql
+    image: postgres:16-alpine
+    imagePullPolicy: IfNotPresent
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h "bifrost-statefulset-upgrade-postgresql" -p 5432 -U "bifrost"; do
+          echo "waiting for postgresql..."
+          sleep 2
+        done

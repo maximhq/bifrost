@@ -1,0 +1,247 @@
+image:
+  # Update this if you want to test another release.
+  tag: "v1.5.0-prerelease5"
+
+# SQLite + persistence + no existingClaim => StatefulSet path
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    size: 2Gi
+
+bifrost:
+  providers:
+    # Example provider with model limit on a specific key.
+    openai:
+      keys:
+        - name: "openai-limited-key"
+          value: "env.OPENAI_API_KEY"
+          weight: 1
+          use_for_batch_api: true
+          models:
+            - "gpt-4o-mini"
+          aliases:
+            gpt-4o-mini: "gpt-4o-mini-2024-07-18"
+        - name: "openai-fallback-key"
+          value: "env.OPENAI_API_KEY_2"
+          weight: 1
+          models:
+            - "*"
+    anthropic:
+      keys:
+        - name: "anthropic-key"
+          value: "env.ANTHROPIC_API_KEY"
+          weight: 1
+
+  governance:
+    # Cost controls used by teams, virtual keys, models, and providers.
+    budgets:
+      - id: "budget-team-default"
+        max_limit: 250
+        reset_duration: "1M"
+        calendar_aligned: true
+      - id: "budget-vk-premium"
+        max_limit: 1000
+        reset_duration: "1M"
+      # Provider-scoped budget (applies to openai via governance.providers below).
+      - id: "budget-provider-openai"
+        max_limit: 500
+        reset_duration: "1M"
+      # Model-scoped budget (applies specifically to gpt-4o-mini via modelConfigs).
+      - id: "budget-model-gpt4o-mini"
+        max_limit: 120
+        reset_duration: "1M"
+      # Another model budget to show per-model differentiation.
+      - id: "budget-model-claude-sonnet"
+        max_limit: 400
+        reset_duration: "1M"
+
+    # Request/token throttling profiles that can be referenced by entities.
+    rateLimits:
+      - id: "rl-team-default"
+        token_max_limit: 200000
+        token_reset_duration: "1d"
+        request_max_limit: 5000
+        request_reset_duration: "1h"
+      # Provider-scoped rate limit for openai.
+      - id: "rl-provider-openai"
+        token_max_limit: 120000
+        token_reset_duration: "1d"
+        request_max_limit: 2500
+        request_reset_duration: "1h"
+      # Model-scoped rate limit for gpt-4o-mini.
+      - id: "rl-model-gpt4o-mini"
+        token_max_limit: 40000
+        token_reset_duration: "1d"
+        request_max_limit: 800
+        request_reset_duration: "1h"
+      # Model-scoped rate limit for claude sonnet.
+      - id: "rl-model-claude-sonnet"
+        token_max_limit: 71000
+        token_reset_duration: "1d"
+        request_max_limit: 1300
+        request_reset_duration: "1h"
+
+    # Optional business hierarchy for governance scoping.
+    customers:
+      - id: "customer-acme"
+        name: "Acme Corp"
+        budget_id: "budget-team-default"
+        rate_limit_id: "rl-team-default"
+
+    teams:
+      - id: "team-platform"
+        name: "Platform Team"
+        customer_id: "customer-acme"
+        budget_id: "budget-team-default"
+        rate_limit_id: "rl-team-default"
+
+    # Example virtual keys with explicit VK -> provider_config relationships.
+    virtualKeys:
+      - id: "vk-routing-demo"
+        name: "Routing Demo Key"
+        description: "VK used to test model-limited provider_configs + routing."
+        value: "sk-bf-demo-routing-key"
+        is_active: true
+        team_id: "team-platform"
+        rate_limit_id: "rl-team-default"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            rate_limit_id: "rl-model-gpt4o-mini"
+            allowed_models:
+              - "gpt-4o-mini"
+          - provider: "anthropic"
+            weight: 1
+            rate_limit_id: "rl-model-claude-sonnet"
+            allowed_models:
+              - "claude-3-5-sonnet-latest"
+      - id: "vk-multi-provider-demo"
+        name: "Multi Provider Demo Key"
+        description: "VK with multiple provider_configs to stress Helm/config sync."
+        value: "sk-bf-demo-multiprovider-key"
+        is_active: true
+        team_id: "team-platform"
+        rate_limit_id: "rl-team-default"
+        provider_configs:
+          - provider: "openai"
+            weight: 0.6
+            allowed_models:
+              - "gpt-4o-mini"
+              - "gpt-4o"
+          - provider: "anthropic"
+            weight: 0.4
+            allowed_models:
+              - "claude-3-5-sonnet-latest"
+
+    # Per-model governance bindings.
+    modelConfigs:
+      - id: "mc-openai-mini"
+        model_name: "gpt-4o-mini"
+        provider: "openai"
+        budget_id: "budget-model-gpt4o-mini"
+        rate_limit_id: "rl-model-gpt4o-mini"
+      - id: "mc-anthropic-sonnet"
+        model_name: "claude-3-5-sonnet-latest"
+        provider: "anthropic"
+        budget_id: "budget-model-claude-sonnet"
+        rate_limit_id: "rl-model-claude-sonnet"
+
+    # Provider-level governance defaults.
+    providers:
+      - name: "openai"
+        budget_id: "budget-provider-openai"
+        rate_limit_id: "rl-provider-openai"
+      - name: "anthropic"
+        budget_id: "budget-vk-premium"
+
+    # Dynamic request routing rules (CEL + weighted targets + scope).
+    routingRules:
+      - id: "route-openai-mini-to-anthropic"
+        name: "Route GPT-4o-mini to Anthropic Sonnet"
+        description: "Example routing rule to test provider/model remapping."
+        enabled: true
+        cel_expression: "model == 'gpt-4o-mini'"
+        chain_rule: false
+        targets:
+          - provider: "anthropic"
+            model: "claude-3-5-sonnet-latest"
+            weight: 1
+        # Fallbacks are tried in order; use "provider" or "provider/model" (e.g. openai/gpt-4o-mini).
+        fallbacks:
+          - "openai/gpt-4o-mini"
+          - "anthropic/claude-3-5-sonnet"
+        scope: "global"
+        priority: 10
+        # Optional dashboard rule-builder state (react-querybuilder). Runtime uses cel_expression only.
+        # Shape must include combinator and rules[]; each rule uses field / operator / value from the CEL builder.
+        query:
+          combinator: and
+          rules:
+            - id: route-mini-model
+              field: model
+              operator: "="
+              value: "gpt-4o-mini"
+      - id: "route-vk-team-specific"
+        name: "VK specific fallback route"
+        description: "Route high-tier key traffic to OpenAI primary."
+        enabled: true
+        # CEL variables use snake_case (see routing engine); virtual_key_id is the VK id from governance.virtualKeys.
+        # No query here: virtual_key_id is not in the dashboard field list, so use cel_expression only for this condition.
+        cel_expression: 'virtual_key_id == "vk-routing-demo"'
+        targets:
+          - provider: "openai"
+            model: "gpt-4o-mini"
+            weight: 0.7
+          - weight: 0.3
+        scope: "virtual_key"
+        scope_id: "vk-routing-demo"
+        priority: 1
+
+    # Runtime pricing patches used by the model catalog.
+    pricingOverrides:
+      - id: "override-openai-mini-chat"
+        name: "Override GPT-4o-mini chat pricing"
+        scope_kind: "global"
+        match_type: "exact"
+        pattern: "gpt-4o-mini"
+        request_types:
+          - "chat_completion"
+          - "responses"
+        pricing_patch: "{\"input_cost_per_token\":0.00000050,\"output_cost_per_token\":0.00000150}"
+      - id: "override-anthropic-provider-wildcard"
+        name: "Anthropic wildcard override"
+        scope_kind: "provider"
+        provider_id: "anthropic"
+        match_type: "wildcard"
+        pattern: "claude-*"
+        request_types:
+          - "chat_completion"
+        pricing_patch: "{\"input_cost_per_token\":0.00000250,\"output_cost_per_token\":0.00000750}"
+      - id: "override-vk-provider-key-exact"
+        name: "Virtual key provider exact override"
+        scope_kind: "virtual_key_provider"
+        virtual_key_id: "vk-routing-demo"
+        provider_id: "openai"
+        match_type: "exact"
+        pattern: "gpt-4o-mini"
+        request_types:
+          - "chat_completion"
+          - "responses"
+        pricing_patch: "{\"input_cost_per_token\":0.00000040,\"output_cost_per_token\":0.00000120}"
+
+  # Access profile model policy fields (all_models_allowed + allowed_models).
+  accessProfiles:
+    - name: "model-policy-profile"
+      description: "Example access profile with model allow-list."
+      is_active: true
+      provider_configs:
+        - provider_name: "openai"
+          all_models_allowed: false
+          allowed_models:
+            - "gpt-4o-mini"
+            - "gpt-4o"
+
+# Keep pod-label delta to exercise StatefulSet template upgrades.
+podLabels:
+  example.bifrost.ai/upgrade-safe: "true"

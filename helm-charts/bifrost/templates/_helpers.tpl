@@ -328,6 +328,52 @@ false
 {{- $providers := dict }}
 {{- range $providerName, $providerConfig := .Values.bifrost.providers }}
 {{- $providerCopy := deepCopy $providerConfig }}
+{{- if $providerConfig.network_config }}
+{{- $networkConfig := dict }}
+{{- if $providerConfig.network_config.base_url }}
+{{- $_ := set $networkConfig "base_url" $providerConfig.network_config.base_url }}
+{{- end }}
+{{- if $providerConfig.network_config.extra_headers }}
+{{- $_ := set $networkConfig "extra_headers" $providerConfig.network_config.extra_headers }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "default_request_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "default_request_timeout_in_seconds" $providerConfig.network_config.default_request_timeout_in_seconds }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "max_retries" }}
+{{- $_ := set $networkConfig "max_retries" $providerConfig.network_config.max_retries }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_initial" }}
+{{- $_ := set $networkConfig "retry_backoff_initial" $providerConfig.network_config.retry_backoff_initial }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_initial_ms" }}
+{{- $_ := set $networkConfig "retry_backoff_initial" $providerConfig.network_config.retry_backoff_initial_ms }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_max" }}
+{{- $_ := set $networkConfig "retry_backoff_max" $providerConfig.network_config.retry_backoff_max }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_max_ms" }}
+{{- $_ := set $networkConfig "retry_backoff_max" $providerConfig.network_config.retry_backoff_max_ms }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "insecure_skip_verify" }}
+{{- $_ := set $networkConfig "insecure_skip_verify" $providerConfig.network_config.insecure_skip_verify }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "ca_cert_pem" }}
+{{- $_ := set $networkConfig "ca_cert_pem" $providerConfig.network_config.ca_cert_pem }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "stream_idle_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "stream_idle_timeout_in_seconds" $providerConfig.network_config.stream_idle_timeout_in_seconds }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "max_conns_per_host" }}
+{{- $_ := set $networkConfig "max_conns_per_host" $providerConfig.network_config.max_conns_per_host }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "enforce_http2" }}
+{{- $_ := set $networkConfig "enforce_http2" $providerConfig.network_config.enforce_http2 }}
+{{- end }}
+{{- if $providerConfig.network_config.beta_header_overrides }}
+{{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
+{{- end }}
+{{- $_ := set $providerCopy "network_config" $networkConfig }}
+{{- end }}
 {{- if $providerConfig.keys }}
 {{- $keys := list }}
 {{- range $key := $providerConfig.keys }}

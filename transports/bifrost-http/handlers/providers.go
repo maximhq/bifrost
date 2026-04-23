@@ -383,6 +383,19 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		oldConfigRaw = &configstore.ProviderConfig{}
 	}
 
+	oldRedactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
+	if err != nil {
+		if !errors.Is(err, lib.ErrNotFound) {
+			logger.Warn("Failed to get old redacted config for provider %s: %v", provider, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if oldRedactedConfig == nil {
+		oldRedactedConfig = &configstore.ProviderConfig{}
+	}
+
 	// Construct ProviderConfig from individual fields (keys are managed separately via /keys endpoints)
 	config := configstore.ProviderConfig{
 		Keys:                     oldConfigRaw.Keys,
@@ -428,16 +441,24 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
 	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
-	if oldConfigRaw.NetworkConfig != nil && (nc.CACertPEM == "<REDACTED>" || nc.CACertPEM == "********") {
-		nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+	if oldConfigRaw.NetworkConfig != nil && oldRedactedConfig.NetworkConfig != nil && nc.CACertPEM != nil {
+		if nc.CACertPEM.IsRedacted() && nc.CACertPEM.Equals(oldRedactedConfig.NetworkConfig.CACertPEM) {
+			nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+		}
 	}
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
-	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
-		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
+	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil && oldRedactedConfig.ProxyConfig != nil {
+		if payload.ProxyConfig.URL != nil && payload.ProxyConfig.URL.IsRedacted() && payload.ProxyConfig.URL.Equals(oldRedactedConfig.ProxyConfig.URL) {
+			payload.ProxyConfig.URL = oldConfigRaw.ProxyConfig.URL
+		}
+		if payload.ProxyConfig.Username != nil && payload.ProxyConfig.Username.IsRedacted() && payload.ProxyConfig.Username.Equals(oldRedactedConfig.ProxyConfig.Username) {
+			payload.ProxyConfig.Username = oldConfigRaw.ProxyConfig.Username
+		}
+		if payload.ProxyConfig.Password != nil && payload.ProxyConfig.Password.IsRedacted() && payload.ProxyConfig.Password.Equals(oldRedactedConfig.ProxyConfig.Password) {
 			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
 		}
-		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
+		if payload.ProxyConfig.CACertPEM != nil && payload.ProxyConfig.CACertPEM.IsRedacted() && payload.ProxyConfig.CACertPEM.Equals(oldRedactedConfig.ProxyConfig.CACertPEM) {
 			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
 		}
 	}

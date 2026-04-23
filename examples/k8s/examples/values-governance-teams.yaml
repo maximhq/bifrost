@@ -1,0 +1,27 @@
+bifrost:
+  governance:
+    budgets:
+      - id: "budget-team-default"
+        max_limit: 250
+        reset_duration: "1M"
+        calendar_aligned: true
+
+    rateLimits:
+      - id: "rl-team-default"
+        token_max_limit: 200000
+        token_reset_duration: "1d"
+        request_max_limit: 5000
+        request_reset_duration: "1h"
+
+    customers:
+      - id: "customer-acme"
+        name: "Acme Corp"
+        budget_id: "budget-team-default"
+        rate_limit_id: "rl-team-default"
+
+    teams:
+      - id: "team-platform"
+        name: "Platform Team"
+        customer_id: "customer-acme"
+        budget_id: "budget-team-default"
+        rate_limit_id: "rl-team-default"
