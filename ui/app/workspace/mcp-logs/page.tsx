@@ -73,6 +73,7 @@ export default function MCPLogsPage() {
 	// Refresh time range on page focus/visibility
 	useEffect(() => {
 		const refreshDefaultsIfStale = () => {
+			if (!polling) return
 			if (urlState.period) {
 				const { from, to } = getRangeForPeriod(urlState.period);
 				setUrlState(
@@ -120,7 +121,7 @@ export default function MCPLogsPage() {
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 			window.removeEventListener("focus", handleFocus);
 		};
-	}, [urlState.period, urlState.start_time, urlState.end_time, setUrlState]);
+	}, [urlState.period, urlState.start_time, urlState.end_time, setUrlState, polling]);
 
 	// Refresh the time window every 5s while live polling is on and a relative period is active.
 	// Updating start_time/end_time changes RTK args → triggers a refetch without needing pollingInterval.

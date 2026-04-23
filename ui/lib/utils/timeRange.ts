@@ -29,7 +29,7 @@ export function getRangeForPeriod(period: string): { from: Date; to: Date } {
 			from.setDate(from.getDate() - 30);
 			break;
 		default:
-			from.setHours(from.getHours() - 24);
+			from.setHours(from.getHours() - 1);
 	}
 	return { from, to };
 }

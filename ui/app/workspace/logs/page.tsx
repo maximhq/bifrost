@@ -119,6 +119,7 @@ export default function LogsPage() {
 	// Refresh time range on page focus/visibility
 	useEffect(() => {
 		const refreshDefaultsIfStale = () => {
+			if (!polling) return
 			if (urlState.period) {
 				const { from, to } = getRangeForPeriod(urlState.period);
 				setUrlState(
@@ -168,7 +169,7 @@ export default function LogsPage() {
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 			window.removeEventListener("focus", handleFocus);
 		};
-	}, [urlState.period, urlState.start_time, urlState.end_time, setUrlState]);
+	}, [urlState.period, urlState.start_time, urlState.end_time, setUrlState, polling]);
 
 	// Refresh the time window every 5s while live polling is on and a relative period is active.
 	// Updating start_time/end_time changes RTK args → triggers a refetch without needing pollingInterval.
@@ -214,12 +215,12 @@ export default function LogsPage() {
 			missing_cost_only: urlState.missing_cost_only,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
+					try {
+						return JSON.parse(urlState.metadata_filters);
+					} catch {
+						return undefined;
+					}
+				})()
 				: undefined,
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
