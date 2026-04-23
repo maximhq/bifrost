@@ -37,6 +37,7 @@ import type {
 import { dateUtils } from "@/lib/types/logs";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
 import { ExportPopover } from "./components/exportPopover";
@@ -149,12 +150,15 @@ export default function DashboardPage() {
 	// MCP filter data
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
+	const rawSearchParams = useSearchParams();
+	const hasExplicitTimeRange = rawSearchParams.has("start_time") && rawSearchParams.has("end_time");
+
 	// URL state management
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
 			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
-			period: parseAsString.withDefault("24h"),
+			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "24h"),
 			tab: parseAsString.withDefault("overview"),
 			virtual_key_ids: parseAsString.withDefault(""),
 			providers: parseAsString.withDefault(""),
