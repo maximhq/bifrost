@@ -9,3 +9,10 @@
 - fix: delete fallbacks from outgoing Anthropic requests
 - feat: claude-opus-4-7 compatibility
 - fix: token usage for vllm
+- feat: adds dedicated streaming HTTP client per provider to eliminate timeouts on long-lived SSE connections
+- fix: drops empty thinking blocks from Anthropic requests to prevent HTTP 400 errors on Claude Code requests
+- fix: concurrent map panic in PluginPipeline during streaming — guarded postHookTimings with streamingMu and fixed double-pool-release race
+- fix: stream cancellation safety — guarded channel sends and finalizer protection prevent goroutine leaks on client disconnect
+- feat: add support for Anthropic structured output and response format (thanks [@emirhanmutlu-natuvion](https://github.com/emirhanmutlu-natuvion)!)
+- feat: preserve MCP tool annotations in bidirectional MCP-to-Bifrost schema conversion
+- fix: prevent send on closed channel panic in provider queue shutdown

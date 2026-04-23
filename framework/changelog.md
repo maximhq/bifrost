@@ -1,1 +1,5 @@
+- chore: upgraded core to v1.4.20
 - feat: automatically add incoming model to empty fallbacks in routing rules
+- fix: preserve context values in async requests
+- fix: capture responses streaming API errors
+- fix: allow custom providers without list-models endpoint to accept any model
