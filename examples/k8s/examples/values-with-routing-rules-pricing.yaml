@@ -184,19 +184,39 @@ bifrost:
               value: "gpt-4o-mini"
       - id: "route-vk-team-specific"
         name: "VK specific fallback route"
-        description: "Route high-tier key traffic to OpenAI primary."
+        description: "UI-friendly chained rule: remap OpenAI mini traffic, then re-evaluate."
         enabled: true
-        # CEL variables use snake_case (see routing engine); virtual_key_id is the VK id from governance.virtualKeys.
-        # No query here: virtual_key_id is not in the dashboard field list, so use cel_expression only for this condition.
-        cel_expression: 'virtual_key_id == "vk-routing-demo"'
+        chain_rule: true
+        # UI-supported CEL fields example (model/provider are available in Query Builder).
+        cel_expression: "model == 'gpt-4o-mini' && provider == 'openai'"
         targets:
           - provider: "openai"
             model: "gpt-4o-mini"
+            # provider_key_name is resolved to internal key_id at config load time.
+            # This matches "bifrost.providers.openai.keys[].name" below.
+            provider_key_name: "openai-limited-key"
             weight: 0.7
-          - weight: 0.3
+          - provider: "anthropic"
+            model: "claude-3-5-sonnet-latest"
+            weight: 0.3
+        fallbacks:
+          - "openai/gpt-4o-mini"
+          - "anthropic/claude-3-5-sonnet-latest"
         scope: "virtual_key"
         scope_id: "vk-routing-demo"
         priority: 1
+        # Optional dashboard rule-builder state (react-querybuilder). Runtime uses cel_expression only.
+        query:
+          combinator: and
+          rules:
+            - id: route-mini-model-openai
+              field: model
+              operator: "="
+              value: "gpt-4o-mini"
+            - id: route-mini-provider-openai
+              field: provider
+              operator: "="
+              value: "openai"
 
     # Runtime pricing patches used by the model catalog.
     pricingOverrides:
@@ -229,6 +249,15 @@ bifrost:
           - "chat_completion"
           - "responses"
         pricing_patch: "{\"input_cost_per_token\":0.00000040,\"output_cost_per_token\":0.00000120}"
+      - id: "override-provider-key-by-name-exact"
+        name: "Provider key exact override by key name"
+        scope_kind: "provider_key"
+        provider_key_name: "openai-limited-key"
+        match_type: "exact"
+        pattern: "gpt-4o-mini"
+        request_types:
+          - "chat_completion"
+        pricing_patch: "{\"input_cost_per_token\":0.00000045,\"output_cost_per_token\":0.00000135}"
 
   # Access profile model policy fields (all_models_allowed + allowed_models).
   accessProfiles:

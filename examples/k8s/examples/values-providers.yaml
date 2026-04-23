@@ -18,9 +18,6 @@ bifrost:
         extra_headers:
           x-bf-example-header-enabled: "true"
           x-bf-example-header-value: "example"
-        # Per-beta-header support overrides (true/false).
-        beta_header_overrides:
-          output-128k-2025-02-19: true
       # Debug/response visibility controls
       send_back_raw_request: true
       send_back_raw_response: true
@@ -75,6 +72,9 @@ bifrost:
       #   type: "none"
       # custom_provider_config:
       #   base_provider_type: "anthropic"
+      # Per-beta-header support overrides (true/false). Applicable for Anthropic only.
+      # beta_header_overrides:
+        # output-128k-2025-02-19: true
       keys:
         - name: "anthropic-key"
           value: "env.ANTHROPIC_API_KEY"

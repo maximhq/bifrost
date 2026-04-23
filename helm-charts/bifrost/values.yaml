@@ -516,11 +516,21 @@ bifrost:
       #   targets:
       #     - provider: "azure"
       #       model: ""              # Empty means use original model
+      #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
       #       weight: 1.0
       #   fallbacks: ["openai"]
       #   scope: "global"           # Options: global, team, customer, virtual_key
       #   scope_id: ""              # Required for non-global scopes
       #   priority: 0               # Lower = evaluated first
+    pricingOverrides: []
+      # - id: "override-1"
+      #   name: "Provider key pricing override"
+      #   scope_kind: "provider_key" # global|provider|provider_key|virtual_key|virtual_key_provider|virtual_key_provider_key
+      #   provider_key_name: ""      # Optional provider key name alias (resolved to internal provider key ID at load time)
+      #   match_type: "exact"        # exact|wildcard
+      #   pattern: "gpt-4o-mini"
+      #   request_types: ["chat_completion"]
+      #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     authConfig:
       adminUsername: ""
       adminPassword: ""

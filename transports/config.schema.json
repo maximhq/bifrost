@@ -1586,10 +1586,10 @@
           "minLength": 1,
           "description": "Target model name. Omit to use the incoming request model"
         },
-        "key_id": {
+        "provider_key_name": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional API key UUID to pin for this target. Omit for load-balanced key selection"
+          "description": "Optional provider key name. Resolved to internal key_id at config load time. Requires provider."
         },
         "weight": {
           "type": "number",
@@ -3775,11 +3775,11 @@
         },
         "provider_id": {
           "type": "string",
-          "description": "Provider ID (required for provider* scopes)"
+          "description": "Provider name (required for provider* scopes; field key remains provider_id for compatibility)"
         },
-        "provider_key_id": {
+        "provider_key_name": {
           "type": "string",
-          "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)"
+          "description": "Provider key name alias. Resolved to internal provider key ID at config load time."
         },
         "match_type": {
           "type": "string",

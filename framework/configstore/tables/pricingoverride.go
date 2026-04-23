@@ -16,6 +16,7 @@ type TablePricingOverride struct {
 	VirtualKeyID     *string   `gorm:"type:varchar(255);index:idx_pricing_override_scope" json:"virtual_key_id,omitempty"`
 	ProviderID       *string   `gorm:"type:varchar(255);index:idx_pricing_override_scope" json:"provider_id,omitempty"`
 	ProviderKeyID    *string   `gorm:"type:varchar(255);index:idx_pricing_override_scope" json:"provider_key_id,omitempty"`
+	ProviderKeyName  *string   `gorm:"-" json:"provider_key_name,omitempty"` // config-only alias; resolved to provider_key_id during load
 	MatchType        string    `gorm:"type:varchar(20);index:idx_pricing_override_match;not null" json:"match_type"`
 	Pattern          string    `gorm:"type:varchar(255);not null" json:"pattern"`
 	RequestTypesJSON string    `gorm:"type:text" json:"-"`
