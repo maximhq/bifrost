@@ -1,3 +1,3 @@
-- chore: upgraded core to v1.4.21 and framework to v1.2.40
+- chore: upgraded core to v1.4.23 and framework to v1.2.40
 - fix: sets default for `insecure` to `true` for config.json
 - fix: includes fallbacks in otel metrics
