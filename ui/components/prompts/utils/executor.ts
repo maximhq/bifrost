@@ -1,4 +1,4 @@
-import { Message, type CompletionUsage, type ToolCall, type VariableMap, replaceVariablesInMessages } from "@/lib/message";
+import { Message, type Annotation, type CompletionUsage, type ToolCall, type VariableMap, replaceVariablesInMessages } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import type { ModelParams } from "@/lib/types/prompts";
 
@@ -20,8 +20,8 @@ function getBaseUrl() {
 
 export interface ExecutionCallbacks {
 	onStreamingStart: (allMessages: Message[], placeholder: Message) => void;
-	onStreamChunk: (content: string) => void;
-	onComplete: (content: string, usage?: CompletionUsage) => void;
+	onStreamChunk: (content: string, annotations?: Annotation[]) => void;
+	onComplete: (content: string, usage?: CompletionUsage, annotations?: Annotation[]) => void;
 	onToolCallComplete: (content: string, toolCalls: ToolCall[], usage?: CompletionUsage) => void;
 	onEmptyResponse: () => void;
 	onError: (error: string) => void;
@@ -87,11 +87,12 @@ export async function executePrompt(
 			const data = await response.json();
 			const content = data.choices?.[0]?.message?.content ?? "";
 			const toolCalls = data.choices?.[0]?.message?.tool_calls as ToolCall[] | undefined;
+			const annotations = data.choices?.[0]?.message?.annotations as Annotation[] | undefined;
 			const usage = data.usage as CompletionUsage | undefined;
 			if (toolCalls && toolCalls.length > 0) {
 				callbacks.onToolCallComplete(content, toolCalls, usage);
 			} else if (content) {
-				callbacks.onComplete(content, usage);
+				callbacks.onComplete(content, usage, annotations);
 			} else {
 				callbacks.onEmptyResponse();
 			}
@@ -103,6 +104,12 @@ export async function executePrompt(
 			let assistantContent = "";
 			let streamUsage: CompletionUsage | undefined;
 			const toolCallsMap = new Map<number, ToolCall>();
+			let collectedAnnotations: Annotation[] = [];
+			// Accumulate annotations from delta chunks as they arrive.
+			// The backend deduplicates via schemas.AnnotationCompositeKey; this UI-side
+			// guard using the same (url, start_index, end_index) key provides a safety net
+			// in case a provider resends the same annotation across multiple chunks.
+			const annotationSeen = new Set<string>();
 			let buffer = "";
 
 			while (true) {
@@ -131,7 +138,24 @@ export async function executePrompt(
 						const content = delta?.content;
 						if (content) {
 							assistantContent += content;
-							callbacks.onStreamChunk(assistantContent);
+						}
+
+						const deltaAnnotations = delta?.annotations as Annotation[] | undefined;
+						if (deltaAnnotations?.length) {
+							const newAnnotations = deltaAnnotations.filter((a, i) => {
+								const base = a.url_citation?.url || a.url_citation?.title || "";
+								const k = `${base}:${a.url_citation?.start_index ?? 0}:${a.url_citation?.end_index ?? 0}`;
+								if (annotationSeen.has(k)) return false;
+								annotationSeen.add(k);
+								return true;
+							});
+							if (newAnnotations.length) {
+								collectedAnnotations = [...collectedAnnotations, ...newAnnotations];
+							}
+						}
+
+						if (content || deltaAnnotations?.length) {
+							callbacks.onStreamChunk(assistantContent, collectedAnnotations.length > 0 ? collectedAnnotations : undefined);
 						}
 
 						const deltaToolCalls = delta?.tool_calls as Array<{
@@ -170,7 +194,7 @@ export async function executePrompt(
 			if (toolCalls.length > 0) {
 				callbacks.onToolCallComplete(assistantContent, toolCalls, streamUsage);
 			} else if (assistantContent) {
-				callbacks.onComplete(assistantContent, streamUsage);
+				callbacks.onComplete(assistantContent, streamUsage, collectedAnnotations.length > 0 ? collectedAnnotations : undefined);
 			} else {
 				callbacks.onEmptyResponse();
 			}

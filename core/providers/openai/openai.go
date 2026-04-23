@@ -1114,6 +1114,35 @@ func HandleOpenAIChatCompletionStreaming(
 		var created int
 		forwardedTerminalFinishReason := false
 
+		// Collect provider-specific top-level fields across streaming chunks.
+		// Perplexity (direct and via OpenRouter) returns citations, search_results,
+		// and videos in the final chunk which often has an empty delta and would
+		// otherwise be skipped by the content-gated forwarding condition below.
+		// This fix is scoped to the known fields above; other provider-specific
+		// top-level metadata should be added here when encountered.
+		var collectedCitations []string
+		var collectedSearchResults []schemas.SearchResult
+		var collectedVideos []schemas.VideoResult
+		// seenCitations deduplicates URL strings (first-seen wins — no richer form exists).
+		seenCitations := make(map[string]struct{})
+		// seenSearchResultURLs / seenVideoURLs map URL → slice index so that a later
+		// chunk carrying updated metadata for the same URL overwrites the earlier entry
+		// (keep-last). URL is used as a best-effort dedup key; entries with an empty
+		// URL are appended unconditionally to avoid collapsing distinct results.
+		// Note: assumes metadata sets are bounded in size (typical for web-search APIs).
+		seenSearchResultURLs := make(map[string]int)
+		seenVideoURLs := make(map[string]int)
+		// Collect delta.annotations from individual chunks so the full aggregated set can
+		// be attached to the final synthetic chunk for downstream clients that prefer not
+		// to implement streaming logic. Each annotation chunk still flows through to the
+		// client individually via the streaming gate below.
+		// Composite key "url:startIndex:endIndex" (or "title:startIndex:endIndex" for
+		// no-URL annotations) keeps per-position citations distinct while deduplicating
+		// exact repeats with keep-last semantics so a later, richer copy always wins.
+		// TODO: Generalize metadata accumulation for all provider-specific top-level fields.
+		var collectedAnnotations []schemas.ChatAssistantMessageAnnotation
+		seenAnnotationKeys := make(map[string]int) // value = index in collectedAnnotations
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -1262,6 +1291,44 @@ func HandleOpenAIChatCompletionStreaming(
 					response.Usage = nil
 				}
 
+				// Collect citations/search_results/videos before the choices length check
+				// so they are not lost when they arrive in empty-choices or empty-delta chunks.
+				for _, c := range response.Citations {
+					if _, exists := seenCitations[c]; !exists {
+						seenCitations[c] = struct{}{}
+						collectedCitations = append(collectedCitations, c)
+					}
+				}
+				// SearchResults and Videos use keep-last semantics: if the same URL appears
+				// again in a later chunk (e.g. with a more complete title or snippet), the
+				// newer entry replaces the earlier one at the same position in the slice so
+				// that insertion order is preserved. Entries with an empty URL are always
+				// appended (no dedup) to avoid silently collapsing distinct results.
+				for _, sr := range response.SearchResults {
+					if sr.URL == "" {
+						collectedSearchResults = append(collectedSearchResults, sr)
+						continue
+					}
+					if idx, exists := seenSearchResultURLs[sr.URL]; exists {
+						collectedSearchResults[idx] = sr
+					} else {
+						seenSearchResultURLs[sr.URL] = len(collectedSearchResults)
+						collectedSearchResults = append(collectedSearchResults, sr)
+					}
+				}
+				for _, v := range response.Videos {
+					if v.URL == "" {
+						collectedVideos = append(collectedVideos, v)
+						continue
+					}
+					if idx, exists := seenVideoURLs[v.URL]; exists {
+						collectedVideos[idx] = v
+					} else {
+						seenVideoURLs[v.URL] = len(collectedVideos)
+						collectedVideos = append(collectedVideos, v)
+					}
+				}
+
 				if response.Model != "" {
 					modelName = response.Model
 				}
@@ -1285,14 +1352,29 @@ func HandleOpenAIChatCompletionStreaming(
 					created = response.Created
 				}
 
-				// Handle regular content chunks, including reasoning
+				// Collect annotations from this chunk for the final synthetic chunk aggregation.
+				if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+					for _, ann := range choice.ChatStreamResponseChoice.Delta.Annotations {
+						key := annotationCompositeKey(ann)
+						if idx, exists := seenAnnotationKeys[key]; exists {
+							// Keep-last: a later chunk may carry richer metadata (title, sources, type).
+							collectedAnnotations[idx] = ann
+						} else {
+							seenAnnotationKeys[key] = len(collectedAnnotations)
+							collectedAnnotations = append(collectedAnnotations, ann)
+						}
+					}
+				}
+
+				// Handle regular content chunks, including reasoning and annotations
 				if choice.ChatStreamResponseChoice != nil &&
 					choice.ChatStreamResponseChoice.Delta != nil &&
 					((choice.ChatStreamResponseChoice.Delta.Content != nil && *choice.ChatStreamResponseChoice.Delta.Content != "") ||
 						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
-						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
+						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0 ||
+						len(choice.ChatStreamResponseChoice.Delta.Annotations) > 0) {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
 						forwardedTerminalFinishReason = true
 					}
@@ -1322,6 +1404,16 @@ func HandleOpenAIChatCompletionStreaming(
 				finalFinishReason = nil
 			}
 			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finalFinishReason, chunkIndex, modelName, created)
+			// Attach any provider-specific top-level fields collected during the stream
+			// (e.g. Perplexity citations that arrived in empty-delta chunks).
+			response.Citations = collectedCitations
+			response.SearchResults = collectedSearchResults
+			response.Videos = collectedVideos
+			// Attach aggregated annotations to the final synthetic chunk so downstream
+			// clients can retrieve the complete set without streaming logic.
+			if len(collectedAnnotations) > 0 {
+				response.Choices[0].ChatStreamResponseChoice.Delta.Annotations = collectedAnnotations
+			}
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}

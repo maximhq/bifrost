@@ -194,16 +194,29 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 			{/* Handle annotations */}
 			{message.annotations && message.annotations.length > 0 && (
 				<CollapsibleBox title="Annotations" onCopy={() => JSON.stringify(message.annotations, null, 2)} collapsedHeight={100}>
-					<CodeEditor
-						className="z-0 w-full"
-						shouldAdjustInitialHeight={true}
-						maxHeight={400}
-						wrap={true}
-						code={JSON.stringify(message.annotations, null, 2)}
-						lang="json"
-						readonly={true}
-						options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-					/>
+					<div className="flex flex-wrap gap-2 px-4 py-3">
+						{message.annotations.map((ann, idx) => {
+							const uc = ann?.url_citation;
+							if (!uc?.url) {
+								// eslint-disable-next-line no-console
+								console.debug("[annotations] skipping malformed annotation at index", idx, ann);
+								return null;
+							}
+							const base = uc.url || uc.title || "";
+							return (
+								<a
+									key={`${base}:${uc.start_index ?? 0}:${uc.end_index ?? 0}`}
+									href={uc.url}
+									target="_blank"
+									rel="noopener noreferrer"
+									className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+									title={uc.url}
+								>
+									<span className="max-w-[240px] truncate">{uc.title || uc.url}</span>
+								</a>
+							);
+						})}
+					</div>
 				</CollapsibleBox>
 			)}
 

@@ -107,7 +107,38 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		}
 	}
 
+	// Deep copy Annotations slice
+	if original.Annotations != nil {
+		copy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(original.Annotations))
+		for i, ann := range original.Annotations {
+			copyAnn := schemas.ChatAssistantMessageAnnotation{
+				Type: ann.Type,
+				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+					StartIndex: ann.URLCitation.StartIndex,
+					EndIndex:   ann.URLCitation.EndIndex,
+					Title:      ann.URLCitation.Title,
+				},
+			}
+			if ann.URLCitation.URL != nil {
+				urlCopy := *ann.URLCitation.URL
+				copyAnn.URLCitation.URL = &urlCopy
+			}
+			if ann.URLCitation.Type != nil {
+				typCopy := *ann.URLCitation.Type
+				copyAnn.URLCitation.Type = &typCopy
+			}
+			// Sources is *interface{}; share the pointer — content is not mutated downstream
+			copyAnn.URLCitation.Sources = ann.URLCitation.Sources
+			copy.Annotations[i] = copyAnn
+		}
+	}
+
 	return copy
+}
+
+// annotationCompositeKey delegates to schemas.AnnotationCompositeKey.
+func annotationCompositeKey(ann schemas.ChatAssistantMessageAnnotation) string {
+	return schemas.AnnotationCompositeKey(ann)
 }
 
 // buildCompleteMessageFromChunks builds a complete message from accumulated chunks.
@@ -146,6 +177,12 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		args strings.Builder
 	}
 	var tcAccums map[uint16]*tcAccum
+
+	// Annotations collected across chunks; deduplicated by composite key (url:start:end
+	// or title:start:end for no-URL) with keep-last semantics so the final synthetic
+	// chunk's richer copies replace stale earlier versions at the same position.
+	var collectedAnnotations []schemas.ChatAssistantMessageAnnotation
+	seenAnnotationKeys := make(map[string]int) // value = index in collectedAnnotations
 
 	for _, chunk := range chunks {
 		if chunk == nil || chunk.Delta == nil {
@@ -252,6 +289,18 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				acc.args.WriteString(args)
 			}
 		}
+		// Accumulate annotations using composite key (url:startIndex:endIndex or
+		// title:startIndex:endIndex for no-URL). Keep-last so the final synthetic
+		// chunk's fully-resolved copy of each citation wins over an earlier, partial one.
+		for _, ann := range chunk.Delta.Annotations {
+			key := annotationCompositeKey(ann)
+			if idx, exists := seenAnnotationKeys[key]; exists {
+				collectedAnnotations[idx] = ann
+			} else {
+				seenAnnotationKeys[key] = len(collectedAnnotations)
+				collectedAnnotations = append(collectedAnnotations, ann)
+			}
+		}
 	}
 
 	// Finalize content
@@ -344,6 +393,14 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			})
 		}
 		completeMessage.ChatAssistantMessage.ToolCalls = toolCalls
+	}
+
+	// Finalize annotations
+	if len(collectedAnnotations) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		completeMessage.ChatAssistantMessage.Annotations = collectedAnnotations
 	}
 
 	return completeMessage

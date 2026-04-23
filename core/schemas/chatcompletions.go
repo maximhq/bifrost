@@ -1330,6 +1330,23 @@ type ChatAssistantMessageAnnotationCitation struct {
 	Type       *string      `json:"type,omitempty"`
 }
 
+// AnnotationCompositeKey returns a per-position deduplication key for ann.
+// The key prefers URL when available (the most stable identifier across
+// partial→final streaming updates), falling back to Title, then Type.
+// Format: "type:base:startIndex:endIndex". This keeps citations of the same
+// source at different text offsets as distinct entries while deduplicating
+// exact repeats with keep-last semantics.
+func AnnotationCompositeKey(ann ChatAssistantMessageAnnotation) string {
+	if ann.URLCitation.URL != nil && *ann.URLCitation.URL != "" {
+		return fmt.Sprintf("%s:%s:%d:%d", ann.Type, *ann.URLCitation.URL, ann.URLCitation.StartIndex, ann.URLCitation.EndIndex)
+	}
+	base := ann.URLCitation.Title
+	if base == "" {
+		base = ann.Type
+	}
+	return fmt.Sprintf("%s:%s:%d:%d", ann.Type, base, ann.URLCitation.StartIndex, ann.URLCitation.EndIndex)
+}
+
 // ChatAssistantMessageToolCall represents a tool call in a message
 type ChatAssistantMessageToolCall struct {
 	Index    uint16                               `json:"index"`
@@ -1421,13 +1438,14 @@ type ChatStreamResponseChoice struct {
 
 // ChatStreamResponseChoiceDelta represents a delta in the stream response
 type ChatStreamResponseChoiceDelta struct {
-	Role             *string                        `json:"role,omitempty"`      // Only in the first chunk
-	Content          *string                        `json:"content,omitempty"`   // May be empty string or null
-	Refusal          *string                        `json:"refusal,omitempty"`   // Refusal content if any
-	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`     // Audio data if any
-	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
-	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
-	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	Role             *string                          `json:"role,omitempty"`             // Only in the first chunk
+	Content          *string                          `json:"content,omitempty"`          // May be empty string or null
+	Refusal          *string                          `json:"refusal,omitempty"`          // Refusal content if any
+	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`            // Audio data if any
+	Reasoning        *string                          `json:"reasoning,omitempty"`        // May be empty string or null
+	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
+	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`      // OpenAI-style url_citation annotations (e.g. OpenRouter→Perplexity)
+	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`       // If tool calls used (supports incremental updates)
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.

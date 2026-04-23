@@ -436,22 +436,25 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 						if (!isActive()) return;
 						setMessages([...allMessages, placeholder]);
 					},
-					onStreamChunk: (content) => {
+					onStreamChunk: (content, annotations) => {
 						if (!isActive()) return;
 						setMessages((prev) => {
 							const updated = [...prev];
 							const last = updated[updated.length - 1];
 							const clone = last.clone();
 							clone.content = content;
+							if (annotations) clone.annotations = annotations;
 							updated[updated.length - 1] = clone;
 							return updated;
 						});
 					},
-					onComplete: (content, usage) => {
+					onComplete: (content, usage, annotations) => {
 						if (!isActive()) return;
 						setMessages((prev) => {
 							const updated = [...prev];
-							updated[updated.length - 1] = Message.response(content, 0, usage);
+							const msg = Message.response(content, 0, usage);
+							if (annotations) msg.annotations = annotations;
+							updated[updated.length - 1] = msg;
 							return updated;
 						});
 					},
@@ -515,22 +518,25 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 						if (!isActive()) return;
 						setMessages([...allMessages, placeholder]);
 					},
-					onStreamChunk: (content) => {
+					onStreamChunk: (content, annotations) => {
 						if (!isActive()) return;
 						setMessages((prev) => {
 							const updated = [...prev];
 							const last = updated[updated.length - 1];
 							const clone = last.clone();
 							clone.content = content;
+							if (annotations) clone.annotations = annotations;
 							updated[updated.length - 1] = clone;
 							return updated;
 						});
 					},
-					onComplete: (content, usage) => {
+					onComplete: (content, usage, annotations) => {
 						if (!isActive()) return;
 						setMessages((prev) => {
 							const updated = [...prev];
-							updated[updated.length - 1] = Message.response(content, 0, usage);
+							const msg = Message.response(content, 0, usage);
+							if (annotations) msg.annotations = annotations;
+							updated[updated.length - 1] = msg;
 							return updated;
 						});
 					},

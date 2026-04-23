@@ -106,3 +106,8 @@ func SanitizeUserField(user *string) *string {
 	}
 	return user
 }
+
+// annotationCompositeKey delegates to schemas.AnnotationCompositeKey.
+func annotationCompositeKey(ann schemas.ChatAssistantMessageAnnotation) string {
+	return schemas.AnnotationCompositeKey(ann)
+}

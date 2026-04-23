@@ -1,7 +1,7 @@
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Message, SerializedMessage } from "@/lib/message";
-import { InfoIcon, PencilIcon, XIcon } from "lucide-react";
+import { Message, SerializedMessage, type Annotation } from "@/lib/message";
+import { InfoIcon, LinkIcon, PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
 import { useEffect, useMemo, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
@@ -38,6 +38,7 @@ export function AssistantMessageView({
 	const content = message.content;
 	const isEmpty = !content;
 	const usage = message.usage;
+	const annotations = message.annotations;
 	const jsonBufferRef = useRef<string | null>(null);
 	const contentIsJson = useMemo(() => !isEmpty && !isStreaming && isJson(content), [content, isEmpty, isStreaming]);
 	const formattedJson = useMemo(() => {
@@ -187,6 +188,34 @@ export function AssistantMessageView({
 					</div>
 				)}
 			</div>
+
+			{annotations && annotations.length > 0 && (
+				<div className="mt-2 border-t border-border pt-2">
+					<div className="flex flex-wrap gap-2">
+						{annotations.map((ann, i) => {
+						if (!ann?.url_citation?.url) {
+							// eslint-disable-next-line no-console
+							console.debug("[annotations] skipping malformed annotation at index", i, ann);
+							return null;
+						}
+						const base = ann.url_citation.url || ann.url_citation.title || "";
+						return (
+							<a
+								key={`${base}:${ann.url_citation.start_index ?? 0}:${ann.url_citation.end_index ?? 0}`}
+									href={ann.url_citation.url}
+									target="_blank"
+									rel="noopener noreferrer"
+									className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+									title={ann.url_citation.url}
+								>
+									<LinkIcon className="size-3 shrink-0" />
+									<span className="max-w-[200px] truncate">{ann.url_citation.title || ann.url_citation.url}</span>
+								</a>
+							);
+						})}
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }

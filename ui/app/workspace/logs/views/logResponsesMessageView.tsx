@@ -144,16 +144,29 @@ function ContentBlockView({ block }: { block: ResponsesMessageContentBlock; inde
 		const jsonContent = JSON.stringify(block.annotations, null, 2);
 		return (
 			<CollapsibleBox title="Annotations" onCopy={() => jsonContent} collapsedHeight={100}>
-				<CodeEditor
-					className="z-0 w-full"
-					shouldAdjustInitialHeight={true}
-					maxHeight={150}
-					wrap={true}
-					code={jsonContent}
-					lang="json"
-					readonly={true}
-					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-				/>
+				<div className="flex flex-wrap gap-2 px-4 py-3">
+					{block.annotations.map((ann: { type?: string; url_citation?: { url?: string; title?: string; start_index?: number; end_index?: number } }, idx: number) => {
+						const uc = ann?.url_citation;
+						if (!uc?.url) {
+							// eslint-disable-next-line no-console
+							console.debug("[annotations] skipping malformed annotation at index", idx, ann);
+							return null;
+						}
+						const base = uc.url || uc.title || "";
+						return (
+							<a
+								key={`${base}:${uc.start_index ?? 0}:${uc.end_index ?? 0}`}
+								href={uc.url}
+								target="_blank"
+								rel="noopener noreferrer"
+								className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+								title={uc.url}
+							>
+								<span className="max-w-[240px] truncate">{uc.title || uc.url}</span>
+							</a>
+						);
+					})}
+				</div>
 			</CollapsibleBox>
 		);
 	}

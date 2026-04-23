@@ -24,6 +24,18 @@ export type ToolCall = {
 	function: ToolCallFunction;
 };
 
+export type AnnotationCitation = {
+  start_index?: number
+  end_index?: number
+  title?: string
+  url?: string
+}
+
+export type Annotation = {
+  type: string
+  url_citation?: AnnotationCitation
+}
+
 export type MessageContent = {
 	type: "text" | "image_url" | "input_audio" | "file";
 	text?: string;
@@ -62,6 +74,7 @@ export type CompletionResultChoice = {
 		role: MessageRole;
 		content: string;
 		tool_calls?: ToolCall[];
+		annotations?: Annotation[];
 	};
 	finish_reason?: string;
 };
