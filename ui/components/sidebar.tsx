@@ -72,7 +72,7 @@ import moment from "moment";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { ThemeToggle } from "./themeToggle";
@@ -184,6 +184,7 @@ const SidebarItemView = ({
 	expandSidebar,
 	highlightedUrl,
 	prefetchRoute,
+	buildUrl,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -197,6 +198,7 @@ const SidebarItemView = ({
 	expandSidebar: () => void;
 	highlightedUrl?: string;
 	prefetchRoute: (url: string) => void;
+	buildUrl: (targetUrl: string) => string;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive =
@@ -230,7 +232,7 @@ const SidebarItemView = ({
 			openInNewTab(url);
 			return;
 		}
-		router.push(url);
+		router.push(buildUrl(url));
 	};
 
 	const handleSubItemClick = (subItem: SidebarItem, e?: React.MouseEvent) => {
@@ -239,7 +241,7 @@ const SidebarItemView = ({
 			openInNewTab(url);
 			return;
 		}
-		router.push(url);
+		router.push(buildUrl(url));
 	};
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
@@ -371,9 +373,12 @@ const compareVersions = (v1: string, v2: string): number => {
 	return 0;
 };
 
+const TIME_AWARE_PATHS = ["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs"];
+
 export default function AppSidebar() {
 	const pathname = usePathname();
 	const router = useRouter();
+	const searchParams = useSearchParams();
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -791,6 +796,26 @@ export default function AppSidebar() {
 		[router],
 	);
 
+	const buildUrl = useCallback(
+		(targetUrl: string): string => {
+			const fromTimeAware = TIME_AWARE_PATHS.some((p) => pathname.startsWith(p));
+			const toTimeAware = TIME_AWARE_PATHS.some((p) => targetUrl.startsWith(p));
+			if (!fromTimeAware || !toTimeAware) return targetUrl;
+
+			const params = new URLSearchParams();
+			const start = searchParams.get("start_time");
+			const end = searchParams.get("end_time");
+			const period = searchParams.get("period");
+			if (start) params.set("start_time", start);
+			if (end) params.set("end_time", end);
+			if (period) params.set("period", period);
+
+			const qs = params.toString();
+			return qs ? `${targetUrl}?${qs}` : targetUrl;
+		},
+		[pathname, searchParams],
+	);
+
 	// Get user info from localStorage (for enterprise SCIM OAuth)
 	const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
 
@@ -905,7 +930,7 @@ export default function AppSidebar() {
 					if (target.isExternal || e.metaKey || e.ctrlKey) {
 						window.open(url, "_blank", "noopener,noreferrer");
 					} else {
-						router.push(url);
+						router.push(buildUrl(url));
 					}
 					setSearchQuery("");
 					setFocusedIndex(-1);
@@ -917,7 +942,7 @@ export default function AppSidebar() {
 				searchInputRef.current?.blur();
 			}
 		},
-		[navigableItems, focusedIndex, router],
+		[navigableItems, focusedIndex, router, buildUrl],
 	);
 
 	// Auto-scroll focused item into view
@@ -1126,6 +1151,7 @@ export default function AppSidebar() {
 									expandSidebar={() => toggleSidebar()}
 									highlightedUrl={highlightedUrl}
 									prefetchRoute={prefetchRoute}
+									buildUrl={buildUrl}
 								/>
 								);
 							})}

@@ -32,6 +32,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 export default function LogsPage() {
 	const [error, setError] = useState<string | null>(null);
@@ -60,6 +61,12 @@ export default function LogsPage() {
 	// Get fresh default time range for refresh logic
 	const getDefaultTimeRange = () => dateUtils.getDefaultTimeRange();
 
+	// Check raw URL params before nuqs applies defaults — if both time bounds are
+	// already present (carried over from another page), skip the "24h" period default
+	// so the mount effect doesn't overwrite the custom range.
+	const rawSearchParams = useSearchParams();
+	const hasExplicitTimeRange = rawSearchParams.has("start_time") && rawSearchParams.has("end_time");
+
 	// URL state management with nuqs - all filters and pagination in URL
 	const [urlState, setUrlState] = useQueryStates(
 		{
@@ -79,7 +86,7 @@ export default function LogsPage() {
 			sort_by: parseAsString.withDefault("timestamp"),
 			order: parseAsString.withDefault("desc"),
 			polling: parseAsBoolean.withDefault(true).withOptions({ clearOnDefault: false }),
-			period: parseAsString.withDefault("24h").withOptions({ clearOnDefault: false }),
+			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "24h").withOptions({ clearOnDefault: false }),
 			missing_cost_only: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
 			selected_log: parseAsString.withDefault(""),

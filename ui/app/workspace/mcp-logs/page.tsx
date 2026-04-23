@@ -17,6 +17,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { createMCPColumns } from "./views/columns";
 import { MCPEmptyState } from "./views/emptyState";
 import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
@@ -44,6 +45,9 @@ export default function MCPLogsPage() {
 	// Get fresh default time range for refresh logic
 	const getDefaultTimeRange = () => dateUtils.getDefaultTimeRange();
 
+	const rawSearchParams = useSearchParams();
+	const hasExplicitTimeRange = rawSearchParams.has("start_time") && rawSearchParams.has("end_time");
+
 	// URL state management
 	const [urlState, setUrlState] = useQueryStates(
 		{
@@ -59,7 +63,7 @@ export default function MCPLogsPage() {
 			sort_by: parseAsString.withDefault("timestamp"),
 			order: parseAsString.withDefault("desc"),
 			polling: parseAsBoolean.withDefault(true).withOptions({ clearOnDefault: false }),
-			period: parseAsString.withDefault("24h").withOptions({ clearOnDefault: false }),
+			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "24h").withOptions({ clearOnDefault: false }),
 			selected_log: parseAsString.withDefault(""),
 		},
 		{
