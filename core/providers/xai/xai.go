@@ -15,7 +15,8 @@ import (
 // xAIProvider implements the Provider interface for xAI's API.
 type XAIProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -42,6 +43,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	if config.NetworkConfig.BaseURL == "" {
@@ -51,6 +53,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 	return &XAIProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -104,7 +107,7 @@ func (provider *XAIProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		provider.networkConfig.BaseURL+"/v1/completions",
 		request,
 		nil,
@@ -150,7 +153,7 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		request,
 		authHeader,
@@ -194,7 +197,7 @@ func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 	}
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		authHeader,

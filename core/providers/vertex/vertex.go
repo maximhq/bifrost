@@ -74,7 +74,8 @@ func removeVertexClient(authCredentials string) {
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
 type VertexProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -98,9 +99,11 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	return &VertexProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -845,7 +848,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// Use shared Anthropic streaming logic
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.client,
+			provider.streamingClient,
 			completeURL,
 			jsonData,
 			headers,
@@ -930,7 +933,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// Use shared streaming logic from Gemini
 		return gemini.HandleGeminiChatCompletionStream(
 			ctx,
-			provider.client,
+			provider.streamingClient,
 			completeURL,
 			jsonData,
 			headers,
@@ -993,7 +996,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// Use shared OpenAI streaming logic
 		return openai.HandleOpenAIChatCompletionStreaming(
 			ctx,
-			provider.client,
+			provider.streamingClient,
 			completeURL,
 			request,
 			authHeader,
@@ -1396,7 +1399,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		// Use shared streaming logic from Anthropic
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.client,
+			provider.streamingClient,
 			url,
 			jsonBody,
 			headers,
@@ -1498,7 +1501,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		// Use shared streaming logic from Gemini
 		return gemini.HandleGeminiResponsesStream(
 			ctx,
-			provider.client,
+			provider.streamingClient,
 			completeURL,
 			jsonData,
 			headers,
@@ -3407,7 +3410,7 @@ func (provider *VertexProvider) PassthroughStream(
 		fasthttpReq.SetBody(req.Body)
 	}
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	if err := activeClient.Do(fasthttpReq, resp); err != nil {
 		providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

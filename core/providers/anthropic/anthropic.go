@@ -24,7 +24,8 @@ import (
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API.
 type AnthropicProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for API requests
+	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	apiVersion           string                        // API version for the provider
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
@@ -101,6 +102,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.anthropic.com"
@@ -110,6 +112,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	return &AnthropicProvider{
 		logger:               logger,
 		client:               client,
+		streamingClient:      streamingClient,
 		apiVersion:           "2023-06-01",
 		networkConfig:        config.NetworkConfig,
 		sendBackRawRequest:   config.SendBackRawRequest,
@@ -592,7 +595,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	// Use shared Anthropic streaming logic
 	return HandleAnthropicChatCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionStreamRequest),
 		jsonData,
 		headers,
@@ -1077,7 +1080,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	return HandleAnthropicResponsesStream(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesStreamRequest),
 		jsonBody,
 		headers,
@@ -2737,7 +2740,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 
 	fasthttpReq.SetBody(req.Body)
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	if err := activeClient.Do(fasthttpReq, resp); err != nil {
 		providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

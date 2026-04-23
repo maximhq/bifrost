@@ -19,7 +19,8 @@ import (
 // MistralProvider implements the Provider interface for Mistral's API.
 type MistralProvider struct {
 	logger               schemas.Logger        // Logger for provider operations
-	client               *fasthttp.Client      // HTTP client for API requests
+	client               *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig        schemas.NetworkConfig // Network configuration including extra headers
 	customProviderConfig *schemas.CustomProviderConfig
 	sendBackRawRequest   bool // Whether to include raw request in BifrostResponse
@@ -52,6 +53,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.mistral.ai"
@@ -61,6 +63,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	return &MistralProvider{
 		logger:               logger,
 		client:               client,
+		streamingClient:      streamingClient,
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
 		sendBackRawRequest:   config.SendBackRawRequest,
@@ -202,7 +205,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		provider.normalizeChatRequestForConversion(request),
 		authHeader,
@@ -552,7 +555,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	req.SetBody(body.Bytes())
 
 	// Make the request
-	err := provider.client.Do(req, resp)
+	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

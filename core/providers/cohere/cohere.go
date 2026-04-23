@@ -87,7 +87,8 @@ func releaseCohereResponse(resp *CohereChatResponse) {
 // CohereProvider implements the Provider interface for Cohere.
 type CohereProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for API requests
+	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
@@ -115,6 +116,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
 		cohereResponsePool.Put(&CohereChatResponse{})
@@ -131,6 +133,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	return &CohereProvider{
 		logger:               logger,
 		client:               client,
+		streamingClient:      streamingClient,
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
 		sendBackRawRequest:   config.SendBackRawRequest,
@@ -469,7 +472,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	}
 
 	// Make the request
-	err := provider.client.Do(req, resp)
+	err := provider.streamingClient.Do(req, resp)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
@@ -758,7 +761,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 
 	// Make the request
-	err := provider.client.Do(req, resp)
+	err := provider.streamingClient.Do(req, resp)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}

@@ -17,7 +17,8 @@ import (
 // PerplexityProvider implements the Provider interface for Perplexity's API.
 type PerplexityProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -44,6 +45,7 @@ func NewPerplexityProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.perplexity.ai"
@@ -53,6 +55,7 @@ func NewPerplexityProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	return &PerplexityProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -197,7 +200,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		provider.networkConfig.BaseURL+"/chat/completions",
 		request,
 		authHeader,

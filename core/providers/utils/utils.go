@@ -855,6 +855,43 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 	}
 }
 
+// BuildStreamingClient returns a fasthttp.Client suitable for long-lived SSE
+// or EventStream responses. It clones base's dialer/proxy/TLS/pool settings,
+// then clears Read/Write timeouts and MaxConnDuration so fasthttp does not
+// pre-empt a healthy stream. StreamResponseBody is forced on.
+//
+// Per-chunk idle detection is enforced at the application layer via
+// NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
+// The initial TCP/TLS dial still honors the base client's ReadTimeout because
+// the Dial closure installed by ConfigureDialer reads client.ReadTimeout from
+// the base client pointer captured at ConfigureDialer call time — cloning copies
+// that closure verbatim, so zeroing the clone's ReadTimeout does not affect dial.
+func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
+	c := CloneFastHTTPClientConfig(base)
+	c.ReadTimeout = 0
+	c.WriteTimeout = 0
+	c.MaxConnDuration = 0
+	c.StreamResponseBody = true
+	return c
+}
+
+// BuildStreamingHTTPClient returns an *http.Client for long-lived streaming
+// responses over net/http (e.g. Bedrock EventStream). It reuses the base's
+// Transport (safe for concurrent use by multiple clients) and sets Timeout=0
+// so Client.Timeout does not cap the entire request lifecycle including body
+// reads. The transport's ResponseHeaderTimeout still bounds the initial
+// response-headers wait; per-chunk idle is enforced by NewIdleTimeoutReader.
+func BuildStreamingHTTPClient(base *http.Client) *http.Client {
+	if base == nil {
+		return &http.Client{}
+	}
+	return &http.Client{
+		Transport:     base.Transport,
+		CheckRedirect: base.CheckRedirect,
+		Jar:           base.Jar,
+	}
+}
+
 // decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
 // with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
 // header so downstream consumers don't double-decompress. Returns original reader
