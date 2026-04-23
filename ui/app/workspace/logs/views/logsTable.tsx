@@ -22,7 +22,7 @@ import {
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
 
@@ -254,7 +254,10 @@ export function LogsDataTable({
             <TableRow className="hover:bg-transparent">
               <TableCell colSpan={columns.length} className="h-12 text-center">
                 <div className="flex items-center justify-center gap-2">
-                  {polling ? (
+                  {loading ? <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading new logs...
+                  </> : polling ? (
                     <>
                       <RefreshCw className="h-4 w-4 animate-spin" />
                       Waiting for new logs...

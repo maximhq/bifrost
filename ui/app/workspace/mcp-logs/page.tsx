@@ -124,7 +124,7 @@ export default function MCPLogsPage() {
   } = useGetMCPLogsQuery(
     { filters, pagination },
     {
-      pollingInterval: showEmptyState ? 3000 : polling && !period ? 5000 : 0,
+      pollingInterval: showEmptyState || polling ? 5000 : 0,
       refetchOnMountOrArgChange: true,
       skipPollingIfUnfocused: true,
     },
@@ -137,7 +137,7 @@ export default function MCPLogsPage() {
   } = useGetMCPLogsStatsQuery(
     { filters },
     {
-      pollingInterval: polling && !period ? 5000 : 0,
+      pollingInterval: polling ? 5000 : 0,
       refetchOnMountOrArgChange: true,
       skipPollingIfUnfocused: true,
     },
@@ -235,27 +235,6 @@ export default function MCPLogsPage() {
       window.removeEventListener("focus", handleFocus);
     };
   }, [urlState.start_time, urlState.end_time, urlState.period, setUrlState, polling]);
-
-  // Refresh the time window every 5s while live polling is on and a relative period is active.
-  // Updating start_time/end_time changes RTK args → triggers a refetch without needing pollingInterval.
-  useEffect(() => {
-    if (!polling || !urlState.period) return;
-
-    const id = setInterval(() => {
-      if (document.hidden) return;
-      const { from, to } = getRangeForPeriod(urlState.period);
-      setUrlState(
-        {
-          start_time: Math.floor(from.getTime() / 1000),
-          end_time: Math.floor(to.getTime() / 1000),
-          period: urlState.period ?? "",
-        },
-        { history: "replace" },
-      );
-    }, 5000);
-
-    return () => clearInterval(id);
-  }, [polling, urlState.period, setUrlState]);
 
   // Derive selectedLog from URL param
   const selectedLogId = urlState.selected_log || null;

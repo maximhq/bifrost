@@ -226,7 +226,10 @@ export function MCPLogsDataTable({
             <TableRow className="hover:bg-transparent">
               <TableCell colSpan={columns.length} className="h-12 text-center">
                 <div className="flex items-center justify-center gap-2">
-                  {polling ? (
+                  {loading ? <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Loading MCP logs...
+                  </> : polling ? (
                     <>
                       <RefreshCw className="h-4 w-4 animate-spin" />
                       Waiting for new MCP logs...
