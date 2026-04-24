@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -4091,6 +4092,8 @@ func (provider *GeminiProvider) Passthrough(
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
+	originalHeaders := make(map[string]string, len(headers))
+	maps.Copy(originalHeaders, headers)
 	for k := range headers {
 		if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
 			delete(headers, k)
@@ -4101,12 +4104,10 @@ func (provider *GeminiProvider) Passthrough(
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
 		Body:       body,
-	}
-
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &bifrostResponse.ExtraFields)
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: originalHeaders,
+		},
 	}
 
 	return bifrostResponse, nil
@@ -4193,10 +4194,6 @@ func (provider *GeminiProvider) PassthroughStream(
 
 	extraFields := schemas.BifrostResponseExtraFields{}
 	statusCode := resp.StatusCode()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &extraFields)
-	}
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {

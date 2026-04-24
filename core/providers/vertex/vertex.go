@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -2930,6 +2931,8 @@ func (provider *VertexProvider) Passthrough(
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
+	originalHeaders := make(map[string]string, len(headers))
+	maps.Copy(originalHeaders, headers)
 	for k := range headers {
 		if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
 			delete(headers, k)
@@ -2939,13 +2942,10 @@ func (provider *VertexProvider) Passthrough(
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
 		Body:       body,
-	}
-
-	bifrostResponse.ExtraFields.ProviderResponseHeaders = headers
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &bifrostResponse.ExtraFields)
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: originalHeaders,
+		},
 	}
 
 	return bifrostResponse, nil
@@ -3102,10 +3102,6 @@ func (provider *VertexProvider) PassthroughStream(
 
 	extraFields := schemas.BifrostResponseExtraFields{}
 	statusCode := resp.StatusCode()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &extraFields)
-	}
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {

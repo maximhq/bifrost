@@ -2813,11 +2813,16 @@ func (g *GenericRouter) handlePassthroughStream(
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
 	ctx.SetStatusCode(passthroughResp.StatusCode)
-	ctx.SetConnectionClose()
+	ctx.SetContentType("text/event-stream")
+	ctx.Response.Header.Set("Cache-Control", "no-cache")
+	ctx.Response.Header.Set("Connection", "keep-alive")
+	ctx.Response.Header.Set("X-Accel-Buffering", "no")
 	for k, v := range passthroughResp.Headers {
 		switch strings.ToLower(k) {
-		case "connection", "transfer-encoding", "content-length", "set-cookie", "proxy-authenticate", "www-authenticate":
-			// drop — content-length is invalid for a streaming response
+		case "connection", "transfer-encoding", "content-length", "content-type",
+			"cache-control", "x-accel-buffering",
+			"set-cookie", "proxy-authenticate", "www-authenticate":
+			// drop — streaming invariants are set explicitly above; upstream must not override them
 		default:
 			ctx.Response.Header.Set(k, v)
 		}
