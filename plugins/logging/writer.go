@@ -175,14 +175,26 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 // cleanupStalePendingLogs removes entries from pendingLogs that have been
 // waiting longer than pendingLogTTL. This handles cases where PostLLMHook
 // never fires for a request (e.g., request was cancelled before reaching the provider).
+//
+// Before evicting a pendingLogsEntries entry the function writes a synthesized
+// error row to the DB so operators can observe the abandoned request in the audit
+// trail. Without this flush the request vanishes with no trace in the logs table.
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
 	p.pendingLogsEntries.Range(func(key, value any) bool {
-		if pending, ok := value.(*PendingLogData); ok {
-			if pending.CreatedAt.Before(cutoff) {
-				p.pendingLogsEntries.Delete(key)
-			}
+		pending, ok := value.(*PendingLogData)
+		if !ok {
+			return true
 		}
+		if !pending.CreatedAt.Before(cutoff) {
+			return true
+		}
+		p.logger.Warn("evicting orphaned pending log entry %s (created %s, PostLLMHook never fired)", pending.RequestID, pending.CreatedAt.Format(time.RFC3339))
+		entry := buildInitialLogEntry(pending)
+		entry.Status = "error"
+		entry.ErrorDetails = `{"message":"abandoned: PostLLMHook never fired (TTL eviction)"}`
+		p.enqueueLogEntry(entry, nil)
+		p.pendingLogsEntries.Delete(key)
 		return true
 	})
 	p.pendingLogsToInject.Range(func(key, value any) bool {
