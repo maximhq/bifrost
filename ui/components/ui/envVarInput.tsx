@@ -10,6 +10,11 @@ type BaseEnvVarInputProps = {
 	inputClassName?: string;
 	variant?: "input" | "textarea";
 	rows?: number;
+	hideValueWhenEnv?: boolean;
+	maskNonEnvValue?: boolean;
+	redactNonEnvValue?: boolean;
+	maskVisiblePrefix?: number;
+	maskVisibleSuffix?: number;
 };
 
 type InputVariantProps = BaseEnvVarInputProps & {
@@ -22,10 +27,37 @@ type TextareaVariantProps = BaseEnvVarInputProps & {
 
 export type EnvVarInputProps = InputVariantProps | TextareaVariantProps;
 
+const maskValue = (value: string, visiblePrefix: number, visibleSuffix: number) => {
+	if (!value) return "";
+	if (visiblePrefix <= 0 && visibleSuffix <= 0) {
+		return "****";
+	}
+	if (value.length <= visiblePrefix + visibleSuffix) {
+		return `${value.slice(0, 1)}****${value.slice(-1)}`;
+	}
+	const prefix = visiblePrefix > 0 ? value.slice(0, visiblePrefix) : "";
+	const suffix = visibleSuffix > 0 ? value.slice(-visibleSuffix) : "";
+	return `${prefix}****${suffix}`;
+};
+
 export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaElement, EnvVarInputProps>(
-	({ className, value, onChange, inputClassName, variant = "input", rows, ...props }, ref) => {
-		// Extract display value from EnvVar object
-		const displayValue = value?.value ?? "";
+	(
+		{
+			className,
+			value,
+			onChange,
+			inputClassName,
+			variant = "input",
+			rows,
+			hideValueWhenEnv = false,
+			maskNonEnvValue = false,
+			redactNonEnvValue = false,
+			maskVisiblePrefix = 4,
+			maskVisibleSuffix = 4,
+			...props
+		},
+		ref,
+	) => {
 		const hasChanged = useRef(false);
 		const isUserChange = useRef(false);
 
@@ -41,9 +73,30 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
 
 		// Show badge when value is from env (server-synced or user-typed)
 		const showBadge = value?.from_env && value?.env_var;
+		const rawValue = value?.value ?? "";
+		const displayValue =
+			showBadge && hideValueWhenEnv && !hasChanged.current
+				? ""
+				: redactNonEnvValue && !showBadge && !hasChanged.current && rawValue
+					? "<REDACTED>"
+				: maskNonEnvValue && !showBadge && !hasChanged.current
+					? maskValue(rawValue, maskVisiblePrefix, maskVisibleSuffix)
+					: rawValue;
 
 		const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-			const newValue = e.target.value;
+			const inputValue = e.target.value;
+			const isMaskedOrPlaceholder =
+				!hasChanged.current &&
+				displayValue !== rawValue &&
+				(displayValue === "<REDACTED>" || (displayValue.length > 0 && !showBadge));
+			let newValue = inputValue;
+			if (isMaskedOrPlaceholder) {
+				if (inputValue === displayValue) {
+					newValue = "";
+				} else if (displayValue && inputValue.startsWith(displayValue)) {
+					newValue = inputValue.slice(displayValue.length);
+				}
+			}
 			hasChanged.current = true;
 			isUserChange.current = true;
 			// Auto-detect env var prefix

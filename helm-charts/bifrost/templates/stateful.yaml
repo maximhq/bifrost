@@ -286,7 +286,13 @@ spec:
     - metadata:
         name: data
         labels:
-          {{- include "bifrost.labels" . | nindent 10 }}
+          {{- /*
+              Keep volumeClaimTemplates labels immutable-safe.
+              Do not include bifrost.labels here because chart/app version labels
+              change between releases and StatefulSet volumeClaimTemplates are immutable.
+          */}}
+          {{- include "bifrost.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: server
       spec:
         accessModes:
           - {{ .Values.storage.persistence.accessMode }}

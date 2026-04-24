@@ -87,17 +87,18 @@ const (
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
 //
 // Authoritative sources (verified 2026-04-17):
-//   A  = Anthropic feature-availability table:
-//        https://platform.claude.com/docs/en/build-with-claude/overview
-//   B-header = AWS Bedrock user guide beta-header list:
-//        https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
-//   B-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock
-//   V-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai
-//   Az-platform = https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
-//   MCP-excl = MCP connector explicit Bedrock/Vertex exclusion:
-//        https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
-//   Advisor-excl = Advisor tool Claude-API-only:
-//        https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
+//
+//	A  = Anthropic feature-availability table:
+//	     https://platform.claude.com/docs/en/build-with-claude/overview
+//	B-header = AWS Bedrock user guide beta-header list:
+//	     https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
+//	B-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock
+//	V-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai
+//	Az-platform = https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
+//	MCP-excl = MCP connector explicit Bedrock/Vertex exclusion:
+//	     https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
+//	Advisor-excl = Advisor tool Claude-API-only:
+//	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 type ProviderFeatureSupport struct {
 	WebSearch           bool // web_search server tool (cite: A)
 	WebSearchDynamic    bool // web_search_20260209 dynamic filtering (cite: A)
@@ -837,29 +838,29 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText                               AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage                              AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeDocument                           AnthropicContentBlockType = "document"
-	AnthropicContentBlockTypeSearchResult                       AnthropicContentBlockType = "search_result"
-	AnthropicContentBlockTypeToolUse                            AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse                      AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult                         AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchToolResult                AnthropicContentBlockType = "web_search_tool_result"
-	AnthropicContentBlockTypeWebSearchToolResultError           AnthropicContentBlockType = "web_search_tool_result_error"
-	AnthropicContentBlockTypeWebSearchResult                    AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeWebFetchToolResult                 AnthropicContentBlockType = "web_fetch_tool_result"
-	AnthropicContentBlockTypeCodeExecutionToolResult            AnthropicContentBlockType = "code_execution_tool_result"
-	AnthropicContentBlockTypeBashCodeExecutionToolResult        AnthropicContentBlockType = "bash_code_execution_tool_result"
-	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult  AnthropicContentBlockType = "text_editor_code_execution_tool_result"
-	AnthropicContentBlockTypeToolSearchToolResult               AnthropicContentBlockType = "tool_search_tool_result"
-	AnthropicContentBlockTypeToolReference                      AnthropicContentBlockType = "tool_reference"
-	AnthropicContentBlockTypeContainerUpload                    AnthropicContentBlockType = "container_upload"
-	AnthropicContentBlockTypeAdvisorToolResult                  AnthropicContentBlockType = "advisor_tool_result"
-	AnthropicContentBlockTypeMCPToolUse                         AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult                      AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking                           AnthropicContentBlockType = "thinking"
-	AnthropicContentBlockTypeRedactedThinking                   AnthropicContentBlockType = "redacted_thinking"
-	AnthropicContentBlockTypeCompaction                         AnthropicContentBlockType = "compaction"
+	AnthropicContentBlockTypeText                              AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage                             AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeDocument                          AnthropicContentBlockType = "document"
+	AnthropicContentBlockTypeSearchResult                      AnthropicContentBlockType = "search_result"
+	AnthropicContentBlockTypeToolUse                           AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse                     AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult                        AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchToolResult               AnthropicContentBlockType = "web_search_tool_result"
+	AnthropicContentBlockTypeWebSearchToolResultError          AnthropicContentBlockType = "web_search_tool_result_error"
+	AnthropicContentBlockTypeWebSearchResult                   AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeWebFetchToolResult                AnthropicContentBlockType = "web_fetch_tool_result"
+	AnthropicContentBlockTypeCodeExecutionToolResult           AnthropicContentBlockType = "code_execution_tool_result"
+	AnthropicContentBlockTypeBashCodeExecutionToolResult       AnthropicContentBlockType = "bash_code_execution_tool_result"
+	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult AnthropicContentBlockType = "text_editor_code_execution_tool_result"
+	AnthropicContentBlockTypeToolSearchToolResult              AnthropicContentBlockType = "tool_search_tool_result"
+	AnthropicContentBlockTypeToolReference                     AnthropicContentBlockType = "tool_reference"
+	AnthropicContentBlockTypeContainerUpload                   AnthropicContentBlockType = "container_upload"
+	AnthropicContentBlockTypeAdvisorToolResult                 AnthropicContentBlockType = "advisor_tool_result"
+	AnthropicContentBlockTypeMCPToolUse                        AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult                     AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
+	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
 )
 
 // AnthropicToolCallerType identifies which agentic caller produced a tool
@@ -869,9 +870,9 @@ const (
 type AnthropicToolCallerType string
 
 const (
-	AnthropicToolCallerTypeDirect                 AnthropicToolCallerType = "direct"
-	AnthropicToolCallerTypeCodeExecution20250825  AnthropicToolCallerType = "code_execution_20250825"
-	AnthropicToolCallerTypeCodeExecution20260120  AnthropicToolCallerType = "code_execution_20260120"
+	AnthropicToolCallerTypeDirect                AnthropicToolCallerType = "direct"
+	AnthropicToolCallerTypeCodeExecution20250825 AnthropicToolCallerType = "code_execution_20250825"
+	AnthropicToolCallerTypeCodeExecution20260120 AnthropicToolCallerType = "code_execution_20260120"
 )
 
 // AnthropicToolCaller represents the "caller" union on tool-use and
@@ -926,17 +927,17 @@ type AnthropicContentBlock struct {
 	EncryptedStdout *string `json:"encrypted_stdout,omitempty"`
 
 	// text_editor_code_execution_tool_result variants
-	FileType     *string  `json:"file_type,omitempty"`    // view_result: "text"|"image"|"pdf"
-	StartLine    *int     `json:"start_line,omitempty"`   // view_result
-	NumLines     *int     `json:"num_lines,omitempty"`    // view_result
-	TotalLines   *int     `json:"total_lines,omitempty"`  // view_result
+	FileType     *string  `json:"file_type,omitempty"`      // view_result: "text"|"image"|"pdf"
+	StartLine    *int     `json:"start_line,omitempty"`     // view_result
+	NumLines     *int     `json:"num_lines,omitempty"`      // view_result
+	TotalLines   *int     `json:"total_lines,omitempty"`    // view_result
 	IsFileUpdate *bool    `json:"is_file_update,omitempty"` // create_result
-	OldStart     *int     `json:"old_start,omitempty"`    // str_replace_result
-	OldLines     *int     `json:"old_lines,omitempty"`    // str_replace_result
-	NewStart     *int     `json:"new_start,omitempty"`    // str_replace_result
-	NewLines     *int     `json:"new_lines,omitempty"`    // str_replace_result
-	Lines        []string `json:"lines,omitempty"`        // str_replace_result
-	ErrorMessage *string  `json:"error_message,omitempty"` // text_editor error variant
+	OldStart     *int     `json:"old_start,omitempty"`      // str_replace_result
+	OldLines     *int     `json:"old_lines,omitempty"`      // str_replace_result
+	NewStart     *int     `json:"new_start,omitempty"`      // str_replace_result
+	NewLines     *int     `json:"new_lines,omitempty"`      // str_replace_result
+	Lines        []string `json:"lines,omitempty"`          // str_replace_result
+	ErrorMessage *string  `json:"error_message,omitempty"`  // text_editor error variant
 
 	// tool_search_tool_result success variant
 	ToolReferences []AnthropicContentBlock `json:"tool_references,omitempty"` // tool_search_tool_search_result (array of tool_reference blocks)
@@ -959,7 +960,7 @@ type AnthropicContentBlock struct {
 //   - "url"            → URL
 //   - "text"           → MediaType ("text/plain") + Data
 //   - "content_block"  → Content (nested string OR array of inner blocks);
-//                        recursive ContentBlockSource used inside DocumentBlockParam
+//     recursive ContentBlockSource used inside DocumentBlockParam
 //   - "file"           → FileID (requires files-api-2025-04-14 beta)
 //
 // The struct is a superset — only the fields relevant to Type should be set
@@ -1159,7 +1160,7 @@ const (
 
 	// Web search
 	AnthropicToolTypeWebSearch20250305 AnthropicToolType = "web_search_20250305"
-	AnthropicToolTypeWebSearch20260209 AnthropicToolType = "web_search_20260209" // Dynamic filtering (Opus 4.6 / Sonnet 4.6)
+	AnthropicToolTypeWebSearch20260209 AnthropicToolType = "web_search_20260209" // Dynamic filtering (Opus 4.6 / Sonnet 4.6) - auto injects code_execution
 
 	// Web fetch
 	AnthropicToolTypeWebFetch20250910 AnthropicToolType = "web_fetch_20250910"

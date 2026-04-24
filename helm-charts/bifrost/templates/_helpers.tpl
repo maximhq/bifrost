@@ -325,7 +325,69 @@ false
 {{- end }}
 {{- end }}
 {{- if .Values.bifrost.providers }}
-{{- $_ := set $config "providers" .Values.bifrost.providers }}
+{{- $providers := dict }}
+{{- range $providerName, $providerConfig := .Values.bifrost.providers }}
+{{- $providerCopy := deepCopy $providerConfig }}
+{{- if $providerConfig.network_config }}
+{{- $networkConfig := dict }}
+{{- if $providerConfig.network_config.base_url }}
+{{- $_ := set $networkConfig "base_url" $providerConfig.network_config.base_url }}
+{{- end }}
+{{- if $providerConfig.network_config.extra_headers }}
+{{- $_ := set $networkConfig "extra_headers" $providerConfig.network_config.extra_headers }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "default_request_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "default_request_timeout_in_seconds" $providerConfig.network_config.default_request_timeout_in_seconds }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "max_retries" }}
+{{- $_ := set $networkConfig "max_retries" $providerConfig.network_config.max_retries }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_initial" }}
+{{- $_ := set $networkConfig "retry_backoff_initial" $providerConfig.network_config.retry_backoff_initial }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_initial_ms" }}
+{{- $_ := set $networkConfig "retry_backoff_initial" $providerConfig.network_config.retry_backoff_initial_ms }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_max" }}
+{{- $_ := set $networkConfig "retry_backoff_max" $providerConfig.network_config.retry_backoff_max }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_max_ms" }}
+{{- $_ := set $networkConfig "retry_backoff_max" $providerConfig.network_config.retry_backoff_max_ms }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "insecure_skip_verify" }}
+{{- $_ := set $networkConfig "insecure_skip_verify" $providerConfig.network_config.insecure_skip_verify }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "ca_cert_pem" }}
+{{- $_ := set $networkConfig "ca_cert_pem" $providerConfig.network_config.ca_cert_pem }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "stream_idle_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "stream_idle_timeout_in_seconds" $providerConfig.network_config.stream_idle_timeout_in_seconds }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "max_conns_per_host" }}
+{{- $_ := set $networkConfig "max_conns_per_host" $providerConfig.network_config.max_conns_per_host }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "enforce_http2" }}
+{{- $_ := set $networkConfig "enforce_http2" $providerConfig.network_config.enforce_http2 }}
+{{- end }}
+{{- if $providerConfig.network_config.beta_header_overrides }}
+{{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
+{{- end }}
+{{- $_ := set $providerCopy "network_config" $networkConfig }}
+{{- end }}
+{{- if $providerConfig.keys }}
+{{- $keys := list }}
+{{- range $key := $providerConfig.keys }}
+{{- $keyCopy := deepCopy $key }}
+{{- if not (hasKey $keyCopy "weight") }}
+{{- $_ := set $keyCopy "weight" 1 }}
+{{- end }}
+{{- $keys = append $keys $keyCopy }}
+{{- end }}
+{{- $_ := set $providerCopy "keys" $keys }}
+{{- end }}
+{{- $_ := set $providers $providerName $providerCopy }}
+{{- end }}
+{{- $_ := set $config "providers" $providers }}
 {{- end }}
 {{- /* Governance */ -}}
 {{- if .Values.bifrost.governance }}
@@ -360,7 +422,6 @@ false
 {{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
-{{- if .budget_id }}{{- $_ := set $vk "budget_id" .budget_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}

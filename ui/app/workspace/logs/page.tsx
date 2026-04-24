@@ -6,7 +6,6 @@ import { LogsHeaderView } from "@/app/workspace/logs/views/logsHeaderView";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
-import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -23,7 +22,6 @@ import { useLazyGetLogByIdQuery, useLazyGetLogsQuery } from "@/lib/store/apis/lo
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
-import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
@@ -62,15 +60,9 @@ export default function LogsPage() {
 	// Track if user has manually modified the time range
 	const userModifiedTimeRange = useRef<boolean>(false);
 
-	// Capture initial defaults on mount to detect shared URLs with custom time ranges
-	const initialDefaults = useRef(dateUtils.getDefaultTimeRange());
-
 	// Memoize default time range to prevent recalculation on every render
 	// This is crucial to avoid triggering refetches when the sheet opens/closes
 	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
-
-	// Get fresh default time range for refresh logic
-	const getDefaultTimeRange = () => dateUtils.getDefaultTimeRange();
 
 	const { search } = useLocation();
 	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
@@ -116,82 +108,6 @@ export default function LogsPage() {
 	const activeLogFetchId = useRef<string | null>(null);
 	const polling = urlState.polling;
 
-	// Refresh time range on page focus/visibility
-	useEffect(() => {
-		const refreshDefaultsIfStale = () => {
-			if (!polling) return
-			if (urlState.period) {
-				const { from, to } = getRangeForPeriod(urlState.period);
-				setUrlState(
-					{
-						start_time: Math.floor(from.getTime() / 1000),
-						end_time: Math.floor(to.getTime() / 1000),
-						period: urlState.period ?? "",
-					},
-					{ history: "replace" },
-				);
-				return;
-			}
-
-			// Absolute custom range: skip refresh if user explicitly set it
-			if (userModifiedTimeRange.current) return;
-
-			// Only slide back to default 1h if the timestamps still match the initial defaults
-			const startTimeDiff = Math.abs(urlState.start_time - initialDefaults.current.startTime);
-			const endTimeDiff = Math.abs(urlState.end_time - initialDefaults.current.endTime);
-			const tolerance = 5;
-			if (startTimeDiff <= tolerance && endTimeDiff <= tolerance) {
-				const defaults = getDefaultTimeRange();
-				const currentEndDiff = Math.abs(urlState.end_time - defaults.endTime);
-				if (currentEndDiff > 300) {
-					setUrlState(
-						{
-							start_time: defaults.startTime,
-							end_time: defaults.endTime,
-							period: urlState.period ?? "",
-						},
-						{ history: "replace" },
-					);
-					initialDefaults.current.startTime = defaults.startTime;
-					initialDefaults.current.endTime = defaults.endTime;
-				}
-			}
-		};
-
-		const handleVisibilityChange = () => {
-			if (!document.hidden) refreshDefaultsIfStale();
-		};
-		const handleFocus = () => refreshDefaultsIfStale();
-
-		document.addEventListener("visibilitychange", handleVisibilityChange);
-		window.addEventListener("focus", handleFocus);
-		return () => {
-			document.removeEventListener("visibilitychange", handleVisibilityChange);
-			window.removeEventListener("focus", handleFocus);
-		};
-	}, [urlState.period, urlState.start_time, urlState.end_time, setUrlState, polling]);
-
-	// Refresh the time window every 5s while live polling is on and a relative period is active.
-	// Updating start_time/end_time changes RTK args → triggers a refetch without needing pollingInterval.
-	useEffect(() => {
-		if (!polling || !urlState.period) return;
-
-		const id = setInterval(() => {
-			if (document.hidden) return;
-			const { from, to } = getRangeForPeriod(urlState.period);
-			setUrlState(
-				{
-					start_time: Math.floor(from.getTime() / 1000),
-					end_time: Math.floor(to.getTime() / 1000),
-					period: urlState.period ?? "",
-				},
-				{ history: "replace" },
-			);
-		}, 5000);
-
-		return () => clearInterval(id);
-	}, [polling, urlState.period, setUrlState]);
-
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
 		() => ({
@@ -210,8 +126,6 @@ export default function LogsPage() {
 			customer_ids: urlState.customer_ids,
 			business_unit_ids: urlState.business_unit_ids,
 			content_search: urlState.content_search,
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
 			missing_cost_only: urlState.missing_cost_only,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
@@ -222,6 +136,11 @@ export default function LogsPage() {
 					}
 				})()
 				: undefined,
+			// Use a period if present
+			...(urlState.period ? { period: urlState.period } : {
+				start_time: dateUtils.toISOString(urlState.start_time),
+				end_time: dateUtils.toISOString(urlState.end_time),
+			})
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
@@ -240,10 +159,11 @@ export default function LogsPage() {
 			urlState.business_unit_ids,
 			urlState.content_search,
 			urlState.parent_request_id,
-			urlState.start_time,
-			urlState.end_time,
 			urlState.missing_cost_only,
 			urlState.metadata_filters,
+			urlState.start_time,
+			urlState.end_time,
+			urlState.period,
 		],
 	);
 
@@ -318,6 +238,7 @@ export default function LogsPage() {
 				start_time: startTime,
 				end_time: endTime,
 				offset: 0,
+				polling: false
 			});
 		},
 		[setUrlState],
@@ -337,28 +258,23 @@ export default function LogsPage() {
 	// Check if user has zoomed (time range is different from default 1h)
 	const isZoomed = useMemo(() => {
 		const currentRange = urlState.end_time - urlState.start_time;
-		const defaultRange = 24 * 60 * 60; // 24 hours in seconds
+		const defaultRange = 1 * 60 * 60; // 1 hours in seconds
 		// Consider zoomed if range is less than 90% of default (to account for minor differences)
 		return currentRange < defaultRange * 0.9;
 	}, [urlState.start_time, urlState.end_time]);
 
-	// Non-lazy RTK Query hooks — RTK handles caching, deduplication, and loading states.
-	// pollingInterval is only set for the no-period case; period polling is handled by
-	// a setInterval that updates URL timestamps, which changes args and triggers RTK to refetch.
 	const {
 		data: logsData,
-		isLoading: logsIsLoading,
 		isFetching: logsIsFetching,
 		error: logsError,
 		refetch: refetchLogs,
 	} = useGetLogsQuery(
-		{ filters, pagination },
 		{
-			// Poll every 5s on the empty state page so we transition as soon as the first log arrives.
-			// When a relative period is active, the setInterval above updates URL timestamps → RTK
-			// detects arg changes and refetches automatically; no separate pollingInterval needed.
-			pollingInterval: showEmptyState ? 5000 : polling && !period ? 5000 : 0,
-			refetchOnMountOrArgChange: true,
+			filters,
+			pagination,
+		},
+		{
+			pollingInterval: showEmptyState || polling ? 10000 : 0,
 			skipPollingIfUnfocused: true,
 		},
 	);
@@ -368,10 +284,11 @@ export default function LogsPage() {
 		isFetching: statsIsFetching,
 		refetch: refetchStats,
 	} = useGetLogsStatsQuery(
-		{ filters },
 		{
-			pollingInterval: polling && !period ? 5000 : 0,
-			refetchOnMountOrArgChange: true,
+			filters,
+		},
+		{
+			pollingInterval: polling ? 10000 : 0,
 			skipPollingIfUnfocused: true,
 		},
 	);
@@ -381,10 +298,11 @@ export default function LogsPage() {
 		isLoading: histogramIsLoading,
 		refetch: refetchHistogram,
 	} = useGetLogsHistogramQuery(
-		{ filters },
 		{
-			pollingInterval: polling && !period ? 5000 : 0,
-			refetchOnMountOrArgChange: true,
+			filters
+		},
+		{
+			pollingInterval: polling ? 10000 : 0,
 			skipPollingIfUnfocused: true,
 		},
 	);
@@ -399,26 +317,6 @@ export default function LogsPage() {
 			setShowEmptyState(false);
 		}
 	}, [logsData, showEmptyState]);
-
-	// On mount: if period is set and stored timestamps are stale, freshen them so the
-	// initial query uses the correct window (RTK will refetch when args change).
-	useEffect(() => {
-		if (urlState.period) {
-			const { from, to } = getRangeForPeriod(urlState.period);
-			const freshEnd = Math.floor(to.getTime() / 1000);
-			if (Math.abs(urlState.end_time - freshEnd) > 60) {
-				setUrlState(
-					{
-						start_time: Math.floor(from.getTime() / 1000),
-						end_time: freshEnd,
-						period: urlState.period ?? "",
-					},
-					{ history: "replace" },
-				);
-			}
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
 
 	const handleFilterByParentRequestId = useCallback(
 		(parentRequestId: string) => {
@@ -465,13 +363,22 @@ export default function LogsPage() {
 	// Period selection: store relative period + fresh timestamps in URL (bypasses setFilters
 	// so userModifiedTimeRange stays false and tab-focus refresh keeps working)
 	const handlePeriodChange = useCallback(
-		(p: string, from: Date, to: Date) => {
-			setUrlState({
-				period: p,
-				start_time: Math.floor(from.getTime() / 1000),
-				end_time: Math.floor(to.getTime() / 1000),
-				offset: 0,
-			});
+		(p?: string, from?: Date, to?: Date) => {
+			if (p) {
+				setUrlState({
+					period: p,
+					offset: 0,
+					polling: true
+				});
+			} else if (from && to) {
+				setUrlState({
+					start_time: Math.floor(from.getTime() / 1000),
+					end_time: Math.floor(to.getTime() / 1000),
+					offset: 0,
+					polling: false,
+					period: ""
+				});
+			}
 		},
 		[setUrlState],
 	);
@@ -663,9 +570,7 @@ export default function LogsPage() {
 
 	return (
 		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
-			{logsIsLoading ? (
-				<FullPageLoader />
-			) : showEmptyState ? (
+			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (
 				<div className="bg-background flex h-full w-full grow gap-3">
@@ -739,6 +644,7 @@ export default function LogsPage() {
 								isZoomed={isZoomed}
 								startTime={urlState.start_time}
 								endTime={urlState.end_time}
+								period={urlState.period}
 								isOpen={isChartOpen}
 								onOpenChange={setIsChartOpen}
 							/>

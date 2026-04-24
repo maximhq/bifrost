@@ -186,11 +186,17 @@ export default function DashboardPage() {
 	const selectedMcpToolNames = useMemo(() => parseCsvParam(urlState.mcp_tool_names), [urlState.mcp_tool_names]);
 	const selectedMcpServerLabels = useMemo(() => parseCsvParam(urlState.mcp_server_labels), [urlState.mcp_server_labels]);
 
-	// Derived filter for API calls
+	// Derived filter for API calls.
+	// When period is set, send it so the backend computes the window fresh on every request.
+	// For custom absolute ranges (period === "") use the stored URL timestamps.
 	const filters: LogFilters = useMemo(
 		() => ({
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
 			...(selectedProviders.length > 0 && { providers: selectedProviders }),
 			...(selectedModels.length > 0 && { models: selectedModels }),
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
@@ -208,10 +214,11 @@ export default function DashboardPage() {
 			...(missingCostOnly && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
-					metadata_filters: metadataFilters,
-				}),
+				metadata_filters: metadataFilters,
+			}),
 		}),
 		[
+			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
 			selectedProviders,
@@ -227,11 +234,15 @@ export default function DashboardPage() {
 		],
 	);
 
-	// MCP filters
+	// MCP filters — same period-first logic as filters above.
 	const mcpFilters: MCPToolLogFilters = useMemo(
 		() => ({
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
 			...(selectedMcpToolNames.length > 0 && {
 				tool_names: selectedMcpToolNames,
 			}),
@@ -239,7 +250,7 @@ export default function DashboardPage() {
 				server_labels: selectedMcpServerLabels,
 			}),
 		}),
-		[urlState.start_time, urlState.end_time, selectedMcpToolNames, selectedMcpServerLabels],
+		[urlState.period, urlState.start_time, urlState.end_time, selectedMcpToolNames, selectedMcpServerLabels],
 	);
 
 	// Model lists for each chart's legend (must match what the chart component actually renders)
@@ -510,6 +521,7 @@ export default function DashboardPage() {
 				...(timeChanged && { period: "" }),
 				start_time: newStartTime,
 				end_time: newEndTime,
+				period: urlState.period,
 				providers: (newFilters.providers || []).join(","),
 				models: (newFilters.models || []).join(","),
 				selected_key_ids: (newFilters.selected_key_ids || []).join(","),
@@ -525,7 +537,7 @@ export default function DashboardPage() {
 						: "",
 			});
 		},
-		[setUrlState, urlState.start_time, urlState.end_time],
+		[setUrlState, urlState.start_time, urlState.end_time, urlState.period],
 	);
 
 	// Date range for picker

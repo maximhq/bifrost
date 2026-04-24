@@ -269,13 +269,19 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
 		}
 	}
 	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, endTime); err == nil {
 			filters.EndTime = &t
+		}
+	}
+	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
+		if start, end := resolvePeriod(period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
 		}
 	}
 	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
@@ -498,13 +504,19 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
 		}
 	}
 	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, endTime); err == nil {
 			filters.EndTime = &t
+		}
+	}
+	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
+		if start, end := resolvePeriod(period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
 		}
 	}
 	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
@@ -645,13 +657,19 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
 		}
 	}
 	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, endTime); err == nil {
 			filters.EndTime = &t
+		}
+	}
+	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
+		if start, end := resolvePeriod(period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
 		}
 	}
 	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
@@ -1303,19 +1321,36 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	var startTimeErr, endTimeErr error
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		t, err := time.Parse(time.RFC3339, startTime)
+		t, err := time.Parse(time.RFC3339Nano, startTime)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid start_time format: %w", err)
+			startTimeErr = fmt.Errorf("invalid start_time format: %w", err)
+		} else {
+			filters.StartTime = &t
 		}
-		filters.StartTime = &t
 	}
 	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		t, err := time.Parse(time.RFC3339, endTime)
+		t, err := time.Parse(time.RFC3339Nano, endTime)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid end_time format: %w", err)
+			endTimeErr = fmt.Errorf("invalid end_time format: %w", err)
+		} else {
+			filters.EndTime = &t
 		}
-		filters.EndTime = &t
+	}
+	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
+		if start, end := resolvePeriod(period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
+			startTimeErr = nil
+			endTimeErr = nil
+		}
+	}
+	if startTimeErr != nil {
+		return nil, nil, startTimeErr
+	}
+	if endTimeErr != nil {
+		return nil, nil, endTimeErr
 	}
 	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
 		f, err := strconv.ParseFloat(minLatency, 64)
@@ -1406,19 +1441,34 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	var timeParseErr error
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		t, err := time.Parse(time.RFC3339, startTime)
+		t, err := time.Parse(time.RFC3339Nano, startTime)
 		if err != nil {
-			return nil, fmt.Errorf("invalid start_time format: %w", err)
+			timeParseErr = fmt.Errorf("invalid start_time format: %w", err)
+		} else {
+			filters.StartTime = &t
 		}
-		filters.StartTime = &t
 	}
 	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		t, err := time.Parse(time.RFC3339, endTime)
+		t, err := time.Parse(time.RFC3339Nano, endTime)
 		if err != nil {
-			return nil, fmt.Errorf("invalid end_time format: %w", err)
+			if timeParseErr == nil {
+				timeParseErr = fmt.Errorf("invalid end_time format: %w", err)
+			}
+		} else {
+			filters.EndTime = &t
 		}
-		filters.EndTime = &t
+	}
+	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
+		if start, end := resolvePeriod(period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
+			timeParseErr = nil
+		}
+	}
+	if timeParseErr != nil {
+		return nil, timeParseErr
 	}
 	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
 		f, err := strconv.ParseFloat(minLatency, 64)

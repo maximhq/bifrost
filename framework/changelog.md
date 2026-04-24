@@ -1,0 +1,2 @@
+- fix: Fixes OTEL exporting in `framework/tracing/llmspan.go` to show input and output messages correctly
+- feat: add support for cache creation cost above 1 hour

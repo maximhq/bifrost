@@ -248,16 +248,21 @@ bifrost:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `bifrost.client.mcpAgentDepth` | Maximum tool-call recursion depth for MCP agent mode | `10` |
-| `bifrost.client.mcpToolExecutionTimeout` | Timeout per tool execution in seconds | `30` |
-| `bifrost.client.mcpCodeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `""` |
-| `bifrost.client.mcpToolSyncInterval` | Global tool sync interval in minutes (`0` = disabled) | `0` |
+| `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum tool-call recursion depth for MCP agent mode | `10` |
+| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Timeout per tool execution in seconds | `30` |
+| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
+| `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |
+| `bifrost.mcp.toolSyncInterval` | Global tool sync interval as a Go duration string (for example `10m`). Use `0s` to use the runtime default (it does **not** disable sync). This differs from legacy `bifrost.client.mcpToolSyncInterval: 0`, which represented disabled behavior. | `10m` |
 
 ```yaml
 bifrost:
-  client:
-    mcpAgentDepth: 15
-    mcpToolExecutionTimeout: 60
+  mcp:
+    toolSyncInterval: "15m"
+    toolManagerConfig:
+      maxAgentDepth: 15
+      toolExecutionTimeout: 60
+      codeModeBindingLevel: "tool"
+      disableAutoToolInject: false
 ```
 
 ---
@@ -298,8 +303,13 @@ bifrost:
     prometheusLabels:
       - name: "environment"
         value: "production"
-    mcpAgentDepth: 10
-    mcpToolExecutionTimeout: 30
+  mcp:
+    toolSyncInterval: "10m"
+    toolManagerConfig:
+      maxAgentDepth: 10
+      toolExecutionTimeout: 30
+      codeModeBindingLevel: "server"
+      disableAutoToolInject: false
 ```
 
 ```bash

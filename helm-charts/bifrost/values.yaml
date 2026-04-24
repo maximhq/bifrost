@@ -210,10 +210,12 @@ bifrost:
     # requiredHeaders: []            # Headers that must be present on every request
     # loggingHeaders: []             # Headers to capture in log metadata
     # allowedHeaders: []             # Additional allowed headers for CORS and WebSocket
-    # mcpAgentDepth: 10              # Maximum depth for MCP agent mode tool execution
-    # mcpToolExecutionTimeout: 30    # Timeout for individual MCP tool execution in seconds
-    # mcpCodeModeBindingLevel: ""    # Code mode binding level (server or tool)
-    # mcpToolSyncInterval: 0         # Global tool sync interval in minutes (0 = disabled)
+    # Deprecated MCP global settings (use bifrost.mcp.toolManagerConfig and bifrost.mcp.toolSyncInterval instead):
+    # mcpAgentDepth: 10
+    # mcpToolExecutionTimeout: 30
+    # mcpCodeModeBindingLevel: "server"
+    # mcpToolSyncInterval: 10
+    # mcpDisableAutoToolInject: false
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
@@ -338,12 +340,13 @@ bifrost:
       #   secretRef:
       #     name: ""                               # k8s secret name
       #     connectionStringKey: "connection-string"  # key within the secret
-    # toolSyncInterval: "10m"   # Global tool sync interval (Go duration)
+    # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Tool manager configuration
     toolManagerConfig:
       toolExecutionTimeout: 30
       maxAgentDepth: 10
-      # codeModeBindingLevel: ""  # Code mode binding level (server or tool)
+      # codeModeBindingLevel: "server"  # Code mode binding level (server or tool)
+      # disableAutoToolInject: false    # Disable automatic MCP tool injection
 
   # Plugins configuration
   # Plugin version must be >= 1 (schema minimum). Use values > 1 to force DB-backed plugin config replacement on upgrade.
@@ -476,18 +479,16 @@ bifrost:
       # - id: "vk-1"
       #   name: "Virtual Key 1"
       #   description: "Virtual key description"
-      #   value: "vk-..."           # Optional - auto-generated if omitted
+      #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
-      #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
       #   # Provider-specific configurations (empty means all providers allowed)
       #   provider_configs:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
-      #       budget_id: ""
       #       rate_limit_id: ""
       #       keys:
       #         - key_id: "uuid-of-key"
@@ -518,11 +519,21 @@ bifrost:
       #   targets:
       #     - provider: "azure"
       #       model: ""              # Empty means use original model
+      #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
       #       weight: 1.0
       #   fallbacks: ["openai"]
       #   scope: "global"           # Options: global, team, customer, virtual_key
       #   scope_id: ""              # Required for non-global scopes
       #   priority: 0               # Lower = evaluated first
+    pricingOverrides: []
+      # - id: "override-1"
+      #   name: "Provider key pricing override"
+      #   scope_kind: "provider_key" # global|provider|provider_key|virtual_key|virtual_key_provider|virtual_key_provider_key
+      #   provider_key_name: ""      # Optional provider key name alias (resolved to internal provider key ID at load time)
+      #   match_type: "exact"        # exact|wildcard
+      #   pattern: "gpt-4o-mini"
+      #   request_types: ["chat_completion"]
+      #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -858,8 +869,8 @@ vectorStore:
 
     # Redis image configuration
     image:
-      repository: redis
-      tag: "7-alpine"
+      repository: redis/redis-stack-server
+      tag: "7.2.0-v20"
       pullPolicy: IfNotPresent
 
     # Redis subchart configuration (when redis.enabled is true)

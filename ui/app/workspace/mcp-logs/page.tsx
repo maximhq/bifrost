@@ -8,7 +8,6 @@ import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
-import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
@@ -34,11 +33,7 @@ export default function MCPLogsPage() {
 	// Track if user has manually modified the time range
 	const userModifiedTimeRange = useRef<boolean>(false);
 
-	// Capture initial defaults on mount to detect shared URLs with custom time ranges
-	const initialDefaults = useRef(dateUtils.getDefaultTimeRange());
-
 	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
-	const getDefaultTimeRange = () => dateUtils.getDefaultTimeRange();
 
 	const { search } = useLocation();
 	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
@@ -70,81 +65,10 @@ export default function MCPLogsPage() {
 	const selectedLogId = urlState.selected_log || null;
 	const polling = urlState.polling;
 
-	// Refresh time range on page focus/visibility
-	useEffect(() => {
-		const refreshDefaultsIfStale = () => {
-			if (!polling) return
-			if (urlState.period) {
-				const { from, to } = getRangeForPeriod(urlState.period);
-				setUrlState(
-					{
-						start_time: Math.floor(from.getTime() / 1000),
-						end_time: Math.floor(to.getTime() / 1000),
-						period: urlState.period ?? "",
-					},
-					{ history: "replace" },
-				);
-				return;
-			}
 
-			if (userModifiedTimeRange.current) return;
-
-			const startTimeDiff = Math.abs(urlState.start_time - initialDefaults.current.startTime);
-			const endTimeDiff = Math.abs(urlState.end_time - initialDefaults.current.endTime);
-			const tolerance = 5;
-			if (startTimeDiff <= tolerance && endTimeDiff <= tolerance) {
-				const defaults = getDefaultTimeRange();
-				const currentEndDiff = Math.abs(urlState.end_time - defaults.endTime);
-				if (currentEndDiff > 300) {
-					setUrlState(
-						{
-							start_time: defaults.startTime,
-							end_time: defaults.endTime,
-							period: urlState.period ?? "",
-						},
-						{ history: "replace" },
-					);
-					initialDefaults.current.startTime = defaults.startTime;
-					initialDefaults.current.endTime = defaults.endTime;
-				}
-			}
-		};
-
-		const handleVisibilityChange = () => {
-			if (!document.hidden) refreshDefaultsIfStale();
-		};
-		const handleFocus = () => refreshDefaultsIfStale();
-
-		document.addEventListener("visibilitychange", handleVisibilityChange);
-		window.addEventListener("focus", handleFocus);
-		return () => {
-			document.removeEventListener("visibilitychange", handleVisibilityChange);
-			window.removeEventListener("focus", handleFocus);
-		};
-	}, [urlState.period, urlState.start_time, urlState.end_time, setUrlState, polling]);
-
-	// Refresh the time window every 5s while live polling is on and a relative period is active.
-	// Updating start_time/end_time changes RTK args → triggers a refetch without needing pollingInterval.
-	useEffect(() => {
-		if (!polling || !urlState.period) return;
-
-		const id = setInterval(() => {
-			if (document.hidden) return;
-			const { from, to } = getRangeForPeriod(urlState.period);
-			setUrlState(
-				{
-					start_time: Math.floor(from.getTime() / 1000),
-					end_time: Math.floor(to.getTime() / 1000),
-					period: urlState.period ?? "",
-				},
-				{ history: "replace" },
-			);
-		}, 5000);
-
-		return () => clearInterval(id);
-	}, [polling, urlState.period, setUrlState]);
-
-	// Convert URL state to filters and pagination for API calls
+	// Convert URL state to filters and pagination for API calls.
+	// When period is set, send it to the backend so the server computes the time window fresh
+	// on every request. For custom absolute ranges (period === "") use the stored timestamps.
 	const filters: MCPToolLogFilters = useMemo(
 		() => ({
 			tool_names: urlState.tool_names,
@@ -152,16 +76,20 @@ export default function MCPLogsPage() {
 			status: urlState.status,
 			virtual_key_ids: urlState.virtual_key_ids,
 			content_search: urlState.content_search,
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
 		}),
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[
 			urlState.tool_names,
 			urlState.server_labels,
 			urlState.status,
 			urlState.virtual_key_ids,
 			urlState.content_search,
+			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
 		],
@@ -177,7 +105,6 @@ export default function MCPLogsPage() {
 		[urlState.limit, urlState.offset, urlState.sort_by, urlState.order],
 	);
 
-	// Non-lazy RTK Query hooks
 	const {
 		data: logsData,
 		isLoading: logsIsLoading,
@@ -187,10 +114,7 @@ export default function MCPLogsPage() {
 	} = useGetMCPLogsQuery(
 		{ filters, pagination },
 		{
-			// When a relative period is active, the setInterval above updates URL timestamps → RTK
-			// detects arg changes and refetches automatically; no separate pollingInterval needed.
-			pollingInterval: showEmptyState ? 3000 : polling && !urlState.period ? 5000 : 0,
-			refetchOnMountOrArgChange: true,
+			pollingInterval: showEmptyState || polling ? 10000 : 0,
 			skipPollingIfUnfocused: true,
 		},
 	);
@@ -199,7 +123,13 @@ export default function MCPLogsPage() {
 		data: statsData,
 		isFetching: statsIsFetching,
 		refetch: refetchStats,
-	} = useGetMCPLogsStatsQuery({ filters }, { refetchOnMountOrArgChange: true });
+	} = useGetMCPLogsStatsQuery(
+		{ filters },
+		{
+			pollingInterval: polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
 
 	const refreshAllData = useCallback(() => {
 		refetchLogs();
@@ -222,25 +152,6 @@ export default function MCPLogsPage() {
 			setShowEmptyState(false);
 		}
 	}, [logsData, showEmptyState]);
-
-	// On mount: freshen period timestamps if stale
-	useEffect(() => {
-		if (urlState.period) {
-			const { from, to } = getRangeForPeriod(urlState.period);
-			const freshEnd = Math.floor(to.getTime() / 1000);
-			if (Math.abs(urlState.end_time - freshEnd) > 60) {
-				setUrlState(
-					{
-						start_time: Math.floor(from.getTime() / 1000),
-						end_time: freshEnd,
-						period: urlState.period ?? "",
-					},
-					{ history: "replace" },
-				);
-			}
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
 
 	// Helper to update filters in URL
 	const setFilters = useCallback(
@@ -295,13 +206,22 @@ export default function MCPLogsPage() {
 	);
 
 	const handlePeriodChange = useCallback(
-		(p: string, from: Date, to: Date) => {
-			setUrlState({
-				period: p,
-				start_time: Math.floor(from.getTime() / 1000),
-				end_time: Math.floor(to.getTime() / 1000),
-				offset: 0,
-			});
+		(p?: string, from?: Date, to?: Date) => {
+			if (p) {
+				setUrlState({
+					period: p,
+					offset: 0,
+					polling: true
+				});
+			} else if (from && to) {
+				setUrlState({
+					start_time: Math.floor(from.getTime() / 1000),
+					end_time: Math.floor(to.getTime() / 1000),
+					offset: 0,
+					polling: false,
+					period: ""
+				});
+			}
 		},
 		[setUrlState],
 	);

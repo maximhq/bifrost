@@ -11,7 +11,7 @@ interface McpHeaderViewProps {
 	filters: MCPToolLogFilters;
 	onFiltersChange: (filters: MCPToolLogFilters) => void;
 	period: string;
-	onPeriodChange: (period: string, from: Date, to: Date) => void;
+	onPeriodChange: (period?: string, from?: Date, to?: Date) => void;
 	polling: boolean;
 	onPollToggle: (enabled: boolean) => void;
 	onRefresh: () => void;
@@ -109,11 +109,7 @@ export function McpHeaderView({
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);
-					onFiltersChange({
-						...filters,
-						start_time: p.from?.toISOString(),
-						end_time: p.to?.toISOString(),
-					});
+					onPeriodChange(undefined, p.from, p.to);
 				}}
 				preDefinedPeriods={TIME_PERIODS}
 				onPredefinedPeriodChange={(periodValue) => {

@@ -42,21 +42,10 @@ function ContentBlockView({ block }: { block: ContentBlock; index: number }) {
 
 	// Handle image content
 	if (block.image_url) {
-		const jsonContent = JSON.stringify(block.image_url, null, 2);
-		return (
-			<CollapsibleBox title={blockType} onCopy={() => jsonContent} collapsedHeight={100}>
-				<CodeEditor
-					className="z-0 w-full"
-					shouldAdjustInitialHeight={true}
-					maxHeight={150}
-					wrap={true}
-					code={jsonContent}
-					lang="json"
-					readonly={true}
-					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-				/>
-			</CollapsibleBox>
-		);
+		const src = block.image_url.url;
+		if (src) {
+			return <img src={src} alt="Attached image" className="max-w-full rounded border" />;
+		}
 	}
 
 	// Handle audio content

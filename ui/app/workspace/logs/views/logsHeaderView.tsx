@@ -21,7 +21,7 @@ interface LogsHeaderViewProps {
 	polling: boolean;
 	onPollToggle: (enabled: boolean) => void;
 	period: string;
-	onPeriodChange: (period: string, from: Date, to: Date) => void;
+	onPeriodChange: (period?: string, from?: Date, to?: Date) => void;
 	/** Column config for the ColumnConfigDropdown */
 	columnEntries: ColumnConfigEntry[];
 	columnLabels: Record<string, string>;
@@ -144,11 +144,7 @@ export function LogsHeaderView({
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);
-					onFiltersChange({
-						...filters,
-						start_time: p.from?.toISOString(),
-						end_time: p.to?.toISOString(),
-					});
+					onPeriodChange(undefined, p.from, p.to);
 				}}
 				preDefinedPeriods={TIME_PERIODS}
 				onPredefinedPeriodChange={(periodValue) => {

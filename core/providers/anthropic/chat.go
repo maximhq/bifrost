@@ -868,13 +868,20 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 	// Convert usage information
 	if response.Usage != nil {
+		promptTokensDetails := &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  response.Usage.CacheReadInputTokens,
+			CachedWriteTokens: response.Usage.CacheCreationInputTokens,
+		}
+		if response.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || response.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: response.Usage.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: response.Usage.CacheCreation.Ephemeral1hInputTokens,
+			}
+		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens: response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens,
-			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-				CachedReadTokens:  response.Usage.CacheReadInputTokens,
-				CachedWriteTokens: response.Usage.CacheCreationInputTokens,
-			},
-			CompletionTokens: response.Usage.OutputTokens,
+			PromptTokens:        response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens,
+			PromptTokensDetails: promptTokensDetails,
+			CompletionTokens:    response.Usage.OutputTokens,
 		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
@@ -916,6 +923,12 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		if bifrostResp.Usage.PromptTokensDetails != nil && bifrostResp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
 			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.PromptTokensDetails.CachedWriteTokens
 			anthropicResp.Usage.InputTokens = anthropicResp.Usage.InputTokens - bifrostResp.Usage.PromptTokensDetails.CachedWriteTokens
+		}
+		if bifrostResp.Usage.PromptTokensDetails != nil && bifrostResp.Usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			anthropicResp.Usage.CacheCreation = AnthropicUsageCacheCreation{
+				Ephemeral5mInputTokens: bifrostResp.Usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m,
+				Ephemeral1hInputTokens: bifrostResp.Usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h,
+			}
 		}
 		// Forward service tier
 		if bifrostResp.ServiceTier != nil {

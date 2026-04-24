@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -137,26 +138,53 @@ func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 }
 
 // sendMessageSafely sends a message to a client with proper locking and error handling
-func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageType int, data []byte) error {
+func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageType int, data []byte) (writeErr error) {
+	if client == nil {
+		return fmt.Errorf("websocket client is nil")
+	}
+
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
-	// Set a write deadline to prevent hanging connections
-	client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	defer client.conn.SetWriteDeadline(time.Time{}) // Clear the deadline
-
-	err := client.conn.WriteMessage(messageType, data)
-	if err != nil {
-		// Remove the client from the map if write fails
-		go func() {
-			h.mu.Lock()
-			delete(h.clients, client.conn)
-			h.mu.Unlock()
-			client.conn.Close()
-		}()
+	conn := client.conn
+	if conn == nil {
+		return fmt.Errorf("websocket connection is nil")
 	}
 
-	return err
+	defer func() {
+		if r := recover(); r != nil {
+			writeErr = fmt.Errorf("panic while writing websocket message: %v", r)
+			h.removeClient(conn)
+			_ = conn.Close()
+		}
+	}()
+
+	// Set a write deadline to prevent hanging connections
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		h.removeClient(conn)
+		_ = conn.Close()
+		return err
+	}
+
+	err := conn.WriteMessage(messageType, data)
+	if err != nil {
+		h.removeClient(conn)
+		_ = conn.Close()
+		return err
+	}
+
+	// Clear write deadline on successful write.
+	_ = conn.SetWriteDeadline(time.Time{})
+	return writeErr
+}
+
+func (h *WebSocketHandler) removeClient(conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	h.mu.Lock()
+	delete(h.clients, conn)
+	h.mu.Unlock()
 }
 
 // BroadcastUpdatesToClients sends a store update notification to all connected WebSocket clients

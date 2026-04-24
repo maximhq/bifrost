@@ -2027,6 +2027,19 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
 			bifrostResp.Usage.InputTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			if response.Usage.CacheDetails != nil {
+				if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+					bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+				}
+				for _, cacheDetail := range *response.Usage.CacheDetails {
+					if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+						bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					}
+					if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+						bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					}
+				}
+			}
 			bifrostResp.Usage.InputTokens = bifrostResp.Usage.InputTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
@@ -2102,6 +2115,22 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			}
 			if bifrostResp.Usage.InputTokensDetails.CachedWriteTokens > 0 {
 				bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
+				if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails != nil {
+					var cacheDetails []BedrockCacheWriteDetails
+					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m > 0 {
+						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
+							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m,
+							TTL:         BedrockCacheWriteTTL5m,
+						})
+					}
+					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h > 0 {
+						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
+							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h,
+							TTL:         BedrockCacheWriteTTL1h,
+						})
+					}
+					bedrockResp.Usage.CacheDetails = &cacheDetails
+				}
 				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
 			}
 		}

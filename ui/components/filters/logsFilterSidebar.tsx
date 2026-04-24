@@ -43,7 +43,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters"];
+		const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters", "period", "polling"];
 		let count = Object.entries(filters).reduce((c, [key, value]) => {
 			if (excludedKeys.includes(key)) return c;
 			if (Array.isArray(value)) return c + value.length;

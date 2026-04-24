@@ -336,102 +336,88 @@ export const modelProviderKeySchema = z
 
 // Network config schema
 export const networkConfigSchema = z
-  .object({
-    base_url: z
-      .union([z.string().url("Must be a valid URL"), z.string().length(0)])
-      .optional(),
-    extra_headers: z.record(z.string(), z.string()).optional(),
-    default_request_timeout_in_seconds: z
-      .number()
-      .min(1, "Timeout must be greater than 0 seconds")
-      .max(3600, "Timeout must be less than 3600 seconds"),
-    max_retries: z
-      .number()
-      .min(0, "Max retries must be greater than 0")
-      .max(10, "Max retries must be less than 10"),
-    retry_backoff_initial: z.number().min(100),
-    retry_backoff_max: z.number().min(1000),
-    insecure_skip_verify: z.boolean().optional(),
-    ca_cert_pem: z.string().optional(),
-    stream_idle_timeout_in_seconds: z
-      .number()
-      .int("Stream idle timeout must be a whole number of seconds")
-      .min(5, "Stream idle timeout must be at least 5 seconds")
-      .max(
-        3600,
-        "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes",
-      )
-      .optional(),
-    max_conns_per_host: z
-      .number()
-      .int("Max connections must be a whole number")
-      .min(1, "Max connections must be at least 1")
-      .max(10000, "Max connections must be at most 10000")
-      .optional(),
-    enforce_http2: z.boolean().optional(),
-  })
-  .refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
-    message: "retry_backoff_initial must be <= retry_backoff_max",
-    path: ["retry_backoff_initial"],
-  });
+	.object({
+		base_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
+		extra_headers: z.record(z.string(), z.string()).optional(),
+		default_request_timeout_in_seconds: z
+			.number()
+			.min(1, "Timeout must be greater than 0 seconds")
+			.max(3600, "Timeout must be less than 3600 seconds"),
+		max_retries: z.number().min(0, "Max retries must be greater than 0").max(10, "Max retries must be less than 10"),
+		retry_backoff_initial: z.number().min(100),
+		retry_backoff_max: z.number().min(100),
+		insecure_skip_verify: z.boolean().optional(),
+		ca_cert_pem: envVarSchema.optional(),
+		stream_idle_timeout_in_seconds: z
+			.number()
+			.int("Stream idle timeout must be a whole number of seconds")
+			.min(5, "Stream idle timeout must be at least 5 seconds")
+			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		max_conns_per_host: z
+			.number()
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
+	})
+	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
+		message: "retry_backoff_initial must be <= retry_backoff_max",
+		path: ["retry_backoff_initial"],
+	});
 
 // Network form schema - more lenient for form inputs
 export const networkFormConfigSchema = z
-  .object({
-    base_url: z
-      .union([
-        z
-          .string()
-          .url("Must be a valid URL")
-          .refine(
-            (url) => url.startsWith("https://") || url.startsWith("http://"),
-            {
-              message: "Must be a valid HTTP or HTTPS URL",
-            },
-          ),
-        z.string().length(0),
-      ])
-      .optional(),
-    extra_headers: z.record(z.string(), z.string()).optional(),
-    default_request_timeout_in_seconds: z.coerce
-      .number("Timeout must be a number")
-      .min(1, "Timeout must be greater than 0 seconds")
-      .max(172800, "Timeout must be less than 172800 seconds i.e. 48 hours"),
-    max_retries: z.coerce
-      .number("Max retries must be a number")
-      .min(0, "Max retries must be greater than 0")
-      .max(10, "Max retries must be less than 10"),
-    retry_backoff_initial: z.coerce
-      .number("Retry backoff initial must be a number")
-      .min(100, "Retry backoff initial must be at least 100ms")
-      .max(1000000, "Retry backoff initial must be at most 1000000ms"),
-    retry_backoff_max: z.coerce
-      .number("Retry backoff max must be a number")
-      .min(100, "Retry backoff max must be at least 100ms")
-      .max(1000000, "Retry backoff max must be at most 1000000ms"),
-    insecure_skip_verify: z.boolean().optional(),
-    ca_cert_pem: z.string().optional(),
-    stream_idle_timeout_in_seconds: z.coerce
-      .number("Stream idle timeout must be a number")
-      .int("Stream idle timeout must be a whole number of seconds")
-      .min(5, "Stream idle timeout must be at least 5 seconds")
-      .max(
-        3600,
-        "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes",
-      )
-      .optional(),
-    max_conns_per_host: z.coerce
-      .number("Max connections must be a number")
-      .int("Max connections must be a whole number")
-      .min(1, "Max connections must be at least 1")
-      .max(10000, "Max connections must be at most 10000")
-      .optional(),
-    enforce_http2: z.boolean().optional(),
-  })
-  .refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
-    message: "Initial backoff must be less than or equal to max backoff",
-    path: ["retry_backoff_initial"],
-  });
+	.object({
+		base_url: z
+			.union([
+				z
+					.string()
+					.url("Must be a valid URL")
+					.refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
+						message: "Must be a valid HTTP or HTTPS URL",
+					}),
+				z.string().length(0),
+			])
+			.optional(),
+		extra_headers: z.record(z.string(), z.string()).optional(),
+		default_request_timeout_in_seconds: z.coerce
+			.number("Timeout must be a number")
+			.min(1, "Timeout must be greater than 0 seconds")
+			.max(172800, "Timeout must be less than 172800 seconds i.e. 48 hours"),
+		max_retries: z.coerce
+			.number("Max retries must be a number")
+			.min(0, "Max retries must be greater than 0")
+			.max(10, "Max retries must be less than 10"),
+		retry_backoff_initial: z.coerce
+			.number("Retry backoff initial must be a number")
+			.min(100, "Retry backoff initial must be at least 100ms")
+			.max(1000000, "Retry backoff initial must be at most 1000000ms"),
+		retry_backoff_max: z.coerce
+			.number("Retry backoff max must be a number")
+			.min(100, "Retry backoff max must be at least 100ms")
+			.max(1000000, "Retry backoff max must be at most 1000000ms"),
+		insecure_skip_verify: z.boolean().optional(),
+		ca_cert_pem: envVarSchema.optional(),
+		stream_idle_timeout_in_seconds: z.coerce
+			.number("Stream idle timeout must be a number")
+			.int("Stream idle timeout must be a whole number of seconds")
+			.min(5, "Stream idle timeout must be at least 5 seconds")
+			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		max_conns_per_host: z.coerce
+			.number("Max connections must be a number")
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
+	})
+	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
+		message: "Initial backoff must be less than or equal to max backoff",
+		path: ["retry_backoff_initial"],
+	});
 
 // Concurrency and buffer size schema
 export const concurrencyAndBufferSizeSchema = z.object({
@@ -455,91 +441,84 @@ export const proxyTypeSchema = z.enum([
 
 // Proxy config schema
 export const proxyConfigSchema = z
-  .object({
-    type: proxyTypeSchema,
-    url: z.url("Must be a valid URL"),
-    username: z.string().optional(),
-    password: z.string().optional(),
-    ca_cert_pem: z.string().optional(),
-  })
-  .refine(
-    (data) =>
-      !(data.type === "http" || data.type === "socks5") ||
-      (data.url && data.url.trim().length > 0),
-    {
-      message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
-      path: ["url"],
-    },
-  )
-  .refine(
-    (data) => {
-      if (
-        (data.type === "http" || data.type === "socks5") &&
-        data.url?.trim()
-      ) {
-        try {
-          new URL(data.url);
-          return true;
-        } catch {
-          return false;
-        }
-      }
-      return true;
-    },
-    {
-      message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
-      path: ["url"],
-    },
-  );
+	.object({
+		type: proxyTypeSchema,
+		url: envVarSchema.optional(),
+		username: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		ca_cert_pem: envVarSchema.optional(),
+	})
+	.refine((data) => !(data.type === "http" || data.type === "socks5") || data.url?.from_env === true || (data.url?.value && data.url.value.trim().length > 0), {
+		message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
+		path: ["url"],
+	})
+	.refine(
+		(data) => {
+			if ((data.type === "http" || data.type === "socks5") && data.url?.value?.trim()) {
+				if (data.url.from_env || data.url.env_var?.startsWith("env.")) {
+					return true;
+				}
+				try {
+					new URL(data.url.value);
+					return true;
+				} catch {
+					return false;
+				}
+			}
+			return true;
+		},
+		{ message: "Must be a valid URL (e.g., http://proxy.example.com:8080)", path: ["url"] },
+	);
 
 // Proxy form schema - more lenient for form inputs with conditional validation
 export const proxyFormConfigSchema = z
-  .object({
-    type: proxyTypeSchema,
-    url: z.string().optional(),
-    username: z.string().optional(),
-    password: z.string().optional(),
-    ca_cert_pem: z.string().optional(),
-  })
-  .refine(
-    (data) => {
-      if (data.type === "none") {
-        return true;
-      }
-      // URL is required when proxy type is http or socks5
-      if (data.type === "http" || data.type === "socks5") {
-        // Check for URL existence, non-empty, and valid format
-        if (!data.url || data.url.trim().length === 0) return false;
-      }
-      return true;
-    },
-    {
-      message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
-      path: ["url"],
-    },
-  )
-  .refine(
-    (data) => {
-      // URL must be valid format when provided and proxy type requires it
-      if (
-        (data.type === "http" || data.type === "socks5") &&
-        data.url &&
-        data.url.trim().length > 0
-      ) {
-        try {
-          new URL(data.url);
-          return true;
-        } catch {
-          return false;
-        }
-      }
-      return true;
-    },
-    {
-      message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
-      path: ["url"],
-    },
-  );
+	.object({
+		type: proxyTypeSchema,
+		url: envVarSchema.optional(),
+		username: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		ca_cert_pem: envVarSchema.optional(),
+	})
+	.refine(
+		(data) => {
+			if (data.type === "none") {
+				return true;
+			}
+			// URL is required when proxy type is http or socks5
+			if (data.type === "http" || data.type === "socks5") {
+				// Env-backed URLs may have empty resolved value before env resolution.
+				if (data.url?.from_env || data.url?.env_var?.startsWith("env.")) return true;
+				// Literal URLs must be non-empty.
+				if (!data.url?.value || data.url.value.trim().length === 0) return false;
+			}
+			return true;
+		},
+		{
+			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// URL must be valid format when provided and proxy type requires it
+			if ((data.type === "http" || data.type === "socks5") && data.url?.value && data.url.value.trim().length > 0) {
+				if (data.url.from_env || data.url.env_var?.startsWith("env.")) {
+					return true;
+				}
+				try {
+					new URL(data.url.value);
+					return true;
+				} catch {
+					return false;
+				}
+			}
+			return true;
+		},
+		{
+			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
+			path: ["url"],
+		},
+	);
 
 // OpenAI Config tab
 export const openaiConfigFormSchema = z.object({
