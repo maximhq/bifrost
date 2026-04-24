@@ -15713,6 +15713,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 // enterpriseSchemaPaths are schema paths that exist only in enterprise version
 var enterpriseSchemaPaths = map[string]bool{
 	"$schema":                    true,
+	"access_profiles":            true,
 	"audit_logs":                 true,
 	"cluster_config":             true,
 	"scim_config":                true,
@@ -15770,7 +15771,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"config_hash":  true,
 		"created_at":   true,
 		"updated_at":   true,
-		"budget":       true, // GORM relation
+		"budgets":      true, // GORM relation (multiple budgets with different reset intervals)
 		"rate_limit":   true, // GORM relation
 		"customer":     true, // GORM relation
 		"virtual_keys": true, // GORM relation
@@ -15831,12 +15832,22 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"client": {
 		"allowed_headers": true, // Not in ClientConfig
 	},
+	"governance": {
+		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
+	},
+	"governance.teams": {
+		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
+		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
+	},
 	"governance.virtual_keys.provider_configs": {
 		"keys":    true, // Complex nested type, validated separately
 		"key_ids": true, // Config-file format; handled via custom UnmarshalJSON into allow_all_keys/keys
 	},
 	"governance.virtual_keys.mcp_configs": {
 		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
+	},
+	"mcp": {
+		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
 	},
 	"mcp.client_configs": {
 		"websocket_config": true, // Schema documents all connection types
@@ -16084,6 +16095,7 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	// and validation purposes, but are only available in the enterprise version.
 	enterpriseSchemaFields := map[string]bool{
 		"$schema":                    true,
+		"access_profiles":            true,
 		"audit_logs":                 true,
 		"cluster_config":             true,
 		"scim_config":                true,
