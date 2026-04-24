@@ -24,7 +24,7 @@ NC=\033[0m # No Color
 ECHO := printf '%b\n'
 
 # nvm requires bash-compatible shell semantics; /bin/sh is dash on some Linux distros.
-SHELL := /bin/bash
+SHELL := /usr/bin/env bash
 
 # Ensures the Node version pinned in .nvmrc is active before any npm/node call.
 # nvm is a shell function, so each recipe that needs it must inline this snippet
