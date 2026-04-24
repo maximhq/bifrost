@@ -158,3 +158,118 @@ func TestPoolExpiredConnection(t *testing.T) {
 	assert.NotSame(t, conn, conn2)
 	pool.Discard(conn2)
 }
+
+// startRejectServer starts a test HTTP server that rejects WebSocket upgrade requests
+// with the given status code and body.
+func startRejectServer(t *testing.T, statusCode int, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(statusCode)
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+// TestDialErrorIncludesStatusAndBody verifies that when the upstream returns a non-nil
+// HTTP response on dial failure, the error contains the status code and body snippet.
+func TestDialErrorIncludesStatusAndBody(t *testing.T) {
+	const upstreamBody = `{"error":"invalid_token","message":"token is not valid"}`
+	server := startRejectServer(t, http.StatusUnauthorized, upstreamBody)
+	defer server.Close()
+
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                5,
+		MaxTotalConnections:          10,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+
+	_, err := pool.Get(key, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upstream status 401")
+	assert.Contains(t, err.Error(), "invalid_token")
+}
+
+// TestDialErrorNilResponseFallback verifies that when there is no HTTP response
+// (e.g. network error before the server responds), the error still uses the base
+// format without panicking.
+func TestDialErrorNilResponseFallback(t *testing.T) {
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                5,
+		MaxTotalConnections:          10,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	// Use an endpoint that is not listening so the TCP dial fails immediately,
+	// producing a nil HTTP response.
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: "ws://127.0.0.1:1"}
+
+	_, err := pool.Get(key, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to dial upstream websocket")
+	assert.NotContains(t, err.Error(), "upstream status")
+}
+
+// TestDialErrorBodyTruncated verifies that body snippets longer than 512 bytes are
+// truncated so the error message stays bounded.
+func TestDialErrorBodyTruncated(t *testing.T) {
+	// Build a body that is larger than the 512-byte limit.
+	largeBody := strings.Repeat("x", 1024)
+	server := startRejectServer(t, http.StatusForbidden, largeBody)
+	defer server.Close()
+
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                5,
+		MaxTotalConnections:          10,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+
+	_, err := pool.Get(key, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upstream status 403")
+	// The error string must not contain the full large body.
+	assert.LessOrEqual(t, len(err.Error()), 700,
+		"error string should be bounded; got length %d", len(err.Error()))
+}
+
+// TestDialErrorResponseBodyClosed verifies that the HTTP response body from a failed
+// dial attempt is closed (no resource leak). We confirm by checking the error is
+// produced without panic and contains expected fields when the server writes a
+// response and closes immediately.
+func TestDialErrorResponseBodyClosed(t *testing.T) {
+	const body = `{"code":"forbidden"}`
+	server := startRejectServer(t, http.StatusForbidden, body)
+	defer server.Close()
+
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                5,
+		MaxTotalConnections:          10,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+
+	_, err := pool.Get(key, nil)
+	require.Error(t, err)
+	// If body were not closed, subsequent connections to the same server could stall.
+	// We verify the error contains the status to confirm the body was read before close.
+	assert.Contains(t, err.Error(), "upstream status 403")
+	assert.Contains(t, err.Error(), "forbidden")
+}

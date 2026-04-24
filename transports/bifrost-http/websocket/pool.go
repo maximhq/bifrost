@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -168,9 +169,23 @@ func (p *Pool) Close() {
 }
 
 func (p *Pool) dial(key PoolKey, headers map[string]string) (*UpstreamConn, error) {
-	wsConn, _, err := Dial(key.Endpoint, headers)
+	wsConn, resp, err := Dial(key.Endpoint, headers)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", key.Endpoint, err)
+		// Include the upstream HTTP response (status and short body) in the error so
+		// handshake failures surface the real reason instead of "bad handshake".
+		detail := ""
+		if resp != nil {
+			bodySnippet := ""
+			if resp.Body != nil {
+				buf, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+				_ = resp.Body.Close()
+				if readErr == nil {
+					bodySnippet = string(buf)
+				}
+			}
+			detail = fmt.Sprintf(" (upstream status %d: %s)", resp.StatusCode, bodySnippet)
+		}
+		return nil, fmt.Errorf("failed to dial upstream websocket %s%s: %w", key.Endpoint, detail, err)
 	}
 	return newUpstreamConn(wsConn, key.Provider, key.KeyID, key.Endpoint), nil
 }
