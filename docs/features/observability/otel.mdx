@@ -40,6 +40,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `protocol` | `string` | ✅ Yes | Transport protocol: `http` or `grpc` |
 | `headers` | `object` | ❌ No | Custom headers for authentication (supports `env.VAR_NAME`) |
 | `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
+| `llm_spans_only` | `boolean` | ❌ No | When `true`, only export LLM operation spans and filter out infrastructure spans. Defaults to `false` |
 
 ### Environment Variable Substitution
 
@@ -577,6 +578,7 @@ Configure the OTel plugin with the following settings:
         "collector_url": "https://cloud.langfuse.com/api/public/otel",
         "trace_type": "genai_extension",
         "protocol": "http",
+        "llm_spans_only": true,
         "headers": {
           "Authorization": "env.LANGFUSE_AUTH"
         }
@@ -587,6 +589,10 @@ Configure the OTel plugin with the following settings:
 ```
 
 For US region, use `https://us.cloud.langfuse.com/api/public/otel` instead.
+
+<Tip>
+Set `llm_spans_only` to `true` to only export LLM operation span kinds: `llm.call`, `retry`, `fallback`, `embedding`, `speech`, and `transcription`. Infrastructure spans (HTTP requests, plugin hooks, key selection, MCP tool calls) are filtered out before export. This can significantly reduce telemetry volume and billing on collectors like Langfuse. Note that filtered parent spans may leave child spans with dangling parent references — most collectors handle this gracefully by promoting them to root level.
+</Tip>
 
 </Tab>
 </Tabs>

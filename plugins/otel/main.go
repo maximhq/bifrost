@@ -53,6 +53,9 @@ type Config struct {
 	TLSCACert    string            `json:"tls_ca_cert"`
 	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
+	// Span export configuration
+	LLMSpansOnly *bool `json:"llm_spans_only,omitempty"` // When true, only export LLM operation spans and filter out infrastructure spans (default: false).
+
 	// Metrics push configuration
 	MetricsEnabled      bool   `json:"metrics_enabled"`
 	MetricsEndpoint     string `json:"metrics_endpoint"`
@@ -102,6 +105,8 @@ type OtelPlugin struct {
 
 	pricingManager *modelcatalog.ModelCatalog
 
+	llmSpansOnly bool
+
 	// Metrics push support
 	metricsExporter *MetricsExporter
 }
@@ -142,6 +147,11 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			}
 		}
 	}
+	// Resolve llm_spans_only (default false)
+	llmSpansOnly := false
+	if config.LLMSpansOnly != nil {
+		llmSpansOnly = *config.LLMSpansOnly
+	}
 	// Preparing the plugin
 	p := &OtelPlugin{
 		serviceName:               config.ServiceName,
@@ -152,6 +162,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		pricingManager:            pricingManager,
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
+		llmSpansOnly:              llmSpansOnly,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
@@ -286,9 +297,12 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		// Convert schemas.Trace to OTEL ResourceSpan
 		resourceSpan := p.convertTraceToResourceSpan(trace)
 
-		// Emit to collector
-		if err := p.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
-			logger.Error("failed to emit trace %s: %v", trace.TraceID, err)
+		// Emit to collector. Skip if nil: either all spans were filtered out by
+		// llmSpansOnly, or the trace had no spans to begin with.
+		if resourceSpan != nil {
+			if err := p.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
+				logger.Error("failed to emit trace %s: %v", trace.TraceID, err)
+			}
 		}
 	}
 
