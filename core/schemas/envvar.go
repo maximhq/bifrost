@@ -41,7 +41,7 @@ func NewEnvVar(value string) *EnvVar {
 					FromEnv: envVar.FromEnv,
 					EnvVar:  envVar.EnvVar,
 				}
-				// Here we will check if the Val starts with env and is same as the EnvVar
+				// Old format: value == env_var == "env.XXX"
 				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
 					e.Val = ""
 					// Load the environment variable value
@@ -50,6 +50,12 @@ func NewEnvVar(value string) *EnvVar {
 						e.Val = envValue
 					}
 					e.FromEnv = true
+				}
+				// New format: value is empty, from_env=true, env_var holds the reference
+				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+						e.Val = envValue
+					}
 				}
 				return e
 			}
@@ -97,6 +103,10 @@ func (e *EnvVar) IsRedacted() bool {
 	}
 	// Check if its string <redacted>
 	if e.Val == "<redacted>" {
+		return true
+	}
+	// Check if its string with [REDACTED] pattern
+	if strings.HasPrefix(e.Val, "[REDACTED]") && strings.HasSuffix(e.Val, "[REDACTED]") {
 		return true
 	}
 	return false
@@ -202,7 +212,7 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 				e.Val = envVar.Val
 				e.FromEnv = envVar.FromEnv
 				e.EnvVar = envVar.EnvVar
-				// Here we will check if the Val starts with env and is same as the EnvVar
+				// Old format: value == env_var == "env.XXX"
 				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
 					e.Val = ""
 					// Load the environment variable value
@@ -211,6 +221,12 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 						e.Val = envValue
 					}
 					e.FromEnv = true
+				}
+				// New format: value is empty, from_env=true, env_var holds the reference
+				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+						e.Val = envValue
+					}
 				}
 				return nil
 			}
