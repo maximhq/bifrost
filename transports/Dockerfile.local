@@ -48,9 +48,6 @@
     go work use ./plugins/telemetry && \
     go work use ./transports
 
-  # Download external (non-local) dependencies
-  RUN cd /build/transports && go mod download
-
   # Copy UI build output into transports
   COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
 
