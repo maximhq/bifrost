@@ -546,7 +546,6 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 	// Read response events from upstream and relay to client, running post-hooks per chunk
 	forwardedAny := false
-	terminalPostHookFired := false
 	for {
 		msgType, data, readErr := upstream.ReadMessage()
 
@@ -573,66 +572,18 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			session.SetUpstream(nil)
 
 			if !forwardedAny {
-				// Nothing was forwarded yet: fall through to HTTP bridge.
-				logger.Warn("upstream WS read failed for %s (no data forwarded): %v, falling back to HTTP bridge", req.Provider, readErr)
+				logger.Warn("upstream WS read failed for %s: %v, falling back to HTTP bridge", req.Provider, readErr)
 				diagExitReason = "upstream_dial_or_write_failed"
 				return false
 			}
 
-			// We already forwarded content. If the terminal post-hook hasn't
-			// fired yet (e.g., because the full struct parse failed or the
-			// upstream closed without sending a terminal event), synthesize a
-			// completed event so the logging plugin writes the DB row and the
-			// UI transitions out of "processing".
-			if !terminalPostHookFired {
-				isClean := ws.IsCloseError(readErr, ws.CloseNormalClosure, ws.CloseGoingAway, ws.CloseNoStatusReceived)
-				if isClean {
-					logger.Debug("upstream WS closed cleanly for %s without terminal event; synthesizing response.completed for logging", req.Provider)
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					synth := synthesizeTerminalStreamResponse(req.Provider, req.Model, schemas.ResponsesStreamResponseTypeCompleted)
-					synthResp := &schemas.BifrostResponse{ResponsesStreamResponse: synth}
-					if tracer != nil && traceID != "" {
-						tracer.AddStreamingChunk(traceID, synthResp)
-					}
-					hooks.PostHookRunner(ctx, synthResp, nil) //nolint:errcheck
-					diagExitReason = "clean_close"
-				} else {
-					// Abnormal close: still finalize as error so the UI
-					// doesn't stay "processing" forever.
-					logger.Warn("upstream WS read failed for %s after forwarding data: %v; finalizing log as error", req.Provider, readErr)
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					synth := synthesizeTerminalStreamResponse(req.Provider, req.Model, schemas.ResponsesStreamResponseTypeCompleted)
-					synthResp := &schemas.BifrostResponse{ResponsesStreamResponse: synth}
-					if tracer != nil && traceID != "" {
-						tracer.AddStreamingChunk(traceID, synthResp)
-					}
-					hooks.PostHookRunner(ctx, synthResp, nil) //nolint:errcheck
-					writeWSError(session, 502, "upstream_connection_error", "upstream websocket stream interrupted")
-					diagExitReason = "abnormal_close"
-				}
-			}
+			logger.Warn("upstream WS read failed for %s after forwarding data: %v", req.Provider, readErr)
+			writeWSError(session, 502, "upstream_connection_error", "upstream websocket stream interrupted")
+			diagExitReason = "abnormal_close"
 			return true
 		}
 
 		streamResp := parseUpstreamWSEvent(data, req.Provider, req.Model)
-
-		// When the full parse failed, attempt a lightweight type extraction so
-		// that terminal-event detection works even for event shapes that don't
-		// fully unmarshal (e.g. chatgpt.com codex.rate_limits, future fields).
-		if streamResp == nil {
-			if rawType := extractStreamEventType(data); rawType != "" {
-				if isTerminalStreamType(rawType) {
-					// Full parse failed but we can still detect the terminal event.
-					// Synthesize a minimal struct so the post-hook and log finalize.
-					streamResp = synthesizeTerminalStreamResponse(req.Provider, req.Model, rawType)
-				} else {
-					logger.Debug("upstream WS event parse failed for type=%q; relaying raw bytes without post-hook", rawType)
-				}
-			} else {
-				logger.Debug("upstream WS event parse failed and type extraction failed; relaying raw bytes without post-hook")
-			}
-		}
-
 		isTerminal := streamResp != nil && isTerminalStreamType(streamResp.Type)
 
 		if isTerminal {
@@ -653,9 +604,6 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 				writeWSBifrostError(session, postErr)
 				diagExitReason = "post_hook_error"
 				return true
-			}
-			if isTerminal {
-				terminalPostHookFired = true
 			}
 		}
 
@@ -715,36 +663,6 @@ func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model str
 	streamResp.ExtraFields.Provider = provider
 	streamResp.ExtraFields.OriginalModelRequested = model
 	return &streamResp
-}
-
-// extractStreamEventType performs a minimal parse of a raw upstream WS event to
-// extract the "type" field without requiring the full BifrostResponsesStreamResponse
-// struct to unmarshal successfully. This is used as a fallback when
-// parseUpstreamWSEvent returns nil (e.g., when the upstream sends events with
-// unknown or incompatible field shapes such as chatgpt.com's codex.rate_limits).
-// Returns an empty string if the JSON is malformed or has no "type" field.
-func extractStreamEventType(data []byte) schemas.ResponsesStreamResponseType {
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if err := sonic.Unmarshal(data, &envelope); err != nil {
-		return ""
-	}
-	return schemas.ResponsesStreamResponseType(envelope.Type)
-}
-
-// synthesizeTerminalStreamResponse builds a minimal BifrostResponsesStreamResponse
-// with the given terminal event type. It populates ExtraFields so that downstream
-// plugins (logging, tracing) can identify the request type, provider, and model.
-// Used when the full upstream parse fails but we still need to finalize the log.
-func synthesizeTerminalStreamResponse(provider schemas.ModelProvider, model string, eventType schemas.ResponsesStreamResponseType) *schemas.BifrostResponsesStreamResponse {
-	synth := &schemas.BifrostResponsesStreamResponse{
-		Type: eventType,
-	}
-	synth.ExtraFields.RequestType = schemas.ResponsesStreamRequest
-	synth.ExtraFields.Provider = provider
-	synth.ExtraFields.OriginalModelRequested = model
-	return synth
 }
 
 // isTerminalStreamType returns true if the event type signals the end of a response stream.
