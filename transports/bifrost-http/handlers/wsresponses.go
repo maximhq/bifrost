@@ -256,7 +256,11 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 	// If no upstream connection pinned, get one from the pool or dial
 	if upstream == nil || upstream.IsClosed() {
-		headers := wsProvider.WebSocketHeaders(key)
+		providerHeaders := wsProvider.WebSocketHeaders(key)
+		// Merge x-bf-eh-* extra headers captured from the client upgrade into the
+		// provider headers so they reach the upstream WS dial.  Provider headers
+		// win on key collision (e.g. Authorization must never be overwritten).
+		headers := mergeWSExtraHeaders(providerHeaders, ctx)
 		poolKey := bfws.PoolKey{
 			Provider: req.Provider,
 			KeyID:    key.ID,
@@ -504,6 +508,41 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 		Input:    input,
 		Params:   params,
 	}, nil
+}
+
+// mergeWSExtraHeaders merges x-bf-eh-* extra headers stored in the BifrostContext into the
+// provider-supplied upstream WS headers map.  Provider headers win on key collision so that
+// auth credentials and provider-specific headers are never overwritten by client-supplied values.
+//
+// The extra headers are stored in the context under BifrostContextKeyExtraHeaders by
+// createBifrostContextFromAuth (keyed by the suffix after the "x-bf-eh-" prefix, e.g.
+// "x-bf-eh-x-trace-id" is stored as "x-trace-id").
+//
+// If no extra headers are present in the context, providerHeaders is returned unchanged.
+func mergeWSExtraHeaders(providerHeaders map[string]string, ctx *schemas.BifrostContext) map[string]string {
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string]string)
+	if !ok || len(extraHeaders) == 0 {
+		return providerHeaders
+	}
+
+	// Build a case-insensitive index of provider keys so client headers cannot
+	// shadow a provider header with different capitalisation.
+	providerLower := make(map[string]bool, len(providerHeaders))
+	for k := range providerHeaders {
+		providerLower[strings.ToLower(k)] = true
+	}
+
+	merged := make(map[string]string, len(providerHeaders)+len(extraHeaders))
+	for k, v := range extraHeaders {
+		if providerLower[strings.ToLower(k)] {
+			continue // provider header wins
+		}
+		merged[k] = v
+	}
+	for k, v := range providerHeaders {
+		merged[k] = v
+	}
+	return merged
 }
 
 // createBifrostContextFromAuth builds a BifrostContext from the auth headers captured during upgrade.
