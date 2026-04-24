@@ -3214,7 +3214,7 @@ func (s *RDBConfigStore) GetRoutingRulesPaginated(ctx context.Context, params Ro
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
-		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ? OR LOWER(cel_expression) LIKE ?", search, search)
 	}
 
 	var totalCount int64
