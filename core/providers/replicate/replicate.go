@@ -2813,19 +2813,6 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 		}
 	}
 
-	// Create form file with proper headers
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="content"; filename="%s"`, filename))
-	h.Set("Content-Type", contentType)
-
-	part, err := writer.CreatePart(h)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
-	}
-	if _, err := part.Write(request.File); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to write file content", err)
-	}
-
 	// Add filename field if provided
 	if filename != "" {
 		if err := writer.WriteField("filename", filename); err != nil {
@@ -2858,6 +2845,19 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 				}
 			}
 		}
+	}
+
+	// Create form file with proper headers
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="content"; filename="%s"`, filename))
+	h.Set("Content-Type", contentType)
+
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
+	}
+	if _, err := part.Write(request.File); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write file content", err)
 	}
 
 	if err := writer.Close(); err != nil {

@@ -39,7 +39,11 @@ spec:
             {{- end }}
           {{- if .Values.vectorStore.redis.auth.enabled }}
           command:
+            {{- if contains "redis-stack" .Values.vectorStore.redis.image.repository }}
+            - redis-stack-server
+            {{- else }}
             - redis-server
+            {{- end }}
             - --requirepass
             - $(REDIS_PASSWORD)
           {{- end }}

@@ -3180,6 +3180,10 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	if err := validateRoutingFallbacks(req.Fallbacks); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 
 	// Set defaults and normalize scope/scope_id
 	scope := req.Scope
@@ -3321,6 +3325,10 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		rule.ParsedQuery = req.Query
 	}
 	if req.Fallbacks != nil {
+		if err := validateRoutingFallbacks(req.Fallbacks); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		rule.ParsedFallbacks = req.Fallbacks
 	}
 	if req.Scope != nil && *req.Scope != "" {
@@ -3811,6 +3819,21 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 	}
 	if math.Abs(total-1.0) > 0.001 {
 		return fmt.Errorf("target weights must sum to 1, got %.4f", total)
+	}
+	return nil
+}
+
+// validateRoutingFallbacks ensures each fallback parses to a non-empty known provider via
+// schemas.ParseModelString (e.g. "openai/gpt-4o", or "azure/" to use the incoming model).
+func validateRoutingFallbacks(fallbacks []string) error {
+	for i, fb := range fallbacks {
+		if strings.TrimSpace(fb) == "" {
+			return fmt.Errorf("fallbacks[%d] must not be empty", i)
+		}
+		provider, _ := schemas.ParseModelString(fb, "")
+		if provider == "" {
+			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb)
+		}
 	}
 	return nil
 }

@@ -140,42 +140,7 @@ func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *
 		}
 	}
 
-	// Add image[] fields (one for each image)
-	for i, imageInput := range openaiReq.Input.Images {
-		fieldName := "image[]"
-
-		// Detect and validate MIME type
-		mimeType := http.DetectContentType(imageInput.Image)
-		// Fallback to PNG if content type is undetectable or generic
-		if mimeType == "" || mimeType == "application/octet-stream" {
-			mimeType = "image/png"
-		}
-
-		// Determine filename based on MIME type
-		var filename string
-		switch mimeType {
-		case "image/jpeg":
-			filename = fmt.Sprintf("image%d.jpg", i)
-		case "image/webp":
-			filename = fmt.Sprintf("image%d.webp", i)
-		default:
-			filename = fmt.Sprintf("image%d.png", i)
-		}
-
-		// Create form part with proper Content-Type header (not CreateFormFile which defaults to application/octet-stream)
-		part, err := writer.CreatePart(map[string][]string{
-			"Content-Disposition": {fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filename)},
-			"Content-Type":        {mimeType},
-		})
-		if err != nil {
-			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to create form part for image %d", i), err)
-		}
-		if _, err := part.Write(imageInput.Image); err != nil {
-			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to write image %d data", i), err)
-		}
-	}
-
-	// Add optional parameters
+	// Add optional parameters before file parts so routing metadata arrives first upstream.
 	if openaiReq.N != nil {
 		if err := writer.WriteField("n", strconv.Itoa(*openaiReq.N)); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write n field", err)
@@ -233,6 +198,41 @@ func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *
 	if openaiReq.User != nil {
 		if err := writer.WriteField("user", *openaiReq.User); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write user field", err)
+		}
+	}
+
+	// Add image[] fields (one for each image)
+	for i, imageInput := range openaiReq.Input.Images {
+		fieldName := "image[]"
+
+		// Detect and validate MIME type
+		mimeType := http.DetectContentType(imageInput.Image)
+		// Fallback to PNG if content type is undetectable or generic
+		if mimeType == "" || mimeType == "application/octet-stream" {
+			mimeType = "image/png"
+		}
+
+		// Determine filename based on MIME type
+		var filename string
+		switch mimeType {
+		case "image/jpeg":
+			filename = fmt.Sprintf("image%d.jpg", i)
+		case "image/webp":
+			filename = fmt.Sprintf("image%d.webp", i)
+		default:
+			filename = fmt.Sprintf("image%d.png", i)
+		}
+
+		// Create form part with proper Content-Type header (not CreateFormFile which defaults to application/octet-stream)
+		part, err := writer.CreatePart(map[string][]string{
+			"Content-Disposition": {fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filename)},
+			"Content-Type":        {mimeType},
+		})
+		if err != nil {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to create form part for image %d", i), err)
+		}
+		if _, err := part.Write(imageInput.Image); err != nil {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to write image %d data", i), err)
 		}
 	}
 
@@ -307,27 +307,7 @@ func parseImageVariationFormDataBodyFromRequest(writer *multipart.Writer, openai
 		return providerUtils.NewBifrostOperationError("image is required", nil)
 	}
 
-	// Detect MIME type
-	mimeType := http.DetectContentType(openaiReq.Input.Image.Image)
-	// If still not detected, default to PNG
-	if mimeType == "application/octet-stream" || mimeType == "" {
-		mimeType = "image/png"
-	}
-
-	filename := "image"
-	part, err := writer.CreatePart(map[string][]string{
-		"Content-Disposition": {fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename)},
-		"Content-Type":        {mimeType},
-	})
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to create image part", err)
-	}
-
-	if _, err := part.Write(openaiReq.Input.Image.Image); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write image data", err)
-	}
-
-	// Add optional parameters
+	// Add optional parameters before the image part so metadata arrives first upstream.
 	if openaiReq.N != nil {
 		if err := writer.WriteField("n", strconv.Itoa(*openaiReq.N)); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write n field", err)
@@ -350,6 +330,26 @@ func parseImageVariationFormDataBodyFromRequest(writer *multipart.Writer, openai
 		if err := writer.WriteField("user", *openaiReq.User); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write user field", err)
 		}
+	}
+
+	// Detect MIME type
+	mimeType := http.DetectContentType(openaiReq.Input.Image.Image)
+	// If still not detected, default to PNG
+	if mimeType == "application/octet-stream" || mimeType == "" {
+		mimeType = "image/png"
+	}
+
+	filename := "image"
+	part, err := writer.CreatePart(map[string][]string{
+		"Content-Disposition": {fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename)},
+		"Content-Type":        {mimeType},
+	})
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to create image part", err)
+	}
+
+	if _, err := part.Write(openaiReq.Input.Image.Image); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to write image data", err)
 	}
 
 	// Close the multipart writer

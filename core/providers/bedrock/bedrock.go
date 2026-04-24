@@ -96,17 +96,21 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	// Apply TLS settings from NetworkConfig
-	if config.NetworkConfig.InsecureSkipVerify || config.NetworkConfig.CACertPEM != "" {
+	caCertPEM := ""
+	if config.NetworkConfig.CACertPEM != nil {
+		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
+	}
+	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 		if config.NetworkConfig.InsecureSkipVerify {
 			tlsConfig.InsecureSkipVerify = true
 		}
-		if config.NetworkConfig.CACertPEM != "" {
+		if caCertPEM != "" {
 			certPool, err := x509.SystemCertPool()
 			if err != nil {
 				certPool = x509.NewCertPool()
 			}
-			if !certPool.AppendCertsFromPEM([]byte(config.NetworkConfig.CACertPEM)) {
+			if !certPool.AppendCertsFromPEM([]byte(caCertPEM)) {
 				return nil, fmt.Errorf("failed to parse CA certificate PEM")
 			}
 			tlsConfig.RootCAs = certPool
@@ -1270,6 +1274,19 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						if streamEvent.Usage.CacheWriteInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
 							usage.PromptTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
+						if streamEvent.Usage.CacheDetails != nil {
+							if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+								usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+							}
+							for _, cacheDetail := range *streamEvent.Usage.CacheDetails {
+								if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+									usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+								}
+								if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+									usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+								}
+							}
+						}
 					}
 				}
 
@@ -1642,6 +1659,19 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						}
 						if streamEvent.Usage.CacheWriteInputTokens > usage.InputTokensDetails.CachedWriteTokens {
 							usage.InputTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
+						}
+						if streamEvent.Usage.CacheDetails != nil {
+							if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+								usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+							}
+							for _, cacheDetail := range *streamEvent.Usage.CacheDetails {
+								if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+								}
+								if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+								}
+							}
 						}
 					}
 				}

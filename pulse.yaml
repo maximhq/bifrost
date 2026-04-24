@@ -9,7 +9,7 @@ services:
     ignore: ["*_test.go"]
     kill_timeout: 10s
     proxy:
-      addr: ":${PORT}"
+      addr: ":${PORT:-8080}"
     healthcheck:
       path: /health
       interval: 2s

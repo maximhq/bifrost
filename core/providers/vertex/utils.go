@@ -9,148 +9,28 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, isCountTokens bool, betaHeaderOverrides map[string]bool, providerExtraHeaders map[string]string) ([]byte, *schemas.BifrostError) {
-	// Large payload mode: body streams directly from the LP reader — skip all body building
-	// (matches CheckContextAndGetRequestBody guard).
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, nil
-	}
-
-	var jsonBody []byte
-	var err error
-
-	// Check if raw request body should be used
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonBody = request.GetRawRequestBody()
-
-		if isCountTokens {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", deployment)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		} else {
-			// Add max_tokens if not present
-			if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(deployment, anthropic.AnthropicDefaultMaxTokens))
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-			// Add stream if streaming
-			if isStreaming {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-
-		// Remap unsupported tool versions for Vertex (e.g., web_search_20260209 → web_search_20250305)
-		jsonBody, err = anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
-		}
-
-		// Add anthropic_version if not present
-		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-	} else {
-		// Validate tools are supported by Vertex
-		if request.Params != nil && request.Params.Tools != nil {
-			if toolErr := anthropic.ValidateToolsForProvider(request.Params.Tools, schemas.Vertex); toolErr != nil {
-				return nil, providerUtils.NewBifrostOperationError(toolErr.Error(), nil)
-			}
-		}
-
-		// Convert request to Anthropic format
-		reqBody, convErr := anthropic.ToAnthropicResponsesRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr)
-		}
-		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
-		}
-		reqBody.Model = deployment
-
-		if isStreaming {
-			reqBody.Stream = schemas.Ptr(true)
-		}
-
-		reqBody.SetStripCacheControlScope(true)
-
-		// Add provider-aware beta headers
-		anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
-
-		// Marshal struct to JSON bytes
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-
-		// Add anthropic_version if not present (using sjson to preserve order)
-		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-
-		if isCountTokens {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		} else {
-			// Remove model field for Vertex API (it's in URL)
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-	}
-
-	if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(providerExtraHeaders, ctx), schemas.Vertex, betaHeaderOverrides); len(betaHeaders) > 0 {
-		jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-	}
-
-	return jsonBody, nil
+// getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Vertex AI.
+// Compared to the native Anthropic path, it strips model/region fields, remaps tool versions, injects beta headers
+// into the request body (rather than HTTP headers), and pins the Anthropic API version to DefaultVertexAnthropicVersion.
+func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, isCountTokens bool, betaHeaderOverrides map[string]bool, providerExtraHeaders map[string]string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
+	return anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+		Provider:                  schemas.Vertex,
+		Deployment:                deployment,
+		DeleteModelField:          true,
+		DeleteRegionField:         true,
+		IsStreaming:               isStreaming,
+		IsCountTokens:             isCountTokens,
+		AddAnthropicVersion:       true,
+		AnthropicVersion:          DefaultVertexAnthropicVersion,
+		StripCacheControlScope:    true,
+		RemapToolVersions:         true,
+		InjectBetaHeadersIntoBody: true,
+		BetaHeaderOverrides:       betaHeaderOverrides,
+		ProviderExtraHeaders:      providerExtraHeaders,
+		ValidateTools:             true,
+		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
+		ShouldSendBackRawResponse: shouldSendBackRawResponse,
+	})
 }
 
 // getCompleteURLForGeminiEndpoint constructs the complete URL for the Gemini endpoint, for both streaming and non-streaming requests

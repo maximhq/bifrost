@@ -417,11 +417,12 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 	// Map token details for cache and search query pricing
 	if u.InputTokensDetails != nil {
 		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			TextTokens:        u.InputTokensDetails.TextTokens,
-			AudioTokens:       u.InputTokensDetails.AudioTokens,
-			ImageTokens:       u.InputTokensDetails.ImageTokens,
-			CachedReadTokens:  u.InputTokensDetails.CachedReadTokens,
-			CachedWriteTokens: u.InputTokensDetails.CachedWriteTokens,
+			TextTokens:              u.InputTokensDetails.TextTokens,
+			AudioTokens:             u.InputTokensDetails.AudioTokens,
+			ImageTokens:             u.InputTokensDetails.ImageTokens,
+			CachedReadTokens:        u.InputTokensDetails.CachedReadTokens,
+			CachedWriteTokens:       u.InputTokensDetails.CachedWriteTokens,
+			CachedWriteTokenDetails: u.InputTokensDetails.CachedWriteTokenDetails,
 		}
 	}
 	if u.OutputTokensDetails != nil {
@@ -485,15 +486,20 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	// Extract cached token counts
 	cachedReadTokens := 0
 	cachedWriteTokens := 0
+	cachedWriteTokensAbove1hr := 0
 	if usage.PromptTokensDetails != nil {
 		cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
 		cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
+		if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
+		}
 	}
 
 	inputRate := tieredInputRate(pricing, totalTokens, tier)
 	outputRate := tieredOutputRate(pricing, totalTokens, tier)
 	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, totalTokens, tier)
 	cacheCreationInputRate := tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
+	cacheCreationInputAbove1hrInputRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, totalTokens, tier)
 
 	// Clamp cached token counts to avoid negative billing on malformed provider payloads
 	if cachedReadTokens > promptTokens {
@@ -501,6 +507,10 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	}
 	if cachedWriteTokens > promptTokens-cachedReadTokens {
 		cachedWriteTokens = promptTokens - cachedReadTokens
+	}
+	// Should not happen, but just in case
+	if cachedWriteTokensAbove1hr > cachedWriteTokens {
+		cachedWriteTokensAbove1hr = cachedWriteTokens
 	}
 
 	// Input cost: non-cached tokens at regular rate
@@ -514,7 +524,10 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 
 	// Add cached write tokens at cache creation rate
 	if cachedWriteTokens > 0 {
-		inputCost += float64(cachedWriteTokens) * cacheCreationInputRate
+		if cachedWriteTokensAbove1hr > 0 {
+			inputCost += float64(cachedWriteTokensAbove1hr) * cacheCreationInputAbove1hrInputRate
+		}
+		inputCost += float64(cachedWriteTokens-cachedWriteTokensAbove1hr) * cacheCreationInputRate
 	}
 
 	outputCost := float64(completionTokens) * outputRate
@@ -1008,6 +1021,16 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 		return *pricing.CacheCreationInputTokenCost
 	}
 	return tieredInputRate(pricing, totalTokens, tier)
+}
+
+func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens
+	}
+	if pricing.CacheCreationInputTokenCostAbove1hr != nil {
+		return *pricing.CacheCreationInputTokenCostAbove1hr
+	}
+	return tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
 }
 
 func safeTotalTokens(usage *schemas.BifrostLLMUsage) int {

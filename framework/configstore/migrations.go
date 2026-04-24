@@ -614,6 +614,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOCRPricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3658,6 +3661,39 @@ func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running tool sync interval migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationConvertMCPClientToolSyncIntervalMinutesToSeconds converts legacy
+// config_mcp_clients.tool_sync_interval values from minutes to seconds.
+// Legacy storage used minutes; runtime now persists seconds to preserve
+// sub-minute precision. We only convert positive values; 0 means "use global"
+// and negative values mean "disabled".
+func migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "convert_mcp_client_tool_sync_interval_minutes_to_seconds",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`
+				UPDATE config_mcp_clients
+				SET tool_sync_interval = tool_sync_interval * 60
+				WHERE tool_sync_interval > 0
+			`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Best-effort rollback for migrated rows.
+			return tx.Exec(`
+				UPDATE config_mcp_clients
+				SET tool_sync_interval = tool_sync_interval / 60
+				WHERE tool_sync_interval > 0
+				AND tool_sync_interval % 60 = 0
+			`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client tool sync interval unit conversion migration: %s", err.Error())
 	}
 	return nil
 }

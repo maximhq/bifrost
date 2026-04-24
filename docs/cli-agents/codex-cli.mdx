@@ -68,6 +68,21 @@ If you have a ChatGPT Plus, Pro, Business, or Enterprise subscription, you can u
 The ChatGPT OAuth passthrough requires no API keys configured on the OpenAI provider and no additional security settings. Bifrost automatically extracts the OAuth token from the `Authorization` header and forwards it to the ChatGPT backend.
 </Note>
 
+### Transport mode (WebSocket vs HTTPS)
+
+Codex CLI defaults to [websocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) for the Responses API and automatically falls back to HTTPS if the websocket connection fails. To force HTTPS by default, add these settings in your `config.toml`:
+
+```toml
+
+model_provider = "openai_http"
+
+[model_providers.openai_http]
+name = "OpenAI HTTP"
+wire_api = "responses"
+supports_websockets = false
+base_url = "http://localhost:8080/openai/v1"
+```
+
 ## Model Configuration
 
 Use the `--model` flag to start Codex with a specific model:

@@ -95,8 +95,8 @@ func (e *EnvVar) IsRedacted() bool {
 			return true
 		}
 	}
-	// Check if its string <redacted>
-	if e.Val == "<redacted>" {
+	// Check for <redacted> sentinel (case-insensitive for compatibility)
+	if strings.EqualFold(e.Val, "<redacted>") {
 		return true
 	}
 	return false
@@ -298,7 +298,10 @@ func (e *EnvVar) IsSet() bool {
 	if e == nil {
 		return false
 	}
-	return e.Val != "" || e.EnvVar != ""
+	if e.IsFromEnv() {
+		return e.EnvVar != ""
+	}
+	return e.Val != ""
 }
 
 // GetValue returns the value.
@@ -339,15 +342,4 @@ func (e *EnvVar) CoerceBool(defaultValue bool) bool {
 		return defaultValue
 	}
 	return val
-}
-
-// IsDefined returns true if the EnvVar has a source (static value or env key)
-func (e *EnvVar) IsDefined() bool {
-	if e == nil {
-		return false
-	}
-	if e.IsFromEnv() {
-		return e.EnvVar != ""
-	}
-	return e.Val != ""
 }

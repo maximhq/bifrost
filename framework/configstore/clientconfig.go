@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"hash"
 	"maps"
 	"sort"
 	"strconv"
@@ -967,6 +968,41 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateModelConfigHash generates a SHA256 hash for a model config.
+// This is used to detect changes to model configs between config.json and database.
+// Skips: CreatedAt, UpdatedAt, and relationship objects (dynamic fields)
+func GenerateModelConfigHash(m tables.TableModelConfig) (string, error) {
+	hash := sha256.New()
+	writeHashField(hash, "id", m.ID)
+	writeHashField(hash, "model_name", m.ModelName)
+	writeHashField(hash, "provider", derefStr(m.Provider))
+	writeHashField(hash, "budget_id", derefStr(m.BudgetID))
+	writeHashField(hash, "rate_limit_id", derefStr(m.RateLimitID))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateProviderGovernanceHash generates a SHA256 hash for provider-governance
+// bindings only (provider name + budget/rate-limit references).
+// It intentionally excludes provider runtime/config fields and keys.
+func GenerateProviderGovernanceHash(p tables.TableProvider) (string, error) {
+	hash := sha256.New()
+	writeHashField(hash, "name", p.Name)
+	writeHashField(hash, "budget_id", derefStr(p.BudgetID))
+	writeHashField(hash, "rate_limit_id", derefStr(p.RateLimitID))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// writeHashField writes a field identifier and a length-prefixed value so the
+// resulting byte stream is unambiguous and cannot collide via concatenation.
+func writeHashField(hash hash.Hash, fieldID, value string) {
+	hash.Write([]byte(fieldID))
+	hash.Write([]byte(":"))
+	hash.Write([]byte(strconv.Itoa(len(value))))
+	hash.Write([]byte(":"))
+	hash.Write([]byte(value))
+	hash.Write([]byte(";"))
+}
+
 // GenerateRoutingRuleHash generates a SHA256 hash for a routing rule.
 // This is used to detect changes to routing rules between config.json and database.
 // routingTargetHashPayload is a canonical struct for hashing a routing target.
@@ -1102,12 +1138,9 @@ func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) 
 
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
-// Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
+// Skips: ID (autoIncrement), ClientID (system-assigned), CreatedAt, UpdatedAt (dynamic fields)
 func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	hash := sha256.New()
-
-	// Hash ClientID
-	hash.Write([]byte(m.ClientID))
 
 	// Hash Name
 	hash.Write([]byte(m.Name))

@@ -188,17 +188,17 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 		},
 		{
 			name: "max limit present is not removal",
-			req:  &UpdateBudgetRequest{MaxLimit: bifrostFloat(10)},
+			req:  &UpdateBudgetRequest{MaxLimit: schemas.Ptr(10.0)},
 			want: false,
 		},
 		{
 			name: "reset duration only is not removal",
-			req:  &UpdateBudgetRequest{ResetDuration: bifrostString("1h")},
+			req:  &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1h")},
 			want: false,
 		},
 		{
 			name: "calendar aligned only is treated as removal",
-			req:  &UpdateBudgetRequest{CalendarAligned: bifrostBool(true)},
+			req:  &UpdateBudgetRequest{CalendarAligned: schemas.Ptr(true)},
 			want: true,
 		},
 	}
@@ -230,19 +230,19 @@ func TestRateLimitRemovalRequestDetection(t *testing.T) {
 		},
 		{
 			name: "token limit present is not removal",
-			req:  &UpdateRateLimitRequest{TokenMaxLimit: bifrostInt64(100)},
+			req:  &UpdateRateLimitRequest{TokenMaxLimit: schemas.Ptr(int64(100))},
 			want: false,
 		},
 		{
 			name: "request limit present is not removal",
-			req:  &UpdateRateLimitRequest{RequestMaxLimit: bifrostInt64(10)},
+			req:  &UpdateRateLimitRequest{RequestMaxLimit: schemas.Ptr(int64(10))},
 			want: false,
 		},
 		{
 			name: "durations only is not removal",
 			req: &UpdateRateLimitRequest{
-				TokenResetDuration:   bifrostString("1h"),
-				RequestResetDuration: bifrostString("1h"),
+				TokenResetDuration:   schemas.Ptr("1h"),
+				RequestResetDuration: schemas.Ptr("1h"),
 			},
 			want: false,
 		},
@@ -320,18 +320,31 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 	}
 }
 
-func bifrostFloat(v float64) *float64 {
-	return &v
-}
+func TestValidateRoutingFallbacks(t *testing.T) {
 
-func bifrostInt64(v int64) *int64 {
-	return &v
-}
-
-func bifrostString(v string) *string {
-	return &v
-}
-
-func bifrostBool(v bool) *bool {
-	return &v
+	tests := []struct {
+		name    string
+		fbs     []string
+		wantErr bool
+	}{
+		{name: "nil", fbs: nil, wantErr: false},
+		{name: "empty", fbs: []string{}, wantErr: false},
+		{name: "provider model", fbs: []string{"openai/gpt-4o"}, wantErr: false},
+		{name: "provider slash incoming model", fbs: []string{"azure/"}, wantErr: false},
+		{name: "bare known provider name rejected", fbs: []string{"openrouter"}, wantErr: true},
+		{name: "bare model rejected", fbs: []string{"gpt-4o"}, wantErr: true},
+		{name: "empty element", fbs: []string{"openai/gpt-4o", ""}, wantErr: true},
+		{name: "huggingface namespace not a provider prefix", fbs: []string{"meta-llama/Llama-3.1-8B"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRoutingFallbacks(tt.fbs)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }

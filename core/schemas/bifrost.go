@@ -857,6 +857,9 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+// PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the
+// active sub-response. Core always calls this both before and after RunPostLLMHooks, so any plugin
+// modifications to these 4 fields are no-ops — tampering with them inside plugins is discouraged.
 func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider ModelProvider, originalModelRequested string, resolvedModelUsed string) {
 	if r == nil {
 		return
@@ -1181,6 +1184,9 @@ type BifrostError struct {
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
 }
 
+// PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the
+// error's ExtraFields. Core always calls this both before and after RunPostLLMHooks, so any plugin
+// modifications to these 4 fields are no-ops — tampering with them inside plugins is discouraged.
 func (e *BifrostError) PopulateExtraFields(requestType RequestType, provider ModelProvider, originalModelRequested string, resolvedModelUsed string) {
 	if e == nil {
 		return

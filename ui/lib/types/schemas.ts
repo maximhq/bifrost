@@ -306,9 +306,9 @@ export const networkConfigSchema = z
 			.max(3600, "Timeout must be less than 3600 seconds"),
 		max_retries: z.number().min(0, "Max retries must be greater than 0").max(10, "Max retries must be less than 10"),
 		retry_backoff_initial: z.number().min(100),
-		retry_backoff_max: z.number().min(1000),
+		retry_backoff_max: z.number().min(100),
 		insecure_skip_verify: z.boolean().optional(),
-		ca_cert_pem: z.string().optional(),
+		ca_cert_pem: envVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z
 			.number()
 			.int("Stream idle timeout must be a whole number of seconds")
@@ -360,7 +360,7 @@ export const networkFormConfigSchema = z
 			.min(100, "Retry backoff max must be at least 100ms")
 			.max(1000000, "Retry backoff max must be at most 1000000ms"),
 		insecure_skip_verify: z.boolean().optional(),
-		ca_cert_pem: z.string().optional(),
+		ca_cert_pem: envVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z.coerce
 			.number("Stream idle timeout must be a number")
 			.int("Stream idle timeout must be a whole number of seconds")
@@ -393,20 +393,23 @@ export const proxyTypeSchema = z.enum(["none", "http", "socks5", "environment"])
 export const proxyConfigSchema = z
 	.object({
 		type: proxyTypeSchema,
-		url: z.url("Must be a valid URL"),
-		username: z.string().optional(),
-		password: z.string().optional(),
-		ca_cert_pem: z.string().optional(),
+		url: envVarSchema.optional(),
+		username: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		ca_cert_pem: envVarSchema.optional(),
 	})
-	.refine((data) => !(data.type === "http" || data.type === "socks5") || (data.url && data.url.trim().length > 0), {
+	.refine((data) => !(data.type === "http" || data.type === "socks5") || data.url?.from_env === true || (data.url?.value && data.url.value.trim().length > 0), {
 		message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
 		path: ["url"],
 	})
 	.refine(
 		(data) => {
-			if ((data.type === "http" || data.type === "socks5") && data.url?.trim()) {
+			if ((data.type === "http" || data.type === "socks5") && data.url?.value?.trim()) {
+				if (data.url.from_env || data.url.env_var?.startsWith("env.")) {
+					return true;
+				}
 				try {
-					new URL(data.url);
+					new URL(data.url.value);
 					return true;
 				} catch {
 					return false;
@@ -421,10 +424,10 @@ export const proxyConfigSchema = z
 export const proxyFormConfigSchema = z
 	.object({
 		type: proxyTypeSchema,
-		url: z.string().optional(),
-		username: z.string().optional(),
-		password: z.string().optional(),
-		ca_cert_pem: z.string().optional(),
+		url: envVarSchema.optional(),
+		username: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		ca_cert_pem: envVarSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -433,8 +436,10 @@ export const proxyFormConfigSchema = z
 			}
 			// URL is required when proxy type is http or socks5
 			if (data.type === "http" || data.type === "socks5") {
-				// Check for URL existence, non-empty, and valid format
-				if (!data.url || data.url.trim().length === 0) return false;
+				// Env-backed URLs may have empty resolved value before env resolution.
+				if (data.url?.from_env || data.url?.env_var?.startsWith("env.")) return true;
+				// Literal URLs must be non-empty.
+				if (!data.url?.value || data.url.value.trim().length === 0) return false;
 			}
 			return true;
 		},
@@ -446,9 +451,12 @@ export const proxyFormConfigSchema = z
 	.refine(
 		(data) => {
 			// URL must be valid format when provided and proxy type requires it
-			if ((data.type === "http" || data.type === "socks5") && data.url && data.url.trim().length > 0) {
+			if ((data.type === "http" || data.type === "socks5") && data.url?.value && data.url.value.trim().length > 0) {
+				if (data.url.from_env || data.url.env_var?.startsWith("env.")) {
+					return true;
+				}
 				try {
-					new URL(data.url);
+					new URL(data.url.value);
 					return true;
 				} catch {
 					return false;

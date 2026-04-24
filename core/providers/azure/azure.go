@@ -687,7 +687,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	var jsonData []byte
 	var bifrostErr *schemas.BifrostError
 	if schemas.IsAnthropicModel(request.Model) {
-		jsonData, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false)
+		jsonData, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	} else {
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -779,7 +779,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		authHeader["anthropic-version"] = AzureAnthropicAPIVersionDefault
 		url = fmt.Sprintf("%s/anthropic/v1/messages", key.AzureKeyConfig.Endpoint.GetValue())
 
-		jsonData, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true)
+		jsonData, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}

@@ -7,11 +7,36 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// resolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
+// start/end time pointers computed from the current server time. Returns nil, nil for
+// unrecognised values. When used in filter parsing, period takes precedence over any explicit
+// start_time/end_time query parameters so every poll always covers the intended window.
+func resolvePeriod(period string) (start, end *time.Time) {
+	now := time.Now()
+	var from time.Time
+	switch period {
+	case "1h":
+		from = now.Add(-time.Hour)
+	case "6h":
+		from = now.Add(-6 * time.Hour)
+	case "24h":
+		from = now.Add(-24 * time.Hour)
+	case "7d":
+		from = now.AddDate(0, 0, -7)
+	case "30d":
+		from = now.AddDate(0, 0, -30)
+	default:
+		return nil, nil
+	}
+	return &from, &now
+}
 
 // pluginDisabledKey is a dedicated context key type for marking a plugin as disabled
 // rather than removed. Using a named type instead of a raw string follows Go best practices.

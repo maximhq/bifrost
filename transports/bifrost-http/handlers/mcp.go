@@ -292,7 +292,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			Headers:               dbClient.Headers,
 			AllowedExtraHeaders:   dbClient.AllowedExtraHeaders,
 			IsPingAvailable:       &isPingAvailable,
-			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolPricing:           dbClient.ToolPricing,
 			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
 		}

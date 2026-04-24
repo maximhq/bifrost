@@ -47,20 +47,7 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 // ParseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
 func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
-	// Add file field
-	filename := openaiReq.Filename
-	if filename == "" {
-		filename = utils.AudioFilenameFromBytes(openaiReq.File)
-	}
-	fileWriter, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return utils.NewBifrostOperationError("failed to create form file", err)
-	}
-	if _, err := fileWriter.Write(openaiReq.File); err != nil {
-		return utils.NewBifrostOperationError("failed to write file data", err)
-	}
-
-	// Add model field
+	// Add model field before the file so upstreams can route without buffering the audio payload.
 	if err := writer.WriteField("model", openaiReq.Model); err != nil {
 		return utils.NewBifrostOperationError("failed to write model field", err)
 	}
@@ -106,6 +93,19 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 		if err := writer.WriteField("stream", "true"); err != nil {
 			return utils.NewBifrostOperationError("failed to write stream field", err)
 		}
+	}
+
+	// Add file field last so large multipart uploads don't block model discovery upstream.
+	filename := openaiReq.Filename
+	if filename == "" {
+		filename = utils.AudioFilenameFromBytes(openaiReq.File)
+	}
+	fileWriter, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return utils.NewBifrostOperationError("failed to create form file", err)
+	}
+	if _, err := fileWriter.Write(openaiReq.File); err != nil {
+		return utils.NewBifrostOperationError("failed to write file data", err)
 	}
 
 	// Close the multipart writer

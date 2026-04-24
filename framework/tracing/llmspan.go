@@ -202,7 +202,9 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 		attrs[schemas.AttrMessageCount] = len(req.Input)
 		messages := extractChatMessages(req.Input)
 		if len(messages) > 0 {
-			attrs[schemas.AttrInputMessages] = messages
+			if data, err := schemas.MarshalString(messages); err == nil {
+				attrs[schemas.AttrInputMessages] = data
+			}
 		}
 	}
 }
@@ -229,7 +231,9 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 	// Extract output messages
 	outputMessages := extractChatResponseMessages(resp)
 	if len(outputMessages) > 0 {
-		attrs[schemas.AttrOutputMessages] = outputMessages
+		if data, err := schemas.MarshalString(outputMessages); err == nil {
+			attrs[schemas.AttrOutputMessages] = data
+		}
 	}
 
 	// Extract finish reason from first choice
@@ -563,7 +567,9 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		attrs[schemas.AttrMessageCount] = len(req.Input)
 		inputMessages := extractResponsesInputMessages(req.Input)
 		if len(inputMessages) > 0 {
-			attrs[schemas.AttrInputMessages] = inputMessages
+			if data, err := schemas.MarshalString(inputMessages); err == nil {
+				attrs[schemas.AttrInputMessages] = data
+			}
 		}
 	}
 
@@ -619,18 +625,34 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		}
 	}
 	if req.Params.Tools != nil {
-		tools := make([]string, len(req.Params.Tools))
-		for i, tool := range req.Params.Tools {
-			tools[i] = string(tool.Type)
+		type toolInfo struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
 		}
-		attrs[schemas.AttrTools] = strings.Join(tools, ",")
+		tools := make([]toolInfo, 0, len(req.Params.Tools))
+		for _, tool := range req.Params.Tools {
+			if tool.Name != nil {
+				info := toolInfo{Name: *tool.Name}
+				if tool.Description != nil {
+					info.Description = *tool.Description
+				}
+				tools = append(tools, info)
+			} else {
+				tools = append(tools, toolInfo{Name: string(tool.Type)})
+			}
+		}
+		if data, err := schemas.MarshalString(tools); err == nil {
+			attrs[schemas.AttrTools] = data
+		}
 	}
 	if req.Params.Truncation != nil {
 		attrs[schemas.AttrTruncation] = *req.Params.Truncation
 	}
 	// ExtraParams
 	for k, v := range req.Params.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		if data, err := schemas.MarshalString(v); err == nil {
+			attrs[k] = data
+		}
 	}
 }
 
@@ -653,7 +675,9 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 	// Extract output messages (includes reasoning)
 	outputMessages := extractResponsesOutputMessages(resp)
 	if len(outputMessages) > 0 {
-		attrs[schemas.AttrOutputMessages] = outputMessages
+		if data, err := schemas.MarshalString(outputMessages); err == nil {
+			attrs[schemas.AttrOutputMessages] = data
+		}
 	}
 
 	// Additional response fields

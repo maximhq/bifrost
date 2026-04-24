@@ -310,9 +310,15 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	}
 	logger.Info("Provider %s added successfully", payload.Provider)
 
-	// Attempt model discovery
-	if err := h.attemptModelDiscovery(ctx, payload.Provider, payload.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s: %v", payload.Provider, err)
+	if err := h.reloadProviderAfterCreate(ctx, payload.Provider); err != nil {
+		logger.Warn("Failed to reload provider %s after add: %v", payload.Provider, err)
+		if rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider); rollbackErr != nil {
+			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v (rollback failed: %v)", err, rollbackErr))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v", err))
+		return
 	}
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
@@ -377,6 +383,19 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		oldConfigRaw = &configstore.ProviderConfig{}
 	}
 
+	oldRedactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
+	if err != nil {
+		if !errors.Is(err, lib.ErrNotFound) {
+			logger.Warn("Failed to get old redacted config for provider %s: %v", provider, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if oldRedactedConfig == nil {
+		oldRedactedConfig = &configstore.ProviderConfig{}
+	}
+
 	// Construct ProviderConfig from individual fields (keys are managed separately via /keys endpoints)
 	config := configstore.ProviderConfig{
 		Keys:                     oldConfigRaw.Keys,
@@ -422,16 +441,24 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
 	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
-	if oldConfigRaw.NetworkConfig != nil && (nc.CACertPEM == "<REDACTED>" || nc.CACertPEM == "********") {
-		nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+	if oldConfigRaw.NetworkConfig != nil && oldRedactedConfig.NetworkConfig != nil && nc.CACertPEM != nil {
+		if nc.CACertPEM.IsRedacted() && nc.CACertPEM.Equals(oldRedactedConfig.NetworkConfig.CACertPEM) {
+			nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+		}
 	}
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
-	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
-		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
+	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil && oldRedactedConfig.ProxyConfig != nil {
+		if payload.ProxyConfig.URL != nil && payload.ProxyConfig.URL.IsRedacted() && payload.ProxyConfig.URL.Equals(oldRedactedConfig.ProxyConfig.URL) {
+			payload.ProxyConfig.URL = oldConfigRaw.ProxyConfig.URL
+		}
+		if payload.ProxyConfig.Username != nil && payload.ProxyConfig.Username.IsRedacted() && payload.ProxyConfig.Username.Equals(oldRedactedConfig.ProxyConfig.Username) {
+			payload.ProxyConfig.Username = oldConfigRaw.ProxyConfig.Username
+		}
+		if payload.ProxyConfig.Password != nil && payload.ProxyConfig.Password.IsRedacted() && payload.ProxyConfig.Password.Equals(oldRedactedConfig.ProxyConfig.Password) {
 			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
 		}
-		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
+		if payload.ProxyConfig.CACertPEM != nil && payload.ProxyConfig.CACertPEM.IsRedacted() && payload.ProxyConfig.CACertPEM.Equals(oldRedactedConfig.ProxyConfig.CACertPEM) {
 			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
 		}
 	}
@@ -988,6 +1015,16 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, ListBaseModelsResponse{Models: baseModels, Total: total})
 }
 
+// reloadProviderAfterCreate performs a single bounded runtime reload after provider creation.
+// ReloadProvider also refreshes model discovery, so create should not invoke a second discovery pass.
+func (h *ProviderHandler) reloadProviderAfterCreate(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider) error {
+	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+	return err
+}
+
 // attemptModelDiscovery performs model discovery with timeout
 func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider, customProviderConfig *schemas.CustomProviderConfig) error {
 	// Determine if we should attempt model discovery
@@ -999,7 +1036,7 @@ func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provid
 	}
 
 	// Attempt model discovery with reasonable timeout
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)

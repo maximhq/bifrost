@@ -54,8 +54,12 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
 		params.routing_engine_used = filters.routing_engine_used.join(",");
 	}
-	if (filters.start_time) params.start_time = filters.start_time;
-	if (filters.end_time) params.end_time = filters.end_time;
+	if (filters.period) {
+		params.period = filters.period;
+	} else {
+		if (filters.start_time) params.start_time = filters.start_time;
+		if (filters.end_time) params.end_time = filters.end_time;
+	}
 	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
 	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;

@@ -13,7 +13,7 @@ import type { MCPToolLogEntry, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tanstack/react-table";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 interface DataTableProps {
@@ -24,8 +24,8 @@ interface DataTableProps {
 	pagination: Pagination;
 	onPaginationChange: (pagination: Pagination) => void;
 	onRowClick?: (log: MCPToolLogEntry, columnId: string) => void;
-	isSocketConnected: boolean;
-	liveEnabled: boolean;
+	onRefresh?: () => void;
+	polling?: boolean;
 	/** Column config — computed by the parent via useColumnConfig */
 	columnEntries: ColumnConfigEntry[];
 	columnOrder: ColumnOrderState;
@@ -44,8 +44,8 @@ export function MCPLogsDataTable({
 	pagination,
 	onPaginationChange,
 	onRowClick,
-	isSocketConnected,
-	liveEnabled,
+	onRefresh,
+	polling = false,
 	columnEntries,
 	columnOrder,
 	columnVisibility,
@@ -159,72 +159,54 @@ export function MCPLogsDataTable({
 							))}
 						</thead>
 						<TableBody>
-							{loading ? (
+							<TableRow className="hover:bg-transparent">
+								<TableCell colSpan={columns.length} className="h-12 text-center">
+									<div className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
+										{polling ? (
+											<>
+												<RefreshCw className="h-4 w-4 animate-spin" />
+												Waiting for new MCP logs...
+											</>
+										) : (
+											<Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading} data-testid="mcp-logs-table-refresh-btn">
+												<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+												Refresh
+											</Button>
+										)}
+									</div>
+								</TableCell>
+							</TableRow>
+							{table.getRowModel().rows.length ? (
+								table.getRowModel().rows.map((row) => (
+									<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
+										{row.getVisibleCells().map((cell) => {
+											const pinned = cell.column.getIsPinned();
+											const size = cell.column.getSize();
+											return (
+												<TableCell
+													onClick={() => onRowClick?.(row.original, cell.column.id)}
+													key={cell.id}
+													style={{ width: size, minWidth: size, maxWidth: size, ...buildPinStyle(cell.column, pinOffsets) }}
+													className={cn(
+														"overflow-hidden",
+														pinned && "bg-card",
+														cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+														cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+														"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+													)}
+												>
+													{flexRender(cell.column.columnDef.cell, cell.getContext())}
+												</TableCell>
+											);
+										})}
+									</TableRow>
+								))
+							) : (
 								<TableRow>
-									<TableCell colSpan={columns.length} className="h-12 text-center">
-										<div className="flex items-center justify-center gap-2">
-											<RefreshCw className="h-4 w-4 animate-spin" />
-											Loading logs...
-										</div>
+									<TableCell colSpan={columns.length} className="h-24 text-center">
+										No results found. Try adjusting your filters and/or time range.
 									</TableCell>
 								</TableRow>
-							) : (
-								<>
-									<TableRow className="hover:bg-transparent">
-										<TableCell colSpan={columns.length} className="h-12 text-center">
-											<div className="flex items-center justify-center gap-2">
-												{!isSocketConnected ? (
-													<>
-														<X className="h-4 w-4" />
-														Not connected to socket, please refresh the page.
-													</>
-												) : liveEnabled ? (
-													<>
-														<RefreshCw className="h-4 w-4 animate-spin" />
-														Listening for logs...
-													</>
-												) : (
-													<>
-														<Pause className="h-4 w-4" />
-														Live updates paused
-													</>
-												)}
-											</div>
-										</TableCell>
-									</TableRow>
-									{table.getRowModel().rows.length ? (
-										table.getRowModel().rows.map((row) => (
-											<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
-												{row.getVisibleCells().map((cell) => {
-													const pinned = cell.column.getIsPinned();
-													const size = cell.column.getSize();
-													return (
-														<TableCell
-															onClick={() => onRowClick?.(row.original, cell.column.id)}
-															key={cell.id}
-															style={{ width: size, minWidth: size, maxWidth: size, ...buildPinStyle(cell.column, pinOffsets) }}
-															className={cn(
-																"overflow-hidden",
-																pinned && "bg-card",
-																cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
-																cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
-																"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
-															)}
-														>
-															{flexRender(cell.column.columnDef.cell, cell.getContext())}
-														</TableCell>
-													);
-												})}
-											</TableRow>
-										))
-									) : (
-										<TableRow>
-											<TableCell colSpan={columns.length} className="h-24 text-center">
-												No results found. Try adjusting your filters and/or time range.
-											</TableCell>
-										</TableRow>
-									)}
-								</>
 							)}
 						</TableBody>
 					</Table>

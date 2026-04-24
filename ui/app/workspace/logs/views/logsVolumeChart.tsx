@@ -6,6 +6,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { HistogramBucket, LogsHistogramResponse } from "@/lib/types/logs";
+import { getUnixRangeForPeriod } from "@/lib/utils/timeRange";
 import { ChevronDown, RotateCcw } from "lucide-react";
 import {
   Component,
@@ -114,6 +115,7 @@ interface LogsVolumeChartProps {
   startTime: number; // Unix timestamp in seconds
   endTime: number; // Unix timestamp in seconds
   isOpen: boolean;
+  period?: string,
   onOpenChange: (open: boolean) => void;
 }
 
@@ -217,6 +219,7 @@ export function LogsVolumeChart({
   startTime,
   endTime,
   isOpen,
+  period,
   onOpenChange,
 }: LogsVolumeChartProps) {
   // State for drag selection
@@ -224,14 +227,23 @@ export function LogsVolumeChart({
   const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
 
+  const effectingTimeRange = useMemo(() => {
+    if (period) {
+      const { start, end } = getUnixRangeForPeriod(period)
+      return { startTime: start, endTime: end }
+    }
+
+    return { startTime, endTime }
+  }, [period, startTime, endTime])
+
   // Transform data for chart, filling in empty buckets for the full time range
   const chartData = useMemo(() => {
     // Need bucket_size_seconds and valid time range
     if (
       !data?.bucket_size_seconds ||
-      !startTime ||
-      !endTime ||
-      startTime >= endTime
+      !effectingTimeRange.startTime ||
+      !effectingTimeRange.endTime ||
+      effectingTimeRange.startTime >= effectingTimeRange.endTime
     ) {
       return [];
     }
@@ -240,8 +252,8 @@ export function LogsVolumeChart({
 
     // Align start time to bucket boundary
     const minTime =
-      Math.floor((startTime * 1000) / bucketSizeMs) * bucketSizeMs;
-    const maxTime = endTime * 1000;
+      Math.floor((effectingTimeRange.startTime * 1000) / bucketSizeMs) * bucketSizeMs;
+    const maxTime = effectingTimeRange.endTime * 1000;
 
     // Safety: limit maximum number of buckets to prevent performance issues
     const maxBuckets = 500;
@@ -332,7 +344,7 @@ export function LogsVolumeChart({
     }
 
     return filledBuckets;
-  }, [data, startTime, endTime]);
+  }, [data, effectingTimeRange.startTime, effectingTimeRange.endTime]);
 
   // Handle mouse down on chart (start selection)
   const handleMouseDown = useCallback((e: ChartMouseEvent) => {
@@ -404,7 +416,7 @@ export function LogsVolumeChart({
   );
 
   // Check if we have valid data for the chart
-  const hasValidData = data && startTime && endTime && chartData.length >= 2;
+  const hasValidData = data && effectingTimeRange.startTime && effectingTimeRange.endTime && chartData.length >= 2;
 
   return (
     <Card className="rounded-sm px-2 py-2 shadow-none">
@@ -452,7 +464,7 @@ export function LogsVolumeChart({
               <Skeleton className="h-full w-full" />
             ) : hasValidData ? (
               <ChartErrorBoundary
-                resetKey={`${startTime}-${endTime}-${chartData.length}`}
+                resetKey={`${effectingTimeRange.startTime}-${effectingTimeRange.endTime}-${chartData.length}`}
               >
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart

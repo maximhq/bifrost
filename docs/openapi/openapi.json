@@ -54,6 +54,10 @@
       "description": "OpenAI Responses API compatible endpoints"
     },
     {
+      "name": "OCR",
+      "description": "Optical character recognition for documents and images"
+    },
+    {
       "name": "Rerank",
       "description": "Document reranking by relevance to a query"
     },
@@ -1511,6 +1515,72 @@
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/ocr": {
+      "post": {
+        "operationId": "performOCR",
+        "summary": "Perform OCR",
+        "description": "Extracts text and content from documents or images using optical character recognition.\nSupports PDF URLs, base64-encoded documents, and image URLs.\n",
+        "tags": [
+          "OCR"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OCRRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OCRResponse"
                 }
               }
             }
@@ -7852,6 +7922,270 @@
         "operationId": "getAsyncImageVariationJob",
         "summary": "Get async image variation job",
         "description": "Retrieves the status and result of an async image variation job.\nReturns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.\n",
+        "tags": [
+          "Async Jobs"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AsyncJobId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job completed (successfully or with failure)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncJobResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Job is still pending or processing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncJobResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/async/rerank": {
+      "post": {
+        "operationId": "createAsyncRerank",
+        "summary": "Create async rerank",
+        "description": "Submits a rerank request for asynchronous execution. Returns a job ID immediately\nwith HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.\n",
+        "tags": [
+          "Async Jobs"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AsyncResultTTL"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RerankRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Job accepted for processing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncJobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/async/rerank/{job_id}": {
+      "get": {
+        "operationId": "getAsyncRerankJob",
+        "summary": "Get async rerank job",
+        "description": "Retrieves the status and result of an async rerank job.\nReturns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.\n",
+        "tags": [
+          "Async Jobs"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AsyncJobId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job completed (successfully or with failure)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncJobResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Job is still pending or processing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncJobResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/async/ocr": {
+      "post": {
+        "operationId": "createAsyncOCR",
+        "summary": "Create async OCR job",
+        "description": "Submits an OCR request for asynchronous execution. Returns a job ID immediately\nwith HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.\n",
+        "tags": [
+          "Async Jobs"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AsyncResultTTL"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OCRRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Job accepted for processing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncJobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/async/ocr/{job_id}": {
+      "get": {
+        "operationId": "getAsyncOCRJob",
+        "summary": "Get async OCR job",
+        "description": "Retrieves the status and result of an async OCR job.\nReturns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.\n",
         "tags": [
           "Async Jobs"
         ],
@@ -46669,6 +47003,426 @@
           },
           "extra_fields": {
             "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "OCRRequest": {
+        "type": "object",
+        "required": [
+          "model",
+          "document"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model in provider/model format",
+            "example": "mistral/mistral-ocr-latest"
+          },
+          "id": {
+            "type": "string",
+            "description": "Optional unique identifier for the request"
+          },
+          "document": {
+            "$ref": "#/components/schemas/OCRDocument"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback models in provider/model format"
+          },
+          "include_image_base64": {
+            "type": "boolean",
+            "description": "Whether to include base64-encoded images in the response"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Specific page indices to process (0-based)"
+          },
+          "image_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum number of images to extract per page"
+          },
+          "image_min_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Minimum image size in pixels to extract"
+          },
+          "table_format": {
+            "type": "string",
+            "description": "Format for extracted tables (e.g., \"markdown\", \"html\")"
+          },
+          "extract_header": {
+            "type": "boolean",
+            "description": "Whether to extract page headers"
+          },
+          "extract_footer": {
+            "type": "boolean",
+            "description": "Whether to extract page footers"
+          },
+          "confidence_scores_granularity": {
+            "type": "string",
+            "enum": [
+              "page",
+              "block",
+              "word",
+              "document"
+            ],
+            "description": "Granularity of confidence scores to include in the response"
+          },
+          "bbox_annotation_format": {
+            "type": "object",
+            "description": "Format for bounding box annotations. Supports text, json_object, and json_schema modes.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "json_object",
+                  "json_schema"
+                ],
+                "description": "The format type"
+              },
+              "json_schema": {
+                "type": "object",
+                "description": "JSON schema definition (required when type is json_schema)",
+                "properties": {
+                  "schema": {
+                    "type": "object",
+                    "description": "The JSON schema"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the schema"
+                  },
+                  "strict": {
+                    "type": "boolean",
+                    "description": "Whether to enforce strict validation"
+                  }
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "text",
+                      "json_object"
+                    ]
+                  }
+                }
+              },
+              {
+                "required": [
+                  "type",
+                  "json_schema"
+                ],
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "json_schema"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "document_annotation_format": {
+            "type": "object",
+            "description": "Format for document-level annotations. Supports text, json_object, and json_schema modes.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "json_object",
+                  "json_schema"
+                ],
+                "description": "The format type"
+              },
+              "json_schema": {
+                "type": "object",
+                "description": "JSON schema definition (required when type is json_schema)",
+                "properties": {
+                  "schema": {
+                    "type": "object",
+                    "description": "The JSON schema"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the schema"
+                  },
+                  "strict": {
+                    "type": "boolean",
+                    "description": "Whether to enforce strict validation"
+                  }
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "text",
+                      "json_object"
+                    ]
+                  }
+                }
+              },
+              {
+                "required": [
+                  "type",
+                  "json_schema"
+                ],
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "json_schema"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "document_annotation_prompt": {
+            "type": "string",
+            "description": "Custom prompt for document annotation"
+          }
+        }
+      },
+      "OCRDocument": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "document_url",
+              "image_url"
+            ],
+            "description": "Type of document input:\n- `document_url`: A PDF URL or base64 data URL\n- `image_url`: An image URL\n"
+          },
+          "document_url": {
+            "type": "string",
+            "description": "URL or base64 data URL of the document (required when type is document_url)"
+          },
+          "image_url": {
+            "type": "string",
+            "description": "URL of the image to process (required when type is image_url)"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "type",
+              "document_url"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "document_url"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "type",
+              "image_url"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "image_url"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "OCRResponse": {
+        "type": "object",
+        "required": [
+          "model",
+          "pages"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model used to perform OCR"
+          },
+          "pages": {
+            "type": "array",
+            "description": "Processed pages with extracted content",
+            "items": {
+              "$ref": "#/components/schemas/OCRPage"
+            }
+          },
+          "usage_info": {
+            "$ref": "#/components/schemas/OCRUsageInfo"
+          },
+          "document_annotation": {
+            "type": "string",
+            "description": "Document-level annotation if requested"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "OCRPage": {
+        "type": "object",
+        "required": [
+          "index",
+          "markdown"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based page index"
+          },
+          "markdown": {
+            "type": "string",
+            "description": "Extracted text content in Markdown format"
+          },
+          "images": {
+            "type": "array",
+            "description": "Images extracted from this page",
+            "items": {
+              "$ref": "#/components/schemas/OCRPageImage"
+            }
+          },
+          "dimensions": {
+            "$ref": "#/components/schemas/OCRPageDimensions"
+          },
+          "tables": {
+            "type": "array",
+            "description": "Tables extracted from this page (present when table_format is set)",
+            "nullable": true,
+            "items": {
+              "type": "object"
+            }
+          },
+          "header": {
+            "type": "string",
+            "nullable": true,
+            "description": "Header content extracted from this page (present when extract_header is true)"
+          },
+          "footer": {
+            "type": "string",
+            "nullable": true,
+            "description": "Footer content extracted from this page (present when extract_footer is true)"
+          },
+          "confidence_scores": {
+            "type": "object",
+            "nullable": true,
+            "description": "Confidence scores for this page (present when confidence_scores_granularity is set)",
+            "properties": {
+              "average_page_confidence_score": {
+                "type": "number",
+                "description": "Average confidence score for the page"
+              },
+              "minimum_page_confidence_score": {
+                "type": "number",
+                "description": "Minimum confidence score for the page"
+              },
+              "word_confidence_scores": {
+                "type": "array",
+                "description": "Per-word confidence scores",
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      },
+      "OCRPageImage": {
+        "type": "object",
+        "required": [
+          "id",
+          "top_left_x",
+          "top_left_y",
+          "bottom_right_x",
+          "bottom_right_y"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the image within the page"
+          },
+          "top_left_x": {
+            "type": "number",
+            "description": "X coordinate of the top-left corner of the image bounding box"
+          },
+          "top_left_y": {
+            "type": "number",
+            "description": "Y coordinate of the top-left corner of the image bounding box"
+          },
+          "bottom_right_x": {
+            "type": "number",
+            "description": "X coordinate of the bottom-right corner of the image bounding box"
+          },
+          "bottom_right_y": {
+            "type": "number",
+            "description": "Y coordinate of the bottom-right corner of the image bounding box"
+          },
+          "image_base64": {
+            "type": "string",
+            "description": "Base64-encoded image data (present when include_image_base64 is true)"
+          }
+        }
+      },
+      "OCRPageDimensions": {
+        "type": "object",
+        "required": [
+          "dpi",
+          "height",
+          "width"
+        ],
+        "properties": {
+          "dpi": {
+            "type": "integer",
+            "description": "Dots per inch of the page"
+          },
+          "height": {
+            "type": "integer",
+            "description": "Page height in pixels"
+          },
+          "width": {
+            "type": "integer",
+            "description": "Page width in pixels"
+          }
+        }
+      },
+      "OCRUsageInfo": {
+        "type": "object",
+        "required": [
+          "pages_processed",
+          "doc_size_bytes"
+        ],
+        "properties": {
+          "pages_processed": {
+            "type": "integer",
+            "description": "Number of pages processed"
+          },
+          "doc_size_bytes": {
+            "type": "integer",
+            "description": "Size of the processed document in bytes"
           }
         }
       },

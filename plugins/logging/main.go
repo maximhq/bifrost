@@ -441,6 +441,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	createdTimestamp := time.Now().UTC()
 
+	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
+
 	// If request type is streaming we create a stream accumulator via the tracer
 	// Skip for passthrough streams — they carry raw bytes, not LLM response chunks
 	if bifrost.IsStreamRequestType(req.RequestType) && req.RequestType != schemas.PassthroughStreamRequest {
@@ -703,6 +705,61 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
+	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", requestID, requestType, isFinalChunk, bifrostErr != nil)
+
+	// Retrieve pending input data from PreLLMHook
+	var pendingVal any
+	var hasPending bool
+	if !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil {
+		pendingVal, hasPending = p.pendingLogsEntries.LoadAndDelete(requestID)
+	} else {
+		pendingVal, hasPending = p.pendingLogsEntries.Load(requestID)
+	}
+
+	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
+
+	if !hasPending {
+		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
+		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
+		// here means the error is completely lost.
+		if bifrostErr != nil {
+			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
+			entry := &logstore.Log{
+				ID:        requestID,
+				Provider:  string(bifrostErr.ExtraFields.Provider),
+				Status:    "error",
+				Object:    string(requestType),
+				Stream:    bifrost.IsStreamRequestType(requestType),
+				Timestamp: time.Now().UTC(),
+				CreatedAt: time.Now().UTC(),
+			}
+			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
+			if data, err := sonic.Marshal(bifrostErr); err == nil {
+				entry.ErrorDetails = string(data)
+			}
+			entry.ErrorDetailsParsed = bifrostErr
+			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
+			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		} else {
+			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
+		}
+		return result, bifrostErr, nil
+	}
+
+	pending := pendingVal.(*PendingLogData)
+	if requestType == schemas.RealtimeRequest {
+		if resolvedRealtimeSessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID); resolvedRealtimeSessionID != "" {
+			pending.ParentRequestID = resolvedRealtimeSessionID
+		}
+	}
+
+	// Should never happen, but just in case
+	// Fallback to request type from pending data if request type is not set
+	if requestType == "" {
+		requestType = schemas.RequestType(pending.InitialData.Object)
+		p.logger.Warn("PostLLMHook: request type missing from response extra fields for request %s, falling back to pre-hook value %q", requestID, requestType)
+	}
+
 	var tracer schemas.Tracer
 	var traceID string
 	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest && requestType != schemas.RealtimeRequest {
@@ -728,42 +785,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 
-	// Retrieve pending input data from PreLLMHook
-	pendingVal, hasPending := p.pendingLogsEntries.LoadAndDelete(requestID)
-	if !hasPending {
-		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
-		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
-		// here means the error is completely lost.
-		if bifrostErr != nil {
-			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
-			entry := &logstore.Log{
-				ID:        requestID,
-				Provider:  string(bifrostErr.ExtraFields.Provider),
-				Status:    "error",
-				Stream:    bifrost.IsStreamRequestType(requestType),
-				Timestamp: time.Now().UTC(),
-				CreatedAt: time.Now().UTC(),
-			}
-			applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
-			if data, err := sonic.Marshal(bifrostErr); err == nil {
-				entry.ErrorDetails = string(data)
-			}
-			entry.ErrorDetailsParsed = bifrostErr
-			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
-		} else {
-			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
-		}
-		return result, bifrostErr, nil
-	}
-
-	pending := pendingVal.(*PendingLogData)
-	if requestType == schemas.RealtimeRequest {
-		if resolvedRealtimeSessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID); resolvedRealtimeSessionID != "" {
-			pending.ParentRequestID = resolvedRealtimeSessionID
-		}
-	}
-
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
 	// Apply common output fields
@@ -781,7 +802,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path A: Error with nil result
 	if result == nil && bifrostErr != nil {
 		entry.Status = "error"
-		applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
+		applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 		if bifrost.IsStreamRequestType(requestType) {
 			entry.Stream = true
 		}
@@ -886,7 +907,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path C: Non-streaming response
 	if bifrostErr != nil {
 		entry.Status = "error"
-		applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
+		applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 		// Serialize error details immediately since bifrostErr may be released
 		// back to the pool before the async batch writer processes this entry.
 		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).

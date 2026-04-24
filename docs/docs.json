@@ -60,9 +60,7 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": [
-              "overview"
-            ]
+            "pages": ["overview"]
           },
           {
             "group": "Quick Start",
@@ -102,16 +100,12 @@
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "migration-guides/v1.5.0"
-            ]
+            "pages": ["migration-guides/v1.5.0"]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": [
-              "integrations/what-is-an-integration"
-            ]
+            "pages": ["integrations/what-is-an-integration"]
           },
           {
             "group": "Providers & Guides",
@@ -243,10 +237,7 @@
               {
                 "group": "Advanced Governance",
                 "icon": "shield-check",
-                "pages": [
-                  "enterprise/advanced-governance",
-                  "enterprise/rbac"
-                ]
+                "pages": ["enterprise/advanced-governance", "enterprise/rbac"]
               },
               "enterprise/mcp-with-fa",
               "enterprise/invpc-deployments",
@@ -310,9 +301,7 @@
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": [
-                  "integrations/genai-sdk/overview"
-                ]
+                "pages": ["integrations/genai-sdk/overview"]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -496,9 +485,7 @@
       {
         "tab": "Security",
         "icon": "shield",
-        "pages": [
-          "security"
-        ]
+        "pages": ["security"]
       },
       {
         "tab": "Benchmarks",
@@ -661,10 +648,7 @@
               },
               {
                 "group": "September 2025",
-                "pages": [
-                  "changelogs/v1.2.22",
-                  "changelogs/v1.2.21"
-                ]
+                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
               }
             ]
           },
@@ -760,6 +744,10 @@
     {
       "source": "/features/mcp/agent-mode",
       "destination": "/mcp/agent-mode"
+    },
+    {
+      "source": "/features/litellm-compat",
+      "destination": "/features/compat-plugin"
     },
     {
       "source": "/features/mcp/code-mode",

@@ -4,9 +4,50 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.4
+**Latest Version:** 2.1.6
 
 ## Changelog
+
+### 2.1.6
+
+- Updated StatefulSet PVC template labels to be immutable-safe:
+  - `spec.volumeClaimTemplates.metadata.labels` now uses stable selector labels (without chart/app version labels).
+- CI / rendered `config.json` checks (`validate-helm-config-fields.sh`):
+  - No longer expect `governance.virtual_keys[].budget_id` in rendered config (not in `config.schema.json`; `governance.budgets[].virtual_key_id` is the supported way to attach a budget to a virtual key).
+  - Fixture and assertions were updated to include a sample `governance.budgets` entry with `virtual_key_id` for coverage.
+  - Tightened `query` validation in `values.schema.json` and `config.schema.json`: `query` now accepts only `null` or an object with `{ combinator, rules }`; invalid user-provided query shapes may now fail Helm/config validation and should be migrated to the new structure.
+- Note: Bifrost HTTP also syncs `governance.model_configs` and `governance.providers` from file into the config store when using DB-backed config, with hash-based reconciliation.
+- Upgrade impact:
+  - Existing SQLite StatefulSets created from older chart templates may require a one-time StatefulSet recreation during upgrade because `spec.volumeClaimTemplates` is immutable in Kubernetes.
+- Migration notes (only if upgrade fails with StatefulSet immutable-field error):
+  1. Identify StatefulSet name and namespace for your Helm release.
+  2. Delete only the StatefulSet while preserving dependents:
+     - `kubectl delete statefulset <statefulset-name> -n <namespace> --cascade=orphan`
+  3. Run Helm upgrade:
+     - `helm upgrade <release-name> bifrost/bifrost -n <namespace> -f <values-file> --set image.tag=<tag>`
+  4. If needed, re-apply/recreate the StatefulSet from the upgraded chart manifests.
+  5. Verify PVCs are preserved and pods become healthy:
+     - `kubectl get pvc -n <namespace>`
+     - `kubectl get pods -n <namespace>`
+
+### 2.1.5
+
+- Added `version` field support for built-in plugins in DB-backed Helm deployments.
+- Added default `version: 1` for built-in plugins in `values.yaml`:
+  - `telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`
+- Updated `_helpers.tpl` to include plugin `version` in rendered config when set, cast as integer.
+- Updated Helm/deployment docs:
+  - Removed hardcoded chart version text and linked to Artifact Hub.
+  - Added plugin `version` examples and guidance that incrementing `version` forces DB-backed plugin config overwrite on upgrade.
+
+### 2.1.4
+
+- Added stricter cluster discovery validation in Helm templates:
+  - Require `bifrost.cluster.discovery.serviceName` when `bifrost.cluster.discovery.type` is `consul`, `etcd`, or `udp`.
+  - For `udp` discovery, require both:
+    - `bifrost.cluster.discovery.udpBroadcastPort`
+    - `bifrost.cluster.discovery.allowedAddressSpace`
+- Added/updated template fail-fast errors so invalid discovery config is rejected at render time instead of failing later at runtime.
 
 ### 2.1.3
 
@@ -391,6 +432,8 @@ vectorStore:
 
 Configure AI provider API keys:
 
+> **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+
 ```yaml
 bifrost:
   providers:
@@ -451,6 +494,23 @@ bifrost:
 | `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
 | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout in seconds | `30` |
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
+| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
+| `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |
+| `bifrost.mcp.toolSyncInterval` | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended. | `10m` |
+
+#### MCP Migration Guide (`client.mcp*` -> `mcp.*`)
+
+Prefer MCP settings under `bifrost.mcp` going forward. Older `bifrost.client.mcp*`
+keys are retained for backward compatibility, but new configs should migrate to the
+`mcp.toolManagerConfig` and `mcp.toolSyncInterval` fields.
+
+| Old key | New key |
+|---------|---------|
+| `bifrost.client.mcpAgentDepth` | `bifrost.mcp.toolManagerConfig.maxAgentDepth` |
+| `bifrost.client.mcpToolExecutionTimeout` | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` |
+| `bifrost.client.mcpCodeModeBindingLevel` | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` |
+| `bifrost.client.mcpDisableAutoToolInject` | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` |
+| `bifrost.client.mcpToolSyncInterval` | `bifrost.mcp.toolSyncInterval` |
 
 ### Ingress Configuration
 

@@ -97,8 +97,6 @@ type ServerCallbacks interface {
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 	ReconnectMCPClient(ctx context.Context, id string) error
-	// Logging related callbacks
-	NewLogEntryAdded(ctx context.Context, logEntry *logstore.Log) error
 }
 
 // BifrostHTTPServer represents a HTTP server instance.
@@ -217,15 +215,6 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after editing client: %v", err)
 	}
-	return nil
-}
-
-// NewLogEntryAdded broadcasts a new log entry to the websocket clients
-func (s *BifrostHTTPServer) NewLogEntryAdded(_ context.Context, logEntry *logstore.Log) error {
-	if s.WebSocketHandler == nil {
-		return nil
-	}
-	s.WebSocketHandler.BroadcastLogUpdate(logEntry)
 	return nil
 }
 
@@ -1085,15 +1074,6 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	logger.Debug("initializing websocket server")
 	if s.WebSocketHandler == nil {
 		s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
-	}
-	if loggerPlugin != nil {
-		loggerPlugin.SetLogCallback(func(ctx context.Context, logEntry *logstore.Log) {
-			err := s.NewLogEntryAdded(ctx, logEntry)
-			if err != nil {
-				logger.Error("failed to add log entry: %v", err)
-			}
-		})
-		loggerPlugin.SetMCPToolLogCallback(s.WebSocketHandler.BroadcastMCPLogUpdate)
 	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()

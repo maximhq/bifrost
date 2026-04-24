@@ -7,7 +7,9 @@ icon: "star-of-life"
 [Claude Code](https://www.claude.com/product/claude-code) brings AI-powered coding capabilities directly to your terminal.
 
 <Note>
-If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Claude Code, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+  If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost
+  with Claude Code, try switching to `*` or adding the specific headers required by your client. By default, Bifrost
+  whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
 </Note>
 
 ## To install Claude code
@@ -21,12 +23,14 @@ npm install -g @anthropic-ai/claude-code
 Claude Code supports multiple authentication methods. Choose the one that matches your account type.
 
 1. **Set environment variables**
+
    ```bash
    export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
 2. **Run Claude Code**
+
 ```bash
 claude
 ```
@@ -47,6 +51,7 @@ Add Bifrost variables in your editor settings:
 
 ```json
 {
+  "claudeCode.disableLoginPrompt": true,
   "claudeCode.environmentVariables": [
     {
       "name": "ANTHROPIC_BASE_URL",
@@ -66,12 +71,11 @@ Add Bifrost variables in your editor settings:
 
 If virtual keys are enabled, also add `ANTHROPIC_API_KEY` in the same list (use your Bifrost virtual key value). If not, set it to `dummy`.
 
-
 ## Amazon Bedrock via Bifrost
 
 ### Setup
 
-Configure environment variables 
+Configure environment variables
 
 ```bash
    export ANTHROPIC_API_KEY=bifrost-virtual-key
@@ -87,27 +91,26 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="bedrock/global.anthropic.claude-haiku-4-5-
 
 If you don't pin using CLI - you can pin these in UI. Go to Dashboard > Models > Model Providers > AWS Bedrock > Key. And add deployments
 
-
 <Frame>
-   <img src="/media/cli/claude-bedrock-pinning.png" alt="Claude bedrock pinning" />
+  <img src="/media/cli/claude-bedrock-pinning.png" alt="Claude bedrock pinning" />
 </Frame>
 
-
-
 ### Start Claude Code
+
 ```
 claude
 ```
 
 <Warning>
-Always pin model versions with `ANTHROPIC_DEFAULT_*_MODEL` when using Bedrock. Without pinning, Claude Code aliases resolve to the latest version, which may not be enabled in your Bedrock account.
+  Always pin model versions with `ANTHROPIC_DEFAULT_*_MODEL` when using Bedrock. Without pinning, Claude Code aliases
+  resolve to the latest version, which may not be enabled in your Bedrock account.
 </Warning>
 
 ## Google Vertex AI via Bifrost
 
 ### Setup
 
-Configure environment variables 
+Configure environment variables
 
 ```bash
    export ANTHROPIC_API_KEY=bifrost-virtual-key
@@ -122,6 +125,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="vertex/claude-haiku-4-5"
 ```
 
 ### Start Claude Code
+
 ```
 claude
 ```
@@ -130,7 +134,7 @@ claude
 
 ### Setup
 
-Configure environment variables 
+Configure environment variables
 
 ```bash
    export ANTHROPIC_API_KEY=bifrost-virtual-key
@@ -147,17 +151,18 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="azure/claude-haiku-4-5"
 You will also have to map these model names to actual deployment names on Bifrost dashboard.
 
 <Frame>
-   <img src="/media/cli/claude-azure-pinning.png" alt="Claude bedrock pinning" />
+  <img src="/media/cli/claude-azure-pinning.png" alt="Claude bedrock pinning" />
 </Frame>
 
-
 ### Start Claude Code
+
 ```
 claude
 ```
 
 <Warning>
-Azure-hosted models must support **tool use capabilities** for Claude Code to function properly. Verify tool calling support before configuring Azure models.
+  Azure-hosted models must support **tool use capabilities** for Claude Code to function properly. Verify tool calling
+  support before configuring Azure models.
 </Warning>
 
 ## Model Configuration
@@ -180,7 +185,8 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="azure/claude-haiku-4-5"
 ```
 
 <Warning>
-Alternative models must support **tool use capabilities** for file operations, terminal commands, and code editing to work properly with Claude Code.
+  Alternative models must support **tool use capabilities** for file operations, terminal commands, and code editing to
+  work properly with Claude Code.
 </Warning>
 
 **Start with a Specific Model:**
@@ -211,11 +217,14 @@ Use the `/model` command to switch models during an active session:
 ```
 
 <Tip>
-Run `/model` without arguments to check your current model. The switch is instantaneous and Claude Code seamlessly continues your conversation context with the new model.
+  Run `/model` without arguments to check your current model. The switch is instantaneous and Claude Code seamlessly
+  continues your conversation context with the new model.
 </Tip>
 
 <Warning>
-If you use Claude-specific features like **web search**, **computer use**, or **citations**, ensure the model you switch to also supports these capabilities. Non-Claude models or Claude models on certain providers may not support all features.
+  If you use Claude-specific features like **web search**, **computer use**, or **citations**, ensure the model you
+  switch to also supports these capabilities. Non-Claude models or Claude models on certain providers may not support
+  all features.
 </Warning>
 
 ## Provider Compatibility
@@ -224,8 +233,10 @@ If you use Claude-specific features like **web search**, **computer use**, or **
 **Not all providers work well with Claude Code**. Since Claude Code heavily relies on tool calling for file operations, terminal commands, and code editing, providers must properly support and stream tool call arguments.
 
 **Known Issues:**
+
 - **OpenRouter**: Does not stream function call arguments properly. Tool calls return with empty `arguments` fields, causing Claude Code to fail when attempting file operations or other tool-based actions.
 - **Some proxy providers**: May not fully implement the Anthropic API streaming specification for tool calls.
 
 If you experience issues with tool calls not executing properly, try switching to a different provider in your Bifrost configuration.
+
 </Warning>

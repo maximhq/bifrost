@@ -1,0 +1,286 @@
+# OCR API schemas
+
+OCRRequest:
+  type: object
+  required:
+    - model
+    - document
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+      example: mistral/mistral-ocr-latest
+    id:
+      type: string
+      description: Optional unique identifier for the request
+    document:
+      $ref: "#/OCRDocument"
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models in provider/model format
+    include_image_base64:
+      type: boolean
+      description: Whether to include base64-encoded images in the response
+    pages:
+      type: array
+      items:
+        type: integer
+        minimum: 0
+      description: Specific page indices to process (0-based)
+    image_limit:
+      type: integer
+      minimum: 1
+      description: Maximum number of images to extract per page
+    image_min_size:
+      type: integer
+      minimum: 1
+      description: Minimum image size in pixels to extract
+    table_format:
+      type: string
+      description: Format for extracted tables (e.g., "markdown", "html")
+    extract_header:
+      type: boolean
+      description: Whether to extract page headers
+    extract_footer:
+      type: boolean
+      description: Whether to extract page footers
+    confidence_scores_granularity:
+      type: string
+      enum:
+        - page
+        - block
+        - word
+        - document
+      description: Granularity of confidence scores to include in the response
+    bbox_annotation_format:
+      type: object
+      description: "Format for bounding box annotations. Supports text, json_object, and json_schema modes."
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - text
+            - json_object
+            - json_schema
+          description: The format type
+        json_schema:
+          type: object
+          description: JSON schema definition (required when type is json_schema)
+          properties:
+            schema:
+              type: object
+              description: The JSON schema
+            name:
+              type: string
+              description: Name of the schema
+            strict:
+              type: boolean
+              description: Whether to enforce strict validation
+      oneOf:
+        - properties:
+            type:
+              enum: [text, json_object]
+        - required: [type, json_schema]
+          properties:
+            type:
+              enum: [json_schema]
+    document_annotation_format:
+      type: object
+      description: "Format for document-level annotations. Supports text, json_object, and json_schema modes."
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - text
+            - json_object
+            - json_schema
+          description: The format type
+        json_schema:
+          type: object
+          description: JSON schema definition (required when type is json_schema)
+          properties:
+            schema:
+              type: object
+              description: The JSON schema
+            name:
+              type: string
+              description: Name of the schema
+            strict:
+              type: boolean
+              description: Whether to enforce strict validation
+      oneOf:
+        - properties:
+            type:
+              enum: [text, json_object]
+        - required: [type, json_schema]
+          properties:
+            type:
+              enum: [json_schema]
+    document_annotation_prompt:
+      type: string
+      description: Custom prompt for document annotation
+
+OCRDocument:
+  type: object
+  properties:
+    type:
+      type: string
+      enum:
+        - document_url
+        - image_url
+      description: |
+        Type of document input:
+        - `document_url`: A PDF URL or base64 data URL
+        - `image_url`: An image URL
+    document_url:
+      type: string
+      description: URL or base64 data URL of the document (required when type is document_url)
+    image_url:
+      type: string
+      description: URL of the image to process (required when type is image_url)
+  oneOf:
+    - required: [type, document_url]
+      properties:
+        type:
+          enum: [document_url]
+    - required: [type, image_url]
+      properties:
+        type:
+          enum: [image_url]
+
+OCRResponse:
+  type: object
+  required:
+    - model
+    - pages
+  properties:
+    model:
+      type: string
+      description: Model used to perform OCR
+    pages:
+      type: array
+      description: Processed pages with extracted content
+      items:
+        $ref: "#/OCRPage"
+    usage_info:
+      $ref: "#/OCRUsageInfo"
+    document_annotation:
+      type: string
+      description: Document-level annotation if requested
+    extra_fields:
+      $ref: "./common.yaml#/BifrostResponseExtraFields"
+
+OCRPage:
+  type: object
+  required:
+    - index
+    - markdown
+  properties:
+    index:
+      type: integer
+      minimum: 0
+      description: Zero-based page index
+    markdown:
+      type: string
+      description: Extracted text content in Markdown format
+    images:
+      type: array
+      description: Images extracted from this page
+      items:
+        $ref: "#/OCRPageImage"
+    dimensions:
+      $ref: "#/OCRPageDimensions"
+    tables:
+      type: array
+      description: Tables extracted from this page (present when table_format is set)
+      nullable: true
+      items:
+        type: object
+    header:
+      type: string
+      nullable: true
+      description: Header content extracted from this page (present when extract_header is true)
+    footer:
+      type: string
+      nullable: true
+      description: Footer content extracted from this page (present when extract_footer is true)
+    confidence_scores:
+      type: object
+      nullable: true
+      description: Confidence scores for this page (present when confidence_scores_granularity is set)
+      properties:
+        average_page_confidence_score:
+          type: number
+          description: Average confidence score for the page
+        minimum_page_confidence_score:
+          type: number
+          description: Minimum confidence score for the page
+        word_confidence_scores:
+          type: array
+          description: Per-word confidence scores
+          items:
+            type: number
+
+OCRPageImage:
+  type: object
+  required:
+    - id
+    - top_left_x
+    - top_left_y
+    - bottom_right_x
+    - bottom_right_y
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the image within the page
+    top_left_x:
+      type: number
+      description: X coordinate of the top-left corner of the image bounding box
+    top_left_y:
+      type: number
+      description: Y coordinate of the top-left corner of the image bounding box
+    bottom_right_x:
+      type: number
+      description: X coordinate of the bottom-right corner of the image bounding box
+    bottom_right_y:
+      type: number
+      description: Y coordinate of the bottom-right corner of the image bounding box
+    image_base64:
+      type: string
+      description: Base64-encoded image data (present when include_image_base64 is true)
+
+OCRPageDimensions:
+  type: object
+  required:
+    - dpi
+    - height
+    - width
+  properties:
+    dpi:
+      type: integer
+      description: Dots per inch of the page
+    height:
+      type: integer
+      description: Page height in pixels
+    width:
+      type: integer
+      description: Page width in pixels
+
+OCRUsageInfo:
+  type: object
+  required:
+    - pages_processed
+    - doc_size_bytes
+  properties:
+    pages_processed:
+      type: integer
+      description: Number of pages processed
+    doc_size_bytes:
+      type: integer
+      description: Size of the processed document in bytes

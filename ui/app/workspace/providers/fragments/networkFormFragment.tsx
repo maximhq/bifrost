@@ -1,15 +1,16 @@
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider, isKnownProvider } from "@/lib/types/config";
-import { networkOnlyFormSchema, type NetworkOnlyFormSchema } from "@/lib/types/schemas";
+import { networkOnlyFormSchema, type EnvVar, type NetworkOnlyFormSchema } from "@/lib/types/schemas";
+import { toEnvVarFormValue, toOptionalEnvVarPayload } from "@/lib/utils/envVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
@@ -72,7 +73,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
-				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
+				ca_cert_pem: toEnvVarFormValue(provider.network_config?.ca_cert_pem as EnvVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -106,7 +107,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
 				insecure_skip_verify: data.network_config?.insecure_skip_verify ?? false,
-				ca_cert_pem: data.network_config?.ca_cert_pem?.trim() || undefined,
+				ca_cert_pem: toOptionalEnvVarPayload(data.network_config?.ca_cert_pem),
 				stream_idle_timeout_in_seconds:
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -138,10 +139,11 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
-				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
+				ca_cert_pem: toEnvVarFormValue(provider.network_config?.ca_cert_pem as EnvVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -447,18 +449,23 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									<FormItem>
 										<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 										<FormControl>
-											<Textarea
-												placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+											<EnvVarInput
+												variant="textarea"
+												placeholder={`-----BEGIN CERTIFICATE-----
+...
+-----END CERTIFICATE----- or env.OPENAI_CA_CERT_PEM`}
 												className="font-mono text-xs"
 												rows={6}
+												hideValueWhenEnv
+												redactNonEnvValue
 												{...field}
-												value={field.value || ""}
+												value={field.value}
 												disabled={!hasUpdateProviderAccess}
 												data-testid="network-config-ca-cert-pem"
 											/>
 										</FormControl>
 										<FormDescription>
-											PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)
+											PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA).
 										</FormDescription>
 										<FormMessage />
 									</FormItem>
