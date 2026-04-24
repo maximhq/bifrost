@@ -168,22 +168,9 @@ func (p *Pool) Close() {
 }
 
 func (p *Pool) dial(key PoolKey, headers map[string]string) (*UpstreamConn, error) {
-	wsConn, resp, err := Dial(key.Endpoint, headers)
+	wsConn, _, err := Dial(key.Endpoint, headers)
 	if err != nil {
-		// Include the upstream HTTP response (status + short body) in the error,
-		// so handshake failures surface the real reason instead of "bad handshake".
-		detail := ""
-		if resp != nil {
-			var bodySnippet string
-			if resp.Body != nil {
-				buf := make([]byte, 512)
-				n, _ := resp.Body.Read(buf)
-				_ = resp.Body.Close()
-				bodySnippet = string(buf[:n])
-			}
-			detail = fmt.Sprintf(" (upstream status %d: %s)", resp.StatusCode, bodySnippet)
-		}
-		return nil, fmt.Errorf("failed to dial upstream websocket %s%s: %w", key.Endpoint, detail, err)
+		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", key.Endpoint, err)
 	}
 	return newUpstreamConn(wsConn, key.Provider, key.KeyID, key.Endpoint), nil
 }
