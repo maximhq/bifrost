@@ -1,0 +1,3 @@
+- fix: resolve request type from pending data before streaming chunk processing
+- chore: adds debug logging in logging plugin lifecycle
+- chore: upgraded core to v1.5.5 and framework to v1.3.5

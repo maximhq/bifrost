@@ -1,3 +1,11 @@
 - feat: Standardizes tool stripping and anthropic integration handling against anthropic, vertex and azure
 - fix: drops empty thinking block for anthropic provider for claude code
 - feat: add support for cache creation details for claude models
+- feat: adds missing anthropic params / handling in Vertex
+- feat: add namespace tool type support in Responses API
+- feat: support `env.*` references for proxy and TLS config fields
+- feat: add Go duration string support for `tool_sync_interval` and hash-based MCP client config reconciliation
+- fix: add redacted check for env var values
+- fix: write multipart metadata before file uploads
+- fix: removes redundant IsDefined func
+- fix: native WebSocket /responses stream reliability improvements

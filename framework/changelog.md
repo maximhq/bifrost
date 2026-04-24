@@ -1,2 +1,7 @@
 - fix: Fixes OTEL exporting in `framework/tracing/llmspan.go` to show input and output messages correctly
 - feat: add support for cache creation cost above 1 hour
+- feat: add `provider_key_name` alias for routing targets and pricing overrides, resolved to `key_id` at config load
+- feat: add Go duration string support for MCP `tool_sync_interval` and hash-based client config reconciliation
+- feat: support `env.*` references for proxy and TLS config fields
+- feat: sync model config and provider governance bindings from config file to DB
+- chore: extend migration tests, fix column ignores, add routing rule search

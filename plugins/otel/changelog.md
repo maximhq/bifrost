@@ -1,0 +1,3 @@
+- fix: OTel metrics not working (thanks [@tcx4c70](https://github.com/tcx4c70)!)
+- fix: OTel conversion from built-in trace
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
