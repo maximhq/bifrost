@@ -2978,7 +2978,8 @@
         }
       },
       "required":[
-        "name"
+        "name",
+        "weight"
       ],
       "oneOf": [
         {

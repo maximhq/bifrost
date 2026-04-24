@@ -2084,17 +2084,18 @@ var performanceIndexes = []performanceIndexDef{
 	{
 		table: "logs",
 		name:  "idx_logs_content_summary_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', content_summary)) WHERE content_summary IS NOT NULL",
+		// left() caps input characters to stay within to_tsvector's 1MB output limit.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', left(content_summary, 800000))) WHERE content_summary IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_arguments_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', arguments)) WHERE arguments IS NOT NULL",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(arguments, 800000))) WHERE arguments IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_result_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', result)) WHERE result IS NOT NULL",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(result, 800000))) WHERE result IS NOT NULL",
 	},
 	{
 		table: "logs",
