@@ -80,6 +80,14 @@ func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 
 // handleUpgrade upgrades the HTTP connection to WebSocket and starts the event loop.
 func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
+	// Infer the default provider from the request path.
+	// Integration-scoped paths (e.g. /openai/v1/responses) are already bound to
+	// OpenAI by the URL, so bare model strings like "gpt-4o" are unambiguous and
+	// should be accepted without a provider prefix.
+	// The unified /v1/responses path is multi-provider by design and requires an
+	// explicit "provider/model" format, so its default remains empty.
+	defaultProvider := inferDefaultProviderFromPath(string(ctx.Path()))
+
 	err := h.upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
 
@@ -93,11 +101,23 @@ func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		// Capture auth headers from the upgrade request for per-event context creation
 		authHeaders := captureAuthHeaders(ctx)
 
-		h.eventLoop(conn, session, authHeaders)
+		h.eventLoop(conn, session, authHeaders, defaultProvider)
 	})
 	if err != nil {
 		logger.Warn("websocket upgrade failed for /v1/responses: %v", err)
 	}
+}
+
+// inferDefaultProviderFromPath returns the default ModelProvider to use when
+// parsing a bare model string for a given request path.
+// Paths under the /openai/ integration prefix default to OpenAI.
+// All other paths (including the unified /v1/responses) return an empty
+// provider, preserving the requirement for an explicit "provider/model" format.
+func inferDefaultProviderFromPath(path string) schemas.ModelProvider {
+	if strings.HasPrefix(path, "/openai/") {
+		return schemas.OpenAI
+	}
+	return ""
 }
 
 // authHeaders holds auth-related headers captured during the WS upgrade.
@@ -132,7 +152,9 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 }
 
 // eventLoop reads events from the client WebSocket and processes them.
-func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, auth *authHeaders) {
+// defaultProvider is the provider inferred from the upgrade path and is
+// forwarded to handleResponseCreate for bare-model-string resolution.
+func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, auth *authHeaders, defaultProvider schemas.ModelProvider) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -153,7 +175,7 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 
 		switch schemas.WebSocketEventType(envelope.Type) {
 		case schemas.WSEventResponseCreate:
-			h.handleResponseCreate(session, auth, message)
+			h.handleResponseCreate(session, auth, message, defaultProvider)
 		default:
 			writeWSError(session, 400, "invalid_request_error", "unsupported event type: "+envelope.Type)
 		}
@@ -163,7 +185,10 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 // handleResponseCreate processes a response.create event.
 // Strategy: try native WS upstream for providers that support it, otherwise use HTTP bridge.
 // If native WS upstream fails mid-stream, falls back to HTTP bridge.
-func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *authHeaders, message []byte) {
+// defaultProvider is the provider inferred from the upgrade path (e.g. schemas.OpenAI for
+// /openai/v1/responses). It is forwarded to ParseModelString so that bare model strings
+// like "gpt-4o" are accepted on integration-scoped paths without an explicit prefix.
+func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *authHeaders, message []byte, defaultProvider schemas.ModelProvider) {
 	var event schemas.WebSocketResponsesEvent
 
 	if err := sonic.Unmarshal(message, &event); err != nil {
@@ -174,7 +199,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+	provider, modelName := schemas.ParseModelString(event.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
 		return
@@ -187,7 +212,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		event.Store = schemas.Ptr(true)
 	}
 
-	bifrostReq, err := h.convertEventToRequest(&event)
+	bifrostReq, err := h.convertEventToRequest(&event, defaultProvider)
 	if err != nil {
 		writeWSError(session, 400, "invalid_request_error", err.Error())
 		return
@@ -418,8 +443,10 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 }
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
-func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+// defaultProvider is forwarded to ParseModelString so that bare model strings are resolved
+// correctly on integration-scoped paths (e.g. /openai/v1/responses supplies schemas.OpenAI).
+func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent, defaultProvider schemas.ModelProvider) (*schemas.BifrostResponsesRequest, error) {
+	provider, modelName := schemas.ParseModelString(event.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, errModelFormat
 	}
