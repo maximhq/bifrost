@@ -738,6 +738,13 @@
               "type": "integer"
             }
           ]
+        },
+        "tool_groups": {
+          "type": "array",
+          "description": "Enterprise MCP tool groups with optional governance associations",
+          "items": {
+            "$ref": "#/$defs/mcp_tool_group_config"
+          }
         }
       },
       "additionalProperties": false
@@ -2850,6 +2857,100 @@
           "default": false
         }
       }
+    },
+    "mcp_tool_group_config": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Tool group name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Tool group description"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether tool group is enabled",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "description": "MCP tools included in this group",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcp_client_id": {
+                "type": "string",
+                "description": "MCP client ID"
+              },
+              "mcp_client_name": {
+                "type": "string",
+                "description": "MCP client name (resolved to client_id at startup)"
+              },
+              "tool_names": {
+                "type": "array",
+                "description": "Tool names to allow. Empty means all tools from this MCP client.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "mcp_client_id"
+                ]
+              },
+              {
+                "required": [
+                  "mcp_client_name"
+                ]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtual_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "team_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "customer_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "user_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provider_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "api_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
     },
     "weaviate_config": {
       "type": "object",

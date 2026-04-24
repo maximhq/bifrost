@@ -493,6 +493,12 @@
             "toolSyncInterval": {
               "type": "string",
               "description": "Global default interval for syncing tools from MCP servers (Go duration string, e.g. '10m', '1h', '0s' to use runtime default)"
+            },
+            "toolGroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/mcpToolGroupConfig"
+              }
             }
           },
           "additionalProperties": false
@@ -3345,6 +3351,77 @@
           }
         }
       ]
+    },
+    "mcpToolGroupConfig": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcpClientId": {
+                "type": "string"
+              },
+              "mcpClientName": {
+                "type": "string"
+              },
+              "toolNames": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "anyOf": [
+              {
+                "required": ["mcpClientId"]
+              },
+              {
+                "required": ["mcpClientName"]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtualKeyIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "teamIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "customerIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "userIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "providerNames": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "apiKeyIds": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
     },
     "virtualKeyProviderConfig": {
       "type": "object",
