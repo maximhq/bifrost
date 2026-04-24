@@ -487,13 +487,15 @@ export function LogDetailView({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => copyRequestBody(log, copyBody)}
-                  data-testid="logdetails-copy-request-body-button"
-                >
-                  <Clipboard className="h-4 w-4" />
-                  Copy request body
-                </DropdownMenuItem>
+                {!isPassthrough && (
+                  <DropdownMenuItem
+                    onClick={() => copyRequestBody(log, copyBody)}
+                    data-testid="logdetails-copy-request-body-button"
+                  >
+                    <Clipboard className="h-4 w-4" />
+                    Copy request body
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
                   data-testid="logdetails-export-log-button"
@@ -1378,14 +1380,16 @@ export function LogDetailView({
               </span>
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="tools" className="px-3">
-            Tools
-            {log.params?.tools?.length ? (
-              <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-                {log.params.tools.length}
-              </span>
-            ) : null}
-          </TabsTrigger>
+          {!isPassthrough && (
+            <TabsTrigger value="tools" className="px-3">
+              Tools
+              {log.params?.tools?.length ? (
+                <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+                  {log.params.tools.length}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="routing" className="px-3">
             Routing
             {log.routing_engine_logs ? (
@@ -1402,9 +1406,11 @@ export function LogDetailView({
               </span>
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="raw" className="px-3">
-            Raw JSON
-          </TabsTrigger>
+          {!isPassthrough && (
+            <TabsTrigger value="raw" className="px-3">
+              Raw JSON
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="messages" className="space-y-4">
@@ -1446,7 +1452,92 @@ export function LogDetailView({
             />
           )}
 
-          {((log.input_history && log.input_history.length > 0) ||
+          {isPassthrough && passthroughRequestBody && (
+            <CollapsibleBox
+              title="Request Body"
+              onCopy={() => {
+                try {
+                  return JSON.stringify(
+                    JSON.parse(passthroughRequestBody || ""),
+                    null,
+                    2,
+                  );
+                } catch {
+                  return passthroughRequestBody || "";
+                }
+              }}
+            >
+              <CodeEditor
+                className="z-0 w-full"
+                shouldAdjustInitialHeight={true}
+                maxHeight={450}
+                wrap={true}
+                code={(() => {
+                  try {
+                    return JSON.stringify(
+                      JSON.parse(passthroughRequestBody || ""),
+                      null,
+                      2,
+                    );
+                  } catch {
+                    return passthroughRequestBody || "";
+                  }
+                })()}
+                lang="json"
+                readonly={true}
+                options={{
+                  scrollBeyondLastLine: false,
+                  lineNumbers: "off",
+                  alwaysConsumeMouseWheel: false,
+                }}
+              />
+            </CollapsibleBox>
+          )}
+          {isPassthrough &&
+            passthroughResponseBody &&
+            log.status !== "processing" && (
+              <CollapsibleBox
+                title="Response Body"
+                onCopy={() => {
+                  try {
+                    return JSON.stringify(
+                      JSON.parse(passthroughResponseBody || ""),
+                      null,
+                      2,
+                    );
+                  } catch {
+                    return passthroughResponseBody || "";
+                  }
+                }}
+              >
+                <CodeEditor
+                  className="z-0 w-full"
+                  shouldAdjustInitialHeight={true}
+                  maxHeight={450}
+                  wrap={true}
+                  code={(() => {
+                    try {
+                      return JSON.stringify(
+                        JSON.parse(passthroughResponseBody || ""),
+                        null,
+                        2,
+                      );
+                    } catch {
+                      return passthroughResponseBody || "";
+                    }
+                  })()}
+                  lang="json"
+                  readonly={true}
+                  options={{
+                    scrollBeyondLastLine: false,
+                    lineNumbers: "off",
+                    alwaysConsumeMouseWheel: false,
+                  }}
+                />
+              </CollapsibleBox>
+            )}
+
+          {!isPassthrough && ((log.input_history && log.input_history.length > 0) ||
             (log.output_message && !log.error_details?.error.message)) && (
             <div className="bg-card rounded-sm border p-5">
               {log.input_history?.map((message, index) => {
@@ -1919,90 +2010,6 @@ export function LogDetailView({
         </TabsContent>
 
         <TabsContent value="raw" className="space-y-3">
-          {isPassthrough && passthroughRequestBody && (
-            <CollapsibleBox
-              title="Request Body"
-              onCopy={() => {
-                try {
-                  return JSON.stringify(
-                    JSON.parse(passthroughRequestBody || ""),
-                    null,
-                    2,
-                  );
-                } catch {
-                  return passthroughRequestBody || "";
-                }
-              }}
-            >
-              <CodeEditor
-                className="z-0 w-full"
-                shouldAdjustInitialHeight={true}
-                maxHeight={450}
-                wrap={true}
-                code={(() => {
-                  try {
-                    return JSON.stringify(
-                      JSON.parse(passthroughRequestBody || ""),
-                      null,
-                      2,
-                    );
-                  } catch {
-                    return passthroughRequestBody || "";
-                  }
-                })()}
-                lang="json"
-                readonly={true}
-                options={{
-                  scrollBeyondLastLine: false,
-                  lineNumbers: "off",
-                  alwaysConsumeMouseWheel: false,
-                }}
-              />
-            </CollapsibleBox>
-          )}
-          {isPassthrough &&
-            passthroughResponseBody &&
-            log.status !== "processing" && (
-              <CollapsibleBox
-                title="Response Body"
-                onCopy={() => {
-                  try {
-                    return JSON.stringify(
-                      JSON.parse(passthroughResponseBody || ""),
-                      null,
-                      2,
-                    );
-                  } catch {
-                    return passthroughResponseBody || "";
-                  }
-                }}
-              >
-                <CodeEditor
-                  className="z-0 w-full"
-                  shouldAdjustInitialHeight={true}
-                  maxHeight={450}
-                  wrap={true}
-                  code={(() => {
-                    try {
-                      return JSON.stringify(
-                        JSON.parse(passthroughResponseBody || ""),
-                        null,
-                        2,
-                      );
-                    } catch {
-                      return passthroughResponseBody || "";
-                    }
-                  })()}
-                  lang="json"
-                  readonly={true}
-                  options={{
-                    scrollBeyondLastLine: false,
-                    lineNumbers: "off",
-                    alwaysConsumeMouseWheel: false,
-                  }}
-                />
-              </CollapsibleBox>
-            )}
           {rawRequest && (
             <>
               <div className="text-muted-foreground text-[12px]">

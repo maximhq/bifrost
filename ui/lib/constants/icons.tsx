@@ -1,5 +1,6 @@
 import { Landmark, Network, Shuffle } from "lucide-react";
 import { useTheme } from "next-themes";
+import { cn } from "../utils";
 
 type IconSize = "xs" | "sm" | "md" | "lg" | "xl" | number;
 type IconProps = {
@@ -775,7 +776,7 @@ export const RenderProviderIcon = ({
   const { resolvedTheme } = useTheme();
   const IconComponent = ProviderIcons[provider];
   return IconComponent
-    ? IconComponent({ ...props, theme: resolvedTheme })
+    ? IconComponent({ ...props, theme: resolvedTheme, className: cn("w-5 h-5 shrink-0", props.className) })
     : null;
 };
 

@@ -413,6 +413,20 @@ false
 {{- if .Values.bifrost.governance.teams }}
 {{- $_ := set $governance "teams" .Values.bifrost.governance.teams }}
 {{- end }}
+{{- if .Values.bifrost.governance.businessUnits }}
+{{- $businessUnits := list }}
+{{- range .Values.bifrost.governance.businessUnits }}
+{{- $bu := dict "id" .id "name" .name }}
+{{- if .budget_id }}{{- $_ := set $bu "budget_id" .budget_id }}{{- end }}
+{{- if .rate_limit_id }}{{- $_ := set $bu "rate_limit_id" .rate_limit_id }}{{- end }}
+{{- if .profile }}{{- $_ := set $bu "profile" .profile }}{{- end }}
+{{- if .config }}{{- $_ := set $bu "config" .config }}{{- end }}
+{{- if .claims }}{{- $_ := set $bu "claims" .claims }}{{- end }}
+{{- if .teamIds }}{{- $_ := set $bu "team_ids" .teamIds }}{{- end }}
+{{- $businessUnits = append $businessUnits $bu }}
+{{- end }}
+{{- $_ := set $governance "business_units" $businessUnits }}
+{{- end }}
 {{- if .Values.bifrost.governance.virtualKeys }}
 {{- $vks := list }}
 {{- range .Values.bifrost.governance.virtualKeys }}
@@ -463,7 +477,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -588,6 +602,7 @@ false
 {{- range .Values.bifrost.guardrails.rules }}
 {{- $rule := dict "id" .id "name" .name "enabled" .enabled "cel_expression" .cel_expression "apply_to" .apply_to }}
 {{- if .description }}{{- $_ := set $rule "description" .description }}{{- end }}
+{{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
@@ -855,17 +870,25 @@ false
 {{- if $client.headers }}
 {{- $_ := set $cc "headers" $client.headers }}
 {{- end }}
-{{- if $client.tools_to_execute }}
+{{- if hasKey $client "tools_to_execute" }}
 {{- $_ := set $cc "tools_to_execute" $client.tools_to_execute }}
+{{- else if hasKey $client "toolsToExecute" }}
+{{- $_ := set $cc "tools_to_execute" $client.toolsToExecute }}
 {{- end }}
-{{- if $client.tools_to_auto_execute }}
+{{- if hasKey $client "tools_to_auto_execute" }}
 {{- $_ := set $cc "tools_to_auto_execute" $client.tools_to_auto_execute }}
+{{- else if hasKey $client "toolsToAutoExecute" }}
+{{- $_ := set $cc "tools_to_auto_execute" $client.toolsToAutoExecute }}
 {{- end }}
-{{- if $client.auth_type }}
+{{- if hasKey $client "auth_type" }}
 {{- $_ := set $cc "auth_type" $client.auth_type }}
+{{- else if hasKey $client "authType" }}
+{{- $_ := set $cc "auth_type" $client.authType }}
 {{- end }}
-{{- if $client.oauth_config_id }}
+{{- if hasKey $client "oauth_config_id" }}
 {{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
+{{- else if hasKey $client "oauthConfigId" }}
+{{- $_ := set $cc "oauth_config_id" $client.oauthConfigId }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
@@ -916,6 +939,33 @@ false
 {{- end }}
 {{- if .Values.bifrost.mcp.toolSyncInterval }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolGroups }}
+{{- $toolGroups := list }}
+{{- range .Values.bifrost.mcp.toolGroups }}
+{{- $group := dict "name" .name }}
+{{- if hasKey . "enabled" }}{{- $_ := set $group "enabled" .enabled }}{{- end }}
+{{- if .description }}{{- $_ := set $group "description" .description }}{{- end }}
+{{- if .tools }}
+{{- $tools := list }}
+{{- range .tools }}
+{{- $tool := dict }}
+{{- if .mcpClientId }}{{- $_ := set $tool "mcp_client_id" .mcpClientId }}{{- end }}
+{{- if .mcpClientName }}{{- $_ := set $tool "mcp_client_name" .mcpClientName }}{{- end }}
+{{- if .toolNames }}{{- $_ := set $tool "tool_names" .toolNames }}{{- end }}
+{{- $tools = append $tools $tool }}
+{{- end }}
+{{- $_ := set $group "tools" $tools }}
+{{- end }}
+{{- if .virtualKeyIds }}{{- $_ := set $group "virtual_key_ids" .virtualKeyIds }}{{- end }}
+{{- if .teamIds }}{{- $_ := set $group "team_ids" .teamIds }}{{- end }}
+{{- if .customerIds }}{{- $_ := set $group "customer_ids" .customerIds }}{{- end }}
+{{- if .userIds }}{{- $_ := set $group "user_ids" .userIds }}{{- end }}
+{{- if .providerNames }}{{- $_ := set $group "provider_names" .providerNames }}{{- end }}
+{{- if .apiKeyIds }}{{- $_ := set $group "api_key_ids" .apiKeyIds }}{{- end }}
+{{- $toolGroups = append $toolGroups $group }}
+{{- end }}
+{{- $_ := set $mcpConfig "tool_groups" $toolGroups }}
 {{- end }}
 {{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
@@ -1397,6 +1447,18 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- end }}
 
+{{/* Validate governance business units */}}
+{{- if .Values.bifrost.governance.businessUnits }}
+{{- range $idx, $bu := .Values.bifrost.governance.businessUnits }}
+{{- if not $bu.id }}
+{{- fail (printf "ERROR: bifrost.governance.businessUnits[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $bu.name }}
+{{- fail (printf "ERROR: bifrost.governance.businessUnits[%d].name is required for business unit '%s'." $idx $bu.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{/* Validate governance virtual keys */}}
 {{- if .Values.bifrost.governance.virtualKeys }}
 {{- range $idx, $vk := .Values.bifrost.governance.virtualKeys }}
@@ -1481,6 +1543,16 @@ Call this template at the beginning of deployment/stateful templates
 {{- if not $client.httpConfig.url }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].httpConfig.url is required for client '%s'." $idx $client.name) }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolGroups }}
+{{- range $idx, $group := .Values.bifrost.mcp.toolGroups }}
+{{- if not $group.name }}
+{{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].name is required." $idx) }}
+{{- end }}
+{{- if not $group.tools }}
+{{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].tools is required for group '%s'." $idx $group.name) }}
 {{- end }}
 {{- end }}
 {{- end }}

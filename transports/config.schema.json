@@ -469,6 +469,10 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
+              "business_unit_id": {
+                "type": "string",
+                "description": "Associated business unit ID"
+              },
               "profile": {
                 "type": "object",
                 "description": "Team profile data"
@@ -486,6 +490,52 @@
                 "description": "Computed count of virtual keys associated with this team",
                 "minimum": 0,
                 "readOnly": true
+              }
+            },
+            "required": ["id", "name"],
+            "additionalProperties": false
+          }
+        },
+        "business_units": {
+          "type": "array",
+          "description": "Business unit configurations with optional team assignments",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Business unit ID"
+              },
+              "name": {
+                "type": "string",
+                "description": "Business unit name"
+              },
+              "budget_id": {
+                "type": "string",
+                "description": "Associated budget ID"
+              },
+              "rate_limit_id": {
+                "type": "string",
+                "description": "Associated rate limit ID"
+              },
+              "profile": {
+                "type": "object",
+                "description": "Business unit profile data"
+              },
+              "config": {
+                "type": "object",
+                "description": "Business unit configuration data"
+              },
+              "claims": {
+                "type": "object",
+                "description": "Business unit claims data"
+              },
+              "team_ids": {
+                "type": "array",
+                "description": "Team IDs to assign to this business unit",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": ["id", "name"],
@@ -688,6 +738,13 @@
               "type": "integer"
             }
           ]
+        },
+        "tool_groups": {
+          "type": "array",
+          "description": "Enterprise MCP tool groups with optional governance associations",
+          "items": {
+            "$ref": "#/$defs/mcp_tool_group_config"
+          }
         }
       },
       "additionalProperties": false
@@ -2801,6 +2858,100 @@
         }
       }
     },
+    "mcp_tool_group_config": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Tool group name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Tool group description"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether tool group is enabled",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "description": "MCP tools included in this group",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcp_client_id": {
+                "type": "string",
+                "description": "MCP client ID"
+              },
+              "mcp_client_name": {
+                "type": "string",
+                "description": "MCP client name (resolved to client_id at startup)"
+              },
+              "tool_names": {
+                "type": "array",
+                "description": "Tool names to allow. Empty means all tools from this MCP client.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "mcp_client_id"
+                ]
+              },
+              {
+                "required": [
+                  "mcp_client_name"
+                ]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtual_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "team_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "customer_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "user_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provider_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "api_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
+    },
     "weaviate_config": {
       "type": "object",
       "description": "Weaviate configuration for vector store",
@@ -3371,6 +3522,32 @@
               "cel_expression": {
                 "type": "string",
                 "description": "CEL (Common Expression Language) expression for rule evaluation"
+              },
+              "query": {
+                "description": "Visual rule builder state for the management UI (react-querybuilder). Omitted unless exported from the dashboard. Not evaluated at runtime (cel_expression is).",
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "required": ["combinator", "rules"],
+                    "properties": {
+                      "combinator": {
+                        "type": "string",
+                        "enum": ["and", "or"]
+                      },
+                      "rules": {
+                        "type": "array",
+                        "items": {
+                          "type": "object"
+                        },
+                        "description": "Leaf rules and/or nested combinator+rules groups from the query builder."
+                      }
+                    },
+                    "additionalProperties": true
+                  }
+                ]
               },
               "apply_to": {
                 "type": "string",

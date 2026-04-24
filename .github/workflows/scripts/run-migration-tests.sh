@@ -140,7 +140,7 @@ get_previous_versions() {
   local stable
   stable=$(git tag -l "transports/v*" | grep -v -- "-" | sort -V | tail -n "$count" | sed 's|transports/||')
   # Explicitly include prerelease versions that need migration coverage
-  local prereleases="v1.5.0-prerelease1"
+  local prereleases="v1.5.0-prerelease1"$'\n'"v1.5.0-prerelease5"
   echo "$stable"$'\n'"$prereleases" | grep -v '^$' | sort -V | uniq
 }
 
@@ -3576,7 +3576,15 @@ compare_postgres_snapshots() {
       # team_id: only ignore on governance_budgets (backfilled from governance_teams.budget_id in prerelease4 migration)
       local table_ignore_columns="$ignore_columns"
       if [ "$table" = "governance_budgets" ]; then
-        table_ignore_columns="$table_ignore_columns virtual_key_id provider_config_id team_id"
+        # virtual_key_id, provider_config_id, team_id: new FK columns added by multi-budget migration
+        # current_usage: DumpBudgets runs on every startup and writes the float64 value back,
+        #   changing the DECIMAL column representation (e.g. 100.00 → 100) without changing the value
+        table_ignore_columns="$table_ignore_columns virtual_key_id provider_config_id team_id current_usage"
+      fi
+      # tool_sync_interval: migrationConvertMCPClientToolSyncIntervalMinutesToSeconds converts
+      # legacy minute values to seconds (e.g. 5 → 300), so this column intentionally changes.
+      if [ "$table" = "config_mcp_clients" ]; then
+        table_ignore_columns="$table_ignore_columns tool_sync_interval"
       fi
       if [[ " $table_ignore_columns " == *" $col "* ]]; then
         col_idx=$((col_idx + 1))
