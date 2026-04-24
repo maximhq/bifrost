@@ -2,7 +2,11 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -302,14 +306,44 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 
+	// Determine the per-read idle deadline from provider config (or fallback constant).
+	idleTimeout := h.upstreamWSIdleTimeout(req.Provider)
+
 	// Read response events from upstream and relay to client, running post-hooks per chunk
 	forwardedAny := false
 	for {
+		// Set a per-read deadline so that a silent upstream stall (e.g. rate-limit
+		// hold, service degradation) does not block this goroutine indefinitely.
+		// The deadline is cleared after each successful read so that a long-running
+		// stream that sends a frame every <idleTimeout is never interrupted.
+		if setErr := upstream.SetReadDeadline(time.Now().Add(idleTimeout)); setErr != nil {
+			logger.Warn("upstream WS SetReadDeadline failed for %s: %v", req.Provider, setErr)
+		}
+
 		msgType, data, readErr := upstream.ReadMessage()
+
+		// Clear the deadline immediately after a successful read so subsequent
+		// reads start their own fresh idle window.
+		if readErr == nil {
+			_ = upstream.SetReadDeadline(time.Time{})
+		}
+
 		if readErr != nil {
-			logger.Warn("upstream WS read failed for %s: %v, falling back to HTTP bridge", req.Provider, readErr)
 			h.pool.Discard(upstream)
 			session.SetUpstream(nil)
+
+			// Detect idle timeout: the upstream accepted the connection but sent no
+			// frame within idleTimeout. Return a 504 to the client rather than
+			// silently blocking.
+			var netErr net.Error
+			if errors.As(readErr, &netErr) && netErr.Timeout() {
+				timeoutMsg := fmt.Sprintf("upstream websocket idle timeout after %.0fs", idleTimeout.Seconds())
+				logger.Warn("upstream WS idle timeout for %s (no frame in %.0fs)", req.Provider, idleTimeout.Seconds())
+				writeWSError(session, 504, "upstream_timeout", timeoutMsg)
+				return true
+			}
+
+			logger.Warn("upstream WS read failed for %s: %v, falling back to HTTP bridge", req.Provider, readErr)
 			if !forwardedAny {
 				return false
 			}
@@ -352,6 +386,39 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			return true
 		}
 	}
+}
+
+// wsUpstreamIdleTimeout is the default idle timeout applied to each
+// upstream.ReadMessage() call inside tryNativeWSUpstream. If no data frame
+// arrives from the upstream within this window the read is cancelled, the
+// connection is discarded, and a 504 error is returned to the client.
+//
+// "Idle" means time since the last frame received, not total request time.
+// After each successful read the deadline is cleared so a stream that sends a
+// frame every 30 s never trips the 60 s idle limit.
+//
+// The value is sourced from NetworkConfig.StreamIdleTimeoutInSeconds when the
+// provider config is available. This constant is the fallback when no per-
+// provider override is configured (matches DefaultStreamIdleTimeoutInSeconds).
+const wsUpstreamIdleTimeout = 60 * time.Second
+
+// upstreamWSIdleTimeout returns the idle timeout to use for upstream WS reads
+// for the given provider. It sources the value from the provider's
+// NetworkConfig.StreamIdleTimeoutInSeconds when available, falling back to
+// wsUpstreamIdleTimeout (60 s) otherwise.
+func (h *WSResponsesHandler) upstreamWSIdleTimeout(provider schemas.ModelProvider) time.Duration {
+	if h.config == nil {
+		return wsUpstreamIdleTimeout
+	}
+	cfg, err := h.config.GetProviderConfigRaw(provider)
+	if err != nil || cfg == nil {
+		return wsUpstreamIdleTimeout
+	}
+	nc := cfg.NetworkConfig
+	if nc == nil || nc.StreamIdleTimeoutInSeconds <= 0 {
+		return wsUpstreamIdleTimeout
+	}
+	return time.Duration(nc.StreamIdleTimeoutInSeconds) * time.Second
 }
 
 // writeWSShortCircuitResponse writes a short-circuited plugin response as WS events.
