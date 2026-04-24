@@ -4,19 +4,43 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.6
+**Latest Version:** 2.1.7
 
 ## Changelog
 
+### 2.1.7
+
+- Added semantic cache Helm layers and examples:
+  - Added Redis deployment template for semantic cache.
+  - Extended Helm values/schema coverage for semantic cache and client-config examples.
+- Added enterprise/governance Helm support:
+  - Added governance `business_units` support in Helm schema/template rendering.
+  - Added deferred virtual-key/provider-config budget ordering handling in Helm rendering.
+- Added MCP tool-groups support in Helm:
+  - Added `mcp.tool_groups` config support with governance bindings.
+  - Added camelCase alias compatibility for related Helm config fields.
+
 ### 2.1.6
 
+- Includes unreleased `2.1.5` changes 
+- Built-in plugin versioning for DB-backed deployments:
+  - Added `version` field support for built-in plugins.
+  - Added default `version: 1` for built-in plugins in `values.yaml` (`telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`).
+  - Updated `_helpers.tpl` to include plugin `version` in rendered config when set (cast as integer).
 - Updated StatefulSet PVC template labels to be immutable-safe:
   - `spec.volumeClaimTemplates.metadata.labels` now uses stable selector labels (without chart/app version labels).
-- CI / rendered `config.json` checks (`validate-helm-config-fields.sh`):
-  - No longer expect `governance.virtual_keys[].budget_id` in rendered config (not in `config.schema.json`; `governance.budgets[].virtual_key_id` is the supported way to attach a budget to a virtual key).
-  - Fixture and assertions were updated to include a sample `governance.budgets` entry with `virtual_key_id` for coverage.
-  - Tightened `query` validation in `values.schema.json` and `config.schema.json`: `query` now accepts only `null` or an object with `{ combinator, rules }`; invalid user-provided query shapes may now fail Helm/config validation and should be migrated to the new structure.
-- Note: Bifrost HTTP also syncs `governance.model_configs` and `governance.providers` from file into the config store when using DB-backed config, with hash-based reconciliation.
+- Governance schema and validation updates:
+  - Added `governance.budgets[].virtual_key_id` support.
+  - Removed stale `budget_id` references from virtual keys and provider configs in templates/tests.
+  - `validate-helm-config-fields.sh` assertions were updated accordingly.
+- Query/schema compatibility updates:
+  - Tightened `query` validation in `values.schema.json` and `config.schema.json` to valid RuleGroupType shape (`null` or `{ combinator, rules }`).
+- Config/input alias support updates:
+  - Added support for `env.*` references in proxy/TLS fields (`ca_cert_pem`, `url`, `username`, `password`).
+  - Added `provider_key_name` alias for routing targets and pricing overrides (resolved to `key_id` at config load time).
+- MCP config improvements:
+  - Added Go duration string support for `mcp.toolSyncInterval` (legacy numeric nanoseconds still supported).
+  - Added hash-based MCP client config reconciliation for DB-backed config store updates.
 - Upgrade impact:
   - Existing SQLite StatefulSets created from older chart templates may require a one-time StatefulSet recreation during upgrade because `spec.volumeClaimTemplates` is immutable in Kubernetes.
 - Migration notes (only if upgrade fails with StatefulSet immutable-field error):
@@ -30,15 +54,9 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
      - `kubectl get pvc -n <namespace>`
      - `kubectl get pods -n <namespace>`
 
-### 2.1.5
+### 2.1.5 (not released separately)
 
-- Added `version` field support for built-in plugins in DB-backed Helm deployments.
-- Added default `version: 1` for built-in plugins in `values.yaml`:
-  - `telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`
-- Updated `_helpers.tpl` to include plugin `version` in rendered config when set, cast as integer.
-- Updated Helm/deployment docs:
-  - Removed hardcoded chart version text and linked to Artifact Hub.
-  - Added plugin `version` examples and guidance that incrementing `version` forces DB-backed plugin config overwrite on upgrade.
+- Merged into `2.1.6` release notes above.
 
 ### 2.1.4
 
