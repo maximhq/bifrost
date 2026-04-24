@@ -1,7 +1,9 @@
 package websocket
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -63,6 +65,19 @@ func (p *Pool) Get(key PoolKey, headers map[string]string) (*UpstreamConn, error
 		p.mu.Unlock()
 
 		if conn.IsClosed() || p.isExpired(conn) {
+			conn.Close()
+			p.mu.Lock()
+			conns = p.idle[key]
+			continue
+		}
+
+		// Liveness probe: attempt a non-blocking read with a 1ms deadline.
+		// An idle connection should produce no frames while sitting in the pool.
+		// If the upstream already sent a close frame, ReadMessage returns
+		// immediately with a close/EOF error, revealing the stale state before
+		// the caller uses the connection.  A timeout error means the connection
+		// is alive and has nothing queued.
+		if !p.isLive(conn) {
 			conn.Close()
 			p.mu.Lock()
 			conns = p.idle[key]
@@ -197,6 +212,34 @@ func (p *Pool) evictLoop() {
 			p.evictExpired()
 		}
 	}
+}
+
+// isLive performs a network-level liveness probe on conn.
+// It sets a 1ms read deadline and attempts a ReadMessage.  A net.Error with
+// Timeout() == true means the connection is alive with nothing queued, which
+// is the expected state for an idle pooled connection.  Any other outcome
+// (close frame, EOF, protocol error) means the connection is stale.
+// The read deadline is always reset to zero before the function returns so
+// that a live connection can be used without deadline constraints.
+func (p *Pool) isLive(conn *UpstreamConn) bool {
+	if err := conn.SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
+		return false
+	}
+	_, _, err := conn.ReadMessage()
+	// Always clear the deadline regardless of outcome.
+	_ = conn.SetReadDeadline(time.Time{})
+	if err == nil {
+		// Received a frame while idle — unexpected; treat as stale because
+		// we cannot safely discard the frame content here.
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		// Deadline fired with no data: connection is alive.
+		return true
+	}
+	// Close frame, EOF, or other error: connection is stale.
+	return false
 }
 
 func (p *Pool) evictExpired() {
