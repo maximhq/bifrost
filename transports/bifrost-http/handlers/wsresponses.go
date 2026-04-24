@@ -471,17 +471,15 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		// forwarded from Codex are present.  Provider OAuth headers (Authorization,
 		// chatgpt-account-id, OpenAI-Beta) retain highest priority because they
 		// come from the provider and are merged last inside WebSocketHeaders.
-		//
-		// mergeClientWSHeaders applies the same forward-all-except-blocklist used
-		// in captureAuthHeaders: only non-blocked client headers are merged, so
-		// the provider's OAuth token can never be overwritten by the client.
 		baseHeaders := wsProvider.WebSocketHeaders(key)
 		// Inject Codex identity defaults (originator, version) only on the ChatGPT OAuth
 		// path — those are chatgpt.com-specific anti-abuse markers that must not be sent
 		// to the standard api.openai.com endpoint.
+		// x-bf-eh-* header forwarding is handled by mergeWSExtraHeaders (extracted to
+		// PR #3014 against main); client-upgrade header forwarding has been removed here.
 		openaiProvider, _ := provider.(*openai.OpenAIProvider)
 		injectCodexDefaults := openaiProvider != nil && openaiProvider.ChatGPTOAuthEnabled()
-		headers := mergeClientWSHeaders(baseHeaders, auth.clientHeaders, injectCodexDefaults)
+		headers := mergeClientWSHeaders(baseHeaders, nil, injectCodexDefaults)
 		poolKey := bfws.PoolKey{
 			Provider: req.Provider,
 			KeyID:    key.ID,
