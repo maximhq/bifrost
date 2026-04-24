@@ -11,8 +11,8 @@ import { getErrorMessage } from "@/lib/store";
 import { useGetLogSessionSummaryByIdQuery, useLazyGetLogSessionByIdQuery } from "@/lib/store/apis/logsApi";
 import { LogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { format } from "date-fns";
+import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { LogMessageCell } from "../views/columns";
@@ -287,7 +287,7 @@ export function SessionDetailsSheet({
 											</Badge>
 										</TableCell>
 										<TableCell className="max-w-[360px]">
-											<LogMessageCell log={log} maxWidth="max-w-[360px]" />
+											<LogMessageCell log={log} contentClassName="max-w-[360px]" />
 										</TableCell>
 										<TableCell>
 											<Badge variant="secondary" className="font-mono text-xs uppercase">

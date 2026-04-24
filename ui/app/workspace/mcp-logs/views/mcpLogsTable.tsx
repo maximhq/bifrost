@@ -201,7 +201,7 @@ export function MCPLogsDataTable({
 										})}
 									</TableRow>
 								))
-							) : (
+							) : loading ? null : (
 								<TableRow>
 									<TableCell colSpan={columns.length} className="h-24 text-center">
 										No results found. Try adjusting your filters and/or time range.
