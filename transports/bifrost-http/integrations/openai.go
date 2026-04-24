@@ -1314,25 +1314,8 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
-			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-				if isAzureSDKRequest(ctx) {
-					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
-				}
-				return nil
-			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
-					// /openai/v1/models is OpenAI-scoped — default Provider to OpenAI (or Azure
-					// for Azure SDK callers) so the request doesn't fan out to every configured
-					// provider. Without this, ListAllModels would also query Anthropic etc.,
-					// causing 401s from providers the caller wasn't targeting.
-					if listModelsReq.Provider == "" {
-						if isAzure, ok := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); ok && isAzure {
-							listModelsReq.Provider = schemas.Azure
-						} else {
-							listModelsReq.Provider = schemas.OpenAI
-						}
-					}
 					return &schemas.BifrostRequest{
 						ListModelsRequest: listModelsReq,
 					}, nil
