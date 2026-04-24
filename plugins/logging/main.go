@@ -441,6 +441,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	createdTimestamp := time.Now().UTC()
 
+	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
+
 	// If request type is streaming we create a stream accumulator via the tracer
 	// Skip for passthrough streams — they carry raw bytes, not LLM response chunks
 	if bifrost.IsStreamRequestType(req.RequestType) && req.RequestType != schemas.PassthroughStreamRequest {
@@ -703,6 +705,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
+	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", requestID, requestType, isFinalChunk, bifrostErr != nil)
+
 	// Retrieve pending input data from PreLLMHook
 	var pendingVal any
 	var hasPending bool
@@ -711,6 +715,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	} else {
 		pendingVal, hasPending = p.pendingLogsEntries.Load(requestID)
 	}
+
+	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
+
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
 		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
@@ -750,6 +757,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Fallback to request type from pending data if request type is not set
 	if requestType == "" {
 		requestType = schemas.RequestType(pending.InitialData.Object)
+		p.logger.Warn("PostLLMHook: request type missing from response extra fields for request %s, falling back to pre-hook value %q", requestID, requestType)
 	}
 
 	var tracer schemas.Tracer
