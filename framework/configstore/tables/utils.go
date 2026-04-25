@@ -2,6 +2,7 @@ package tables
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -11,6 +12,11 @@ import (
 func IsCalendarAlignableDuration(duration string) bool {
 	if duration == "" {
 		return false
+	}
+	// Check human-readable aliases
+	switch strings.ToLower(duration) {
+	case "daily", "weekly", "monthly", "yearly":
+		return true
 	}
 	switch duration[len(duration)-1] {
 	case 'd', 'w', 'M', 'Y':
@@ -57,6 +63,18 @@ func GetCalendarPeriodStart(duration string, t time.Time) time.Time {
 func ParseDuration(duration string) (time.Duration, error) {
 	if duration == "" {
 		return 0, fmt.Errorf("duration is empty")
+	}
+
+	// Normalize human-readable aliases to canonical format
+	switch strings.ToLower(duration) {
+	case "daily":
+		duration = "1d"
+	case "weekly":
+		duration = "1w"
+	case "monthly":
+		duration = "1M"
+	case "yearly":
+		duration = "1Y"
 	}
 
 	// Handle special cases for days, weeks, months, years

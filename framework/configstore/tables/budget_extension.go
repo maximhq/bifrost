@@ -77,7 +77,7 @@ func ValidateExtensionAmount(amount float64, budgetMaxLimit float64) error {
 	}
 	cap := budgetMaxLimit * MaxExtensionMultiplier
 	if amount > cap {
-		return fmt.Errorf("extension amount %.2f exceeds maximum allowed %.2f (%.0f%% of budget limit %.2f)",
+		return fmt.Errorf("extension amount %g exceeds maximum allowed %g (%.0f%% of budget limit %g)",
 			amount, cap, MaxExtensionMultiplier*100, budgetMaxLimit)
 	}
 	return nil

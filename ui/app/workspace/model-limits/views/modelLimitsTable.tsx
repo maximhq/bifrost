@@ -18,14 +18,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
-import { getErrorMessage, useDeleteModelConfigMutation } from "@/lib/store";
+import { getErrorMessage, useDeleteModelConfigMutation, useGetBudgetExtensionsQuery } from "@/lib/store";
 import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2, TrendingUp } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import ExtendBudgetDialog from "./extendBudgetDialog";
 import ModelLimitSheet from "./modelLimitSheet";
 import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
 
@@ -39,6 +40,37 @@ const toTestIdPart = (value: string) =>
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-|-$/g, "");
+
+function ActiveExtensionBadge({ budgetId }: { budgetId: string }) {
+	// Poll the extension list every 2s so a deleted/expired extension drops out within ~2s even
+	// if the component itself never re-mounts. Combined with the 1s `now` ticker below, the badge
+	// disappears within 1s of the local expiry and within ~2s of a server-side deletion.
+	const { data, isLoading } = useGetBudgetExtensionsQuery(
+		{ budgetId, status: "approved" },
+		{ pollingInterval: 2000, refetchOnMountOrArgChange: true, refetchOnFocus: true },
+	);
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		const id = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(id);
+	}, []);
+	if (isLoading) return null;
+	// Always derive the active extension from the latest API response AND current wall-clock —
+	// never trust cached data without re-checking expiry on every render.
+	const active = data?.budget_extensions.find((e) => e.status === "approved" && e.expires_at && new Date(e.expires_at).getTime() > now);
+	if (!active) return null;
+	const expiresAt = new Date(active.expires_at!);
+	const diffMs = expiresAt.getTime() - now;
+	if (diffMs <= 0) return null;
+	const diffH = Math.floor(diffMs / 3600000);
+	const diffM = Math.floor((diffMs % 3600000) / 60000);
+	const relativeTime = diffH > 0 ? `${diffH}h ${diffM}m` : `${diffM}m`;
+	return (
+		<span className="mt-1 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+			<TrendingUp className="h-3 w-3" />+{formatCurrency(active.amount)}, expires in {relativeTime}
+		</span>
+	);
+}
 
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
@@ -63,6 +95,7 @@ export default function ModelLimitsTable({
 }: ModelLimitsTableProps) {
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
 	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
+	const [extendBudgetModelConfigId, setExtendBudgetModelConfigId] = useState<string | null>(null);
 
 	// Derive editingModelConfig from props so it stays in sync with RTK cache updates
 	const editingModelConfig = useMemo(
@@ -101,6 +134,11 @@ export default function ModelLimitsTable({
 		setEditingModelConfigId(null);
 	};
 
+	const extendBudgetConfig = useMemo(
+		() => (extendBudgetModelConfigId ? (modelConfigs.find((mc) => mc.id === extendBudgetModelConfigId) ?? null) : null),
+		[extendBudgetModelConfigId, modelConfigs],
+	);
+
 	const hasActiveFilters = debouncedSearch;
 
 	// True empty state: no model limits at all (not just filtered to zero)
@@ -119,6 +157,16 @@ export default function ModelLimitsTable({
 		<>
 			{showModelLimitSheet && (
 				<ModelLimitSheet modelConfig={editingModelConfig} onSave={handleModelLimitSaved} onCancel={() => setShowModelLimitSheet(false)} />
+			)}
+			{extendBudgetConfig?.budget && (
+				<ExtendBudgetDialog
+					open={extendBudgetModelConfigId !== null}
+					onOpenChange={(open) => {
+						if (!open) setExtendBudgetModelConfigId(null);
+					}}
+					budgetId={extendBudgetConfig.budget.id}
+					modelName={extendBudgetConfig.model_name}
+				/>
 			)}
 
 			<div className="space-y-4">
@@ -221,41 +269,44 @@ export default function ModelLimitsTable({
 													<span className="text-muted-foreground text-sm">All Providers</span>
 												)}
 											</TableCell>
-											<TableCell className="min-w-[180px]">
+											<TableCell className="min-w-[200px]">
 												{config.budget ? (
-													<TooltipProvider>
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<div className="space-y-2">
-																	<div className="flex items-center justify-between gap-4">
-																		<span className="font-medium">{formatCurrency(config.budget.max_limit)}</span>
-																		<span className="text-muted-foreground text-xs">
-																			{formatResetDuration(config.budget.reset_duration)}
-																		</span>
+													<>
+														<TooltipProvider>
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<div className="space-y-2">
+																		<div className="flex items-center justify-between gap-4">
+																			<span className="font-medium">{formatCurrency(config.budget.max_limit)}</span>
+																			<span className="text-muted-foreground text-xs">
+																				{formatResetDuration(config.budget.reset_duration)}
+																			</span>
+																		</div>
+																		<Progress
+																			value={budgetPercentage}
+																			className={cn(
+																				"bg-muted/70 dark:bg-muted/30 h-1.5",
+																				isBudgetExhausted
+																					? "[&>div]:bg-red-500/70"
+																					: budgetPercentage > 80
+																						? "[&>div]:bg-amber-500/70"
+																						: "[&>div]:bg-emerald-500/70",
+																			)}
+																		/>
 																	</div>
-																	<Progress
-																		value={budgetPercentage}
-																		className={cn(
-																			"bg-muted/70 dark:bg-muted/30 h-1.5",
-																			isBudgetExhausted
-																				? "[&>div]:bg-red-500/70"
-																				: budgetPercentage > 80
-																					? "[&>div]:bg-amber-500/70"
-																					: "[&>div]:bg-emerald-500/70",
-																		)}
-																	/>
-																</div>
-															</TooltipTrigger>
-															<TooltipContent>
-																<p className="font-medium">
-																	{formatCurrency(config.budget.current_usage)} / {formatCurrency(config.budget.max_limit)}
-																</p>
-																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(config.budget.reset_duration)}
-																</p>
-															</TooltipContent>
-														</Tooltip>
-													</TooltipProvider>
+																</TooltipTrigger>
+																<TooltipContent>
+																	<p className="font-medium">
+																		{formatCurrency(config.budget.current_usage)} / {formatCurrency(config.budget.max_limit)}
+																	</p>
+																	<p className="text-primary-foreground/80 text-xs">
+																		Resets {formatResetDuration(config.budget.reset_duration)}
+																	</p>
+																</TooltipContent>
+															</Tooltip>
+														</TooltipProvider>
+														<ActiveExtensionBadge budgetId={config.budget.id} />
+													</>
 												) : (
 													<span className="text-muted-foreground text-sm">-</span>
 												)}
@@ -342,6 +393,20 @@ export default function ModelLimitsTable({
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+													<Button
+														variant="ghost"
+														size="icon"
+														className="h-8 w-8"
+														onClick={(e) => {
+															e.stopPropagation();
+															setExtendBudgetModelConfigId(config.id);
+														}}
+														disabled={!config.budget || !hasUpdateAccess}
+														aria-label={`Extend budget for ${config.model_name}`}
+														data-testid={`model-limit-button-extend-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+													>
+														<TrendingUp className="h-4 w-4" />
+													</Button>
 													<Button
 														variant="ghost"
 														size="icon"

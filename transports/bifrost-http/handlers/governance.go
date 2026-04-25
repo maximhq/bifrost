@@ -296,6 +296,7 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 	// Budget and Rate Limit GET operations
 	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
+	r.GET("/api/governance/budgets/{budget_id}", lib.ChainMiddlewares(h.getBudget, middlewares...))
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 
 	// Routing Rules CRUD operations
@@ -2182,6 +2183,23 @@ func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// getBudget handles GET /api/governance/budgets/{budget_id} - Get a single budget by ID
+func (h *GovernanceHandler) getBudget(ctx *fasthttp.RequestCtx) {
+	budgetID := ctx.UserValue("budget_id").(string)
+	budget, err := h.configStore.GetBudget(ctx, budgetID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "budget not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("failed to retrieve budget: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"budget": budget,
+	})
+}
+
 // getRateLimits handles GET /api/governance/rate-limits - Get all rate limits
 func (h *GovernanceHandler) getRateLimits(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
@@ -3978,6 +3996,22 @@ func (h *GovernanceHandler) createBudgetExtension(ctx *fasthttp.RequestCtx) {
 	if err := configstoreTables.ValidateExtensionAmount(req.Amount, budget.MaxLimit); err != nil {
 		SendError(ctx, 400, err.Error())
 		return
+	}
+
+	// Fail fast: reject creation if there is already an active (approved, non-expired) extension
+	// for this budget. The approve handler enforces this atomically under a row-lock, but failing
+	// here gives an earlier, clearer error and prevents unbounded pending accumulation.
+	existingExts, err := h.configStore.GetBudgetExtensions(ctx, req.BudgetID, string(configstoreTables.BudgetExtensionStatusApproved))
+	if err != nil {
+		SendError(ctx, 500, fmt.Sprintf("failed to check existing extensions: %v", err))
+		return
+	}
+	now := time.Now()
+	for _, e := range existingExts {
+		if e.ExpiresAt != nil && e.ExpiresAt.After(now) {
+			SendError(ctx, 409, "budget already has an active extension; wait for it to expire or delete it before creating another")
+			return
+		}
 	}
 
 	ext := &configstoreTables.TableBudgetExtension{
