@@ -153,7 +153,8 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	resp, bifrostErr := sessionProvider.CreateRealtimeClientSecret(bifrostCtx, key, route.EndpointType, normalizedBody)
+	tc := h.client.ResolveTimeoutConfigForProvider(bifrostCtx, providerKey, &key)
+	resp, bifrostErr := sessionProvider.CreateRealtimeClientSecret(bifrostCtx, key, route.EndpointType, normalizedBody, tc)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return

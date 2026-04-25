@@ -45,7 +45,7 @@ func (provider *ElevenlabsProvider) SupportsRealtimeWebRTC() bool {
 }
 
 // ExchangeRealtimeWebRTCSDP is not yet implemented for ElevenLabs.
-func (provider *ElevenlabsProvider) ExchangeRealtimeWebRTCSDP(_ *schemas.BifrostContext, _ schemas.Key, _ string, _ string, _ json.RawMessage) (string, *schemas.BifrostError) {
+func (provider *ElevenlabsProvider) ExchangeRealtimeWebRTCSDP(_ *schemas.BifrostContext, _ schemas.Key, _ string, _ string, _ json.RawMessage, _ schemas.TimeoutConfig) (string, *schemas.BifrostError) {
 	return "", &schemas.BifrostError{
 		IsBifrostError: true,
 		StatusCode:     schemas.Ptr(400),

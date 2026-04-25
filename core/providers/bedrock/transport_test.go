@@ -182,7 +182,7 @@ func TestChatCompletionStream_StaleConnection_ChunkIsRetryable(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest(), schemas.TimeoutConfig{})
 
 	if bifrostErr != nil {
 		// Error surfaced synchronously (e.g. connection refused before HTTP 200).
@@ -247,7 +247,7 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest(), schemas.TimeoutConfig{})
 	if bifrostErr != nil {
 		assert.False(t, bifrostErr.IsBifrostError,
 			"pre-stream network error must be IsBifrostError:false")
@@ -331,7 +331,7 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			ctx := testBedrockCtx()
 			key := testBedrockKey()
 
-			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest(), schemas.TimeoutConfig{})
 			require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 			require.NotNil(t, streamChan)
@@ -378,7 +378,7 @@ func TestChatCompletionStream_NonRetryableException_IsTerminal(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest(), schemas.TimeoutConfig{})
 	require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 	require.NotNil(t, streamChan)
@@ -481,7 +481,7 @@ func TestTextCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			defer ts.Close()
 
 			provider := newTestProviderWithServer(t, ts)
-			streamChan, bifrostErr := provider.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testTextCompletionRequest())
+			streamChan, bifrostErr := provider.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testTextCompletionRequest(), schemas.TimeoutConfig{})
 			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
 		})
 	}
@@ -517,7 +517,7 @@ func TestResponsesStream_RetryableException_ChunkIsRetryable(t *testing.T) {
 			defer ts.Close()
 
 			provider := newTestProviderWithServer(t, ts)
-			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testResponsesRequest())
+			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testResponsesRequest(), schemas.TimeoutConfig{})
 			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
 		})
 	}

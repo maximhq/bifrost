@@ -221,6 +221,7 @@ func convertToInferenceProviderMappings(resp *HuggingFaceInferenceProviderMappin
 }
 
 func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx context.Context, huggingfaceModelName string) (map[inferenceProvider]HuggingFaceInferenceProviderMapping, *schemas.BifrostError) {
+	var tc providerUtils.TimeoutConfig
 	// Check cache first
 	if cached, ok := provider.modelProviderMappingCache.Load(huggingfaceModelName); ok {
 		if mappings, ok := cached.(map[inferenceProvider]HuggingFaceInferenceProviderMapping); ok {
@@ -237,7 +238,7 @@ func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx contex
 	req.SetRequestURI(provider.buildModelInferenceProviderURL(huggingfaceModelName))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -302,6 +303,7 @@ func (provider *HuggingFaceProvider) getValidatedProviderModelID(ctx context.Con
 
 // downloadAudioFromURL downloads audio data from a URL
 func (provider *HuggingFaceProvider) downloadAudioFromURL(ctx context.Context, audioURL string) ([]byte, error) {
+	var tc providerUtils.TimeoutConfig
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -310,7 +312,7 @@ func (provider *HuggingFaceProvider) downloadAudioFromURL(ctx context.Context, a
 	req.SetRequestURI(audioURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, fmt.Errorf("failed to download audio: %v", bifrostErr)

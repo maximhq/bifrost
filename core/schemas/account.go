@@ -139,6 +139,12 @@ type Key struct {
 	ConfigHash         string              `json:"config_hash,omitempty"`          // Hash of config.json version, used for change detection
 	Status             KeyStatusType       `json:"status,omitempty"`               // Status of key
 	Description        string              `json:"description,omitempty"`          // Description of key
+
+	// Per-key timeout overrides. Take precedence over virtual-key and provider-level timeouts.
+	// Precedence: API key > virtual key > provider NetworkConfig defaults. Nil = inherit.
+	RequestTimeoutInSeconds    *int `json:"request_timeout_in_seconds,omitempty"`     // Unary request timeout in seconds
+	StreamIdleTimeoutInSeconds *int `json:"stream_idle_timeout_in_seconds,omitempty"` // Per-chunk idle timeout for streaming
+	StreamTotalTimeoutInSeconds *int `json:"stream_total_timeout_in_seconds,omitempty"` // Hard wall-clock cap for streaming
 }
 
 type KeyAliases map[string]string

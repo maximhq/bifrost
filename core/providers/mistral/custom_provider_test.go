@@ -96,7 +96,7 @@ func TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetad
 		return response, err
 	}
 
-	stream, bifrostErr := provider.ChatCompletionStream(ctx, postHookRunner, nil, schemas.Key{}, request)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, postHookRunner, nil, schemas.Key{}, request, schemas.TimeoutConfig{})
 	require.Nil(t, bifrostErr)
 
 	var firstResponse *schemas.BifrostChatResponse
@@ -152,7 +152,7 @@ func TestMistralProvider_CustomAliasEmbeddingReportsAliasMetadata(t *testing.T) 
 		},
 	}
 
-	response, bifrostErr := provider.Embedding(ctx, schemas.Key{}, request)
+	response, bifrostErr := provider.Embedding(ctx, schemas.Key{}, request, schemas.TimeoutConfig{})
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, response)
 

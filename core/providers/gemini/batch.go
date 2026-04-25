@@ -249,6 +249,7 @@ func extractBatchIDFromName(name string) string {
 // downloadBatchResultsFile downloads and parses a batch results file from Gemini.
 // Returns the parsed result items from the JSONL file and any parse errors encountered.
 func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, key schemas.Key, fileName string) ([]schemas.BatchResultItem, []schemas.BatchError, *schemas.BifrostError) {
+	var tc providerUtils.TimeoutConfig
 	// Create request to download the file
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -277,7 +278,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	}
 
 	// Make request
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, bifrostErr
