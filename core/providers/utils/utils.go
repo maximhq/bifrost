@@ -2787,7 +2787,8 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 			if slices.Contains(availableProviders, defaultProvider) {
 				return defaultProvider
 			}
-			return ""
+			// Return the first available provider
+			return availableProviders[0]
 		}
 		return defaultProvider
 	}

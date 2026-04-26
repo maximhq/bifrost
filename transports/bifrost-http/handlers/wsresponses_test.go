@@ -26,7 +26,7 @@ func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return nil
 }
 
-func (s testWSHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+func (s testWSHandlerStore) GetAvailableProviders(model string) []schemas.ModelProvider {
 	return nil
 }
 

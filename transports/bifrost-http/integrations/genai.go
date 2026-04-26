@@ -35,6 +35,33 @@ type GenAIRouter struct {
 	*GenericRouter
 }
 
+// genAIModelGetter extracts the model name for GenAI routes.
+// For request types populated by extractAndSetModelAndRequestType (the PreCallback),
+// the model is already clean on the struct. For BifrostVideoRetrieveRequest (which has
+// no model field), the provider-scoped model is extracted from the operation_id suffix
+// (format: "op123:openai/gpt-4o") since the route pins the provider via operation_id.
+func genAIModelGetter(ctx *fasthttp.RequestCtx, req interface{}) (string, error) {
+	switch r := req.(type) {
+	case *gemini.GeminiGenerationRequest:
+		return r.Model, nil
+	case *gemini.GeminiEmbeddingRequest:
+		return r.Model, nil
+	case *gemini.GeminiVideoGenerationRequest:
+		return r.Model, nil
+	case *gemini.GeminiBatchCreateRequest:
+		return r.Model, nil
+	case *schemas.BifrostVideoRetrieveRequest:
+		// operation_id encodes the full model string: "op123:gpt-4o" or "op123:openai/gpt-4o".
+		operationID, _ := ctx.UserValue("operation_id").(string)
+		parts := strings.Split(operationID, ":")
+		if len(parts) >= 2 && parts[len(parts)-1] != "" {
+			return parts[len(parts)-1], nil
+		}
+		return "", nil
+	}
+	return "", nil
+}
+
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
@@ -51,6 +78,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostVideoRetrieveRequest{}
 		},
+		GetRequestModel: genAIModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if videoRetrieveReq, ok := req.(*schemas.BifrostVideoRetrieveRequest); ok {
 				return &schemas.BifrostRequest{
@@ -89,6 +117,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return &gemini.GeminiGenerationRequest{}
 		},
+		GetRequestModel: genAIModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 				if geminiReq.IsCountTokens {
@@ -790,6 +819,12 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &vertex.VertexRankRequest{}
 		},
+		GetRequestModel: func(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
+			if r, ok := req.(*vertex.VertexRankRequest); ok && r.Model != nil {
+				return *r.Model, nil
+			}
+			return "", nil
+		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if vertexReq, ok := req.(*vertex.VertexRankRequest); ok {
 				return &schemas.BifrostRequest{
@@ -1282,31 +1317,38 @@ func extractGeminiVideoOperationFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *s
 		return errors.New("operation_id must be a non-empty string")
 	}
 
-	// check provider from operation id suffix, id:provider, could be any provider
+	// operation_id encodes the raw model string as a suffix: "id:rawModel"
+	// rawModel is either "gpt-4o" (provider name or bare model) or "openai/gpt-4o" (provider/model).
 	parts := strings.Split(operationIDStr, ":")
 	if len(parts) < 2 || parts[len(parts)-1] == "" {
-		return errors.New("provider is required in operation_id format 'id:provider'")
+		return errors.New("raw model is required in operation_id format 'id:rawModel' or 'id:provider/model'")
 	}
-	provider := parts[len(parts)-1]
+	rawModel := parts[len(parts)-1]
+
+	// Parse provider from rawModel: "openai/gpt-4o" → provider="openai"; "gemini" → provider="gemini".
+	var provider schemas.ModelProvider
+	rawModelParts := strings.SplitN(rawModel, "/", 2)
+	if len(rawModelParts) == 2 {
+		provider = schemas.ModelProvider(rawModelParts[0])
+	} else {
+		provider = schemas.ModelProvider(rawModel)
+	}
 
 	modelStr, ok := model.(string)
 	if !ok || modelStr == "" {
-		modelStr = provider
+		modelStr = rawModel
 	}
-
-	// if its gemini, set r.ID in format models/model/operations/operation_id:provider
-	// else set r.ID in format operation_id:provider
 
 	switch r := req.(type) {
 	case *schemas.BifrostVideoRetrieveRequest:
-		r.Provider = schemas.ModelProvider(provider)
+		r.Provider = provider
 
 		if r.Provider == schemas.OpenAI || r.Provider == schemas.Azure {
 			// set a context flag to have video download request after video retrieve request when incoming request is coming from genai integration
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVideoOutputRequested, true)
 		}
 		// Gemini provider expects an operation resource path (without /v1beta prefix).
-		if provider == string(schemas.Gemini) {
+		if provider == schemas.Gemini {
 			r.ID = "models/" + modelStr + "/operations/" + operationIDStr
 		} else {
 			r.ID = operationIDStr
