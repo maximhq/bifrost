@@ -382,7 +382,11 @@ func (f *FallbacksInput) UnmarshalJSON(data []byte) error {
 	// Try the legacy ["provider/model"] string form first.
 	var fallbackStrings []string
 	if err := sonic.Unmarshal(data, &fallbackStrings); err == nil {
-		parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode)
+		// Note: logger is not available inside UnmarshalJSON — dropped entries
+		// are logged upstream via fallbackStringsToInput / parseMultipartFallbacks
+		// where a logger is in scope. JSON-body callers get the same visibility
+		// via the handler-level logger passed in those paths.
+		parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode, logger)
 		if err != nil {
 			return err
 		}
@@ -393,7 +397,7 @@ func (f *FallbacksInput) UnmarshalJSON(data []byte) error {
 	// Fall back to the typed object form, including optional per-entry params.
 	var fallbackObjects []schemas.Fallback
 	if err := sonic.Unmarshal(data, &fallbackObjects); err == nil {
-		parsed, err := schemas.NormalizeFallbacks(fallbackObjects, fallbackValidationMode)
+		parsed, err := schemas.NormalizeFallbacks(fallbackObjects, fallbackValidationMode, logger)
 		if err != nil {
 			return err
 		}
@@ -662,7 +666,7 @@ func effectiveStream(bodyStream *bool) bool {
 }
 
 func fallbackStringsToInput(fallbackStrings []string) (FallbacksInput, error) {
-	parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode)
+	parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode, logger)
 	if err != nil {
 		return nil, err
 	}

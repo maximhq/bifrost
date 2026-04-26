@@ -470,15 +470,28 @@ func NormalizeAndValidateFallback(fallback Fallback, index int) (Fallback, bool,
 }
 
 // NormalizeFallbacks normalises a batch of fallback entries using the supplied
-// validation mode. In lenient mode, malformed entries are silently dropped and
-// the function never returns an error (matching legacy behaviour). In strict
+// validation mode. In lenient mode, malformed entries are logged (when a logger
+// is provided) and dropped from the result, matching legacy behaviour. In strict
 // mode, the first malformed entry causes the whole batch to be rejected.
 //
 // An empty input slice is always a no-op and returns (nil, nil), regardless of
 // mode, so callers don't have to special-case empty fallbacks arrays.
-func NormalizeFallbacks(input []Fallback, mode FallbackValidationMode) ([]Fallback, error) {
+//
+// Duplicate entries are preserved as-is. Deduplication is the caller's
+// responsibility; keeping duplicates here avoids second-guessing intent
+// (e.g. a weighted-round-robin caller might legitimately repeat a provider).
+//
+// The optional logger is used to emit a Warn-level message for each dropped
+// entry in lenient mode, giving operators visibility into misconfigured
+// fallbacks without requiring strict mode. Pass nil (or omit) to suppress logs.
+func NormalizeFallbacks(input []Fallback, mode FallbackValidationMode, loggers ...Logger) ([]Fallback, error) {
 	if len(input) == 0 {
 		return nil, nil
+	}
+
+	var l Logger
+	if len(loggers) > 0 {
+		l = loggers[0]
 	}
 
 	out := make([]Fallback, 0, len(input))
@@ -488,7 +501,10 @@ func NormalizeFallbacks(input []Fallback, mode FallbackValidationMode) ([]Fallba
 			if mode == FallbackValidationStrict {
 				return nil, err
 			}
-			// Lenient mode: skip the malformed entry and continue.
+			// Lenient mode: log and skip the malformed entry.
+			if l != nil {
+				l.Warn("dropping invalid fallback entry: %v", err)
+			}
 			continue
 		}
 		out = append(out, normalized)
@@ -498,11 +514,19 @@ func NormalizeFallbacks(input []Fallback, mode FallbackValidationMode) ([]Fallba
 
 // FallbackStringsToFallbacks converts the legacy "provider/model" string form
 // into normalised Fallback entries using the supplied validation mode. The
-// rules mirror NormalizeFallbacks above: lenient mode silently drops malformed
-// strings; strict mode rejects the whole batch on the first failure.
-func FallbackStringsToFallbacks(input []string, mode FallbackValidationMode) ([]Fallback, error) {
+// rules mirror NormalizeFallbacks above: lenient mode logs (when a logger is
+// provided) and drops malformed strings; strict mode rejects the whole batch
+// on the first failure.
+//
+// The optional logger parameter follows the same semantics as NormalizeFallbacks.
+func FallbackStringsToFallbacks(input []string, mode FallbackValidationMode, loggers ...Logger) ([]Fallback, error) {
 	if len(input) == 0 {
 		return nil, nil
+	}
+
+	var l Logger
+	if len(loggers) > 0 {
+		l = loggers[0]
 	}
 
 	out := make([]Fallback, 0, len(input))
@@ -512,7 +536,10 @@ func FallbackStringsToFallbacks(input []string, mode FallbackValidationMode) ([]
 			if mode == FallbackValidationStrict {
 				return nil, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, i)
 			}
-			// Lenient mode: skip the malformed entry and continue.
+			// Lenient mode: log and skip the malformed entry.
+			if l != nil {
+				l.Warn("dropping invalid fallback string at index %d: %q", i, raw)
+			}
 			continue
 		}
 		out = append(out, Fallback{Provider: provider, Model: model})

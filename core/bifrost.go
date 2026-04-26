@@ -4447,14 +4447,15 @@ type fallbackParamsTypeConstraint interface {
 //
 // Caveats / future work
 //
-//   - Fallback params share the same namespace as the request's ExtraParams,
-//     so a stray base key with the same name as a provider-specific control
-//     will be silently shadowed when the fallback fires. This is acceptable
-//     because callers opt-in to the override by setting `fallback.params`,
-//     but anyone debugging a missing param should look here first. The
-//     overlap is deliberately surfaced via debug logging in the caller
-//     (prepareFallbackRequest) so it shows up in traces without spamming
-//     production logs.
+//   - WARNING: Fallback params share the same namespace as the request's
+//     ExtraParams. Any key present in both maps will be silently overridden
+//     by the fallback value. Callers who set `fallback.params` are explicitly
+//     opting into this behaviour, but the override is invisible at the JSON
+//     layer. To avoid surprises: (a) do not reuse ExtraParams keys across base
+//     and fallback params unless you intend an override; and (b) enable debug
+//     logging to see per-key collisions at runtime (see logFallbackParamOverrides).
+//     Future work could isolate fallback params into a separate namespace to
+//     eliminate this risk entirely.
 //
 // Deterministic ordering is required because downstream prompt-caching behavior
 // can be sensitive to serialized JSON key order. Base keys are copied in sorted
@@ -4589,22 +4590,30 @@ func extraParamsFromRequest(req *schemas.BifrostRequest) map[string]interface{} 
 	return nil
 }
 
-// logFallbackParamOverrides emits a debug log line for every fallback param
-// key that shadows a base request ExtraParams key. Centralised here so the
-// per-request-type type switch in prepareFallbackRequest stays focused on
-// cloning and the merge math stays in mergeFallbackParams.
+// logFallbackParamOverrides emits debug log lines for every fallback param key
+// that either shadows a base request ExtraParams key (override) or introduces a
+// brand-new key that the base request didn't carry (addition). Both cases are
+// surfaced so operators can see the full set of mutations that occur when a
+// fallback fires, without needing to diff requests manually.
+//
+// Centralised here so the per-request-type type switch in prepareFallbackRequest
+// stays focused on cloning and the merge math stays in mergeFallbackParams.
 func (bifrost *Bifrost) logFallbackParamOverrides(req *schemas.BifrostRequest, fallback schemas.Fallback) {
 	base := extraParamsFromRequest(req)
-	if len(base) == 0 {
-		return
-	}
 	for key := range fallback.Params {
-		if _, exists := base[key]; exists {
-			bifrost.logger.Debug(
-				"fallback param overriding base extra_param: provider=%s model=%s key=%s",
-				fallback.Provider, fallback.Model, key,
-			)
+		if base != nil {
+			if _, exists := base[key]; exists {
+				bifrost.logger.Debug(
+					"fallback param overriding base extra_param: provider=%s model=%s key=%s",
+					fallback.Provider, fallback.Model, key,
+				)
+				continue
+			}
 		}
+		bifrost.logger.Debug(
+			"fallback param adding new extra_param: provider=%s model=%s key=%s",
+			fallback.Provider, fallback.Model, key,
+		)
 	}
 }
 

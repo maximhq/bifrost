@@ -3077,4 +3077,21 @@ Params:   map[string]any{"x": 1},
 }); got == nil {
 t.Fatal("expected fallback request with nil base params, got nil")
 }
+
+// Case 3: a new key (no overlap with base) must also be logged — exercises
+// the "adding new extra_param" branch in logFallbackParamOverrides.
+req3 := &schemas.BifrostRequest{
+RequestType: schemas.ChatCompletionRequest,
+ChatRequest: &schemas.BifrostChatRequest{
+Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{"temperature": 0.7}},
+},
+}
+if got := b.prepareFallbackRequest(req3, schemas.Fallback{
+Provider: schemas.Bedrock,
+Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+Params:   map[string]any{"brand_new_param": true},
+}); got == nil {
+t.Fatal("expected fallback request for new-key case, got nil")
+}
 }

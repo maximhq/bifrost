@@ -445,7 +445,7 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 			// (e.g. an OpenAI SDK client passing bare model names). This is
 			// intentionally different from the HTTP transport, which has no
 			// implicit provider. We still honour the configured validation
-			// mode: lenient drops malformed entries silently, strict rejects.
+			// mode: lenient logs and drops malformed entries; strict rejects.
 			fallbacks := make([]schemas.Fallback, 0, fallbacksField.Len())
 			for i := 0; i < fallbacksField.Len(); i++ {
 				fallbackStr := fallbacksField.Index(i).String()
@@ -454,6 +454,7 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 					if fallbackValidationMode == schemas.FallbackValidationStrict {
 						return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
 					}
+					g.logger.Warn("dropping invalid fallback string at index %d: %q", i, fallbackStr)
 					continue
 				}
 				fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
@@ -470,11 +471,12 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 					if fallbackValidationMode == schemas.FallbackValidationStrict {
 						return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
 					}
+					g.logger.Warn("dropping non-Fallback element at index %d in fallbacks slice", i)
 					continue
 				}
 				raw = append(raw, fallback)
 			}
-			return schemas.NormalizeFallbacks(raw, fallbackValidationMode)
+			return schemas.NormalizeFallbacks(raw, fallbackValidationMode, g.logger)
 		}
 	case reflect.String:
 		// Single string case - treat as one fallback
