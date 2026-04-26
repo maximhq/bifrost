@@ -389,9 +389,6 @@ func TestCacheConfiguration(t *testing.T) {
 				EmbeddingModel: "text-embedding-3-small",
 				Dimension:      1536,
 				Threshold:      0.95, // Very high threshold
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: schemas.WhiteList{"*"}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "strict_matching",
 		},
@@ -402,9 +399,6 @@ func TestCacheConfiguration(t *testing.T) {
 				EmbeddingModel: "text-embedding-3-small",
 				Dimension:      1536,
 				Threshold:      0.1, // Very low threshold
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: schemas.WhiteList{"*"}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "loose_matching",
 		},
@@ -416,9 +410,6 @@ func TestCacheConfiguration(t *testing.T) {
 				Dimension:      1536,
 				Threshold:      0.8,
 				TTL:            1 * time.Hour, // Custom TTL
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: schemas.WhiteList{"*"}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "custom_ttl",
 		},
@@ -547,13 +538,6 @@ func TestInvalidProviderRejection(t *testing.T) {
 				Dimension:         1536,
 				Threshold:         0.8,
 				CleanUpOnShutdown: false,
-				Keys: []schemas.Key{
-					{
-						Value:  *schemas.NewEnvVar("env.TEST_API_KEY"),
-						Models: schemas.WhiteList{"*"},
-						Weight: 1.0,
-					},
-				},
 			}
 
 			_, err := Init(ctx, config, logger, mockStore)
@@ -584,13 +568,6 @@ func TestValidProviderAccepted(t *testing.T) {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: false,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	// Should fail due to namespace creation, not provider validation

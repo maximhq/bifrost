@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,7 +27,6 @@ import (
 type Config struct {
 	// Embedding Model settings - REQUIRED for semantic caching
 	Provider       schemas.ModelProvider `json:"provider"`
-	Keys           []schemas.Key         `json:"keys"`
 	EmbeddingModel string                `json:"embedding_model,omitempty"` // Model to use for generating embeddings (optional)
 
 	// Plugin behavior settings
@@ -49,7 +50,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	// Define a temporary struct to avoid infinite recursion
 	type TempConfig struct {
 		Provider                     string        `json:"provider"`
-		Keys                         []schemas.Key `json:"keys"`
 		EmbeddingModel               string        `json:"embedding_model,omitempty"`
 		CleanUpOnShutdown            bool          `json:"cleanup_on_shutdown,omitempty"`
 		Dimension                    int           `json:"dimension"`
@@ -70,7 +70,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 	// Set simple fields
 	c.Provider = schemas.ModelProvider(temp.Provider)
-	c.Keys = temp.Keys
 	c.EmbeddingModel = temp.EmbeddingModel
 	c.CleanUpOnShutdown = temp.CleanUpOnShutdown
 	c.Dimension = temp.Dimension
@@ -142,7 +141,7 @@ type Plugin struct {
 	store              vectorstore.VectorStore
 	config             *Config
 	logger             schemas.Logger
-	client             *bifrost.Bifrost
+	client             atomic.Pointer[schemas.BifrostEmbedder]
 	streamAccumulators sync.Map // Track stream accumulators by request ID
 	waitGroup          sync.WaitGroup
 }
@@ -155,6 +154,7 @@ const (
 	CacheConnectionTimeout              time.Duration = 5 * time.Second
 	CreateNamespaceTimeout              time.Duration = 30 * time.Second
 	CacheSetTimeout                     time.Duration = 30 * time.Second
+	EmbeddingRequestTimeout             time.Duration = 30 * time.Second
 	DefaultCacheTTL                     time.Duration = 5 * time.Minute
 	DefaultCacheThreshold               float64       = 0.8
 	DefaultConversationHistoryThreshold int           = 3
@@ -199,26 +199,6 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 		DataType:    vectorstore.VectorStorePropertyTypeBoolean,
 		Description: "Whether the cache entry was created by the BifrostSemanticCachePlugin",
 	},
-}
-
-type PluginAccount struct {
-	provider schemas.ModelProvider
-	keys     []schemas.Key
-}
-
-func (pa *PluginAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{pa.provider}, nil
-}
-
-func (pa *PluginAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
-	return pa.keys, nil
-}
-
-func (pa *PluginAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	return &schemas.ProviderConfig{
-		NetworkConfig:            schemas.DefaultNetworkConfig,
-		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-	}, nil
 }
 
 // Dependencies is a list of dependencies that the plugin requires.
@@ -323,26 +303,15 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 
 	if config.Provider == "" && config.Dimension == 1 {
 		logger.Info(PluginLoggerPrefix + " Starting in direct-only mode (dimension=1, no embedding provider)")
-	} else if config.Provider == "" || len(config.Keys) == 0 {
-		logger.Warn(PluginLoggerPrefix + " Incomplete semantic mode config: missing provider or keys, falling back to direct search only")
+	} else if config.Provider == "" {
+		logger.Warn(PluginLoggerPrefix + " Incomplete semantic mode config: missing provider, falling back to direct search only")
 	} else {
 		// Validate that the provider supports embeddings
 		if bifrost.IsStandardProvider(config.Provider) && !ProvidersWithEmbeddingSupport[config.Provider] {
 			return nil, fmt.Errorf("provider '%s' does not support embedding operations required for semantic cache. Supported providers: openai, azure, bedrock, cohere, gemini, vertex, mistral, ollama, nebius, huggingface, sgl. Note: custom providers based on embedding-capable providers are also supported", config.Provider)
 		}
-
-		bifrost, err := bifrost.Init(ctx, schemas.BifrostConfig{
-			Logger: logger,
-			Account: &PluginAccount{
-				provider: config.Provider,
-				keys:     config.Keys,
-			},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize bifrost for semantic cache: %w", err)
-		}
-
-		plugin.client = bifrost
+		// Semantic mode enabled - client will be injected via SetBifrost() after parent bifrost.Init()
+		logger.Debug(PluginLoggerPrefix + " Semantic mode enabled - waiting for SetBifrost() call from parent")
 	}
 
 	createCtx, cancel := context.WithTimeout(ctx, CreateNamespaceTimeout)
@@ -361,6 +330,29 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 //   - string: The plugin name for semantic cache
 func (plugin *Plugin) GetName() string {
 	return PluginName
+}
+
+// SetBifrost implements schemas.BifrostAwarePlugin.
+// It is called by the parent Bifrost instance after Init() to inject the embedding client.
+func (plugin *Plugin) SetBifrost(client schemas.BifrostEmbedder) {
+	if client == nil {
+		plugin.client.Store(nil)
+		return
+	}
+	// Guard against typed-nil interfaces (e.g., var b *bifrost.Bifrost; SetBifrost(b))
+	v := reflect.ValueOf(client)
+	if !v.IsValid() {
+		plugin.client.Store(nil)
+		return
+	}
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Chan, reflect.Func, reflect.Slice, reflect.Interface:
+		if v.IsNil() {
+			plugin.client.Store(nil)
+			return
+		}
+	}
+	plugin.client.Store(&client)
 }
 
 // HTTPTransportPreHook is not used for this plugin
@@ -465,19 +457,20 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
-	if performSemanticSearch && plugin.client != nil {
-		if req.EmbeddingRequest != nil || req.TranscriptionRequest != nil {
-			plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic search for embedding/transcription input")
-			// For vector stores that require vectors, set a zero vector placeholder
-			// This allows direct hash matching to work without the overhead of generating embeddings
-			if plugin.store.RequiresVectors() && plugin.config.Dimension > 0 {
-				zeroVector := make([]float32, plugin.config.Dimension)
-				ctx.SetValue(requestEmbeddingKey, zeroVector)
-				plugin.logger.Debug(PluginLoggerPrefix + " Using zero vector placeholder for embedding/transcription request storage")
-			}
-			return req, nil, nil
-		}
+	embedderPtr := plugin.client.Load()
+	requiresZeroVector := plugin.store.RequiresVectors() && plugin.config.Dimension > 0
 
+	// Embedding/transcription requests can never participate in semantic search.
+	if req.EmbeddingRequest != nil || req.TranscriptionRequest != nil {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic search for embedding/transcription input")
+		if requiresZeroVector {
+			ctx.SetValue(requestEmbeddingKey, make([]float32, plugin.config.Dimension))
+			plugin.logger.Debug(PluginLoggerPrefix + " Using zero vector placeholder for embedding/transcription request storage")
+		}
+		return req, nil, nil
+	}
+
+	if performSemanticSearch && embedderPtr != nil {
 		// Try semantic search as fallback
 		shortCircuit, err := plugin.performSemanticSearch(ctx, req, cacheKey)
 		if err != nil {
@@ -488,28 +481,12 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		if shortCircuit != nil {
 			return req, shortCircuit, nil
 		}
-	} else if !performSemanticSearch && plugin.store.RequiresVectors() && plugin.client != nil {
-		// Vector store requires vectors but we're in direct-only mode
-		// Generate embeddings for storage purposes (not for searching)
-		if req.EmbeddingRequest != nil || req.TranscriptionRequest != nil {
-			plugin.logger.Debug(PluginLoggerPrefix + " Skipping embedding generation for embedding/transcription input")
-			// For vector stores that require vectors, set a zero vector placeholder
-			// This allows direct hash matching to work without the overhead of generating embeddings
-			if plugin.config.Dimension > 0 {
-				zeroVector := make([]float32, plugin.config.Dimension)
-				ctx.SetValue(requestEmbeddingKey, zeroVector)
-				plugin.logger.Debug(PluginLoggerPrefix + " Using zero vector placeholder for embedding/transcription request storage")
-			}
-			return req, nil, nil
-		}
-
-		// Use zero vector for direct-only cache type to prevent semantic search matches
-		// This preserves cache type isolation - direct-only entries won't be found by semantic search
-		if plugin.config.Dimension > 0 {
-			zeroVector := make([]float32, plugin.config.Dimension)
-			ctx.SetValue(requestEmbeddingKey, zeroVector)
-			plugin.logger.Debug(PluginLoggerPrefix + " Using zero vector for direct-only cache storage (preserves isolation)")
-		}
+	} else if requiresZeroVector {
+		// Use zero vector when semantic search is disabled (cache-type=direct) OR
+		// when the embedder client hasn't been injected yet. This keeps storage
+		// satisfied for vector-required stores and preserves cache-type isolation.
+		ctx.SetValue(requestEmbeddingKey, make([]float32, plugin.config.Dimension))
+		plugin.logger.Debug(PluginLoggerPrefix + " Using zero vector placeholder for cache storage")
 	}
 
 	return req, nil, nil
@@ -758,11 +735,6 @@ func (plugin *Plugin) Cleanup() error {
 
 	// Clean up old stream accumulators first
 	plugin.cleanupOldStreamAccumulators()
-
-	// Shutdown the internal Bifrost client used for embeddings
-	if plugin.client != nil {
-		plugin.client.Shutdown()
-	}
 
 	// Only clean up cache entries if configured to do so
 	if !plugin.config.CleanUpOnShutdown {

@@ -134,8 +134,6 @@ func TestResponsesAPIDifferentParameters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear cache for this subtest
-			clearTestKeysWithStore(t, setup.Store)
 
 			// Make first request
 			_, err1 := setup.Client.ResponsesRequest(ctx, tt.request1)
