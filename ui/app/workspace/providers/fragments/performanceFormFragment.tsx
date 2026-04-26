@@ -144,10 +144,10 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 				</div>
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 pb-6">
+				<div className="flex justify-end space-x-2">
 					<Button
 						type="submit"
-						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
+						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
 						Save Performance Configuration

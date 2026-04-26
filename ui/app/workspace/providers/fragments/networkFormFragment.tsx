@@ -476,7 +476,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				</div>
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 py-2">
+				<div className="flex justify-end space-x-2">
 					{!hideBaseURL && (
 						<Button
 							type="button"
@@ -503,7 +503,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 							<TooltipTrigger asChild>
 								<Button
 									type="submit"
-									disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess}
+									disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
 									isLoading={isUpdatingProvider}
 								>
 									Save Network Configuration

@@ -159,7 +159,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				/>
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 py-2">
+				<div className="flex justify-end space-x-2">
 					<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!hasUpdateProviderAccess}>
 						Reset
 					</Button>
@@ -168,7 +168,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 							<TooltipTrigger asChild>
 								<Button
 									type="submit"
-									disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess}
+									disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
 									isLoading={isUpdatingProvider}
 								>
 									Save API Structure Configuration
