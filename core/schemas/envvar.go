@@ -307,6 +307,20 @@ func (e *EnvVar) IsFromEnv() bool {
 	return e.FromEnv
 }
 
+// ShouldPreserveStored returns true when the EnvVar is a client-side placeholder
+// that should not overwrite the stored encrypted credential. Returns true for a
+// nil receiver, an empty non-env value, or a redacted non-env value. Returns false
+// for env var references (always intentional) and plain non-empty values.
+func (e *EnvVar) ShouldPreserveStored() bool {
+	if e == nil {
+		return true
+	}
+	if e.IsFromEnv() {
+		return false
+	}
+	return e.GetValue() == "" || e.IsRedacted()
+}
+
 // IsSet returns true if the EnvVar has a resolved value or an environment variable reference.
 // This should be used instead of GetValue() != "" when checking whether a field was configured,
 // because env var references may have an empty Val before resolution (e.g., when the env var
