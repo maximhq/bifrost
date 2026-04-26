@@ -182,7 +182,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	config := key.BedrockKeyConfig
 
 	region := DefaultBedrockRegion
-	if config.Region != nil && config.Region.GetValue() != "" {
+	if config != nil && config.Region != nil && config.Region.GetValue() != "" {
 		region = config.Region.GetValue()
 	}
 
@@ -211,6 +211,9 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
+		if config == nil {
+			return nil, 0, nil, providerUtils.NewBifrostOperationError("bedrock_key_config is required for AWS request signing", nil)
+		}
 		// Sign the request using either explicit credentials or IAM role authentication
 		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
 			return nil, 0, nil, err

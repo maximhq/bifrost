@@ -712,3 +712,14 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
 }
+
+func TestCompleteRequestNilBedrockKeyConfigReturnsError(t *testing.T) {
+	provider := &BedrockProvider{}
+
+	require.NotPanics(t, func() {
+		_, _, _, err := provider.completeRequest(testBedrockCtx(), []byte(`{}`), "us.anthropic.claude-sonnet-4-6/converse", schemas.Key{})
+		require.NotNil(t, err)
+		require.NotNil(t, err.Error)
+		assert.Contains(t, err.Error.Message, "bedrock_key_config")
+	})
+}
