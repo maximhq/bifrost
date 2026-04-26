@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -53,6 +54,7 @@ import {
   AlertCircle,
   ChevronDown,
   Clipboard,
+  Copy,
   Download,
   Loader2,
   MoreVertical,
@@ -297,6 +299,53 @@ const messageRoleLabel: Record<MessageRole, string> = {
   tool: "Tool",
 };
 
+function RoutingDecisionLogs({ logs }: { logs: string }) {
+  const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+  return (
+    <div className="w-full rounded-sm border">
+      <div className="flex items-center justify-between border-b py-2 pl-6">
+        <div className="text-sm font-medium">Routing Decision Logs</div>
+        <button
+          type="button"
+          onClick={() => copy(logs)}
+          className="text-muted-foreground mx-2 flex h-6 items-center rounded px-1 py-1 hover:text-black dark:hover:text-white"
+        >
+          <Copy className="h-3 w-3" />
+        </button>
+      </div>
+      <div>
+        {logs
+          .split("\n")
+          .filter((l) => l.trim())
+          .map((line, i) => {
+            const m = line.match(/^\[(\d+)\]\s+\[([^\]]+)\]\s+-\s+(.*)$/);
+            const ts = m ? Number(m[1]) : null;
+            const scope = m ? m[2] : null;
+            const message = m ? m[3] : line;
+            return (
+              <div
+                key={i}
+                className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0"
+              >
+                {ts != null ? (
+                  <span className="text-muted-foreground shrink-0">
+                    {format(new Date(ts), "HH:mm:ss.SSS")}
+                  </span>
+                ) : null}
+                {scope ? (
+                  <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-300">
+                    {scope}
+                  </span>
+                ) : null}
+                <span className="break-words whitespace-pre-wrap">{message}</span>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
 function CollapsibleCode({
   text,
   preview = 3,
@@ -413,6 +462,8 @@ export function LogDetailView({
     successMessage: "Request body copied to clipboard",
     errorMessage: "Failed to copy request body",
   });
+  const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
+  const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
 
   if (!log) return null;
 
@@ -650,6 +701,7 @@ export function LogDetailView({
             mono
             value={log.model || "—"}
             sub={log.provider?.toLowerCase() || ""}
+            valueClass="whitespace-normal overflow-visible break-all"
             hasRightBorder
           />
           <HeroStat
@@ -1414,6 +1466,76 @@ export function LogDetailView({
         </TabsList>
 
         <TabsContent value="messages" className="space-y-4">
+          <div className="flex justify-end">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11.5px] font-medium transition",
+                    visibleRoles.size < allRoles.length
+                      ? "bg-muted text-foreground border-border"
+                      : "text-muted-foreground hover:text-foreground border-transparent hover:border-border",
+                  )}
+                >
+                  Messages
+                  {visibleRoles.size < allRoles.length && (
+                    <span className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums">
+                      {visibleRoles.size}/{allRoles.length}
+                    </span>
+                  )}
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuCheckboxItem
+                  checked={visibleRoles.size === allRoles.length}
+                  onCheckedChange={(checked) =>
+                    setVisibleRoles(checked ? new Set(allRoles) : new Set())
+                  }
+                >
+                  Show all messages
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+                {(
+                  [
+                    ["system", "System"],
+                    ["user", "User"],
+                    ["assistant", "Assistant"],
+                    ["tool", "Tool"],
+                    ["reasoning", "Reasoning"],
+                  ] as [MessageRole, string][]
+                ).map(([role, label]) => (
+                  <DropdownMenuCheckboxItem
+                    key={role}
+                    checked={visibleRoles.has(role)}
+                    onCheckedChange={(checked) =>
+                      setVisibleRoles((prev) => {
+                        const next = new Set(prev);
+                        checked ? next.add(role) : next.delete(role);
+                        return next;
+                      })
+                    }
+                  >
+                    <span
+                      className={cn(
+                        "mr-1.5 inline-block h-2 w-2 rounded-sm",
+                        messageDotClass[role],
+                      )}
+                    />
+                    {label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setVisibleRoles(new Set())}
+                  className="text-muted-foreground justify-center text-[12px]"
+                >
+                  Clear all
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           {(log.ocr_input || log.ocr_output) && (
             <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />
           )}
@@ -1540,7 +1662,12 @@ export function LogDetailView({
           {!isPassthrough && ((log.input_history && log.input_history.length > 0) ||
             (log.output_message && !log.error_details?.error.message)) && (
             <div className="bg-card rounded-sm border p-5">
-              {log.input_history?.map((message, index) => {
+              {(visibleRoles.size < allRoles.length
+                ? log.input_history?.filter((m) =>
+                    visibleRoles.has(((m.role as string) || "user") as MessageRole)
+                  )
+                : log.input_history
+              )?.map((message, index) => {
                 const role = ((message.role as string) ||
                   "user") as MessageRole;
                 const text = extractMessageText(message);
@@ -1611,6 +1738,7 @@ export function LogDetailView({
               })}
               {log.output_message &&
                 !log.error_details?.error.message &&
+                visibleRoles.has("assistant") &&
                 (() => {
                   const text = extractMessageText(log.output_message);
                   const lineCount = text ? text.split("\n").length : 0;
@@ -1639,11 +1767,17 @@ export function LogDetailView({
           )}
 
           {(() => {
-            const inputMsgs = log.responses_input_history ?? [];
-            const outputMsgs =
+            const rawInput = log.responses_input_history ?? [];
+            const inputMsgs = visibleRoles.size < allRoles.length
+              ? rawInput.filter((m) => visibleRoles.has(getResponsesRole(m)))
+              : rawInput;
+            const rawOutput =
               log.status !== "processing" && !log.error_details?.error.message
                 ? (log.responses_output ?? [])
                 : [];
+            const outputMsgs = visibleRoles.size < allRoles.length
+              ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m)))
+              : rawOutput;
             const all: ResponsesMessage[] = [...inputMsgs, ...outputMsgs];
             if (all.length === 0) return null;
             return (
@@ -1953,44 +2087,7 @@ export function LogDetailView({
             </CollapsibleBox>
           )}
           {log.routing_engine_logs && (
-            <CollapsibleBox
-              title="Routing Decision Logs"
-              onCopy={() => log.routing_engine_logs || ""}
-            >
-              <div className="custom-scrollbar max-h-[400px] overflow-y-auto">
-                {log.routing_engine_logs
-                  .split("\n")
-                  .filter((l) => l.trim())
-                  .map((line, i) => {
-                    const m = line.match(
-                      /^\[(\d+)\]\s+\[([^\]]+)\]\s+-\s+(.*)$/,
-                    );
-                    const ts = m ? Number(m[1]) : null;
-                    const scope = m ? m[2] : null;
-                    const message = m ? m[3] : line;
-                    return (
-                      <div
-                        key={i}
-                        className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0"
-                      >
-                        {ts != null ? (
-                          <span className="text-muted-foreground shrink-0">
-                            {format(new Date(ts), "HH:mm:ss.SSS")}
-                          </span>
-                        ) : null}
-                        {scope ? (
-                          <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-300">
-                            {scope}
-                          </span>
-                        ) : null}
-                        <span className="break-words whitespace-pre-wrap">
-                          {message}
-                        </span>
-                      </div>
-                    );
-                  })}
-              </div>
-            </CollapsibleBox>
+            <RoutingDecisionLogs logs={log.routing_engine_logs} />
           )}
           {!log.attempt_trail?.length && !log.routing_engine_logs && (
               <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
