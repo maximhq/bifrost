@@ -31,7 +31,19 @@ const (
 	// FastHTTPUserValueLargeResponseMode marks requests that streamed a large response body.
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
+	// FastHTTPUserValueModelCatalogResolution stores model catalog resolution metadata
+	// set by prepare*Request functions when a provider was auto-resolved. Picked up
+	// centrally in ConvertToBifrostContext to add the routing engine log.
+	FastHTTPUserValueModelCatalogResolution = "__bifrost_model_catalog_resolution"
 )
+
+// ModelCatalogResolution carries the result of an automatic provider lookup so
+// that ConvertToBifrostContext can emit the routing engine log in one place.
+type ModelCatalogResolution struct {
+	Model            string
+	ResolvedProvider schemas.ModelProvider
+	AllProviders     []schemas.ModelProvider
+}
 
 // ParseSessionIDFromBaggage extracts the session-id baggage member value.
 // It supports simple W3C baggage parsing sufficient for log grouping.
@@ -192,6 +204,22 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	ctx.VisitUserValuesAll(func(key, value any) {
 		bifrostCtx.SetValue(key, value)
 	})
+
+	// When a prepare*Request function resolved a provider via the model catalog,
+	// it stores the resolution info on the fasthttp context. Emit the routing
+	// engine log and mark the engine as used centrally here.
+	if res, ok := ctx.UserValue(FastHTTPUserValueModelCatalogResolution).(*ModelCatalogResolution); ok && res != nil {
+		providerStrs := make([]string, len(res.AllProviders))
+		for i, p := range res.AllProviders {
+			providerStrs[i] = string(p)
+		}
+		bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+			"No provider specified for model %s, found %d options in model catalog: [%s], selecting first: %s",
+			res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider,
+		))
+		schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
+	}
+
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)
 	// Initialize dimensions map for x-bf-dim-* headers
@@ -471,6 +499,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "x-bf-store-raw-request-response" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, b)
+			}
+			return true
+		}
+		if keyStr == "x-bf-disable-content-logging" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, b)
 			}
 			return true
 		}

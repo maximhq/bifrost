@@ -302,6 +302,7 @@ const (
 	RoutingEngineGovernance    = "governance"
 	RoutingEngineRoutingRule   = "routing-rule"
 	RoutingEngineLoadbalancing = "loadbalancing"
+	RoutingEngineModelCatalog  = "model-catalog"
 )
 
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
