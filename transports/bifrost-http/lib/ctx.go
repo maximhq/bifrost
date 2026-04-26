@@ -120,22 +120,34 @@ func ParseSessionIDFromBaggage(header string) string {
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
-//   - allowDirectKeys: Whether to allow direct API key usage from headers
+//   - store: HandlerStore providing per-request policy flags and header matchers
 //
 // Returns:
-//   - *context.Context: A new cancellable context.Context containing the propagated values
+//   - *schemas.BifrostContext: A new cancellable context containing the propagated values
 //   - context.CancelFunc: Function to cancel the context (should be called when request completes)
 //
 // Example Usage:
 //
 //	fastCtx := &fasthttp.RequestCtx{...}
-//	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, true, nil)
+//	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, handlerStore)
 //	defer cancel() // Ensure cleanup
 //	// bifrostCtx now contains propagated header values including Prometheus metrics,
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher, mcpHeaderCombinedAllowlist schemas.WhiteList) (*schemas.BifrostContext, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
+	allowDirectKeys := false
+	var matcher *HeaderMatcher
+	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
+	allowPerRequestStorageOverride := false
+	allowPerRequestRawOverride := false
+	if store != nil {
+		allowDirectKeys = store.ShouldAllowDirectKeys()
+		matcher = store.GetHeaderMatcher()
+		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
+		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
+		allowPerRequestRawOverride = store.ShouldAllowPerRequestRawOverride()
+	}
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
 	var cancel context.CancelFunc
@@ -404,7 +416,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 				return true
 			}
 			// Apply configurable header filter
-			if !matcher.ShouldAllow(labelName) {
+			if matcher != nil && !matcher.ShouldAllow(labelName) {
 				return true
 			}
 			// Append header value (allow multiple values for the same header)
@@ -415,7 +427,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
 		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
 		// Only applies when allowlist is non-empty (backward compatible).
-		if matcher.HasAllowlist() {
+		if matcher != nil && matcher.HasAllowlist() {
 			if matcher.MatchesAllow(keyStr) {
 				// Skip reserved x-bf-* headers (handled separately)
 				if strings.HasPrefix(keyStr, "x-bf-") {
@@ -473,6 +485,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		if keyStr == "x-bf-passthrough-extra-params" {
 			if valueStr := string(value); valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			return true
+		}
+		if keyStr == "x-bf-disable-content-logging" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, b)
 			}
 			return true
 		}
@@ -608,6 +626,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
 	return bifrostCtx, cancel
 }
 

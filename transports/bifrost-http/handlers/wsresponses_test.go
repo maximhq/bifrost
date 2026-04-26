@@ -50,6 +50,9 @@ func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return nil
 }
 
+func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
+func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool    { return false }
+
 type timeoutNetError struct{}
 
 func (timeoutNetError) Error() string   { return "i/o timeout" }

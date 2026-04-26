@@ -1,0 +1,1 @@
+- feat: added per-request content logging toggle that overrides the global setting

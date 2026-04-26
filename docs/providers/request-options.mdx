@@ -8,36 +8,36 @@ Bifrost provides request options that control behavior, enable features, and pas
 
 ## Complete Reference
 
-| Context Key | Header | Type | Description |
-|-------------|--------|------|-------------|
-| `BifrostContextKeyVirtualKey` | `x-bf-vk` | `string` | Virtual key identifier for governance |
-| `BifrostContextKeyAPIKeyName` | `x-bf-api-key` | `string` | Explicit API key name selection |
-| `BifrostContextKeyAPIKeyID` | `x-bf-api-key-id` | `string` | Explicit API key ID selection (takes priority over name) |
-| `BifrostContextKeySessionID` | `x-bf-session-id` | `string` | Session ID for key stickiness (requires KV store) |
-| `BifrostContextKeySessionTTL` | `x-bf-session-ttl` | `time.Duration` | Session-to-key cache TTL (duration string or seconds) |
-| `BifrostContextKeyRequestID` | `x-request-id` | `string` | Custom request ID for tracking |
-| `BifrostContextKeySendBackRawRequest` | `x-bf-send-back-raw-request` | `bool` | Include raw provider request in the response |
-| `BifrostContextKeySendBackRawResponse` | `x-bf-send-back-raw-response` | `bool` | Include raw provider response in the response |
-| `BifrostContextKeyStoreRawRequestResponse` | `x-bf-store-raw-request-response` | `bool` | Persist raw request/response in log records |
-| `BifrostContextKeyPassthroughExtraParams` | `x-bf-passthrough-extra-params` | `bool` | Enable passthrough for extra parameters |
-| `BifrostContextKeyExtraHeaders` | `x-bf-eh-*` | `map[string][]string` | Custom headers forwarded to provider |
-| `BifrostContextKeyDirectKey` | `-` | `schemas.Key` | Direct key credentials (Go SDK only) |
-| `BifrostContextKeySkipKeySelection` | `-` | `bool` | Skip key selection process (Go SDK only) |
-| `BifrostContextKeyURLPath` | `-` | `string` | Custom URL path appended to provider base URL (Go SDK only) |
-| `BifrostContextKeyUseRawRequestBody` | `-` | `bool` | Use raw request body (Go SDK only, requires RawRequestBody field) |
-| `semanticcache.CacheKey` | `x-bf-cache-key` | `string` | Custom cache key |
-| `semanticcache.CacheTTLKey` | `x-bf-cache-ttl` | `time.Duration` | Cache TTL (duration string or seconds) |
-| `semanticcache.CacheThresholdKey` | `x-bf-cache-threshold` | `float64` | Similarity threshold (0.0-1.0) |
-| `semanticcache.CacheTypeKey` | `x-bf-cache-type` | `string` | Cache type |
-| `semanticcache.CacheNoStoreKey` | `x-bf-cache-no-store` | `bool` | Prevent caching |
-| `mcp-include-clients` | `x-bf-mcp-include-clients` | `[]string` | Filter MCP clients (comma-separated). |
-| `mcp-include-tools` | `x-bf-mcp-include-tools` | `[]string` | Filter MCP tools (`clientName-toolName` format, comma-separated) |
-| `BifrostContextKeyMCPExtraHeaders` | *(any header in a client's `allowed_extra_headers`)* | `map[string][]string` | Headers forwarded to MCP servers at tool execution time, filtered per-client against `allowed_extra_headers` |
-| `maxim.TraceIDKey` | `x-bf-maxim-trace-id` | `string` | Maxim trace ID |
-| `maxim.GenerationIDKey` | `x-bf-maxim-generation-id` | `string` | Maxim generation ID |
-| `maxim.TagsKey` | `x-bf-maxim-*` | `map[string]string` | Maxim tags (custom tag names) |
-| `BifrostContextKey(labelName)` | `x-bf-prom-*` | `string` | Prometheus metric labels |
-
+| Context Key                                | Header                                               | Type                  | Description                                                                                                                           |
+| ------------------------------------------ | ---------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `BifrostContextKeyVirtualKey`              | `x-bf-vk`                                            | `string`              | Virtual key identifier for governance                                                                                                 |
+| `BifrostContextKeyAPIKeyName`              | `x-bf-api-key`                                       | `string`              | Explicit API key name selection                                                                                                       |
+| `BifrostContextKeyAPIKeyID`                | `x-bf-api-key-id`                                    | `string`              | Explicit API key ID selection (takes priority over name)                                                                              |
+| `BifrostContextKeySessionID`               | `x-bf-session-id`                                    | `string`              | Session ID for key stickiness (requires KV store)                                                                                     |
+| `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session-to-key cache TTL (duration string or seconds)                                                                                 |
+| `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
+| `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
+| `BifrostContextKeySendBackRawResponse`     | `x-bf-send-back-raw-response`                        | `bool`                | Include raw provider response in the response                                                                                         |
+| `BifrostContextKeyStoreRawRequestResponse` | `x-bf-store-raw-request-response`                    | `bool`                | Persist raw request/response in log records                                                                                           |
+| `BifrostContextKeyDisableContentLogging`   | `x-bf-disable-content-logging`                       | `bool`                | Per-request override for content logging; only honored when `allow_per_request_content_storage_override` is enabled in logging config |
+| `BifrostContextKeyPassthroughExtraParams`  | `x-bf-passthrough-extra-params`                      | `bool`                | Enable passthrough for extra parameters                                                                                               |
+| `BifrostContextKeyExtraHeaders`            | `x-bf-eh-*`                                          | `map[string][]string` | Custom headers forwarded to provider                                                                                                  |
+| `BifrostContextKeyDirectKey`               | `-`                                                  | `schemas.Key`         | Direct key credentials (Go SDK only)                                                                                                  |
+| `BifrostContextKeySkipKeySelection`        | `-`                                                  | `bool`                | Skip key selection process (Go SDK only)                                                                                              |
+| `BifrostContextKeyURLPath`                 | `-`                                                  | `string`              | Custom URL path appended to provider base URL (Go SDK only)                                                                           |
+| `BifrostContextKeyUseRawRequestBody`       | `-`                                                  | `bool`                | Use raw request body (Go SDK only, requires RawRequestBody field)                                                                     |
+| `semanticcache.CacheKey`                   | `x-bf-cache-key`                                     | `string`              | Custom cache key                                                                                                                      |
+| `semanticcache.CacheTTLKey`                | `x-bf-cache-ttl`                                     | `time.Duration`       | Cache TTL (duration string or seconds)                                                                                                |
+| `semanticcache.CacheThresholdKey`          | `x-bf-cache-threshold`                               | `float64`             | Similarity threshold (0.0-1.0)                                                                                                        |
+| `semanticcache.CacheTypeKey`               | `x-bf-cache-type`                                    | `string`              | Cache type                                                                                                                            |
+| `semanticcache.CacheNoStoreKey`            | `x-bf-cache-no-store`                                | `bool`                | Prevent caching                                                                                                                       |
+| `mcp-include-clients`                      | `x-bf-mcp-include-clients`                           | `[]string`            | Filter MCP clients (comma-separated).                                                                                                 |
+| `mcp-include-tools`                        | `x-bf-mcp-include-tools`                             | `[]string`            | Filter MCP tools (`clientName-toolName` format, comma-separated)                                                                      |
+| `BifrostContextKeyMCPExtraHeaders`         | _(any header in a client's `allowed_extra_headers`)_ | `map[string][]string` | Headers forwarded to MCP servers at tool execution time, filtered per-client against `allowed_extra_headers`                          |
+| `maxim.TraceIDKey`                         | `x-bf-maxim-trace-id`                                | `string`              | Maxim trace ID                                                                                                                        |
+| `maxim.GenerationIDKey`                    | `x-bf-maxim-generation-id`                           | `string`              | Maxim generation ID                                                                                                                   |
+| `maxim.TagsKey`                            | `x-bf-maxim-*`                                       | `map[string]string`   | Maxim tags (custom tag names)                                                                                                         |
+| `BifrostContextKey(labelName)`             | `x-bf-prom-*`                                        | `string`              | Prometheus metric labels                                                                                                              |
 
 ## Request Configuration Options
 
@@ -70,11 +70,12 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyVirtualKey, "sk-bf-*")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -105,7 +106,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -113,11 +115,12 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -140,7 +143,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -148,19 +152,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "premium-key")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Session Stickiness (Session ID)
 
-**Context Key:** `BifrostContextKeySessionID`  
-**Header:** `x-bf-session-id`  
-**Type:** `string`  
+**Context Key:** `BifrostContextKeySessionID`
+**Header:** `x-bf-session-id`
+**Type:** `string`
 **Required:** No
 
 Bind a session to a specific API key so that requests with the same session ID consistently use the same key. Useful for predictable rate-limit buckets, cost attribution per user, and consistent model routing per session.
@@ -181,7 +186,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -189,19 +195,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-session-abc")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Session TTL
 
-**Context Key:** `BifrostContextKeySessionTTL`  
-**Header:** `x-bf-session-ttl`  
-**Type:** `time.Duration` (header value: duration string like `"30m"` or `"1h"`, or seconds as integer)  
+**Context Key:** `BifrostContextKeySessionTTL`
+**Header:** `x-bf-session-ttl`
+**Type:** `time.Duration` (header value: duration string like `"30m"` or `"1h"`, or seconds as integer)
 **Required:** No
 
 Optional. Controls how long the session-to-key binding is cached. If not set, Bifrost uses 1 hour. The TTL is refreshed on each request so active sessions do not expire.
@@ -219,7 +226,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -228,19 +236,20 @@ ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-sessi
 ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minute)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Request ID
 
-**Context Key:** `BifrostContextKeyRequestID`  
-**Header:** `x-request-id`  
-**Type:** `string`  
+**Context Key:** `BifrostContextKeyRequestID`
+**Header:** `x-request-id`
+**Type:** `string`
 **Required:** No
 
 Set a custom request ID for tracking and correlation. If not provided, Bifrost generates a UUID.
@@ -255,7 +264,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -263,22 +273,27 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestID, "req-12345-abc")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Send Back Raw Request
 
-**Context Key:** `BifrostContextKeySendBackRawRequest`  
-**Header:** `x-bf-send-back-raw-request`  
-**Type:** `bool` (header values: `"true"` or `"false"`)  
+**Context Key:** `BifrostContextKeySendBackRawRequest`
+**Header:** `x-bf-send-back-raw-request`
+**Type:** `bool` (header values: `"true"` or `"false"`)
 **Required:** No
 
 Include the exact JSON body sent to the provider alongside Bifrost's standardized response. Accepts `"true"` or `"false"` — either value fully overrides the provider-level `send_back_raw_request` config for this request.
+
+<Warning>
+Per-request overrides are **disabled by default**. You must first enable `allow_per_request_raw_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. This flag controls only what is **sent back to the caller** — it does not affect log storage. To persist raw bytes in logs, use `x-bf-store-raw-request-response` (gated by `allow_per_request_content_storage_override`).
+</Warning>
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -290,7 +305,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -298,16 +314,17 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
 
 // Access raw request
 if response.ChatResponse != nil {
-    rawReq := response.ChatResponse.ExtraFields.RawRequest
+rawReq := response.ChatResponse.ExtraFields.RawRequest
 }
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -324,7 +341,7 @@ The raw request appears in `extra_fields.raw_request`:
         }
     }
 }
-```
+````
 
 ### Send Back Raw Response
 
@@ -334,6 +351,10 @@ The raw request appears in `extra_fields.raw_request`:
 **Required:** No
 
 Include the original provider response alongside Bifrost's standardized response format. Accepts `"true"` or `"false"` — either value fully overrides the provider-level `send_back_raw_response` config for this request.
+
+<Warning>
+Per-request overrides are **disabled by default**. You must first enable `allow_per_request_raw_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. This flag controls only what is **sent back to the caller** — it does not affect log storage. To persist raw bytes in logs, use `x-bf-store-raw-request-response` (gated by `allow_per_request_content_storage_override`).
+</Warning>
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -353,16 +374,17 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
 
 // Access raw response
 if response.ChatResponse != nil {
-    rawResp := response.ChatResponse.ExtraFields.RawResponse
+rawResp := response.ChatResponse.ExtraFields.RawResponse
 }
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -379,7 +401,7 @@ The raw response appears in `extra_fields.raw_response`:
         }
     }
 }
-```
+````
 
 ### Store Raw Request/Response
 
@@ -391,6 +413,10 @@ The raw response appears in `extra_fields.raw_response`:
 Persist the raw provider request and response in the log record. Accepts `"true"` or `"false"` — either value fully overrides the provider-level `store_raw_request_response` config for this request.
 
 This is orthogonal to the send-back flags: enabling this does not affect whether raw data appears in the API response, and enabling send-back does not automatically store raw data in logs. Use this when you want observability into provider payloads without necessarily exposing them to the caller, or combine it with `x-bf-send-back-raw-*` to do both.
+
+<Warning>
+Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. Note that this is gated by the **content storage** override, not the raw override — `allow_per_request_raw_override` only gates `x-bf-send-back-raw-request` and `x-bf-send-back-raw-response` (sending raw bytes back to the caller).
+</Warning>
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -410,13 +436,14 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyStoreRawRequestResponse, true)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
 // Raw data is persisted in the log record.
 // ExtraFields.RawRequest/RawResponse are nil unless send-back flags are also enabled.
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -426,11 +453,66 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 `x-bf-store-raw-request-response` and `x-bf-send-back-raw-*` are orthogonal — you can enable any combination. Enabling store does not send data back to the caller; enabling send-back does not persist data in logs. Enable both to do both.
 </Note>
 
+### Disable Content Logging (Per-Request)
+
+**Context Key:** `BifrostContextKeyDisableContentLogging`
+**Header:** `x-bf-disable-content-logging`
+**Type:** `bool` (header values: `"true"` or `"false"`)
+**Required:** No
+
+Override the logging plugin's global `disable_content_logging` config for a single request. When set to `true`, messages, parameters, tool arguments, and tool results are omitted from the log record for that request. When set to `false`, content is recorded even if the global toggle is off.
+
+This is useful when you need to suppress sensitive data (e.g. PII, credentials) for specific requests while keeping content logging enabled globally.
+
+<Warning>
+Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. When the toggle is off, the global `disable_content_logging` setting is authoritative and this value is ignored.
+</Warning>
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+# Suppress content for this request only
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-disable-content-logging: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Sensitive data here"}]
+}'
+````
+
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+
+// Suppress content logging for this request
+bfCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, true)
+
+response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
+})
+
+````
+</Tab>
+</Tabs>
+
+**Prerequisite:** `allow_per_request_content_storage_override` must be `true` in the logging plugin config (set in `config.json` or via the UI).
+
+**Precedence (when override is enabled):** The per-request value takes precedence over the global `disable_content_logging` setting. A value of `true` suppresses content; `false` forces content on.
+
+<Note>
+This flag affects only what is written to the log record (messages, params, tool results, raw request/response). Token counts, latency, cost, status, and routing metadata are always logged regardless of this setting.
+</Note>
+
 ### Passthrough Extra Parameters
 
-**Context Key:** `BifrostContextKeyPassthroughExtraParams`  
-**Header:** `x-bf-passthrough-extra-params`  
-**Type:** `bool` (header value: `"true"`)  
+**Context Key:** `BifrostContextKeyPassthroughExtraParams`
+**Header:** `x-bf-passthrough-extra-params`
+**Type:** `bool` (header value: `"true"`)
 **Required:** No
 
 Enable passthrough mode for extra parameters. When enabled, any parameters in `extra_params` (or provider-specific extra parameter fields) will be merged directly into the request sent to the provider.
@@ -450,7 +532,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
         "b": 123
     }
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -458,20 +541,21 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
-    Params: &schemas.ChatParameters{
-        ExtraParams: map[string]interface{}{
-            "custom_param":  "value",
-            "nested_param": map[string]interface{}{
-                "a": "value",
-                "b": 123,
-            },
-        },
-    },
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
+Params: &schemas.ChatParameters{
+ExtraParams: map[string]interface{}{
+"custom_param": "value",
+"nested_param": map[string]interface{}{
+"a": "value",
+"b": 123,
+},
+},
+},
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -483,9 +567,9 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 
 ### Direct Key (Go SDK Only)
 
-**Context Key:** `BifrostContextKeyDirectKey`  
-**Header:** `-` (not available via HTTP)  
-**Type:** `schemas.Key`  
+**Context Key:** `BifrostContextKeyDirectKey`
+**Header:** `-` (not available via HTTP)
+**Type:** `schemas.Key`
 **Required:** No
 
 Bypass key selection and provide credentials directly. Useful for dynamic key scenarios.
@@ -504,7 +588,7 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
     Model:    "gpt-4o",
     Input:    messages,
 })
-```
+````
 
 ### Skip Key Selection (Go SDK Only)
 
@@ -574,12 +658,14 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 ```
 
 <Note>
-When using raw request body, Bifrost bypasses its request conversion and sends your payload directly to the provider. You're responsible for ensuring the payload matches the provider's expected format.
+  When using raw request body, Bifrost bypasses its request conversion and sends
+  your payload directly to the provider. You're responsible for ensuring the
+  payload matches the provider's expected format.
 </Note>
 
 ## Custom Headers
 
-### Extra Headers (x-bf-eh-*)
+### Extra Headers (x-bf-eh-\*)
 
 **Context Key:** `BifrostContextKeyExtraHeaders`  
 **Header Pattern:** `x-bf-eh-{header-name}`  
@@ -611,11 +697,12 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -633,9 +720,9 @@ These options control semantic caching behavior.
 
 ### Cache Key
 
-**Context Key:** `semanticcache.CacheKey`  
-**Header:** `x-bf-cache-key`  
-**Type:** `string`  
+**Context Key:** `semanticcache.CacheKey`
+**Header:** `x-bf-cache-key`
+**Type:** `string`
 **Required:** No
 
 Specify a custom cache key for semantic cache lookups.
@@ -650,7 +737,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -658,19 +746,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheKey, "custom-key-123")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Cache TTL
 
-**Context Key:** `semanticcache.CacheTTLKey`  
-**Header:** `x-bf-cache-ttl`  
-**Type:** `time.Duration` (header value: duration string like `"30s"` or `"5m"`, or seconds as integer)  
+**Context Key:** `semanticcache.CacheTTLKey`
+**Header:** `x-bf-cache-ttl`
+**Type:** `time.Duration` (header value: duration string like `"30s"` or `"5m"`, or seconds as integer)
 **Required:** No
 
 Set a custom time-to-live for cached responses.
@@ -685,7 +774,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -693,11 +783,12 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheTTLKey, 5*time.Minute)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -705,9 +796,9 @@ Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as 
 
 ### Cache Threshold
 
-**Context Key:** `semanticcache.CacheThresholdKey`  
-**Header:** `x-bf-cache-threshold`  
-**Type:** `float64` (range: 0.0 to 1.0)  
+**Context Key:** `semanticcache.CacheThresholdKey`
+**Header:** `x-bf-cache-threshold`
+**Type:** `float64` (range: 0.0 to 1.0)
 **Required:** No
 
 Set the similarity threshold for semantic cache matching.
@@ -722,7 +813,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -730,19 +822,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheThresholdKey, 0.85)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Cache Type
 
-**Context Key:** `semanticcache.CacheTypeKey`  
-**Header:** `x-bf-cache-type`  
-**Type:** `semanticcache.CacheType` (string)  
+**Context Key:** `semanticcache.CacheTypeKey`
+**Header:** `x-bf-cache-type`
+**Type:** `semanticcache.CacheType` (string)
 **Required:** No
 
 Specify the cache type for this request.
@@ -757,7 +850,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -765,19 +859,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheTypeKey, semanticcache.CacheTypeSemantic)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Cache No Store
 
-**Context Key:** `semanticcache.CacheNoStoreKey`  
-**Header:** `x-bf-cache-no-store`  
-**Type:** `bool` (header value: `"true"`)  
+**Context Key:** `semanticcache.CacheNoStoreKey`
+**Header:** `x-bf-cache-no-store`
+**Type:** `bool` (header value: `"true"`)
 **Required:** No
 
 Prevent caching of this request/response.
@@ -792,7 +887,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -800,11 +896,12 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheNoStoreKey, true)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -814,9 +911,9 @@ These options control MCP client and tool filtering.
 
 ### Include Clients
 
-**Context Key:** `mcp-include-clients`  
-**Header:** `x-bf-mcp-include-clients`  
-**Type:** `[]string` (comma-separated values)  
+**Context Key:** `mcp-include-clients`
+**Header:** `x-bf-mcp-include-clients`
+**Type:** `[]string` (comma-separated values)
 **Required:** No
 
 Filter MCP clients to include only the specified ones.
@@ -831,7 +928,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -839,11 +937,12 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-clients"), []string{"client1", "client2"})
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -866,7 +965,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -874,11 +974,12 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), []string{"gmail-send_email", "filesystem-read_file"})
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
@@ -888,9 +989,9 @@ These options enable Maxim observability integration and tag propagation.
 
 ### Maxim Trace ID
 
-**Context Key:** `maxim.TraceIDKey`  
-**Header:** `x-bf-maxim-trace-id`  
-**Type:** `string`  
+**Context Key:** `maxim.TraceIDKey`
+**Header:** `x-bf-maxim-trace-id`
+**Type:** `string`
 **Required:** No
 
 Set the Maxim trace ID for distributed tracing.
@@ -905,7 +1006,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -913,19 +1015,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, maxim.TraceIDKey, "trace-12345")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Maxim Generation ID
 
-**Context Key:** `maxim.GenerationIDKey`  
-**Header:** `x-bf-maxim-generation-id`  
-**Type:** `string`  
+**Context Key:** `maxim.GenerationIDKey`
+**Header:** `x-bf-maxim-generation-id`
+**Type:** `string`
 **Required:** No
 
 Set the Maxim generation ID for request correlation.
@@ -940,7 +1043,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -948,19 +1052,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, maxim.GenerationIDKey, "gen-12345")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ### Maxim Tags (x-bf-maxim-*)
 
-**Context Key:** `maxim.TagsKey`  
-**Header Pattern:** `x-bf-maxim-{tag-name}`  
-**Type:** `map[string]string`  
+**Context Key:** `maxim.TagsKey`
+**Header Pattern:** `x-bf-maxim-{tag-name}`
+**Type:** `map[string]string`
 **Required:** No
 
 Add custom tags to Maxim traces. Any header starting with `x-bf-maxim-` that isn't a reserved header becomes a tag.
@@ -976,7 +1081,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -988,19 +1094,20 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, maxim.TagsKey, tags)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
-```
+
+````
 </Tab>
 </Tabs>
 
 ## Prometheus Options
 
-**Context Key:** `BifrostContextKey(labelName)`  
-**Header Pattern:** `x-bf-prom-{label-name}`  
-**Type:** `string`  
+**Context Key:** `BifrostContextKey(labelName)`
+**Header Pattern:** `x-bf-prom-{label-name}`
+**Type:** `string`
 **Required:** No
 
 Add custom labels to Prometheus metrics. The `x-bf-prom-` prefix is stripped and the remainder becomes the label name.
@@ -1016,7 +1123,8 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
 }'
-```
+````
+
 </Tab>
 <Tab title="Go SDK">
 ```go
@@ -1025,10 +1133,11 @@ ctx = context.WithValue(ctx, schemas.BifrostContextKey("environment"), "producti
 ctx = context.WithValue(ctx, schemas.BifrostContextKey("team"), "engineering")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o-mini",
-    Input:    messages,
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
 })
+
 ```
 </Tab>
 </Tabs>
@@ -1048,7 +1157,7 @@ Bifrost maintains a security denylist of headers that are **never** forwarded to
 - `x-bf-api-key` (when used via `x-bf-eh-*`)
 - `x-bf-vk` (when used via `x-bf-eh-*`)
 
-## Internal Context Keys 
+## Internal Context Keys
 <Warning>
 These context keys are read-only and set when request is completed. **Do not set these values.**
 </Warning>
@@ -1069,3 +1178,4 @@ The following context keys are set by Bifrost internally.
 - **[Go SDK Context Keys](../quickstart/go-sdk/context-keys)** - Programmatic context key usage
 - **[Virtual Keys](../features/governance/virtual-keys)** - Virtual key usage and governance
 - **[Semantic Cache](../features/semantic-caching)** - Caching configuration
+```

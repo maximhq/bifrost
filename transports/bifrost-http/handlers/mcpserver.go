@@ -112,7 +112,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
 
 	injectMCPSessionIdentity(bifrostCtx, session)
@@ -153,7 +153,7 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set("Connection", "keep-alive")
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 
 	injectMCPSessionIdentity(bifrostCtx, session)
 

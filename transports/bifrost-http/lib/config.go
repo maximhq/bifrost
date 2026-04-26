@@ -79,6 +79,10 @@ type HandlerStore interface {
 	GetKVStore() *kvstore.Store
 	// GetMCPHeaderCombinedAllowlist returns the combined allowlist for MCP headers
 	GetMCPHeaderCombinedAllowlist() schemas.WhiteList
+	// ShouldAllowPerRequestStorageOverride returns whether per-request overrides for content storage are permitted
+	ShouldAllowPerRequestStorageOverride() bool
+	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
+	ShouldAllowPerRequestRawOverride() bool
 }
 
 // Retry backoff constants for validation
@@ -3253,6 +3257,16 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 // reads are atomic and won't cause panics.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// ShouldAllowPerRequestStorageOverride returns whether per-request content storage overrides are permitted.
+func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
+	return c.ClientConfig.AllowPerRequestContentStorageOverride
+}
+
+// ShouldAllowPerRequestRawOverride returns whether per-request raw request/response overrides are permitted.
+func (c *Config) ShouldAllowPerRequestRawOverride() bool {
+	return c.ClientConfig.AllowPerRequestRawOverride
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.

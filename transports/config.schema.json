@@ -68,6 +68,16 @@
           "type": "boolean",
           "description": "Disable logging of sensitive content (inputs, outputs, embeddings, etc.)"
         },
+        "allow_per_request_content_storage_override": {
+          "type": "boolean",
+          "description": "Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key, and to opt in to raw-byte persistence in logs via x-bf-store-raw-request-response. When false (default), the global disable_content_logging setting is authoritative and per-request storage overrides are ignored. Does not control sending raw bytes back to callers — see allow_per_request_raw_override.",
+          "default": false
+        },
+        "allow_per_request_raw_override": {
+          "type": "boolean",
+          "description": "Allow individual requests to send raw provider request/response bytes back to the caller via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), the provider-level send_back_raw_request/response settings are authoritative and per-request overrides are ignored. Does not affect raw-byte persistence in logs — see allow_per_request_content_storage_override.",
+          "default": false
+        },
         "disable_db_pings_in_health": {
           "type": "boolean",
           "description": "Disable DB pings in health check",
@@ -1258,6 +1268,11 @@
                     "disable_content_logging": {
                       "type": "boolean",
                       "description": "Disable logging of request and response content"
+                    },
+                    "allow_per_request_content_storage_override": {
+                      "type": "boolean",
+                      "description": "Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key, and to opt in to raw-byte persistence in logs via x-bf-store-raw-request-response. When false (default), per-request storage overrides are ignored. Does not control sending raw bytes back to callers — see allow_per_request_raw_override.",
+                      "default": false
                     },
                     "logging_headers": {
                       "type": "array",

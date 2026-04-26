@@ -28,6 +28,8 @@ func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor  { re
 func (s testHandlerStore) GetAsyncJobResultTTL() int                        { return 0 }
 func (s testHandlerStore) GetKVStore() *kvstore.Store                       { return s.kv }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList { return nil }
+func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { return false }
+func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { return false }
 
 func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) {
 	_, _, _, err := resolveRealtimeSDPTarget("/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))

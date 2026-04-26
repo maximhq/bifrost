@@ -147,6 +147,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	cacheDebug *schemas.BifrostCacheDebug,
 	routingEngineLogs string,
 	data *UpdateLogData,
+	contentLoggingEnabled bool,
 ) error {
 	updates := make(map[string]interface{})
 	if selectedKeyID != "" {
@@ -177,7 +178,6 @@ func (p *LoggerPlugin) updateLogEntry(
 	if routingEngineLogs != "" {
 		updates["routing_engine_logs"] = routingEngineLogs
 	}
-	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
 	tempEntry := &logstore.Log{}
 	needsSerialization := false
 
@@ -294,12 +294,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	if data.IsLargePayloadResponse {
 		updates["is_large_payload_response"] = true
 		// Large payload preview is already a string — skip sonic.Marshal.
-		if p.disableContentLogging == nil || !*p.disableContentLogging {
+		if contentLoggingEnabled {
 			if str, ok := data.RawResponse.(string); ok {
 				updates["raw_response"] = str
 			}
 		}
-	} else if (p.disableContentLogging == nil || !*p.disableContentLogging) && data.RawResponse != nil {
+	} else if contentLoggingEnabled && data.RawResponse != nil {
 		rawResponseBytes, err := sonic.Marshal(data.RawResponse)
 		if err != nil {
 			p.logger.Error("failed to marshal raw response: %v", err)
@@ -332,7 +332,7 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
-func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool) {
+func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	if streamResponse.Data == nil {
 		return
 	}
@@ -378,7 +378,17 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.StopReason = streamResponse.Data.FinishReason
 	}
 
-	if p.disableContentLogging == nil || !*p.disableContentLogging {
+	// Cache
+	if streamResponse.Data.CacheDebug != nil {
+		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
+	}
+
+	// Finish/stop reason - always persist regardless of content logging settings
+	if streamResponse.Data.FinishReason != nil {
+		entry.StopReason = streamResponse.Data.FinishReason
+	}
+
+	if contentLoggingEnabled {
 		// Transcription output
 		if streamResponse.Data.TranscriptionOutput != nil {
 			entry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
@@ -430,7 +440,7 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
-func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
+func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	if result == nil {
 		return
 	}
@@ -493,7 +503,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		entry.StopReason = result.ResponsesResponse.StopReason
 	}
 
-	if p.disableContentLogging == nil || !*p.disableContentLogging {
+	if contentLoggingEnabled {
 		if shouldStoreRaw {
 			if extraFields.RawRequest != nil {
 				rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest)
@@ -565,7 +575,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	}
 }
 
-func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
+func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	if result == nil || result.ResponsesResponse == nil {
 		return
 	}
@@ -582,8 +592,6 @@ func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *s
 		entry.CompletionTokens = bifrostUsage.CompletionTokens
 		entry.TotalTokens = bifrostUsage.TotalTokens
 	}
-
-	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
 
 	if contentLoggingEnabled {
 		if outputMessage := extractRealtimeOutputMessage(result.ResponsesResponse.Output); outputMessage != nil {

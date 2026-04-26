@@ -31,6 +31,8 @@ export default function LoggingView() {
 		return (
 			localConfig.enable_logging !== config.enable_logging ||
 			localConfig.disable_content_logging !== config.disable_content_logging ||
+			localConfig.allow_per_request_content_storage_override !== config.allow_per_request_content_storage_override ||
+			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
 			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
 			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || [])
@@ -129,6 +131,50 @@ export default function LoggingView() {
 						{needsRestart && <RestartWarning />}
 					</div>
 				)}
+
+				{/* Allow Per-Request Content Storage Override - Only show when logging is enabled */}
+				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
+					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="allow-per-request-content-storage-override" className="text-sm font-medium">
+								Allow Per-Request Content Storage Override
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, individual requests can override the global content logging setting using the{" "}
+								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw provider bytes in logs using the{" "}
+								<code className="text-xs">x-bf-store-raw-request-response</code> header. Raw data is not stored by default — each request must explicitly opt in. Does not control sending raw bytes back to callers — see Allow Per-Request Raw Override.
+							</p>
+						</div>
+						<Switch
+							id="allow-per-request-content-storage-override"
+							data-testid="workspace-content-storage-override-switch"
+							size="md"
+							checked={localConfig.allow_per_request_content_storage_override}
+							onCheckedChange={(checked) => handleConfigChange("allow_per_request_content_storage_override", checked)}
+						/>
+					</div>
+				)}
+
+				{/* Allow Per-Request Raw Override */}
+				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">
+								Allow Per-Request Raw Override
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, individual requests can send raw provider request/response bytes back to the caller using the{" "}
+								<code className="text-xs">x-bf-send-back-raw-request</code> and{" "}
+								<code className="text-xs">x-bf-send-back-raw-response</code> headers. Does not affect log storage — raw-byte persistence in logs is controlled by Allow Per-Request Content Storage Override.
+							</p>
+						</div>
+						<Switch
+							id="allow-per-request-raw-override"
+							data-testid="workspace-raw-override-switch"
+							size="md"
+							checked={localConfig.allow_per_request_raw_override}
+							onCheckedChange={(checked) => handleConfigChange("allow_per_request_raw_override", checked)}
+						/>
+					</div>
 
 				{/* Log Retention Days */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (

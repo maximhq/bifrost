@@ -31,6 +31,14 @@ ClientConfig:
     disable_content_logging:
       type: boolean
       description: Whether content logging is disabled
+    allow_per_request_content_storage_override:
+      type: boolean
+      default: false
+      description: Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key. When false (default), per-request overrides are ignored.
+    allow_per_request_raw_override:
+      type: boolean
+      default: false
+      description: Allow individual requests to override raw request/response visibility via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), provider-level settings are authoritative and per-request overrides are ignored.
     enforce_auth_on_inference:
       type: boolean
       description: Whether to enforce virtual key authentication on inference requests

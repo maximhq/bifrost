@@ -54,6 +54,14 @@ func (m *mockHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return m.mcpHeaderCombinedAllowlist
 }
 
+func (m *mockHandlerStore) ShouldAllowPerRequestStorageOverride() bool {
+	return false
+}
+
+func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
+	return false
+}
+
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 

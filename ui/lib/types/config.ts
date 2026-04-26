@@ -472,6 +472,8 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	disable_content_logging: boolean;
+	allow_per_request_content_storage_override: boolean;
+	allow_per_request_raw_override: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
@@ -500,6 +502,8 @@ export const DefaultCoreConfig: CoreConfig = {
 	prometheus_labels: [],
 	enable_logging: true,
 	disable_content_logging: false,
+	allow_per_request_content_storage_override: false,
+	allow_per_request_raw_override: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
