@@ -118,6 +118,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<StopReasonFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<MetadataFilters filters={filters} onFiltersChange={onFiltersChange} />
 				</div>
 			</ScrollArea>
@@ -315,6 +316,43 @@ function StatusFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 					testId={`status-filter-checkbox-${status}`}
 				/>
 			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// StopReasonFilter – fetches available stop reasons internally
+// ---------------------------------------------------------------------------
+
+function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.stop_reasons || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(undefined, { skip: !opened && !hasActive });
+	const availableStopReasons = filterData?.stop_reasons || [];
+
+	if (!isUninitialized && !isLoading && availableStopReasons.length === 0 && !hasActive) return null;
+
+	return (
+		<FilterSection
+			title="Stop Reason"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="stop-reason-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search stop reasons"
+				items={availableStopReasons.map((reason) => ({ key: reason, label: reason }))}
+				isSelected={(reason) => (filters.stop_reasons || []).includes(reason)}
+				onToggle={(reason) => {
+					const current = filters.stop_reasons || [];
+					const next = current.includes(reason) ? current.filter((r) => r !== reason) : [...current, reason];
+					onFiltersChange({ ...filters, stop_reasons: next });
+				}}
+				testIdPrefix="stop-reason-filter"
+			/>
 		</FilterSection>
 	);
 }

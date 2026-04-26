@@ -373,6 +373,11 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
 	}
 
+	// Finish/stop reason - always persist regardless of content logging settings
+	if streamResponse.Data.FinishReason != nil {
+		entry.StopReason = streamResponse.Data.FinishReason
+	}
+
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
 		// Transcription output
 		if streamResponse.Data.TranscriptionOutput != nil {
@@ -472,6 +477,22 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 
 	// Extract raw request/response and output content
 	extraFields := result.GetExtraFields()
+
+	// Extract stop_reason - always persist regardless of content logging settings
+	if result.TextCompletionResponse != nil && len(result.TextCompletionResponse.Choices) > 0 {
+		if choice := result.TextCompletionResponse.Choices[0]; choice.FinishReason != nil {
+			entry.StopReason = choice.FinishReason
+		}
+	}
+	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
+		if choice := result.ChatResponse.Choices[0]; choice.FinishReason != nil {
+			entry.StopReason = choice.FinishReason
+		}
+	}
+	if result.ResponsesResponse != nil && result.ResponsesResponse.StopReason != nil {
+		entry.StopReason = result.ResponsesResponse.StopReason
+	}
+
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
 		if shouldStoreRaw {
 			if extraFields.RawRequest != nil {
@@ -547,6 +568,11 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
 	if result == nil || result.ResponsesResponse == nil {
 		return
+	}
+
+	// Stop reason - always persist regardless of content logging settings
+	if result.ResponsesResponse.StopReason != nil {
+		entry.StopReason = result.ResponsesResponse.StopReason
 	}
 
 	if usage := result.ResponsesResponse.Usage; usage != nil {
@@ -1102,6 +1128,17 @@ func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context) []string 
 		return []string{}
 	}
 	return engines
+}
+
+// GetAvailableStopReasons returns all unique stop reason values from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableStopReasons(ctx context.Context) []string {
+	stopReasons, err := p.store.GetDistinctStopReasons(ctx)
+	if err != nil {
+		p.logger.Error("failed to get available stop reasons: %v", err)
+		return []string{}
+	}
+	return stopReasons
 }
 
 // keyPairResultsToKeyPairs converts logstore.KeyPairResult slice to KeyPair slice

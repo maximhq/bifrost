@@ -80,6 +80,7 @@ type logOpts struct {
 	SelectedKeyName    string
 	RoutingRuleID      string
 	RoutingRuleName    string
+	StopReason         string
 }
 
 func insertPerfLog(t *testing.T, db *gorm.DB, opts logOpts) {
@@ -98,13 +99,13 @@ func insertPerfLog(t *testing.T, db *gorm.DB, opts logOpts) {
 		INSERT INTO logs (id, timestamp, object_type, provider, model, status,
 			routing_engines_used, metadata, content_summary,
 			virtual_key_id, virtual_key_name, selected_key_id, selected_key_name,
-			routing_rule_id, routing_rule_name, created_at, latency, cost,
+			routing_rule_id, routing_rule_name, stop_reason, created_at, latency, cost,
 			prompt_tokens, completion_tokens, total_tokens)
-		VALUES (?, ?, 'chat_completion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 0.01, 10, 5, 15)
+		VALUES (?, ?, 'chat_completion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 0.01, 10, 5, 15)
 	`, id, opts.Timestamp, opts.Provider, opts.Model, opts.Status,
 		opts.RoutingEnginesUsed, opts.Metadata, opts.ContentSummary,
 		opts.VirtualKeyID, opts.VirtualKeyName, opts.SelectedKeyID, opts.SelectedKeyName,
-		opts.RoutingRuleID, opts.RoutingRuleName, opts.Timestamp).Error
+		opts.RoutingRuleID, opts.RoutingRuleName, opts.StopReason, opts.Timestamp).Error
 	require.NoError(t, err, "Failed to insert test log")
 }
 
@@ -322,6 +323,24 @@ func TestGetDistinctMetadataKeys_TimeCutoff(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, keys, "env")
 	assert.NotContains(t, keys, "old_key")
+}
+
+func TestGetDistinctStopReasons_TimeCutoff(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	recent := now.Add(-7 * 24 * time.Hour)
+	old := now.Add(-60 * 24 * time.Hour)
+
+	insertPerfLog(t, db, logOpts{Timestamp: recent, StopReason: "refusal"})
+	insertPerfLog(t, db, logOpts{Timestamp: recent, StopReason: "content_filter"})
+	insertPerfLog(t, db, logOpts{Timestamp: old, StopReason: "length"})
+
+	stopReasons, err := store.GetDistinctStopReasons(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, stopReasons, "refusal")
+	assert.Contains(t, stopReasons, "content_filter")
+	assert.NotContains(t, stopReasons, "length")
 }
 
 func TestGetAvailableToolNames_TimeCutoff(t *testing.T) {

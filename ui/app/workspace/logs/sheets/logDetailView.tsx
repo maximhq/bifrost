@@ -45,7 +45,7 @@ import {
   RoutingEngineUsedLabels,
   Status
 } from "@/lib/constants/logs";
-import { ContentBlock, LogEntry, ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { Link } from "@tanstack/react-router";
@@ -840,6 +840,30 @@ export function LogDetailView({
                   </div>
                 }
               />
+              {log.stop_reason && (
+                <LogEntryDetailsView
+                  className="w-full"
+                  label="Stop Reason"
+                  value={
+                    <Badge
+                      variant="secondary"
+                      className={cn(
+                        "uppercase",
+                        log.stop_reason === "content_filter" ||
+                          log.stop_reason === "safety" ||
+                          log.stop_reason === "refusal"
+                          ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                          : log.stop_reason === "length" ||
+                              log.stop_reason === "max_tokens"
+                            ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                            : "",
+                      )}
+                    >
+                      {log.stop_reason}
+                    </Badge>
+                  }
+                />
+              )}
               {log.parent_request_id && (
                 <LogEntryDetailsView
                   className="w-full"
@@ -1660,7 +1684,8 @@ export function LogDetailView({
             )}
 
           {!isPassthrough && ((log.input_history && log.input_history.length > 0) ||
-            (log.output_message && !log.error_details?.error.message)) && (
+            (log.output_message && !log.error_details?.error.message) ||
+            (log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety")) && (
             <div className="bg-card rounded-sm border p-5">
               {(visibleRoles.size < allRoles.length
                 ? log.input_history?.filter((m) =>
@@ -1741,6 +1766,12 @@ export function LogDetailView({
                 visibleRoles.has("assistant") &&
                 (() => {
                   const text = extractMessageText(log.output_message);
+                  const refusalText = log.output_message.refusal;
+                  const isStopReasonRefusal =
+                    log.stop_reason === "refusal" ||
+                    log.stop_reason === "content_filter" ||
+                    log.stop_reason === "safety";
+                  const showRefusal = refusalText || (!text && isStopReasonRefusal);
                   const lineCount = text ? text.split("\n").length : 0;
                   const tokenMeta = log.token_usage?.completion_tokens
                     ? `${log.token_usage.completion_tokens} tokens`
@@ -1749,10 +1780,26 @@ export function LogDetailView({
                     ? tokenMeta
                       ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ${tokenMeta}`
                       : `${lineCount} line${lineCount === 1 ? "" : "s"}`
-                    : tokenMeta;
+                    : showRefusal
+                      ? "refusal"
+                      : tokenMeta;
                   return (
                     <MessageRow role="assistant" meta={meta} last>
-                      {text ? (
+                      {showRefusal ? (
+                        <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+                          <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                            <span className="text-[12.5px] font-semibold">
+                              Refusal
+                            </span>
+                          </div>
+                          {refusalText && (
+                            <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+                              {refusalText}
+                            </div>
+                          )}
+                        </div>
+                      ) : text ? (
                         <CollapsibleCode text={text} preview={3} mono={false} />
                       ) : (
                         <LogChatMessageView
@@ -1763,6 +1810,22 @@ export function LogDetailView({
                     </MessageRow>
                   );
                 })()}
+              {!log.output_message &&
+                !log.error_details?.error.message &&
+                (log.stop_reason === "refusal" ||
+                  log.stop_reason === "content_filter" ||
+                  log.stop_reason === "safety") && (
+                  <MessageRow role="assistant" meta="refusal" last>
+                    <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+                      <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                        <AlertCircle className="h-4 w-4 shrink-0" />
+                        <span className="text-[12.5px] font-semibold">
+                          Refusal
+                        </span>
+                      </div>
+                    </div>
+                  </MessageRow>
+                )}
             </div>
           )}
 

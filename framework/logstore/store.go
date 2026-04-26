@@ -63,6 +63,7 @@ type LogStore interface {
 	GetDistinctAliases(ctx context.Context) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context) ([]string, error)
+	GetDistinctStopReasons(ctx context.Context) ([]string, error)
 	GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error)
 
 	// MCP Tool Log histogram methods

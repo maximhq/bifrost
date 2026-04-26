@@ -85,6 +85,9 @@ type LogManager interface {
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
 	GetAvailableRoutingEngines(ctx context.Context) []string
 
+	// GetAvailableStopReasons returns all unique stop reason values from logs
+	GetAvailableStopReasons(ctx context.Context) []string
+
 	// GetAvailableTeams returns all unique team ID-Name pairs from logs
 	GetAvailableTeams(ctx context.Context) []KeyPair
 
@@ -282,6 +285,11 @@ func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPa
 // GetAvailableRoutingEngines returns all unique routing engine types from logs
 func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
 	return p.plugin.GetAvailableRoutingEngines(ctx)
+}
+
+// GetAvailableStopReasons returns all unique stop reason values from logs
+func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context) []string {
+	return p.plugin.GetAvailableStopReasons(ctx)
 }
 
 // GetAvailableTeams returns all unique team ID-Name pairs from logs.

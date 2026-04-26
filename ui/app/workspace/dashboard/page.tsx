@@ -137,6 +137,7 @@ export default function DashboardPage() {
 			status: parseAsString.withDefault(""),
 			routing_rule_ids: parseAsString.withDefault(""),
 			routing_engine_used: parseAsString.withDefault(""),
+			stop_reasons: parseAsString.withDefault(""),
 			missing_cost_only: parseAsString.withDefault("false"),
 			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
@@ -172,6 +173,7 @@ export default function DashboardPage() {
 	const selectedStatuses = useMemo(() => parseCsvParam(urlState.status), [urlState.status]);
 	const selectedRoutingRuleIds = useMemo(() => parseCsvParam(urlState.routing_rule_ids), [urlState.routing_rule_ids]);
 	const selectedRoutingEngines = useMemo(() => parseCsvParam(urlState.routing_engine_used), [urlState.routing_engine_used]);
+	const selectedStopReasons = useMemo(() => parseCsvParam(urlState.stop_reasons), [urlState.stop_reasons]);
 	const missingCostOnly = useMemo(() => urlState.missing_cost_only === "true", [urlState.missing_cost_only]);
 	const metadataFilters = useMemo(() => {
 		if (!urlState.metadata_filters) return undefined;
@@ -211,6 +213,7 @@ export default function DashboardPage() {
 			...(selectedRoutingEngines.length > 0 && {
 				routing_engine_used: selectedRoutingEngines,
 			}),
+			...(selectedStopReasons.length > 0 && { stop_reasons: selectedStopReasons }),
 			...(missingCostOnly && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
@@ -229,6 +232,7 @@ export default function DashboardPage() {
 			selectedStatuses,
 			selectedRoutingRuleIds,
 			selectedRoutingEngines,
+			selectedStopReasons,
 			missingCostOnly,
 			metadataFilters,
 		],
@@ -530,6 +534,7 @@ export default function DashboardPage() {
 				status: (newFilters.status || []).join(","),
 				routing_rule_ids: (newFilters.routing_rule_ids || []).join(","),
 				routing_engine_used: (newFilters.routing_engine_used || []).join(","),
+				stop_reasons: (newFilters.stop_reasons || []).join(","),
 				missing_cost_only: String(newFilters.missing_cost_only ?? false),
 				metadata_filters:
 					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0

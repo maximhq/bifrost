@@ -528,6 +528,10 @@ func (h *HybridLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]strin
 	return h.inner.GetDistinctRoutingEngines(ctx)
 }
 
+func (h *HybridLogStore) GetDistinctStopReasons(ctx context.Context) ([]string, error) {
+	return h.inner.GetDistinctStopReasons(ctx)
+}
+
 func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error) {
 	return h.inner.GetDistinctMetadataKeys(ctx)
 }
