@@ -4941,10 +4941,10 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			go func() {
 				defer func() {
 					drainAndAttachPluginLogs(ctx) // ensure logs are drained even if stream closes without a final chunk
-					if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+					pipeline.FinalizeStreamingPostHookSpans(ctx)
+					if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
 						tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
 					}
-					pipeline.FinalizeStreamingPostHookSpans(ctx)
 					bifrost.releasePluginPipeline(pipeline)
 				}()
 				defer close(outputStream)
