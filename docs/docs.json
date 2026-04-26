@@ -389,7 +389,11 @@
           {
             "group": "Platform specific guides",
             "icon": "swatchbook",
-            "pages": ["deployment-guides/k8s", "deployment-guides/ecs", "deployment-guides/fly"]
+            "pages": [
+              "deployment-guides/k8s",
+              "deployment-guides/ecs",
+              "deployment-guides/fly"
+            ]
           },
           {
             "group": "Config as Code",
@@ -422,6 +426,7 @@
                   "deployment-guides/config-json/storage",
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/cluster",
                   "deployment-guides/config-json/guardrails"
                 ]
               }
@@ -444,6 +449,7 @@
             "pages": [
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
+              "deployment-guides/how-to/nginx-reverse-proxy",
               "deployment-guides/docker-tuning"
             ]
           }
@@ -512,6 +518,9 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.0-prerelease6",
+              "changelogs/v1.5.0-prerelease5",
+              "changelogs/v1.5.0-prerelease4",
               "changelogs/v1.5.0-prerelease3",
               "changelogs/v1.5.0-prerelease2",
               "changelogs/v1.5.0-prerelease1",
@@ -752,6 +761,10 @@
     {
       "source": "/features/mcp/agent-mode",
       "destination": "/mcp/agent-mode"
+    },
+    {
+      "source": "/features/litellm-compat",
+      "destination": "/features/compat-plugin"
     },
     {
       "source": "/features/mcp/code-mode",

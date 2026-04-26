@@ -29,11 +29,10 @@ export interface Team {
 	id: string;
 	name: string;
 	customer_id?: string;
-	budget_id?: string;
 	rate_limit_id?: string;
 	// Populated relationships
 	customer?: Customer;
-	budget?: Budget;
+	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
 	rate_limit?: RateLimit;
 }
 
@@ -185,14 +184,14 @@ export interface UpdateVirtualKeyRequest {
 export interface CreateTeamRequest {
 	name: string;
 	customer_id?: string;
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Multi-budget: each must have a unique reset_duration
 	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateTeamRequest {
 	name?: string;
 	customer_id?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
 }
 
@@ -250,6 +249,7 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	exclude_access_profile_managed_virtual?: boolean;
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";
 	export?: boolean;
@@ -456,6 +456,9 @@ export interface PricingOverridePatch {
 	// Other
 	search_context_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
+	// OCR
+	ocr_cost_per_page?: number;
+	annotation_cost_per_page?: number;
 }
 
 export interface PricingOverride {

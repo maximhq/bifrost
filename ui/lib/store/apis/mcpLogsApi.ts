@@ -28,8 +28,12 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 		params.llm_request_ids = filters.llm_request_ids.join(",");
 	}
-	if (filters.start_time) params.start_time = filters.start_time;
-	if (filters.end_time) params.end_time = filters.end_time;
+	if (filters.period) {
+		params.period = filters.period;
+	} else {
+		if (filters.start_time) params.start_time = filters.start_time;
+		if (filters.end_time) params.end_time = filters.end_time;
+	}
 	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
 	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
 	if (filters.content_search) params.content_search = filters.content_search;
@@ -75,8 +79,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 					params.llm_request_ids = filters.llm_request_ids.join(",");
 				}
-				if (filters.start_time) params.start_time = filters.start_time;
-				if (filters.end_time) params.end_time = filters.end_time;
+				if (filters.period) {
+					params.period = filters.period;
+				} else {
+					if (filters.start_time) params.start_time = filters.start_time;
+					if (filters.end_time) params.end_time = filters.end_time;
+				}
 				if (filters.min_latency) params.min_latency = filters.min_latency;
 				if (filters.max_latency) params.max_latency = filters.max_latency;
 				if (filters.content_search) params.content_search = filters.content_search;
@@ -115,8 +123,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 					params.llm_request_ids = filters.llm_request_ids.join(",");
 				}
-				if (filters.start_time) params.start_time = filters.start_time;
-				if (filters.end_time) params.end_time = filters.end_time;
+				if (filters.period) {
+					params.period = filters.period;
+				} else {
+					if (filters.start_time) params.start_time = filters.start_time;
+					if (filters.end_time) params.end_time = filters.end_time;
+				}
 				if (filters.min_latency) params.min_latency = filters.min_latency;
 				if (filters.max_latency) params.max_latency = filters.max_latency;
 				if (filters.content_search) params.content_search = filters.content_search;

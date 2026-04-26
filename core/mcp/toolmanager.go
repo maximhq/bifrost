@@ -5,9 +5,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -184,6 +182,7 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 		PluginPipelineProvider: m.pluginPipelineProvider,
 		ReleasePluginPipeline:  m.releasePluginPipeline,
 		FetchNewRequestIDFunc:  m.fetchNewRequestIDFunc,
+		OAuth2Provider:         m.oauth2Provider,
 	}
 }
 
@@ -256,7 +255,7 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 //
 // Returns:
 //   - map[string]bool: Map of tool names/patterns to check against
-func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integrationUserAgent string) map[string]bool {
+func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integrationUserAgent string, _ schemas.Logger) map[string]bool {
 	duplicateCheckMap := make(map[string]bool)
 
 	// Add direct tool names
@@ -267,8 +266,8 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 	}
 
 	// Add integration-specific patterns from existing tools
-	switch integrationUserAgent {
-	case "claude-cli":
+	switch {
+	case schemas.ClaudeCLI.Matches(integrationUserAgent):
 		// Claude CLI uses pattern: mcp__{foreign_name}__{tool_name}
 		// The middle part is a foreign name we cannot check for, so we extract the last part
 		// Examples:
@@ -296,12 +295,120 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 				}
 			}
 		}
-		// Add more integration-specific patterns here as needed
-		// case "another-integration":
-		//     // Add patterns for other integrations
+	case schemas.GeminiCLI.Matches(integrationUserAgent):
+		// Gemini CLI uses pattern: mcp_{server_name}_{tool_name}
+		// where {server_name} is the user-configured MCP server name (no underscores)
+		// and {tool_name} is Bifrost's full tool name (may contain hyphens and underscores).
+		// Extract by stripping "mcp_" then skipping to the first "_" (server name boundary).
+		// mcp_bifrost_testing_exa-web_fetch_exa -> testing_exa-web_fetch_exa
+		// mcp_bifrost_ctx7-resolve-library-id   -> ctx7-resolve-library-id
+		// mcp_bifrost_testing_websets-cancel_enrichment -> testing_websets-cancel_enrichment
+		for _, tool := range existingTools {
+			if tool.Function != nil && tool.Function.Name != "" {
+				existingToolName := tool.Function.Name
+				if strings.HasPrefix(existingToolName, "mcp_") {
+					// Strip "mcp_" then find the first "_" which ends the server name
+					withoutPrefix := existingToolName[len("mcp_"):]
+					underscoreIdx := strings.Index(withoutPrefix, "_")
+					if underscoreIdx != -1 && underscoreIdx < len(withoutPrefix)-1 {
+						toolName := withoutPrefix[underscoreIdx+1:]
+						if toolName != "" {
+							duplicateCheckMap[toolName] = true
+							duplicateCheckMap[existingToolName] = true
+						}
+					}
+				}
+			}
+		}
+	case schemas.QwenCodeCLI.Matches(integrationUserAgent):
+		// Qwen CLI uses pattern: mcp__{server_name}__{tool_name}  (double underscores)
+		// Strip "mcp__" then skip past the first "__" (server name boundary) to get tool_name.
+		// Hyphens in the original Bifrost tool name are preserved.
+		// mcp__bifrost__testing_exa-web_search_exa -> testing_exa-web_search_exa
+		// mcp__bifrost__ctx7-resolve-library-id    -> ctx7-resolve-library-id
+		for _, tool := range existingTools {
+			if tool.Function != nil && tool.Function.Name != "" {
+				existingToolName := tool.Function.Name
+				if strings.HasPrefix(existingToolName, "mcp__") {
+					withoutPrefix := existingToolName[len("mcp__"):]
+					separatorIdx := strings.Index(withoutPrefix, "__")
+					if separatorIdx != -1 && separatorIdx < len(withoutPrefix)-2 {
+						toolName := withoutPrefix[separatorIdx+2:]
+						if toolName != "" {
+							duplicateCheckMap[toolName] = true
+							duplicateCheckMap[existingToolName] = true
+						}
+					}
+				}
+			}
+		}
+	case schemas.CodexCLI.Matches(integrationUserAgent):
+		// Codex CLI uses pattern: mcp__{server_name}__{tool_name} (double underscores)
+		// but ALL hyphens in the original Bifrost tool name are converted to underscores.
+		// Strip "mcp__" then skip past the first "__" to get the all-underscore tool name.
+		// mcp__bifrost__testing_exa_web_fetch_exa -> testing_exa_web_fetch_exa
+		// mcp__bifrost__ctx7_query_docs           -> ctx7_query_docs
+		// Callers must also normalize Bifrost tool names (replace "-" with "_") before lookup.
+		for _, tool := range existingTools {
+			if tool.Function != nil && tool.Function.Name != "" {
+				existingToolName := tool.Function.Name
+				if strings.HasPrefix(existingToolName, "mcp__") {
+					withoutPrefix := existingToolName[len("mcp__"):]
+					separatorIdx := strings.Index(withoutPrefix, "__")
+					if separatorIdx != -1 && separatorIdx < len(withoutPrefix)-2 {
+						toolName := withoutPrefix[separatorIdx+2:]
+						if toolName != "" {
+							duplicateCheckMap[toolName] = true
+							duplicateCheckMap[existingToolName] = true
+						}
+					}
+				}
+			}
+		}
+	case schemas.OpenCode.Matches(integrationUserAgent):
+		// OpenCode uses pattern: {server_name}_{tool_name} (no mcp_ prefix, single underscore, hyphens preserved)
+		// Strip up to and including the first "_" to extract the Bifrost tool name.
+		// bifrost_testing_exa-web_fetch_exa    -> testing_exa-web_fetch_exa
+		// bifrost_ctx7-query-docs              -> ctx7-query-docs
+		// bifrost_filesystem-create_directory  -> filesystem-create_directory
+		for _, tool := range existingTools {
+			if tool.Function != nil && tool.Function.Name != "" {
+				existingToolName := tool.Function.Name
+				underscoreIdx := strings.Index(existingToolName, "_")
+				if underscoreIdx != -1 && underscoreIdx < len(existingToolName)-1 {
+					toolName := existingToolName[underscoreIdx+1:]
+					if toolName != "" {
+						duplicateCheckMap[toolName] = true
+						duplicateCheckMap[existingToolName] = true
+					}
+				}
+			}
+		}
 	}
 
 	return duplicateCheckMap
+}
+
+// integrationDuplicateCheck reports whether toolName is already represented in duplicateCheckMap,
+// including Codex CLI's hyphen-to-underscore normalization when matching existing tools.
+func integrationDuplicateCheck(duplicateCheckMap map[string]bool, toolName string, integrationUserAgent string) bool {
+	if duplicateCheckMap[toolName] {
+		return true
+	}
+	if schemas.CodexCLI.Matches(integrationUserAgent) && duplicateCheckMap[strings.ReplaceAll(toolName, "-", "_")] {
+		return true
+	}
+	return false
+}
+
+// markToolSeenInDuplicateCheckMap records toolName in duplicateCheckMap for subsequent
+// integrationDuplicateCheck calls. For Codex CLI it also marks the hyphen-to-underscore
+// form so MCP-only batches cannot inject both "foo-bar" and "foo_bar".
+func markToolSeenInDuplicateCheckMap(duplicateCheckMap map[string]bool, toolName string, integrationUserAgent string) {
+	duplicateCheckMap[toolName] = true
+	if schemas.CodexCLI.Matches(integrationUserAgent) {
+		duplicateCheckMap[strings.ReplaceAll(toolName, "-", "_")] = true
+	}
 }
 
 // ParseAndAddToolsToRequest parses the available tools per client and adds them to the Bifrost request.
@@ -355,7 +462,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 			tools := req.ChatRequest.Params.Tools
 
 			// Build integration-aware duplicate check map
-			duplicateCheckMap := buildIntegrationDuplicateCheckMap(tools, integrationUserAgentStr)
+			duplicateCheckMap := buildIntegrationDuplicateCheckMap(tools, integrationUserAgentStr, m.logger)
 
 			// Add MCP tools that are not already present
 			for _, mcpTool := range availableTools {
@@ -366,11 +473,11 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 
 				toolName := mcpTool.Function.Name
 
-				// Check for duplicates using integration-aware logic
-				if !duplicateCheckMap[toolName] {
+				isDuplicate := integrationDuplicateCheck(duplicateCheckMap, toolName, integrationUserAgentStr)
+				if !isDuplicate {
 					tools = append(tools, mcpTool)
-					// Update the map to prevent duplicates within MCP tools as well
-					duplicateCheckMap[toolName] = true
+					// Update the duplicate check map to prevent duplicates within MCP tools as well
+					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
 			}
 			req.ChatRequest.Params.Tools = tools
@@ -396,7 +503,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 			}
 
 			// Build integration-aware duplicate check map
-			duplicateCheckMap := buildIntegrationDuplicateCheckMap(existingChatTools, integrationUserAgentStr)
+			duplicateCheckMap := buildIntegrationDuplicateCheckMap(existingChatTools, integrationUserAgentStr, m.logger)
 
 			// Add MCP tools that are not already present
 			for _, mcpTool := range availableTools {
@@ -407,17 +514,14 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 
 				toolName := mcpTool.Function.Name
 
-				// Check for duplicates using integration-aware logic
-				if !duplicateCheckMap[toolName] {
+				isDuplicate := integrationDuplicateCheck(duplicateCheckMap, toolName, integrationUserAgentStr)
+				if !isDuplicate {
 					responsesTool := mcpTool.ToResponsesTool()
-					// Skip if the converted tool has nil Name
 					if responsesTool.Name == nil {
 						continue
 					}
-
 					tools = append(tools, *responsesTool)
-					// Update the map to prevent duplicates within MCP tools as well
-					duplicateCheckMap[toolName] = true
+					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
 			}
 			req.ResponsesRequest.Params.Tools = tools
@@ -581,55 +685,9 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 
 	// Handle per-user OAuth: inject user-specific Authorization header
 	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
-		if m.oauth2Provider == nil {
-			return nil, "", "", fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
-		}
-		virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-		userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
-		sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
-
-		// Optional X-Bf-User-Id header overrides user identity; if absent, falls back to virtual key
-		if mcpUserID, _ := ctx.Value(schemas.BifrostContextKeyMCPUserID).(string); mcpUserID != "" {
-			userID = mcpUserID
-		}
-
-		// Try identity-based token lookup first (works even without session token)
-		accessToken, err := m.oauth2Provider.GetUserAccessTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, client.ExecutionConfig.ID)
-		if err != nil && !errors.Is(err, schemas.ErrOAuth2TokenNotFound) {
-			// Had session but token lookup failed with a real error (not just "not found") — return error
-			return nil, "", "", fmt.Errorf("failed to get user access token for MCP server %s: %w", client.ExecutionConfig.Name, err)
-		}
+		accessToken, err := utils.ResolvePerUserOAuthToken(ctx, client, m.oauth2Provider)
 		if err != nil {
-			// No token found — user hasn't authenticated with this MCP server yet.
-			// In LLM gateway mode with no identity, we can't track who this user is,
-			// so an OAuth flow would produce an orphaned token. Return a clear error instead.
-			isMCPGateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool)
-			if !isMCPGateway && userID == "" && virtualKeyID == "" {
-				return nil, "", "", fmt.Errorf(
-					"per-user OAuth for %s requires a user identity: include X-Bf-User-Id or a Virtual Key in your request so the token can be linked to you",
-					client.ExecutionConfig.Name,
-				)
-			}
-
-			// Initiate OAuth flow to get a proper authorize URL with session tracking.
-			if client.ExecutionConfig.OauthConfigID == nil || *client.ExecutionConfig.OauthConfigID == "" {
-				return nil, "", "", fmt.Errorf("per-user OAuth requires an OAuth config but MCP client %s has none", client.ExecutionConfig.Name)
-			}
-			redirectURI := buildRedirectURIFromContext(ctx)
-			if redirectURI == "" {
-				return nil, "", "", fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
-			}
-			flowInitiation, sessionID, flowErr := m.oauth2Provider.InitiateUserOAuthFlow(ctx, *client.ExecutionConfig.OauthConfigID, client.ExecutionConfig.ID, redirectURI)
-			if flowErr != nil {
-				return nil, "", "", fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", client.ExecutionConfig.Name, flowErr)
-			}
-			return nil, "", "", &schemas.MCPUserOAuthRequiredError{
-				MCPClientID:   client.ExecutionConfig.ID,
-				MCPClientName: client.ExecutionConfig.Name,
-				AuthorizeURL:  flowInitiation.AuthorizeURL,
-				SessionID:     sessionID,
-				Message:       fmt.Sprintf("Authentication required for %s. Please visit the authorize URL to connect your account.", client.ExecutionConfig.Name),
-			}
+			return nil, "", "", err
 		}
 
 		if client.Conn == nil {
@@ -638,7 +696,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 			defer cancel()
 
-			toolResponse, callErr := executeToolWithUserToken(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, accessToken, m.logger)
+			toolResponse, callErr := ExecuteToolWithUserToken(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, accessToken, m.logger)
 			if callErr != nil {
 				if toolCtx.Err() == context.DeadlineExceeded {
 					return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
@@ -650,21 +708,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
 		}
 
-		// Persistent connection exists — use per-call headers
-		headers := make(http.Header)
-		if client.ExecutionConfig.Headers != nil {
-			for key, value := range client.ExecutionConfig.Headers {
-				headers.Add(key, value.GetValue())
-			}
-		}
-		headers.Set("Authorization", "Bearer "+accessToken)
-		callRequest.Header = headers
-	} else if client.ExecutionConfig.Headers != nil {
-		headers := make(http.Header)
-		for key, value := range client.ExecutionConfig.Headers {
-			headers.Add(key, value.GetValue())
-		}
-		callRequest.Header = headers
+		callRequest.Header = utils.BuildPerUserOAuthHeaders(callRequest.Header, accessToken)
 	}
 
 	// Create timeout context for tool execution
@@ -806,7 +850,7 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 // Returns:
 //   - *mcp.CallToolResult: tool execution result
 //   - error: any error during connection or execution
-func executeToolWithUserToken(ctx context.Context, config *schemas.MCPClientConfig, toolName string, arguments map[string]interface{}, accessToken string, logger schemas.Logger) (*mcp.CallToolResult, error) {
+func ExecuteToolWithUserToken(ctx context.Context, config *schemas.MCPClientConfig, toolName string, arguments map[string]interface{}, accessToken string, logger schemas.Logger) (*mcp.CallToolResult, error) {
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
 		return nil, fmt.Errorf("connection URL is required for per-user OAuth tool execution")
 	}
@@ -859,15 +903,6 @@ func executeToolWithUserToken(ctx context.Context, config *schemas.MCPClientConf
 	return tempClient.CallTool(ctx, callRequest)
 }
 
-// buildRedirectURIFromContext extracts the OAuth redirect URI from context.
-// The URI is set by the HTTP middleware from the request's host.
-func buildRedirectURIFromContext(ctx *schemas.BifrostContext) string {
-	if uri, ok := ctx.Value(schemas.BifrostContextKeyOAuthRedirectURI).(string); ok && uri != "" {
-		return uri
-	}
-	// Fallback — should not happen if middleware is configured correctly
-	return ""
-}
 
 // GetCodeModeBindingLevel returns the current code mode binding level.
 // This method is safe to call concurrently from multiple goroutines.

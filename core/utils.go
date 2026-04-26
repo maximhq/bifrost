@@ -144,13 +144,8 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			return fmt.Errorf("azure_key_config.endpoint is required")
 		}
 	case schemas.Bedrock:
-		// Key is valid if either:
-		// 1. BedrockKeyConfig is provided
-		// 2. Value is provided and is not empty
+		// BedrockKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
 		if key.BedrockKeyConfig == nil {
-			if key.Value.GetValue() == "" {
-				return fmt.Errorf("either value in key or bedrock_key_config is required")
-			}
 			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
 		}
 	case schemas.Vertex:
@@ -279,6 +274,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {

@@ -43,6 +43,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		ToolsParsed:                 data.Tools,
 		SpeechInputParsed:           data.SpeechInput,
 		TranscriptionInputParsed:    data.TranscriptionInput,
+		OCRInputParsed:              data.OCRInput,
 		ImageGenerationInputParsed:  data.ImageGenerationInput,
 		ImageEditInputParsed:        data.ImageEditInput,
 		ImageVariationInputParsed:   data.ImageVariationInput,
@@ -351,10 +352,6 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.Latency = &latF
 	}
 
-	entry.Status = "success"
-	latF := float64(streamResponse.Data.Latency)
-	entry.Latency = &latF
-
 	// Update model and alias from resolved/requested model pair.
 	applyModelAlias(entry, streamResponse.RequestedModel, streamResponse.ResolvedModel)
 
@@ -371,6 +368,11 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.Cost = streamResponse.Data.Cost
 	}
 
+	// Cache
+	if streamResponse.Data.CacheDebug != nil {
+		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
+	}
+
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
 		// Transcription output
 		if streamResponse.Data.TranscriptionOutput != nil {
@@ -384,10 +386,6 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if streamResponse.Data.ImageGenerationOutput != nil {
 			entry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
 		}
-		// Cache debug
-		if streamResponse.Data.CacheDebug != nil {
-			entry.CacheDebugParsed = streamResponse.Data.CacheDebug
-		}
 		// Output message
 		if streamResponse.Data.OutputMessage != nil {
 			entry.OutputMessageParsed = streamResponse.Data.OutputMessage
@@ -399,9 +397,14 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if shouldStoreRaw {
 			// Raw request
 			if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
-				rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
-				if err == nil {
-					entry.RawRequest = string(rawRequestBytes)
+				switch raw := (*streamResponse.RawRequest).(type) {
+				case string:
+					entry.RawRequest = strings.TrimSpace(raw)
+				default:
+					rawRequestBytes, err := sonic.Marshal(raw)
+					if err == nil {
+						entry.RawRequest = string(rawRequestBytes)
+					}
 				}
 			}
 			// Raw response

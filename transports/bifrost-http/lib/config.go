@@ -127,9 +127,9 @@ type ConfigData struct {
 	// from config.json. Omitting this field or setting it to 2 uses v1.5.0+ semantics:
 	// empty = deny all, ["*"] = allow all. Setting it to 1 restores v1.4.x semantics:
 	// empty = allow all (equivalent to ["*"]).
-	Version           int                                   `json:"version,omitempty"`
-	Client            *configstore.ClientConfig             `json:"client"`
-	EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
+	Version       int                       `json:"version,omitempty"`
+	Client        *configstore.ClientConfig `json:"client"`
+	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -1059,7 +1059,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 
 	if config.MCPConfig != nil {
 		// Merge with config file if present
-		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
+		if configData.MCP != nil {
 			mergeMCPConfig(ctx, config, configData, config.MCPConfig)
 		}
 	} else if configData.MCP != nil {
@@ -1080,6 +1080,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			}
 		}
 	}
+	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP)
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -1091,16 +1092,47 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	}
 	tempMCPConfig := configData.MCP
 	config.MCPConfig = tempMCPConfig
-	// Merge ClientConfigs arrays by ClientID or Name
+	// Merge client configs by name with hash-based reconciliation.
 	clientConfigsToAdd := make([]*schemas.MCPClientConfig, 0)
+	clientConfigsToUpdate := make([]configstoreTables.TableMCPClient, 0)
 	for _, newClientConfig := range tempMCPConfig.ClientConfigs {
+		if newClientConfig == nil {
+			continue
+		}
 		if newClientConfig.ID == "" {
 			newClientConfig.ID = uuid.NewString()
 		}
+		fileClientRow, err := mcpClientConfigToTable(newClientConfig)
+		if err != nil {
+			logger.Warn("invalid MCP client config for %q: %v", newClientConfig.Name, err)
+			continue
+		}
+		fileHash, err := configstore.GenerateMCPClientHash(fileClientRow)
+		if err != nil {
+			logger.Warn("failed to generate MCP client hash for %q: %v", newClientConfig.Name, err)
+			continue
+		}
+		newClientConfig.ConfigHash = fileHash
+		fileClientRow.ConfigHash = fileHash
+
 		found := false
-		for _, existingClientConfig := range mcpConfig.ClientConfigs {
+		for i, existingClientConfig := range mcpConfig.ClientConfigs {
+			if existingClientConfig == nil {
+				continue
+			}
 			if newClientConfig.Name != "" && existingClientConfig.Name == newClientConfig.Name {
 				found = true
+				if existingClientConfig.ConfigHash != fileHash {
+					logger.Debug("config hash mismatch for MCP client %q, syncing from config file", newClientConfig.Name)
+					newClientConfig.ID = existingClientConfig.ID
+					newClientConfig.ConfigHash = fileHash
+					fileClientRow.ClientID = existingClientConfig.ID
+					fileClientRow.ConfigHash = fileHash
+					clientConfigsToUpdate = append(clientConfigsToUpdate, fileClientRow)
+					mcpConfig.ClientConfigs[i] = newClientConfig
+				} else {
+					logger.Debug("config hash matches for MCP client %q, keeping DB config", newClientConfig.Name)
+				}
 				break
 			}
 		}
@@ -1108,11 +1140,11 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			clientConfigsToAdd = append(clientConfigsToAdd, newClientConfig)
 		}
 	}
-	// Add new client configs to existing ones
+	// Add new client configs to existing ones.
 	config.MCPConfig.ClientConfigs = append(mcpConfig.ClientConfigs, clientConfigsToAdd...)
-	// Update store with merged config
-	if config.ConfigStore != nil && len(clientConfigsToAdd) > 0 {
-		logger.Debug("updating MCP config in store with %d new client configs", len(clientConfigsToAdd))
+	// Persist additions and config-driven updates.
+	if config.ConfigStore != nil && (len(clientConfigsToAdd) > 0 || len(clientConfigsToUpdate) > 0) {
+		logger.Debug("updating MCP config in store with %d new clients and %d updated clients", len(clientConfigsToAdd), len(clientConfigsToUpdate))
 		for _, clientConfig := range clientConfigsToAdd {
 			if clientConfig != nil {
 				if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
@@ -1120,11 +1152,115 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 				}
 			}
 		}
+		for i := range clientConfigsToUpdate {
+			update := clientConfigsToUpdate[i]
+			if err := config.ConfigStore.UpdateMCPClientConfig(ctx, update.ClientID, &update); err != nil {
+				logger.Warn("failed to update MCP client config %q: %v", update.Name, err)
+			}
+		}
 	}
+}
+
+func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, mcpCfg *schemas.MCPConfig) {
+	if config == nil || config.ClientConfig == nil || mcpCfg == nil {
+		return
+	}
+
+	changed := false
+	if mcpCfg.ToolManagerConfig != nil {
+		if mcpCfg.ToolManagerConfig.MaxAgentDepth > 0 && config.ClientConfig.MCPAgentDepth != mcpCfg.ToolManagerConfig.MaxAgentDepth {
+			config.ClientConfig.MCPAgentDepth = mcpCfg.ToolManagerConfig.MaxAgentDepth
+			changed = true
+		}
+		toolTimeoutSec := int(mcpCfg.ToolManagerConfig.ToolExecutionTimeout / time.Second)
+		if toolTimeoutSec > 0 && config.ClientConfig.MCPToolExecutionTimeout != toolTimeoutSec {
+			config.ClientConfig.MCPToolExecutionTimeout = toolTimeoutSec
+			changed = true
+		}
+		if mcpCfg.ToolManagerConfig.CodeModeBindingLevel != "" {
+			codeModeLevel := string(mcpCfg.ToolManagerConfig.CodeModeBindingLevel)
+			if config.ClientConfig.MCPCodeModeBindingLevel != codeModeLevel {
+				config.ClientConfig.MCPCodeModeBindingLevel = codeModeLevel
+				changed = true
+			}
+		}
+		if config.ClientConfig.MCPDisableAutoToolInject != mcpCfg.ToolManagerConfig.DisableAutoToolInject {
+			config.ClientConfig.MCPDisableAutoToolInject = mcpCfg.ToolManagerConfig.DisableAutoToolInject
+			changed = true
+		}
+	}
+	if mcpCfg.ToolSyncInterval == 0 {
+		if config.ClientConfig.MCPToolSyncInterval != 0 {
+			config.ClientConfig.MCPToolSyncInterval = 0
+			changed = true
+		}
+	} else if mcpCfg.ToolSyncInterval > 0 {
+		if mcpCfg.ToolSyncInterval%time.Second != 0 {
+			logger.Warn(
+				"ignoring mcp.tool_sync_interval %q: must be a whole number of seconds",
+				mcpCfg.ToolSyncInterval.String(),
+			)
+		} else {
+			syncSeconds := int(mcpCfg.ToolSyncInterval / time.Second)
+			if config.ClientConfig.MCPToolSyncInterval != syncSeconds {
+				config.ClientConfig.MCPToolSyncInterval = syncSeconds
+				changed = true
+			}
+		}
+	}
+
+	if changed && config.ConfigStore != nil {
+		if err := config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+			logger.Warn("failed to update client config with MCP global settings: %v", err)
+		}
+	}
+}
+
+func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreTables.TableMCPClient, error) {
+	if clientConfig == nil {
+		return configstoreTables.TableMCPClient{}, nil
+	}
+	if clientConfig.ToolSyncInterval%time.Second != 0 {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf(
+			"tool_sync_interval must be a whole number of seconds, got %q",
+			clientConfig.ToolSyncInterval.String(),
+		)
+	}
+	authType := string(clientConfig.AuthType)
+	if authType == "" {
+		authType = string(schemas.MCPAuthTypeHeaders)
+	}
+	return configstoreTables.TableMCPClient{
+		ClientID:                  clientConfig.ID,
+		Name:                      clientConfig.Name,
+		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ConnectionType:            string(clientConfig.ConnectionType),
+		ConnectionString:          clientConfig.ConnectionString,
+		StdioConfig:               clientConfig.StdioConfig,
+		AuthType:                  authType,
+		OauthConfigID:             clientConfig.OauthConfigID,
+		ToolsToExecute:            clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		Headers:                   clientConfig.Headers,
+		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:           clientConfig.IsPingAvailable,
+		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		ToolPricing:               clientConfig.ToolPricing,
+		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		DiscoveredTools:           clientConfig.DiscoveredTools,
+		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		ConfigHash:                clientConfig.ConfigHash,
+	}, nil
 }
 
 // loadGovernanceConfig loads and merges governance config from file
 func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	if configData.Governance != nil {
+		if err := resolveGovernanceKeyReferences(ctx, config, configData.Governance); err != nil {
+			logger.Fatal("failed to resolve governance key references: %v", err)
+		}
+	}
+
 	var governanceConfig *configstore.GovernanceConfig
 	var err error
 	// Checking from the store
@@ -1154,6 +1290,127 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 	} else {
 		logger.Debug("no governance config in store or config file")
 	}
+}
+
+func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governanceConfig *configstore.GovernanceConfig) error {
+	if governanceConfig == nil {
+		return nil
+	}
+
+	usesNameRefs := false
+	for i := range governanceConfig.RoutingRules {
+		for j := range governanceConfig.RoutingRules[i].Targets {
+			target := &governanceConfig.RoutingRules[i].Targets[j]
+			if target.ProviderKeyName != nil && strings.TrimSpace(*target.ProviderKeyName) != "" {
+				usesNameRefs = true
+				break
+			}
+		}
+		if usesNameRefs {
+			break
+		}
+	}
+	if !usesNameRefs {
+		for i := range governanceConfig.PricingOverrides {
+			override := &governanceConfig.PricingOverrides[i]
+			if override.ProviderKeyName != nil && strings.TrimSpace(*override.ProviderKeyName) != "" {
+				usesNameRefs = true
+				break
+			}
+		}
+	}
+	if !usesNameRefs {
+		return nil
+	}
+	if config.ConfigStore == nil {
+		return fmt.Errorf("provider_key_name references require config store for key lookup")
+	}
+
+	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		resolveProviderKeyIDByProviderAndName := func(provider string, keyName string) (string, error) {
+			var key configstoreTables.TableKey
+			err := tx.WithContext(ctx).
+				Model(&configstoreTables.TableKey{}).
+				Select("key_id").
+				Where("LOWER(provider) = LOWER(?) AND name = ?", provider, keyName).
+				First(&key).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", fmt.Errorf("provider key not found for provider=%q name=%q", provider, keyName)
+			}
+			if err != nil {
+				return "", err
+			}
+			return key.KeyID, nil
+		}
+
+		resolveProviderKeyIDByName := func(keyName string) (string, error) {
+			var key configstoreTables.TableKey
+			err := tx.WithContext(ctx).
+				Model(&configstoreTables.TableKey{}).
+				Select("key_id").
+				Where("name = ?", keyName).
+				First(&key).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", fmt.Errorf("provider key not found for name=%q", keyName)
+			}
+			if err != nil {
+				return "", err
+			}
+			return key.KeyID, nil
+		}
+
+		for i := range governanceConfig.RoutingRules {
+			for j := range governanceConfig.RoutingRules[i].Targets {
+				target := &governanceConfig.RoutingRules[i].Targets[j]
+				keyName := ""
+				if target.ProviderKeyName != nil {
+					keyName = strings.TrimSpace(*target.ProviderKeyName)
+				}
+				if keyName == "" {
+					target.ProviderKeyName = nil
+					continue
+				}
+				if target.KeyID != nil && strings.TrimSpace(*target.KeyID) != "" {
+					return fmt.Errorf("routing rule %q target cannot set key_id together with provider_key_name", governanceConfig.RoutingRules[i].ID)
+				}
+				if target.Provider == nil || strings.TrimSpace(*target.Provider) == "" {
+					return fmt.Errorf("routing rule %q target provider_key_name requires provider to be set", governanceConfig.RoutingRules[i].ID)
+				}
+
+				keyID, err := resolveProviderKeyIDByProviderAndName(*target.Provider, keyName)
+				if err != nil {
+					return fmt.Errorf("routing rule %q target provider_key_name resolution failed: %w", governanceConfig.RoutingRules[i].ID, err)
+				}
+				target.KeyID = bifrost.Ptr(keyID)
+				target.ProviderKeyName = nil
+			}
+		}
+
+		for i := range governanceConfig.PricingOverrides {
+			override := &governanceConfig.PricingOverrides[i]
+			if override.ProviderKeyName == nil {
+				continue
+			}
+
+			keyName := strings.TrimSpace(*override.ProviderKeyName)
+			if keyName == "" {
+				override.ProviderKeyName = nil
+				continue
+			}
+			if override.ProviderKeyID != nil && strings.TrimSpace(*override.ProviderKeyID) != "" {
+				return fmt.Errorf("pricing override %q cannot set both provider_key_id and provider_key_name", override.ID)
+			}
+
+			keyID, err := resolveProviderKeyIDByName(keyName)
+			if err != nil {
+				return fmt.Errorf("pricing override %q provider_key_name resolution failed: %w", override.ID, err)
+			}
+			override.ProviderKeyID = bifrost.Ptr(keyID)
+			override.ProviderKeyName = nil
+		}
+
+		return nil
+	})
 }
 
 // mergeGovernanceConfig merges governance config from file with store
@@ -1428,6 +1685,67 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			pricingOverridesToAdd = append(pricingOverridesToAdd, configData.Governance.PricingOverrides[i])
 		}
 	}
+	// Merge ModelConfigs by ID (governance model-level budget/rate-limit bindings)
+	modelConfigsToAdd := make([]configstoreTables.TableModelConfig, 0)
+	modelConfigsToUpdate := make([]configstoreTables.TableModelConfig, 0)
+	for i, newModelConfig := range configData.Governance.ModelConfigs {
+		fileModelConfigHash, err := configstore.GenerateModelConfigHash(newModelConfig)
+		if err != nil {
+			logger.Warn("failed to generate model config hash for %s: %v", newModelConfig.ID, err)
+			continue
+		}
+		configData.Governance.ModelConfigs[i].ConfigHash = fileModelConfigHash
+
+		found := false
+		for j, existingModelConfig := range governanceConfig.ModelConfigs {
+			if existingModelConfig.ID == newModelConfig.ID {
+				found = true
+				if existingModelConfig.ConfigHash != fileModelConfigHash {
+					logger.Debug("config hash mismatch for model config %s, syncing from config file", newModelConfig.ID)
+					modelConfigsToUpdate = append(modelConfigsToUpdate, configData.Governance.ModelConfigs[i])
+					governanceConfig.ModelConfigs[j] = configData.Governance.ModelConfigs[i]
+				} else {
+					logger.Debug("config hash matches for model config %s, keeping DB config", newModelConfig.ID)
+				}
+				break
+			}
+		}
+		if !found {
+			modelConfigsToAdd = append(modelConfigsToAdd, configData.Governance.ModelConfigs[i])
+		}
+	}
+	// Merge provider governance bindings by provider name.
+	providersToAdd := make([]configstoreTables.TableProvider, 0)
+	providersToUpdate := make([]configstoreTables.TableProvider, 0)
+	for i, newProvider := range configData.Governance.Providers {
+		fileProviderGovHash, err := configstore.GenerateProviderGovernanceHash(newProvider)
+		if err != nil {
+			logger.Warn("failed to generate provider governance hash for %s: %v", newProvider.Name, err)
+			continue
+		}
+		found := false
+		for j, existingProvider := range governanceConfig.Providers {
+			if existingProvider.Name == newProvider.Name {
+				found = true
+				existingProviderGovHash, err := configstore.GenerateProviderGovernanceHash(existingProvider)
+				if err != nil {
+					logger.Warn("failed to generate existing provider governance hash for %s: %v", existingProvider.Name, err)
+					existingProviderGovHash = ""
+				}
+				if existingProviderGovHash != fileProviderGovHash {
+					logger.Debug("config hash mismatch for provider governance %s, syncing from config file", newProvider.Name)
+					providersToUpdate = append(providersToUpdate, configData.Governance.Providers[i])
+					governanceConfig.Providers[j] = configData.Governance.Providers[i]
+				} else {
+					logger.Debug("config hash matches for provider governance %s, keeping DB config", newProvider.Name)
+				}
+				break
+			}
+		}
+		if !found {
+			providersToAdd = append(providersToAdd, configData.Governance.Providers[i])
+		}
+	}
 	// Add merged items to config
 	config.GovernanceConfig.Budgets = append(governanceConfig.Budgets, budgetsToAdd...)
 	config.GovernanceConfig.RateLimits = append(governanceConfig.RateLimits, rateLimitsToAdd...)
@@ -1436,6 +1754,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	config.GovernanceConfig.VirtualKeys = append(governanceConfig.VirtualKeys, virtualKeysToAdd...)
 	config.GovernanceConfig.RoutingRules = append(governanceConfig.RoutingRules, routingRulesToAdd...)
 	config.GovernanceConfig.PricingOverrides = append(governanceConfig.PricingOverrides, pricingOverridesToAdd...)
+	config.GovernanceConfig.ModelConfigs = append(governanceConfig.ModelConfigs, modelConfigsToAdd...)
+	config.GovernanceConfig.Providers = append(governanceConfig.Providers, providersToAdd...)
 	// Update store with merged config items
 	hasChanges := len(budgetsToAdd) > 0 || len(budgetsToUpdate) > 0 ||
 		len(rateLimitsToAdd) > 0 || len(rateLimitsToUpdate) > 0 ||
@@ -1443,7 +1763,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		len(teamsToAdd) > 0 || len(teamsToUpdate) > 0 ||
 		len(virtualKeysToAdd) > 0 || len(virtualKeysToUpdate) > 0 ||
 		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0 ||
-		len(pricingOverridesToAdd) > 0 || len(pricingOverridesToUpdate) > 0
+		len(pricingOverridesToAdd) > 0 || len(pricingOverridesToUpdate) > 0 ||
+		len(modelConfigsToAdd) > 0 || len(modelConfigsToUpdate) > 0 ||
+		len(providersToAdd) > 0 || len(providersToUpdate) > 0
 	if config.ConfigStore != nil && hasChanges {
 		err := updateGovernanceConfigInStore(ctx, config,
 			budgetsToAdd, budgetsToUpdate,
@@ -1452,7 +1774,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			teamsToAdd, teamsToUpdate,
 			virtualKeysToAdd, virtualKeysToUpdate,
 			routingRulesToAdd, routingRulesToUpdate,
-			pricingOverridesToAdd, pricingOverridesToUpdate)
+			pricingOverridesToAdd, pricingOverridesToUpdate,
+			modelConfigsToAdd, modelConfigsToUpdate,
+			providersToAdd, providersToUpdate)
 		if err != nil {
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
@@ -1493,11 +1817,38 @@ func updateGovernanceConfigInStore(
 	routingRulesToUpdate []configstoreTables.TableRoutingRule,
 	pricingOverridesToAdd []configstoreTables.TablePricingOverride,
 	pricingOverridesToUpdate []configstoreTables.TablePricingOverride,
+	modelConfigsToAdd []configstoreTables.TableModelConfig,
+	modelConfigsToUpdate []configstoreTables.TableModelConfig,
+	providersToAdd []configstoreTables.TableProvider,
+	providersToUpdate []configstoreTables.TableProvider,
 ) error {
 	logger.Debug("updating governance config in store with merged items")
 	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Owner-scoped budgets require owner rows to exist first:
+		// - team_id -> governance_teams
+		// - virtual_key_id -> governance_virtual_keys
+		// - provider_config_id -> governance_virtual_key_provider_configs
+		pendingTeamBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
+		pendingVirtualKeyBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
+		pendingProviderConfigBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
+		pendingTeamBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+		pendingVirtualKeyBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+		pendingProviderConfigBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+
 		// Create budgets
 		for _, budget := range budgetsToAdd {
+			if budget.TeamID != nil {
+				pendingTeamBudgetsToAdd = append(pendingTeamBudgetsToAdd, budget)
+				continue
+			}
+			if budget.VirtualKeyID != nil {
+				pendingVirtualKeyBudgetsToAdd = append(pendingVirtualKeyBudgetsToAdd, budget)
+				continue
+			}
+			if budget.ProviderConfigID != nil {
+				pendingProviderConfigBudgetsToAdd = append(pendingProviderConfigBudgetsToAdd, budget)
+				continue
+			}
 			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
 			}
@@ -1505,6 +1856,18 @@ func updateGovernanceConfigInStore(
 
 		// Update budgets (config.json changed)
 		for _, budget := range budgetsToUpdate {
+			if budget.TeamID != nil {
+				pendingTeamBudgetsToUpdate = append(pendingTeamBudgetsToUpdate, budget)
+				continue
+			}
+			if budget.VirtualKeyID != nil {
+				pendingVirtualKeyBudgetsToUpdate = append(pendingVirtualKeyBudgetsToUpdate, budget)
+				continue
+			}
+			if budget.ProviderConfigID != nil {
+				pendingProviderConfigBudgetsToUpdate = append(pendingProviderConfigBudgetsToUpdate, budget)
+				continue
+			}
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -1552,6 +1915,20 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Create team-owned budgets after teams exist.
+		for _, budget := range pendingTeamBudgetsToAdd {
+			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Update team-owned budgets after teams exist.
+		for _, budget := range pendingTeamBudgetsToUpdate {
+			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+			}
+		}
+
 		// Create virtual keys with explicit association handling
 		for i := range virtualKeysToAdd {
 			virtualKey := &virtualKeysToAdd[i]
@@ -1590,6 +1967,34 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Create virtual-key-owned budgets after virtual keys exist.
+		for _, budget := range pendingVirtualKeyBudgetsToAdd {
+			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Update virtual-key-owned budgets after virtual keys exist.
+		for _, budget := range pendingVirtualKeyBudgetsToUpdate {
+			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Create provider-config-owned budgets after virtual key provider configs exist.
+		for _, budget := range pendingProviderConfigBudgetsToAdd {
+			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Update provider-config-owned budgets after virtual key provider configs exist.
+		for _, budget := range pendingProviderConfigBudgetsToUpdate {
+			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+			}
+		}
+
 		// Create routing rules (new from config.json)
 		for _, rule := range routingRulesToAdd {
 			if err := config.ConfigStore.CreateRoutingRule(ctx, &rule, tx); err != nil {
@@ -1617,9 +2022,214 @@ func updateGovernanceConfigInStore(
 				return fmt.Errorf("failed to update pricing override %s: %w", override.ID, err)
 			}
 		}
+		// Create model configs (new from config.json)
+		for _, modelConfig := range modelConfigsToAdd {
+			if err := validateModelConfigGovernanceOwnership(tx, modelConfig); err != nil {
+				return err
+			}
+			if err := config.ConfigStore.CreateModelConfig(ctx, &modelConfig, tx); err != nil {
+				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
+			}
+		}
+
+		// Update model configs (config.json changed)
+		for _, modelConfig := range modelConfigsToUpdate {
+			if err := validateModelConfigGovernanceOwnership(tx, modelConfig); err != nil {
+				return err
+			}
+			if err := config.ConfigStore.UpdateModelConfig(ctx, &modelConfig, tx); err != nil {
+				return fmt.Errorf("failed to update model config %s: %w", modelConfig.ID, err)
+			}
+		}
+
+		// Upsert provider governance links (budget_id/rate_limit_id) for newly added mappings.
+		for _, provider := range providersToAdd {
+			if provider.Name == "" {
+				continue
+			}
+			if err := validateProviderGovernanceOwnership(tx, provider); err != nil {
+				return err
+			}
+			updates := map[string]interface{}{
+				"budget_id":     provider.BudgetID,
+				"rate_limit_id": provider.RateLimitID,
+			}
+			result := tx.Model(&configstoreTables.TableProvider{}).
+				Where("name = ?", provider.Name).
+				Select("budget_id", "rate_limit_id").
+				Updates(updates)
+			if result.Error != nil {
+				return fmt.Errorf("failed to create provider governance mapping for %s: %w", provider.Name, result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return fmt.Errorf(
+					"failed to create provider governance mapping for %s: no provider row found (budget_id=%v, rate_limit_id=%v)",
+					provider.Name,
+					provider.BudgetID,
+					provider.RateLimitID,
+				)
+			}
+		}
+
+		// Update provider governance links when config file values changed.
+		for _, provider := range providersToUpdate {
+			if provider.Name == "" {
+				continue
+			}
+			if err := validateProviderGovernanceOwnership(tx, provider); err != nil {
+				return err
+			}
+			updates := map[string]interface{}{
+				"budget_id":     provider.BudgetID,
+				"rate_limit_id": provider.RateLimitID,
+			}
+			result := tx.Model(&configstoreTables.TableProvider{}).
+				Where("name = ?", provider.Name).
+				Select("budget_id", "rate_limit_id").
+				Updates(updates)
+			if result.Error != nil {
+				return fmt.Errorf("failed to update provider governance mapping for %s: %w", provider.Name, result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return fmt.Errorf(
+					"failed to update provider governance mapping for %s: no provider row found (budget_id=%v, rate_limit_id=%v)",
+					provider.Name,
+					provider.BudgetID,
+					provider.RateLimitID,
+				)
+			}
+		}
 
 		return nil
 	})
+}
+
+func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstoreTables.TableModelConfig) error {
+	if err := validateBudgetLinkOwnership(tx, modelConfig.BudgetID, "model config", modelConfig.ID); err != nil {
+		return err
+	}
+	if err := validateRateLimitLinkOwnership(tx, modelConfig.RateLimitID, "model config", modelConfig.ID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProviderGovernanceOwnership(tx *gorm.DB, provider configstoreTables.TableProvider) error {
+	if err := validateBudgetLinkOwnership(tx, provider.BudgetID, "provider", provider.Name); err != nil {
+		return err
+	}
+	if err := validateRateLimitLinkOwnership(tx, provider.RateLimitID, "provider", provider.Name); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateBudgetLinkOwnership(tx *gorm.DB, budgetID *string, ownerType, ownerID string) error {
+	if budgetID == nil {
+		return nil
+	}
+	id := strings.TrimSpace(*budgetID)
+	if id == "" {
+		return nil
+	}
+
+	var budget configstoreTables.TableBudget
+	if err := tx.Select("id", "team_id", "virtual_key_id", "provider_config_id").Where("id = ?", id).First(&budget).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("budget_id %q referenced by %s %q does not exist", id, ownerType, ownerID)
+		}
+		return fmt.Errorf("failed to validate budget ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	if budget.TeamID != nil || budget.VirtualKeyID != nil || budget.ProviderConfigID != nil {
+		return fmt.Errorf("budget_id %q is already owned by another governance entity and cannot be linked to %s %q", id, ownerType, ownerID)
+	}
+
+	modelQuery := tx.Model(&configstoreTables.TableModelConfig{}).Where("budget_id = ?", id)
+	if ownerType == "model config" {
+		modelQuery = modelQuery.Where("id <> ?", ownerID)
+	}
+	var modelOwner configstoreTables.TableModelConfig
+	if err := modelQuery.Select("id").First(&modelOwner).Error; err == nil {
+		return fmt.Errorf("budget_id %q is already linked to model config %q; cannot link to %s %q", id, modelOwner.ID, ownerType, ownerID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to validate budget ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	providerQuery := tx.Model(&configstoreTables.TableProvider{}).Where("budget_id = ?", id)
+	if ownerType == "provider" {
+		providerQuery = providerQuery.Where("name <> ?", ownerID)
+	}
+	var providerOwner configstoreTables.TableProvider
+	if err := providerQuery.Select("name").First(&providerOwner).Error; err == nil {
+		return fmt.Errorf("budget_id %q is already linked to provider %q; cannot link to %s %q", id, providerOwner.Name, ownerType, ownerID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to validate budget ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	return nil
+}
+
+func validateRateLimitLinkOwnership(tx *gorm.DB, rateLimitID *string, ownerType, ownerID string) error {
+	if rateLimitID == nil {
+		return nil
+	}
+	id := strings.TrimSpace(*rateLimitID)
+	if id == "" {
+		return nil
+	}
+
+	var rateLimit configstoreTables.TableRateLimit
+	if err := tx.Select("id").Where("id = ?", id).First(&rateLimit).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("rate_limit_id %q referenced by %s %q does not exist", id, ownerType, ownerID)
+		}
+		return fmt.Errorf("failed to validate rate_limit ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	modelQuery := tx.Model(&configstoreTables.TableModelConfig{}).Where("rate_limit_id = ?", id)
+	if ownerType == "model config" {
+		modelQuery = modelQuery.Where("id <> ?", ownerID)
+	}
+	var modelOwner configstoreTables.TableModelConfig
+	if err := modelQuery.Select("id").First(&modelOwner).Error; err == nil {
+		return fmt.Errorf("rate_limit_id %q is already linked to model config %q; cannot link to %s %q", id, modelOwner.ID, ownerType, ownerID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to validate rate_limit ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	providerQuery := tx.Model(&configstoreTables.TableProvider{}).Where("rate_limit_id = ?", id)
+	if ownerType == "provider" {
+		providerQuery = providerQuery.Where("name <> ?", ownerID)
+	}
+	var providerOwner configstoreTables.TableProvider
+	if err := providerQuery.Select("name").First(&providerOwner).Error; err == nil {
+		return fmt.Errorf("rate_limit_id %q is already linked to provider %q; cannot link to %s %q", id, providerOwner.Name, ownerType, ownerID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to validate rate_limit ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	var teamOwner configstoreTables.TableTeam
+	if err := tx.Model(&configstoreTables.TableTeam{}).
+		Where("rate_limit_id = ?", id).
+		Select("id").
+		First(&teamOwner).Error; err == nil {
+		return fmt.Errorf("rate_limit_id %q is already linked to team %q; cannot link to %s %q", id, teamOwner.ID, ownerType, ownerID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to validate rate_limit ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	var vkOwner configstoreTables.TableVirtualKeyProviderConfig
+	if err := tx.Model(&configstoreTables.TableVirtualKeyProviderConfig{}).
+		Where("rate_limit_id = ?", id).
+		Select("id").
+		First(&vkOwner).Error; err == nil {
+		return fmt.Errorf("rate_limit_id %q is already linked to virtual-key provider config %d; cannot link to %s %q", id, vkOwner.ID, ownerType, ownerID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to validate rate_limit ownership for %s %q: %w", ownerType, ownerID, err)
+	}
+
+	return nil
 }
 
 // createGovernanceConfigInStore creates governance config in store from config file
@@ -1634,8 +2244,7 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		len(config.GovernanceConfig.VirtualKeys),
 		len(config.GovernanceConfig.RoutingRules))
 	if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		for i := range config.GovernanceConfig.Budgets {
-			budget := &config.GovernanceConfig.Budgets[i]
+		createBudget := func(budget *configstoreTables.TableBudget) error {
 			budgetHash, err := configstore.GenerateBudgetHash(*budget)
 			if err != nil {
 				logger.Warn("failed to generate budget hash for %s: %v", budget.ID, err)
@@ -1644,6 +2253,33 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateBudget(ctx, budget, tx); err != nil {
 				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+			return nil
+		}
+
+		// Owner-scoped budgets require owner rows to exist first:
+		// - team_id -> governance_teams
+		// - virtual_key_id -> governance_virtual_keys
+		// - provider_config_id -> governance_virtual_key_provider_configs
+		pendingTeamBudgets := make([]*configstoreTables.TableBudget, 0)
+		pendingVirtualKeyBudgets := make([]*configstoreTables.TableBudget, 0)
+		pendingProviderConfigBudgets := make([]*configstoreTables.TableBudget, 0)
+		for i := range config.GovernanceConfig.Budgets {
+			budget := &config.GovernanceConfig.Budgets[i]
+			if budget.TeamID != nil {
+				pendingTeamBudgets = append(pendingTeamBudgets, budget)
+				continue
+			}
+			if budget.VirtualKeyID != nil {
+				pendingVirtualKeyBudgets = append(pendingVirtualKeyBudgets, budget)
+				continue
+			}
+			if budget.ProviderConfigID != nil {
+				pendingProviderConfigBudgets = append(pendingProviderConfigBudgets, budget)
+				continue
+			}
+			if err := createBudget(budget); err != nil {
+				return err
 			}
 		}
 
@@ -1657,6 +2293,44 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateRateLimit(ctx, rateLimit, tx); err != nil {
 				return fmt.Errorf("failed to create rate limit %s: %w", rateLimit.ID, err)
+			}
+		}
+		for i := range config.GovernanceConfig.ModelConfigs {
+			modelConfig := &config.GovernanceConfig.ModelConfigs[i]
+			if err := validateModelConfigGovernanceOwnership(tx, *modelConfig); err != nil {
+				return err
+			}
+			modelConfigHash, err := configstore.GenerateModelConfigHash(*modelConfig)
+			if err != nil {
+				logger.Warn("failed to generate model config hash for %s: %v", modelConfig.ID, err)
+			} else {
+				modelConfig.ConfigHash = modelConfigHash
+			}
+			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
+				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
+			}
+		}
+		for i := range config.GovernanceConfig.Providers {
+			provider := &config.GovernanceConfig.Providers[i]
+			if provider.Name == "" {
+				continue
+			}
+			if err := validateProviderGovernanceOwnership(tx, *provider); err != nil {
+				return err
+			}
+			updates := map[string]interface{}{
+				"budget_id":     provider.BudgetID,
+				"rate_limit_id": provider.RateLimitID,
+			}
+			result := tx.Model(&configstoreTables.TableProvider{}).
+				Where("name = ?", provider.Name).
+				Select("budget_id", "rate_limit_id").
+				Updates(updates)
+			if result.Error != nil {
+				return fmt.Errorf("failed to apply provider governance config for %s: %w", provider.Name, result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return fmt.Errorf("failed to apply provider governance config for %s: no provider row found", provider.Name)
 			}
 		}
 
@@ -1683,6 +2357,12 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateTeam(ctx, team, tx); err != nil {
 				return fmt.Errorf("failed to create team %s: %w", team.ID, err)
+			}
+		}
+
+		for _, budget := range pendingTeamBudgets {
+			if err := createBudget(budget); err != nil {
+				return err
 			}
 		}
 
@@ -1740,6 +2420,20 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 
 			virtualKey.ProviderConfigs = providerConfigs
 			virtualKey.MCPConfigs = mcpConfigs
+		}
+
+		// Create virtual-key-owned budgets after virtual keys exist.
+		for _, budget := range pendingVirtualKeyBudgets {
+			if err := createBudget(budget); err != nil {
+				return err
+			}
+		}
+
+		// Create provider-config-owned budgets after virtual key provider configs exist.
+		for _, budget := range pendingProviderConfigBudgets {
+			if err := createBudget(budget); err != nil {
+				return err
+			}
 		}
 
 		// Create pricing overrides after virtual keys so that scoped overrides referencing
@@ -2087,15 +2781,6 @@ func buildMCPPricingDataFromConfig(ctx context.Context, configData *ConfigData) 
 	return mcpPricingData
 }
 
-// redactURL truncates a URL for safe logging, avoiding leakage of tokens or
-// credentials that may be embedded in query parameters or paths.
-func redactURL(u string) string {
-	if len(u) <= 8 {
-		return "***"
-	}
-	return u[:8] + "..."
-}
-
 // ResolveFrameworkPricingConfig resolves framework pricing configuration.
 //
 // Precedence order (highest → lowest): DB > config.json > built-in defaults.
@@ -2174,17 +2859,13 @@ func ResolveFrameworkPricingConfig(
 
 	resolvedPricingURL := &defaultPricingURL
 	resolvedSyncSeconds := &defaultSyncSeconds
-	urlSource := "default"
-	intervalSource := "default"
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
-		urlSource = "file"
 		logger.Debug("pricing_url resolved from file")
 	}
 	if fileSyncSeconds != nil {
 		resolvedSyncSeconds = fileSyncSeconds
-		intervalSource = "file"
 		logger.Debug("pricing_sync_interval resolved from file: %d seconds", *fileSyncSeconds)
 	}
 
@@ -2195,11 +2876,7 @@ func ResolveFrameworkPricingConfig(
 	if dbConfig != nil {
 		configID = dbConfig.ID
 		if dbConfig.PricingURL != nil {
-			if filePricingURL != nil && *filePricingURL != *dbConfig.PricingURL {
-				logger.Info("pricing_url overridden by DB: file=%s db=%s", redactURL(*filePricingURL), redactURL(*dbConfig.PricingURL))
-			}
 			resolvedPricingURL = dbConfig.PricingURL
-			urlSource = "db"
 		} else if !skipURLBackfill {
 			// DB row exists but URL field is NULL — backfill with resolved value.
 			// Skip backfill when the resolved URL is an unresolved env reference
@@ -2219,14 +2896,12 @@ func ResolveFrameworkPricingConfig(
 				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumPricingSyncIntervalSec)
 				clamped := modelcatalog.MinimumPricingSyncIntervalSec
 				resolvedSyncSeconds = &clamped
-				intervalSource = "db"
 				needsDBUpdate = true
 			} else {
 				if fileSyncSeconds != nil && *fileSyncSeconds != *dbConfig.PricingSyncInterval {
 					logger.Info("pricing_sync_interval overridden by DB: file=%d db=%d seconds", *fileSyncSeconds, *dbConfig.PricingSyncInterval)
 				}
 				resolvedSyncSeconds = dbConfig.PricingSyncInterval
-				intervalSource = "db"
 			}
 		} else {
 			// DB row exists but interval field is NULL — backfill.
@@ -2245,16 +2920,11 @@ func ResolveFrameworkPricingConfig(
 	if resolvedPricingURL == nil {
 		logger.Warn("invariant violation: pricing_url resolved to nil — falling back to default %q", defaultPricingURL)
 		resolvedPricingURL = &defaultPricingURL
-		urlSource = "default(invariant-fallback)"
 	}
 	if resolvedSyncSeconds == nil {
 		logger.Warn("invariant violation: pricing_sync_interval resolved to nil — falling back to default %d seconds", defaultSyncSeconds)
 		resolvedSyncSeconds = &defaultSyncSeconds
-		intervalSource = "default(invariant-fallback)"
 	}
-
-	logger.Info("resolved pricing config: url=%s (source: %s) sync_interval=%d seconds (source: %s)",
-		redactURL(*resolvedPricingURL), urlSource, *resolvedSyncSeconds, intervalSource)
 
 	return &configstoreTables.TableFrameworkConfig{
 			ID:                  configID,

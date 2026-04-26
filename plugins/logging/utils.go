@@ -545,29 +545,6 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 			},
 		}, []schemas.ResponsesMessage{}
 	}
-	if request.OCRRequest != nil {
-		var docRef string
-		if request.OCRRequest.Document.DocumentURL != nil {
-			docRef = *request.OCRRequest.Document.DocumentURL
-		} else if request.OCRRequest.Document.ImageURL != nil {
-			docRef = *request.OCRRequest.Document.ImageURL
-		}
-		// Strip query parameters to avoid logging sensitive tokens (e.g., pre-signed URLs)
-		if idx := strings.Index(docRef, "?"); idx != -1 {
-			docRef = docRef[:idx]
-		}
-		if docRef == "" {
-			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
-		}
-		return []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &docRef,
-				},
-			},
-		}, []schemas.ResponsesMessage{}
-	}
 	if request.CountTokensRequest != nil && len(request.CountTokensRequest.Input) > 0 {
 		return []schemas.ChatMessage{}, request.CountTokensRequest.Input
 	}
@@ -678,7 +655,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeText
 	case schemas.ChatCompletionStreamRequest:
 		streamType = streaming.StreamTypeChat
-	case schemas.ResponsesStreamRequest:
+	case schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		streamType = streaming.StreamTypeResponses
 	case schemas.SpeechStreamRequest:
 		streamType = streaming.StreamTypeAudio
@@ -702,6 +679,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		OutputMessages:        result.OutputMessages,
 		ErrorDetails:          result.ErrorDetails,
 		TokenUsage:            result.TokenUsage,
+		CacheDebug:            result.CacheDebug,
 		Cost:                  result.Cost,
 		AudioOutput:           result.AudioOutput,
 		TranscriptionOutput:   result.TranscriptionOutput,

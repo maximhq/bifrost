@@ -378,72 +378,42 @@ func TestToBifrostChatResponse_MultipleTextBlocksWithThinking(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 
-	// Content should be a combined string, not blocks
+	// With multiple text blocks, ToBifrostChatResponse preserves them as ContentBlocks
+	// (only a single text block collapses to ContentStr — see chat.go:812-815).
+	// Thinking flows through ReasoningDetails below, not ContentStr.
 	choice := result.Choices[0]
 	msg := choice.ChatNonStreamResponseChoice.Message
-	if msg.Content.ContentBlocks != nil {
-		t.Error("expected ContentBlocks to be nil (combined into string)")
+	if msg.Content.ContentStr != nil {
+		t.Errorf("expected ContentStr to be nil with multiple text blocks, got %q", *msg.Content.ContentStr)
 	}
-	if msg.Content.ContentStr == nil {
-		t.Fatal("expected ContentStr to be non-nil")
+	if len(msg.Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks (one per text block), got %d", len(msg.Content.ContentBlocks))
+	}
+	if msg.Content.ContentBlocks[0].Text == nil || *msg.Content.ContentBlocks[0].Text != textBlock1 {
+		t.Errorf("block 0 text mismatch: got %v, want %q", msg.Content.ContentBlocks[0].Text, textBlock1)
+	}
+	if msg.Content.ContentBlocks[1].Text == nil || *msg.Content.ContentBlocks[1].Text != textBlock2 {
+		t.Errorf("block 1 text mismatch: got %v, want %q", msg.Content.ContentBlocks[1].Text, textBlock2)
 	}
 
-	// Combined string: thinking first, then text blocks
-	expected := thinkingText + "\n\n" + textBlock1 + "\n\n" + textBlock2
-	if *msg.Content.ContentStr != expected {
-		t.Errorf("expected combined content:\n%s\ngot:\n%s", expected, *msg.Content.ContentStr)
-	}
-
-	// Reasoning field should still have thinking text
+	// Thinking is surfaced via ReasoningDetails with the signature preserved
+	// (see chat.go:798-807).
 	if msg.ChatAssistantMessage == nil {
 		t.Fatal("expected ChatAssistantMessage to be non-nil")
 	}
-	if msg.ChatAssistantMessage.Reasoning == nil {
-		t.Fatal("expected Reasoning to be non-nil")
-	}
-
-	// ReasoningDetails should have: signature-only thinking entry + content blocks boundary
 	rd := msg.ChatAssistantMessage.ReasoningDetails
-	if len(rd) < 2 {
-		t.Fatalf("expected at least 2 reasoning details entries, got %d", len(rd))
+	if len(rd) != 1 {
+		t.Fatalf("expected 1 reasoning details entry (the thinking block), got %d", len(rd))
 	}
-
-	// First entry: thinking with signature, no text (text was cleared)
 	if rd[0].Type != schemas.BifrostReasoningDetailsTypeText {
-		t.Errorf("expected first reasoning detail type %s, got %s", schemas.BifrostReasoningDetailsTypeText, rd[0].Type)
+		t.Errorf("expected reasoning detail type %s, got %s", schemas.BifrostReasoningDetailsTypeText, rd[0].Type)
 	}
 	if rd[0].Signature == nil || *rd[0].Signature != signature {
-		t.Error("expected signature to be preserved")
+		t.Error("expected thinking signature to be preserved on reasoning detail")
 	}
-	if rd[0].Text != nil {
-		t.Error("expected thinking text to be nil (cleared to avoid duplication)")
+	if rd[0].Text == nil || *rd[0].Text != thinkingText {
+		t.Errorf("expected reasoning text to match thinking text")
 	}
-
-	// Last entry: content blocks boundary
-	lastRD := rd[len(rd)-1]
-	if lastRD.Type != schemas.BifrostReasoningDetailsTypeContentBlocks {
-		t.Errorf("expected last reasoning detail type %s, got %s", schemas.BifrostReasoningDetailsTypeContentBlocks, lastRD.Type)
-	}
-	if lastRD.Text == nil {
-		t.Fatal("expected content blocks metadata to be non-nil")
-	}
-
-	// var meta []contentBlockMeta
-	// if err := json.Unmarshal([]byte(*lastRD.Text), &meta); err != nil {
-	// 	t.Fatalf("failed to unmarshal block metadata: %v", err)
-	// }
-	// if len(meta) != 3 {
-	// 	t.Fatalf("expected 3 block metadata entries, got %d", len(meta))
-	// }
-	// if meta[0].T != "thinking" || meta[0].L != len(thinkingText) {
-	// 	t.Errorf("block 0: expected thinking/%d, got %s/%d", len(thinkingText), meta[0].T, meta[0].L)
-	// }
-	// if meta[1].T != "text" || meta[1].L != len(textBlock1) {
-	// 	t.Errorf("block 1: expected text/%d, got %s/%d", len(textBlock1), meta[1].T, meta[1].L)
-	// }
-	// if meta[2].T != "text" || meta[2].L != len(textBlock2) {
-	// 	t.Errorf("block 2: expected text/%d, got %s/%d", len(textBlock2), meta[2].T, meta[2].L)
-	// }
 }
 
 func TestToBifrostChatResponse_SingleTextBlockNoThinking(t *testing.T) {

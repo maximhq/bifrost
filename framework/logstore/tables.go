@@ -93,12 +93,13 @@ type SessionSummaryResult struct {
 }
 
 type SearchStats struct {
-	TotalRequests         int64   `json:"total_requests"`
-	SuccessRate           float64 `json:"success_rate"`             // Percentage of individual attempts that succeeded
-	UserFacingSuccessRate float64 `json:"user_facing_success_rate"` // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
-	AverageLatency        float64 `json:"average_latency"`          // Average latency in milliseconds
-	TotalTokens           int64   `json:"total_tokens"`             // Total tokens used
-	TotalCost             float64 `json:"total_cost"`               // Total cost in dollars
+	TotalRequests              int64   `json:"total_requests"`
+	SuccessRate                float64 `json:"success_rate"`                          // Percentage of individual attempts that succeeded
+	UserFacingSuccessRate      float64 `json:"user_facing_success_rate"`              // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
+	UserFacingTotalRequests    int64   `json:"user_facing_total_requests"`            // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
+	AverageLatency             float64 `json:"average_latency"`                       // Average latency in milliseconds
+	TotalTokens                int64   `json:"total_tokens"`                          // Total tokens used
+	TotalCost                  float64 `json:"total_cost"`                            // Total cost in dollars
 }
 
 // Log represents a complete log entry for a request/response cycle
@@ -144,6 +145,7 @@ type Log struct {
 	ToolCalls               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
 	SpeechInput             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
 	TranscriptionInput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
+	OCRInput                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.OCRDocument
 	ImageGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
 	ImageEditInput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageEditInput
 	ImageVariationInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageVariationInput
@@ -200,6 +202,7 @@ type Log struct {
 	ErrorDetailsParsed          *schemas.BifrostError                   `gorm:"-" json:"error_details,omitempty"`
 	SpeechInputParsed           *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
 	TranscriptionInputParsed    *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
+	OCRInputParsed              *schemas.OCRDocument                    `gorm:"-" json:"ocr_input,omitempty"`
 	ImageGenerationInputParsed  *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
 	ImageEditInputParsed        *schemas.ImageEditInput                 `gorm:"-" json:"image_edit_input,omitempty"`
 	ImageVariationInputParsed   *schemas.ImageVariationInput            `gorm:"-" json:"image_variation_input,omitempty"`
@@ -334,6 +337,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.TranscriptionInput = string(data)
+		}
+	}
+
+	if l.OCRInputParsed != nil {
+		if data, err := sonic.Marshal(l.OCRInputParsed); err != nil {
+			return err
+		} else {
+			l.OCRInput = string(data)
 		}
 	}
 
@@ -673,6 +684,12 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.TranscriptionInput), &l.TranscriptionInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionInputParsed = nil
+		}
+	}
+
+	if l.OCRInput != "" {
+		if err := sonic.Unmarshal([]byte(l.OCRInput), &l.OCRInputParsed); err != nil {
+			l.OCRInputParsed = nil
 		}
 	}
 

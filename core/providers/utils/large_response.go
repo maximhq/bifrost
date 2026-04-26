@@ -61,12 +61,19 @@ func (r *LargeResponseReader) Close() error {
 
 // BuildLargeResponseClient creates a streaming-enabled fasthttp client for large response detection.
 // The client caps buffering at the threshold and enables response body streaming.
+//
+// ReadTimeout/WriteTimeout/MaxConnDuration are zeroed: large-response bodies may take arbitrarily
+// long to download, and fasthttp's ReadTimeout bounds *full* body read — not idle. Idle detection
+// on stalled streams is handled separately (see NewIdleTimeoutReader / SetupStreamingPassthrough).
 func BuildLargeResponseClient(base *fasthttp.Client, responseThreshold int64) *fasthttp.Client {
 	client := CloneFastHTTPClientConfig(base)
 	if responseThreshold > 0 && responseThreshold <= int64(math.MaxInt) {
 		client.MaxResponseBodySize = int(responseThreshold)
 	}
 	client.StreamResponseBody = true
+	client.ReadTimeout = 0
+	client.WriteTimeout = 0
+	client.MaxConnDuration = 0
 	return client
 }
 

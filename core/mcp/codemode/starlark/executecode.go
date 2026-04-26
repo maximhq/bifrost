@@ -544,7 +544,30 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
 	defer cancel()
 
-	toolResponse, callErr := client.Conn.CallTool(toolCtx, callRequest)
+	var toolResponse *mcp.CallToolResult
+	var callErr error
+
+	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+		accessToken, err := utils.ResolvePerUserOAuthToken(nestedCtx, client, s.oauth2Provider)
+		if err != nil {
+			return nil, err
+		}
+
+		if client.Conn == nil {
+			// Per-user OAuth with no persistent connection — use a temporary connection.
+			// Assign to outer toolResponse/callErr so the shared logging + post-hooks path runs.
+			toolResponse, callErr = codemcp.ExecuteToolWithUserToken(toolCtx, client.ExecutionConfig, toolNameToCall, args, accessToken, s.logger)
+			if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
+				callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+			}
+		} else {
+			callRequest.Header = utils.BuildPerUserOAuthHeaders(callRequest.Header, accessToken)
+			toolResponse, callErr = client.Conn.CallTool(toolCtx, callRequest)
+		}
+	} else {
+		toolResponse, callErr = client.Conn.CallTool(toolCtx, callRequest)
+	}
+
 	latency := time.Since(startTime).Milliseconds()
 
 	var mcpResp *schemas.BifrostMCPResponse

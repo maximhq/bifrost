@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,6 +129,27 @@ func TestPoolClose(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestPoolDialIncludesHandshakeDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("invalid websocket token"))
+	}))
+	defer server.Close()
+
+	config := &schemas.WSPoolConfig{}
+	config.CheckAndSetDefaults()
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+
+	_, err := pool.Get(key, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "401 Unauthorized")
+	assert.Contains(t, err.Error(), "invalid websocket token")
+}
+
 func TestPoolExpiredConnection(t *testing.T) {
 	server := startTestWSServer(t)
 	defer server.Close()
@@ -157,4 +179,64 @@ func TestPoolExpiredConnection(t *testing.T) {
 	require.NotNil(t, conn2)
 	assert.NotSame(t, conn, conn2)
 	pool.Discard(conn2)
+}
+
+func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
+	var connectionCount atomic.Int32
+	serverClosed := make(chan struct{})
+	upgrader := ws.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		connectionCount.Add(1)
+		current := connectionCount.Load()
+		if current == 1 {
+			_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "done"), time.Now().Add(time.Second))
+			_ = conn.Close()
+			close(serverClosed)
+			return
+		}
+		defer conn.Close()
+		for {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			_ = conn.WriteMessage(mt, msg)
+		}
+	}))
+	defer server.Close()
+
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                5,
+		MaxTotalConnections:          10,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+
+	conn, err := pool.Get(key, nil)
+	require.NoError(t, err)
+	pool.Return(conn)
+
+	// Wait for the server to finish sending the close frame before the next
+	// borrow attempt so the close is in the client's TCP receive buffer.
+	select {
+	case <-serverClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not close the first connection in time")
+	}
+
+	freshConn, err := pool.Get(key, nil)
+	require.NoError(t, err)
+	require.NotNil(t, freshConn)
+	assert.NotSame(t, conn, freshConn)
+	assert.EqualValues(t, 2, connectionCount.Load())
+	pool.Discard(freshConn)
 }

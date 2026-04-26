@@ -300,7 +300,7 @@ A quick-reference table of the most commonly used top-level parameters:
 | `postgresql.enabled` | Deploy embedded PostgreSQL | `false` |
 | `vectorStore.enabled` | Enable vector store | `false` |
 | `vectorStore.type` | Vector store type (`weaviate`, `redis`, `qdrant`) | `none` |
-| `bifrost.encryptionKey` | Encryption key (use `encryptionKeySecret` in production) | `""` |
+| `bifrost.encryptionKey` | Optional encryption key (use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
 | `ingress.enabled` | Enable ingress | `false` |
 | `autoscaling.enabled` | Enable HPA | `false` |
 

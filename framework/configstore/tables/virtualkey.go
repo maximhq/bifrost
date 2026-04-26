@@ -182,20 +182,16 @@ func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
 		Alias
 		MCPClientName string `json:"mcp_client_name"` // Config file format: MCP client name
 	}
-
 	var temp TempMCPConfig
 	if err := json.Unmarshal(data, &temp); err != nil {
 		return err
 	}
-
 	// Copy all standard fields
 	*mc = TableVirtualKeyMCPConfig(temp.Alias)
-
 	// Capture mcp_client_name for later resolution to MCPClientID
 	if temp.MCPClientName != "" {
 		mc.MCPClientName = temp.MCPClientName
 	}
-
 	return nil
 }
 
@@ -210,10 +206,15 @@ type TableVirtualKey struct {
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
-	TeamID          *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID      *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	RateLimitID     *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
-	CalendarAligned bool    `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
+	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+
+	// Deprecated
+	// Calendar aligned is not the property of virtual key but its property of the budget and ratelimit
+	// So in the migration we will move this to the budget/ratelimit table
+	// And this won't be referred
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`

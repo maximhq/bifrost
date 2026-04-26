@@ -1122,10 +1122,12 @@ func setupFullMigrationDB(t *testing.T) (*RDBConfigStore, *gorm.DB) {
 	err = triggerMigrations(ctx, db)
 	require.NoError(t, err, "triggerMigrations should succeed on a fresh DB")
 
-	store := &RDBConfigStore{
-		db:     db,
-		logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo),
+	store := &RDBConfigStore{logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	store.db.Store(db)
+	store.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, store.DB())
 	}
+	store.refreshPoolFn = func(ctx context.Context) error { return nil }
 	return store, db
 }
 
@@ -2002,3 +2004,370 @@ func TestMigrationReplaceEnableLiteLLMWithCompatColumns(t *testing.T) {
 	assert.False(t, rows[1].CompatShouldConvertParams, "compat_should_convert_params should default to false")
 }
 
+// setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
+// governance_budgets, and governance_rate_limits tables, then drops the calendar_aligned
+// column from budgets and rate_limits to simulate the pre-migration schema state.
+func setupCalendarAlignedPreMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "Failed to create test database")
+
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableBudget{},
+		&tables.TableRateLimit{},
+		&tables.TableVirtualKey{},
+	), "Failed to auto-migrate governance tables")
+
+	// Simulate pre-migration state: drop calendar_aligned from budgets and rate_limits.
+	mig := db.Migrator()
+	if mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+		require.NoError(t, mig.DropColumn(&tables.TableBudget{}, "calendar_aligned"))
+	}
+	if mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
+		require.NoError(t, mig.DropColumn(&tables.TableRateLimit{}, "calendar_aligned"))
+	}
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
+// insertBudgetRaw inserts a budget via raw SQL so the pre-migration table (without
+// calendar_aligned) accepts the row without tripping BeforeSave hooks.
+func insertBudgetRaw(t *testing.T, db *gorm.DB, id string, vkID *string) {
+	t.Helper()
+	now := time.Now()
+	err := db.Exec(`
+		INSERT INTO governance_budgets
+		  (id, max_limit, reset_duration, last_reset, current_usage, virtual_key_id, config_hash, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 0, ?, '', ?, ?)
+	`, id, 100.0, "1d", now, vkID, now, now).Error
+	require.NoError(t, err, "Failed to insert budget %s", id)
+}
+
+// insertRateLimitRaw inserts a rate_limit via raw SQL mirroring insertBudgetRaw.
+func insertRateLimitRaw(t *testing.T, db *gorm.DB, id string) {
+	t.Helper()
+	now := time.Now()
+	tokenMax := int64(1000)
+	tokenDur := "1h"
+	err := db.Exec(`
+		INSERT INTO governance_rate_limits
+		  (id, token_max_limit, token_reset_duration, token_current_usage, token_last_reset,
+		   request_current_usage, request_last_reset, config_hash, created_at, updated_at)
+		VALUES (?, ?, ?, 0, ?, 0, ?, '', ?, ?)
+	`, id, tokenMax, tokenDur, now, now, now, now).Error
+	require.NoError(t, err, "Failed to insert rate limit %s", id)
+}
+
+// insertVKRaw inserts a virtual key via raw SQL so we can set rate_limit_id without
+// running the VK BeforeSave hook (which handles encryption).
+func insertVKRaw(t *testing.T, db *gorm.DB, id, name, value string, rateLimitID *string, calendarAligned bool) {
+	t.Helper()
+	now := time.Now()
+	err := db.Exec(`
+		INSERT INTO governance_virtual_keys
+		  (id, name, value, is_active, rate_limit_id, calendar_aligned, encryption_status, value_hash, config_hash, created_at, updated_at)
+		VALUES (?, ?, ?, 1, ?, ?, 'plain_text', ?, '', ?, ?)
+	`, id, name, value, rateLimitID, calendarAligned, id+"-hash", now, now).Error
+	require.NoError(t, err, "Failed to insert virtual key %s", id)
+}
+
+func setupLegacyBudgetOwnerMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "Failed to create test database")
+
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableBudget{},
+		&tables.TableVirtualKey{},
+		&tables.TableVirtualKeyProviderConfig{},
+		&tables.TableTeam{},
+	), "Failed to auto-migrate legacy budget owner test tables")
+
+	// Add legacy budget_id columns WITH foreign key constraints, matching production
+	// schema. The FK definitions are what caused SQLite to reject ALTER TABLE DROP
+	// COLUMN and what triggered FK reference corruption via rename propagation.
+	require.NoError(t, db.Exec(`ALTER TABLE governance_virtual_keys ADD COLUMN budget_id VARCHAR(255) REFERENCES governance_budgets(id)`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE governance_virtual_key_provider_configs ADD COLUMN budget_id VARCHAR(255) REFERENCES governance_budgets(id)`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE governance_teams ADD COLUMN budget_id VARCHAR(255) REFERENCES governance_budgets(id)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
+func insertProviderConfigRaw(t *testing.T, db *gorm.DB, id uint, virtualKeyID, provider string) {
+	t.Helper()
+	err := db.Exec(`
+		INSERT INTO governance_virtual_key_provider_configs
+		  (id, virtual_key_id, provider, allowed_models, allow_all_keys)
+		VALUES (?, ?, ?, '[]', 1)
+	`, id, virtualKeyID, provider).Error
+	require.NoError(t, err, "Failed to insert provider config %d", id)
+}
+
+func insertTeamRaw(t *testing.T, db *gorm.DB, id, name string) {
+	t.Helper()
+	now := time.Now()
+	err := db.Exec(`
+		INSERT INTO governance_teams
+		  (id, name, config_hash, created_at, updated_at)
+		VALUES (?, ?, '', ?, ?)
+	`, id, name, now, now).Error
+	require.NoError(t, err, "Failed to insert team %s", id)
+}
+
+// TestMigrationCalendarAligned_AddColumnsAndBackfill exercises the full migration:
+// column addition on governance_budgets and governance_rate_limits, plus backfill
+// of calendar_aligned=true for rows attached to any virtual key. Rows NOT attached
+// to a VK must remain at the default (false).
+func TestMigrationCalendarAligned_AddColumnsAndBackfill(t *testing.T) {
+	db := setupCalendarAlignedPreMigrationDB(t)
+	ctx := context.Background()
+
+	// Pre-condition: columns should be absent before running the migration.
+	mig := db.Migrator()
+	assert.False(t, mig.HasColumn(&tables.TableBudget{}, "calendar_aligned"),
+		"calendar_aligned should NOT exist on budgets before migration")
+	assert.False(t, mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned"),
+		"calendar_aligned should NOT exist on rate_limits before migration")
+
+	// Seed: VK-aligned carries the legacy calendar_aligned=true flag; its rate limit
+	// and both attached budgets SHOULD be backfilled.
+	insertRateLimitRaw(t, db, "rl-aligned")
+	vkAlignedID := "vk-aligned"
+	rlAlignedID := "rl-aligned"
+	insertVKRaw(t, db, vkAlignedID, "vk-aligned", "vk-aligned-value", &rlAlignedID, true)
+	insertBudgetRaw(t, db, "budget-aligned-1", &vkAlignedID)
+	insertBudgetRaw(t, db, "budget-aligned-2", &vkAlignedID)
+
+	// Seed: VK-unaligned carries calendar_aligned=false; its rate limit and
+	// budgets MUST NOT be backfilled (preserves legacy per-VK semantics).
+	insertRateLimitRaw(t, db, "rl-unaligned")
+	vkUnalignedID := "vk-unaligned"
+	rlUnalignedID := "rl-unaligned"
+	insertVKRaw(t, db, vkUnalignedID, "vk-unaligned", "vk-unaligned-value", &rlUnalignedID, false)
+	insertBudgetRaw(t, db, "budget-unaligned", &vkUnalignedID)
+
+	// Seed: VK-aligned-no-rl has calendar_aligned=true but no rate limit — its
+	// single budget should still be backfilled.
+	vkAlignedNoRLID := "vk-aligned-no-rl"
+	insertVKRaw(t, db, vkAlignedNoRLID, "vk-aligned-no-rl", "vk-aligned-no-rl-value", nil, true)
+	insertBudgetRaw(t, db, "budget-aligned-no-rl", &vkAlignedNoRLID)
+
+	// Seed: orphaned rows (no VK owner) — these must NOT be backfilled.
+	insertRateLimitRaw(t, db, "rl-orphan")
+	insertBudgetRaw(t, db, "budget-orphan", nil)
+
+	// Run the migration.
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+		"migration should succeed")
+
+	// Post-condition: columns exist.
+	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "calendar_aligned"),
+		"calendar_aligned should exist on budgets after migration")
+	assert.True(t, mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned"),
+		"calendar_aligned should exist on rate_limits after migration")
+
+	// Verify per-row state.
+	type budgetRow struct {
+		ID              string
+		CalendarAligned bool
+	}
+	type rlRow struct {
+		ID              string
+		CalendarAligned bool
+	}
+
+	assertBudget := func(id string, expected bool) {
+		t.Helper()
+		var row budgetRow
+		err := db.Table("governance_budgets").
+			Select("id, calendar_aligned").
+			Where("id = ?", id).Scan(&row).Error
+		require.NoError(t, err)
+		assert.Equal(t, expected, row.CalendarAligned,
+			"budget %s calendar_aligned mismatch", id)
+	}
+	assertRateLimit := func(id string, expected bool) {
+		t.Helper()
+		var row rlRow
+		err := db.Table("governance_rate_limits").
+			Select("id, calendar_aligned").
+			Where("id = ?", id).Scan(&row).Error
+		require.NoError(t, err)
+		assert.Equal(t, expected, row.CalendarAligned,
+			"rate_limit %s calendar_aligned mismatch", id)
+	}
+
+	// Rows attached to VKs with calendar_aligned=true should be backfilled.
+	assertBudget("budget-aligned-1", true)
+	assertBudget("budget-aligned-2", true)
+	assertBudget("budget-aligned-no-rl", true)
+	assertRateLimit("rl-aligned", true)
+
+	// Rows attached to VKs with calendar_aligned=false must remain false —
+	// the migration must preserve the legacy per-VK semantic.
+	assertBudget("budget-unaligned", false)
+	assertRateLimit("rl-unaligned", false)
+
+	// Orphaned rows should retain the default (false).
+	assertBudget("budget-orphan", false)
+	assertRateLimit("rl-orphan", false)
+}
+
+// TestMigrationCalendarAligned_StaleRateLimitID verifies that a VK pointing at a
+// deleted rate_limit row is skipped rather than aborting the migration (the FK
+// is intentionally not DB-enforced on TableVirtualKey).
+func TestMigrationCalendarAligned_StaleRateLimitID(t *testing.T) {
+	db := setupCalendarAlignedPreMigrationDB(t)
+	ctx := context.Background()
+
+	// VK-stale carries calendar_aligned=true (so the migration touches it) and
+	// references a rate_limit_id that doesn't exist in the table.
+	stale := "rl-does-not-exist"
+	insertVKRaw(t, db, "vk-stale", "vk-stale", "vk-stale-value", &stale, true)
+	insertBudgetRaw(t, db, "budget-stale-vk", strPtr("vk-stale"))
+
+	// VK-ok has calendar_aligned=true and a valid rate_limit so we can verify
+	// the loop keeps processing after the stale skip.
+	insertRateLimitRaw(t, db, "rl-ok")
+	vkOKID := "vk-ok"
+	rlOK := "rl-ok"
+	insertVKRaw(t, db, vkOKID, "vk-ok", "vk-ok-value", &rlOK, true)
+	insertBudgetRaw(t, db, "budget-ok", &vkOKID)
+
+	// Migration must NOT return an error despite the stale reference.
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+		"stale rate_limit_id should be skipped, not abort the migration")
+
+	// The VK with the stale ref still has its budgets backfilled.
+	var staleVKBudget bool
+	require.NoError(t, db.Table("governance_budgets").
+		Select("calendar_aligned").
+		Where("id = ?", "budget-stale-vk").Scan(&staleVKBudget).Error)
+	assert.True(t, staleVKBudget, "budget attached to the stale-ref VK should still be migrated")
+
+	// Non-stale VK should have been fully processed.
+	var okRL bool
+	require.NoError(t, db.Table("governance_rate_limits").
+		Select("calendar_aligned").
+		Where("id = ?", "rl-ok").Scan(&okRL).Error)
+	assert.True(t, okRL, "valid rate_limit should be migrated even when a prior VK had a stale ref")
+}
+
+// TestMigrationCalendarAligned_Idempotent ensures the migration can run twice
+// without error — the migrator library must record the migration ID so the
+// second invocation is a no-op.
+func TestMigrationCalendarAligned_Idempotent(t *testing.T) {
+	db := setupCalendarAlignedPreMigrationDB(t)
+	ctx := context.Background()
+
+	insertRateLimitRaw(t, db, "rl-1")
+	vkID := "vk-1"
+	rl := "rl-1"
+	insertVKRaw(t, db, vkID, "vk-1", "vk-1-value", &rl, true)
+	insertBudgetRaw(t, db, "budget-1", &vkID)
+
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+		"first run should succeed")
+	require.NoError(t, migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx, db),
+		"second run should be a no-op")
+}
+
+func TestMigrationAddMultiBudgetTables_DropsLegacyBudgetColumnsAndBackfillsOwners(t *testing.T) {
+	db := setupLegacyBudgetOwnerMigrationDB(t)
+	ctx := context.Background()
+	mig := db.Migrator()
+
+	vkID := "vk-legacy"
+	insertVKRaw(t, db, vkID, "vk-legacy", "vk-legacy-value", nil, false)
+	insertBudgetRaw(t, db, "budget-vk-legacy", nil)
+	require.NoError(t, db.Exec(`UPDATE governance_virtual_keys SET budget_id = ? WHERE id = ?`, "budget-vk-legacy", vkID).Error)
+
+	insertProviderConfigRaw(t, db, 1001, vkID, "openai")
+	insertBudgetRaw(t, db, "budget-pc-legacy", nil)
+	require.NoError(t, db.Exec(`UPDATE governance_virtual_key_provider_configs SET budget_id = ? WHERE id = ?`, "budget-pc-legacy", 1001).Error)
+
+	require.True(t, mig.HasColumn("governance_virtual_keys", "budget_id"))
+	require.True(t, mig.HasColumn("governance_virtual_key_provider_configs", "budget_id"))
+
+	require.NoError(t, migrationAddMultiBudgetTables(ctx, db))
+
+	assert.False(t, mig.HasColumn("governance_virtual_keys", "budget_id"), "vk budget_id should be dropped by migration")
+	assert.False(t, mig.HasColumn("governance_virtual_key_provider_configs", "budget_id"), "provider config budget_id should be dropped by migration")
+
+	var vkBudgetOwner string
+	require.NoError(t, db.Table("governance_budgets").Select("virtual_key_id").Where("id = ?", "budget-vk-legacy").Scan(&vkBudgetOwner).Error)
+	assert.Equal(t, vkID, vkBudgetOwner, "migration should backfill governance_budgets.virtual_key_id")
+
+	var providerConfigBudgetOwner uint
+	require.NoError(t, db.Table("governance_budgets").Select("provider_config_id").Where("id = ?", "budget-pc-legacy").Scan(&providerConfigBudgetOwner).Error)
+	assert.Equal(t, uint(1001), providerConfigBudgetOwner, "migration should backfill governance_budgets.provider_config_id")
+
+	// Verify FK references in governance_budgets still point at the correct
+	// table names — not corrupted backup/temp names from SQLite rename propagation.
+	assertNoCorruptedFKReferences(t, db)
+}
+
+func TestMigrationAddTeamBudgetsToBudgetsTable_DropsLegacyBudgetColumnAndBackfillsOwners(t *testing.T) {
+	db := setupLegacyBudgetOwnerMigrationDB(t)
+	ctx := context.Background()
+	mig := db.Migrator()
+
+	insertTeamRaw(t, db, "team-legacy", "Legacy Team")
+	insertBudgetRaw(t, db, "budget-team-legacy", nil)
+	require.NoError(t, db.Exec(`UPDATE governance_teams SET budget_id = ? WHERE id = ?`, "budget-team-legacy", "team-legacy").Error)
+
+	require.True(t, mig.HasColumn("governance_teams", "budget_id"))
+
+	require.NoError(t, migrationAddTeamBudgetsToBudgetsTable(ctx, db))
+
+	assert.False(t, mig.HasColumn("governance_teams", "budget_id"), "team budget_id should be dropped by migration")
+
+	var teamBudgetOwner string
+	require.NoError(t, db.Table("governance_budgets").Select("team_id").Where("id = ?", "budget-team-legacy").Scan(&teamBudgetOwner).Error)
+	assert.Equal(t, "team-legacy", teamBudgetOwner, "migration should backfill governance_budgets.team_id")
+
+	// Verify FK references in governance_budgets still point at the correct
+	// table names — not corrupted backup/temp names from SQLite rename propagation.
+	assertNoCorruptedFKReferences(t, db)
+}
+
+// migration is part of the startup chain so a fresh DB emerges with the column
+// present on both governance_budgets and governance_rate_limits.
+func TestMigrationCalendarAligned_WiredIntoTriggerMigrations(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	mig := db.Migrator()
+	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "calendar_aligned"),
+		"triggerMigrations should add calendar_aligned to governance_budgets")
+	assert.True(t, mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned"),
+		"triggerMigrations should add calendar_aligned to governance_rate_limits")
+}
+
+// assertNoCorruptedFKReferences checks that no table in the database has FK
+// references pointing at temporary/backup table names left behind by a
+// SQLite table rebuild. This is the actual failure mode from the production
+// bug: ALTER TABLE RENAME propagated into FK definitions in other tables,
+// leaving references like governance_teams__legacy_budget_backup.
+func assertNoCorruptedFKReferences(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	type masterRow struct {
+		Name string `gorm:"column:name"`
+		SQL  string `gorm:"column:sql"`
+	}
+	var rows []masterRow
+	require.NoError(t, db.Raw(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL`).Scan(&rows).Error)
+	for _, row := range rows {
+		assert.NotContains(t, row.SQL, "__dump",
+			"table %s has FK referencing a dump table: %s", row.Name, row.SQL)
+		assert.NotContains(t, row.SQL, "__legacy_budget_backup",
+			"table %s has FK referencing a legacy backup table: %s", row.Name, row.SQL)
+		assert.NotContains(t, row.SQL, "__new",
+			"table %s has FK referencing a temp table: %s", row.Name, row.SQL)
+	}
+}
+
+func strPtr(s string) *string { return &s }

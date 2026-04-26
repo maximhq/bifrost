@@ -182,7 +182,6 @@ bifrost:
           - provider: "openai"
             weight: 1
             allowed_models: ["gpt-4o", "gpt-4o-mini"]
-            # No keys[] → all configured OpenAI keys allowed
 
       # 3. Multi-provider with weighted routing
       - id: "vk-multi"
@@ -212,8 +211,7 @@ bifrost:
           - provider: "openai"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "openai-primary"  # pin to specific configured key
+            key_ids: ["openai-primary"]  # pin to specific configured key by name
 
       # 5. Restricted testing key
       - id: "vk-testing"
@@ -238,9 +236,10 @@ bifrost:
           - provider: "openai"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "openai-batch"    # only the batch-flagged key
+            key_ids: ["openai-batch"]    # only the batch-flagged key
 ```
+
+`provider_configs[].key_ids` and `provider_configs[].keys` are both supported in Helm values. Prefer `key_ids` for parity with `config.json` (`key_ids` should contain provider key names).
 
 **Use a virtual key in API calls:**
 
@@ -419,4 +418,29 @@ kubectl create secret generic bifrost-admin-credentials \
   --from-literal=password='secure-admin-password'
 
 helm install bifrost bifrost/bifrost -f governance-full-values.yaml
+```
+
+---
+
+## Access Profiles (Enterprise)
+
+You can seed enterprise `access_profiles` directly from Helm values. The chart renders `bifrost.accessProfiles` into top-level `access_profiles` in `config.json`.
+
+```yaml
+bifrost:
+  accessProfiles:
+    - name: "platform-default"
+      description: "Default profile for platform users"
+      is_active: true
+      tags: ["platform", "default"]
+      provider_configs:
+        - provider_name: "openai"
+          all_models_allowed: false
+          allowed_models: ["gpt-4o", "gpt-4o-mini"]
+      mcp_servers:
+        - mcp_server_id: "github"
+      mcp_tool_overrides:
+        - mcp_client_id: "github"
+          tool_name: "create_pull_request"
+          action: "include"
 ```

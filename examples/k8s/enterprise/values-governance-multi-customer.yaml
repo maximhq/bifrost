@@ -1,0 +1,116 @@
+bifrost:
+  governance:
+    # All related governance entities are intentionally in one file.
+    # Helm replaces arrays, so keeping them together avoids broken references.
+    budgets:
+      # Keep provider-level governance IDs from values-providers.yaml so
+      # provider budget/rate-limit references remain valid after array replacement.
+      - id: "budget-provider-openai"
+        max_limit: 500
+        reset_duration: "1M"
+      - id: "budget-customer-acme"
+        max_limit: 12000
+        reset_duration: "1M"
+      - id: "budget-customer-beta"
+        max_limit: 6000
+        reset_duration: "1M"
+      - id: "budget-team-acme-platform"
+        max_limit: 4000
+        reset_duration: "1M"
+        team_id: "team-acme-platform"
+      - id: "budget-team-beta-research"
+        max_limit: 2200
+        reset_duration: "1M"
+        team_id: "team-beta-research"
+      - id: "budget-vk-acme-platform-primary"
+        max_limit: 1300
+        reset_duration: "1M"
+        virtual_key_id: "vk-acme-platform-primary"
+
+    rateLimits:
+      - id: "rl-provider-openai"
+        token_max_limit: 120000
+        token_reset_duration: "1d"
+        request_max_limit: 2500
+        request_reset_duration: "1h"
+      - id: "rl-customer-acme"
+        token_max_limit: 1400000
+        token_reset_duration: "1d"
+        request_max_limit: 60000
+        request_reset_duration: "1h"
+      - id: "rl-customer-beta"
+        token_max_limit: 700000
+        token_reset_duration: "1d"
+        request_max_limit: 30000
+        request_reset_duration: "1h"
+      - id: "rl-team-acme-platform"
+        token_max_limit: 280000
+        token_reset_duration: "1d"
+        request_max_limit: 12000
+        request_reset_duration: "1h"
+      - id: "rl-team-beta-research"
+        token_max_limit: 160000
+        token_reset_duration: "1d"
+        request_max_limit: 7000
+        request_reset_duration: "1h"
+
+    customers:
+      - id: "customer-acme-gold"
+        name: "Acme Gold"
+        budget_id: "budget-customer-acme"
+        rate_limit_id: "rl-customer-acme"
+      - id: "customer-beta-silver"
+        name: "Beta Silver"
+        budget_id: "budget-customer-beta"
+        rate_limit_id: "rl-customer-beta"
+
+    providers:
+      - name: "openai"
+        budget_id: "budget-provider-openai"
+        rate_limit_id: "rl-provider-openai"
+
+    teams:
+      - id: "team-acme-platform"
+        name: "Acme Platform Team"
+        customer_id: "customer-acme-gold"
+        rate_limit_id: "rl-team-acme-platform"
+      - id: "team-beta-research"
+        name: "Beta Research Team"
+        customer_id: "customer-beta-silver"
+        rate_limit_id: "rl-team-beta-research"
+
+    businessUnits:
+      - id: "bu-acme-platform"
+        name: "Acme Platform BU"
+        teamIds:
+          - "team-acme-platform"
+      - id: "bu-beta-ai-research"
+        name: "Beta AI Research BU"
+        teamIds:
+          - "team-beta-research"
+
+    virtualKeys:
+      - id: "vk-acme-platform-primary"
+        name: "Acme Platform Primary Key"
+        description: "VK for Acme platform workloads"
+        value: "sk-bf-acme-platform-primary"
+        is_active: true
+        team_id: "team-acme-platform"
+        rate_limit_id: "rl-team-acme-platform"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models:
+              - "gpt-4o-mini"
+      - id: "vk-beta-research-primary"
+        name: "Beta Research Primary Key"
+        description: "VK for Beta research workloads"
+        value: "sk-bf-beta-research-primary"
+        is_active: true
+        team_id: "team-beta-research"
+        rate_limit_id: "rl-team-beta-research"
+        provider_configs:
+          - provider: "anthropic"
+            weight: 1
+            allowed_models:
+              - "claude-3-5-sonnet-latest"

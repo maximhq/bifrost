@@ -3,8 +3,6 @@
  * Thin wrapper around the reusable CELRuleBuilder with routing-specific config
  */
 
-"use client";
-
 import { CELRuleBuilder as BaseCELRuleBuilder } from "@/components/ui/custom/celBuilder";
 import { getRoutingFields } from "@/lib/config/celFieldsRouting";
 import { celOperatorsRouting } from "@/lib/config/celOperatorsRouting";

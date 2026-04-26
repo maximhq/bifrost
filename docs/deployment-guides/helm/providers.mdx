@@ -178,7 +178,7 @@ bifrost:
 
 ### Azure OpenAI
 
-Azure requires `azure_key_config` on every key with `endpoint`, `api_version`, and a `deployments` map (logical model name → Azure deployment name).
+Azure requires `azure_key_config` on every key with `endpoint` and `api_version`. Use top-level `aliases` to map logical model names to Azure deployment names.
 
 Two auth modes are supported:
 
@@ -211,10 +211,10 @@ bifrost:
           azure_key_config:
             endpoint: "env.AZURE_ENDPOINT"
             api_version: "2024-10-21"
-            deployments:
-              gpt-4o: "gpt-4o-prod"
-              gpt-4o-mini: "gpt-4o-mini-prod"
-              text-embedding-3-small: "embeddings-prod"
+          aliases:
+            gpt-4o: "gpt-4o-prod"
+            gpt-4o-mini: "gpt-4o-mini-prod"
+            text-embedding-3-small: "embeddings-prod"
 
   providerSecrets:
     azure-api-key:
@@ -282,8 +282,8 @@ bifrost:
           azure_key_config:
             endpoint: "env.AZURE_ENDPOINT"
             api_version: "2024-10-21"
-            deployments:
-              gpt-4o: "gpt-4o-prod"
+          aliases:
+            gpt-4o: "gpt-4o-prod"
 
   providerSecrets:
     azure-endpoint:
@@ -314,16 +314,16 @@ bifrost:
           azure_key_config:
             endpoint: "env.AZURE_ENDPOINT_EAST"
             api_version: "2024-10-21"
-            deployments:
-              gpt-4o: "gpt-4o-eastus"
+          aliases:
+            gpt-4o: "gpt-4o-eastus"
         - name: "westus"
           value: "env.AZURE_KEY_WEST"
           weight: 1
           azure_key_config:
             endpoint: "env.AZURE_ENDPOINT_WEST"
             api_version: "2024-10-21"
-            deployments:
-              gpt-4o: "gpt-4o-westus"
+          aliases:
+            gpt-4o: "gpt-4o-westus"
 ```
 
 </Tab>

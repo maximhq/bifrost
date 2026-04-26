@@ -138,7 +138,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		for _, scope := range scopeChain {
 			scopeID := scope.ScopeID
 
-			rules := re.store.GetScopedRoutingRules(scope.ScopeName, scopeID)
+			rules := re.store.GetScopedRoutingRules(ctx, scope.ScopeName, scopeID)
 			re.logger.Debug("[RoutingEngine] Evaluating scope=%s, scopeID=%s, ruleCount=%d", scope.ScopeName, scopeID, len(rules))
 
 			if len(rules) == 0 {
@@ -154,7 +154,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			for _, rule := range rules {
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
-				program, err := re.store.GetRoutingProgram(rule)
+				program, err := re.store.GetRoutingProgram(ctx, rule)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))

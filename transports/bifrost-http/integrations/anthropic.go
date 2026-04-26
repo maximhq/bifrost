@@ -115,7 +115,11 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
-						if resp.ExtraFields.RawResponse != nil {
+						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
+						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
+						// Passing through here would produce a duplicate content_block_start that causes
+						// the Anthropic SDK to error and drop all subsequent content_block_delta events.
+						if resp.ExtraFields.RawResponse != nil && resp.Type != schemas.ResponsesStreamResponseTypeContentPartAdded {
 							raw, ok := resp.ExtraFields.RawResponse.(string)
 							if !ok {
 								return "", nil, fmt.Errorf("expected RawResponse string, got %T", resp.ExtraFields.RawResponse)
@@ -349,22 +353,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	}
 
 	headers := extractHeadersFromRequest(ctx)
-	if len(headers) > 0 {
-		// Check for User-Agent header (case-insensitive)
-		var userAgent []string
-		for key, value := range headers {
-			if strings.EqualFold(key, "user-agent") {
-				userAgent = value
-				break
-			}
-		}
-		if len(userAgent) > 0 {
-			// Check if it's claude code
-			if strings.Contains(userAgent[0], "claude-cli") {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli")
-			}
-		}
-	}
+	schemas.ExtractAndSetUserAgentFromHeaders(headers, bifrostCtx)
 
 	// Check if anthropic oauth headers are present
 	if shouldUsePassthrough(bifrostCtx, provider, model, "") {

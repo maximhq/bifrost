@@ -96,15 +96,19 @@ The new clustering configuration uses a `cluster_config` object with integrated 
 
 Discovery-specific fields (e.g. `k8s_label_selector`, `consul_address`, `etcd_endpoints`) slot into the `discovery` object alongside `type` — see each method's section below.
 
+<Note>
+At startup, cluster mode requires either a non-empty `peers` list or `discovery.enabled: true`.
+</Note>
+
 ### Common Discovery Configuration Fields
 
 All discovery methods support these common fields:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `enabled` | boolean | Yes | Enable/disable discovery |
+| `enabled` | boolean | No | Enable/disable discovery (must be `true` to use discovery at runtime) |
 | `type` | string | Yes | Discovery type: `kubernetes`, `consul`, `etcd`, `dns`, `udp`, `mdns` |
-| `service_name` | string | Yes | Service name for discovery |
+| `service_name` | string | Conditional | Required for `consul`, `etcd`, `udp`, and typically `mdns`; optional for `kubernetes` and `dns` |
 | `bind_port` | integer | No | Port for cluster communication (default: 10101) |
 | `dial_timeout` | duration | No | Discovery timeout (default: 10s) |
 | `allowed_address_space` | array | No | CIDR ranges to filter discovered nodes (e.g., `["10.0.0.0/8"]`) |

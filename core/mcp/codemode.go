@@ -72,6 +72,9 @@ type CodeModeDependencies struct {
 
 	// LogMutex protects concurrent access to logs during code execution
 	LogMutex *sync.Mutex
+
+	// OAuth2Provider handles per-user OAuth token lookup and flow initiation
+	OAuth2Provider schemas.OAuth2Provider
 }
 
 // DefaultCodeModeConfig returns the default configuration for CodeMode.

@@ -10,6 +10,10 @@ Cluster mode enables multiple Bifrost replicas to share state — rate limits, b
 Cluster mode requires **PostgreSQL** as the storage backend. SQLite is single-node only.
 </Note>
 
+<Warning>
+`bifrost.cluster.*` is an enterprise capability. OSS images accept these values but do not run cluster mode at runtime.
+</Warning>
+
 ## When to Use Cluster Mode
 
 | Scenario | Recommendation |
@@ -104,6 +108,10 @@ helm install bifrost bifrost/bifrost -f cluster-values.yaml
 ## Peer Discovery
 
 Bifrost uses a gossip protocol (memberlist) for peer-to-peer state sync. Configure how peers find each other:
+
+<Note>
+For `consul`, `etcd`, and `udp` discovery, set `bifrost.cluster.discovery.serviceName` so nodes register/discover under a stable service identity.
+</Note>
 
 <Tabs>
 
@@ -240,6 +248,7 @@ bifrost:
     discovery:
       enabled: true
       type: consul
+      serviceName: "bifrost-cluster"
       consulAddress: "consul.consul.svc.cluster.local:8500"
     gossip:
       port: 7946
@@ -260,6 +269,7 @@ bifrost:
     discovery:
       enabled: true
       type: etcd
+      serviceName: "bifrost-cluster"
       etcdEndpoints:
         - "http://etcd-0.etcd.default.svc.cluster.local:2379"
         - "http://etcd-1.etcd.default.svc.cluster.local:2379"

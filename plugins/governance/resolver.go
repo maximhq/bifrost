@@ -88,34 +88,34 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 	}
 	// 1. Check provider-level rate limits FIRST (before model-level checks)
 	if provider != "" {
-		if err, decision := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil {
+		if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 			return &EvaluationResult{
 				Decision: decision,
-				Reason:   fmt.Sprintf("Provider-level rate limit check failed: %s", err.Error()),
+				Reason:   fmt.Sprintf("Provider-level rate limit check failed: %s", reasonFromErr(err, decision)),
 			}
 		}
 		// 2. Check provider-level budgets FIRST (before model-level checks)
-		if err := r.store.CheckProviderBudget(ctx, request, nil); err != nil {
+		if decision, err := r.store.CheckProviderBudget(ctx, request, nil); err != nil || isBudgetViolation(decision) {
 			return &EvaluationResult{
-				Decision: DecisionBudgetExceeded,
-				Reason:   fmt.Sprintf("Provider-level budget exceeded: %s", err.Error()),
+				Decision: decision,
+				Reason:   fmt.Sprintf("Provider-level budget exceeded: %s", reasonFromErr(err, decision)),
 			}
 		}
 	}
 	// 3. Check model-level rate limits (after provider-level checks)
 	if model != "" {
-		if err, decision := r.store.CheckModelRateLimit(ctx, request, nil, nil); err != nil {
+		if decision, err := r.store.CheckModelRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 			return &EvaluationResult{
 				Decision: decision,
-				Reason:   fmt.Sprintf("Model-level rate limit check failed: %s", err.Error()),
+				Reason:   fmt.Sprintf("Model-level rate limit check failed: %s", reasonFromErr(err, decision)),
 			}
 		}
 
 		// 4. Check model-level budgets (after provider-level checks)
-		if err := r.store.CheckModelBudget(ctx, request, nil); err != nil {
+		if decision, err := r.store.CheckModelBudget(ctx, request, nil); err != nil || isBudgetViolation(decision) {
 			return &EvaluationResult{
-				Decision: DecisionBudgetExceeded,
-				Reason:   fmt.Sprintf("Model-level budget exceeded: %s", err.Error()),
+				Decision: decision,
+				Reason:   fmt.Sprintf("Model-level budget exceeded: %s", reasonFromErr(err, decision)),
 			}
 		}
 	}
@@ -124,6 +124,67 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 		Decision: DecisionAllow,
 		Reason:   "Request allowed by governance policy (provider-level and model-level checks passed)",
 	}
+}
+
+func (r *BudgetResolver) EvaluateCustomerRequest(ctx *schemas.BifrostContext, customerID string, request *EvaluationRequest) *EvaluationResult {
+	// Skip if no customerID
+	if customerID == "" {
+		return &EvaluationResult{
+			Decision: DecisionAllow,
+			Reason:   "No customer ID provided, skipping customer-level checks",
+		}
+	}
+	// Check customer-level rate limits
+	if decision, err := r.store.CheckCustomerRateLimit(ctx, customerID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Customer-level rate limit exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	// Check customer-level budget
+	if decision, err := r.store.CheckCustomerBudget(ctx, customerID, request, nil); err != nil || isBudgetViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Customer-level budget exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	return &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "Customer-level checks passed",
+	}
+}
+
+func (r *BudgetResolver) EvaluateTeamRequest(ctx *schemas.BifrostContext, teamID string, request *EvaluationRequest) *EvaluationResult {
+	// Skip if no teamID
+	if teamID == "" {
+		return &EvaluationResult{
+			Decision: DecisionAllow,
+			Reason:   "No team ID provided, skipping team-level checks",
+		}
+	}
+	// Check team-level rate limits
+	if decision, err := r.store.CheckTeamRateLimit(ctx, teamID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Team-level rate limit exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	// Check team-level budget
+	if decision, err := r.store.CheckTeamBudget(ctx, teamID, request, nil); err != nil || isBudgetViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Team-level budget exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	return &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "Team-level checks passed",
+	}
+
 }
 
 // EvaluateUserRequest evaluates user-level rate limits and budgets (enterprise-only)
@@ -139,18 +200,18 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 	}
 
 	// Check user-level rate limits
-	if err, decision := r.store.CheckUserRateLimit(ctx, userID, request, nil, nil); err != nil {
+	if decision, err := r.store.CheckUserRateLimit(ctx, userID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 		return &EvaluationResult{
 			Decision: decision,
-			Reason:   fmt.Sprintf("User-level rate limit exceeded: %s", err.Error()),
+			Reason:   fmt.Sprintf("User-level rate limit exceeded: %s", reasonFromErr(err, decision)),
 		}
 	}
 
 	// Check user-level budget
-	if err := r.store.CheckUserBudget(ctx, userID, request, nil); err != nil {
+	if decision, err := r.store.CheckUserBudget(ctx, userID, request, nil); err != nil || isBudgetViolation(decision) {
 		return &EvaluationResult{
-			Decision: DecisionBudgetExceeded,
-			Reason:   fmt.Sprintf("User-level budget exceeded: %s", err.Error()),
+			Decision: decision,
+			Reason:   fmt.Sprintf("User-level budget exceeded: %s", reasonFromErr(err, decision)),
 		}
 	}
 
@@ -175,7 +236,7 @@ func (r *BudgetResolver) isModelRequired(requestType schemas.RequestType) bool {
 // skipRateLimitsAndBudgets evaluates to true when we want to skip rate limits and budgets. This is used when user auth is present (user governance handles limits).
 func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType, skipRateLimitsAndBudgets bool) *EvaluationResult {
 	// 1. Validate virtual key exists and is active
-	vk, exists := r.store.GetVirtualKey(virtualKeyValue)
+	vk, exists := r.store.GetVirtualKey(ctx, virtualKeyValue)
 	if !exists {
 		return &EvaluationResult{
 			Decision: DecisionVirtualKeyNotFound,
@@ -308,7 +369,7 @@ func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey
 
 // checkRateLimitHierarchy checks provider-level rate limits first, then VK rate limits using flexible approach
 func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
-	if decision, err := r.store.CheckRateLimit(ctx, vk, request, nil, nil); err != nil {
+	if decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 		// Check provider-level first (matching check order), then VK-level
 		var rateLimitInfo *configstoreTables.TableRateLimit
 		for _, pc := range vk.ProviderConfigs {
@@ -322,7 +383,7 @@ func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *config
 		}
 		return &EvaluationResult{
 			Decision:      decision,
-			Reason:        fmt.Sprintf("Rate limit check failed: %s", err.Error()),
+			Reason:        fmt.Sprintf("Rate limit check failed: %s", reasonFromErr(err, decision)),
 			VirtualKey:    vk,
 			RateLimitInfo: rateLimitInfo,
 		}
@@ -334,16 +395,14 @@ func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *config
 // checkBudgetHierarchy checks the budget hierarchy atomically (VK → Team → Customer)
 func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
-	if err := r.store.CheckBudget(ctx, vk, request, nil); err != nil {
-		r.logger.Debug(fmt.Sprintf("Atomic budget exceeded for VK %s: %s", vk.ID, err.Error()))
-
+	if decision, err := r.store.CheckVirtualKeyBudget(ctx, vk, request, nil); err != nil || isBudgetViolation(decision) {
+		r.logger.Debug(fmt.Sprintf("Atomic budget exceeded for VK %s: %s", vk.ID, reasonFromErr(err, decision)))
 		return &EvaluationResult{
-			Decision:   DecisionBudgetExceeded,
-			Reason:     fmt.Sprintf("Budget exceeded: %s", err.Error()),
+			Decision:   decision,
+			Reason:     fmt.Sprintf("Budget exceeded: %s", reasonFromErr(err, decision)),
 			VirtualKey: vk,
 		}
 	}
-
 	return nil // No budget violations
 }
 
@@ -354,7 +413,7 @@ func (r *BudgetResolver) isProviderBudgetViolated(ctx context.Context, vk *confi
 	request := &EvaluationRequest{Provider: schemas.ModelProvider(config.Provider)}
 
 	// 1. Check global provider-level budget first
-	if err := r.store.CheckProviderBudget(ctx, request, nil); err != nil {
+	if _, err := r.store.CheckProviderBudget(ctx, request, nil); err != nil {
 		r.logger.Debug(fmt.Sprintf("Global provider budget exceeded for provider %s: %s", config.Provider, err.Error()))
 		return true
 	}
@@ -363,7 +422,7 @@ func (r *BudgetResolver) isProviderBudgetViolated(ctx context.Context, vk *confi
 	if len(config.Budgets) == 0 {
 		return false
 	}
-	if err := r.store.CheckBudget(ctx, vk, request, nil); err != nil {
+	if _, err := r.store.CheckVirtualKeyBudget(ctx, vk, request, nil); err != nil {
 		r.logger.Debug(fmt.Sprintf("VK provider config budget exceeded for VK %s: %s", vk.ID, err.Error()))
 		return true
 	}
@@ -375,7 +434,7 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 	request := &EvaluationRequest{Provider: schemas.ModelProvider(config.Provider)}
 
 	// 1. Check global provider-level rate limit first
-	if err, decision := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+	if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 		r.logger.Debug(fmt.Sprintf("Global provider rate limit exceeded for provider %s", config.Provider))
 		return true
 	}
@@ -384,7 +443,7 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 	if config.RateLimit == nil {
 		return false
 	}
-	decision, err := r.store.CheckRateLimit(ctx, vk, request, nil, nil)
+	decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil)
 	if err != nil || isRateLimitViolation(decision) {
 		r.logger.Debug(fmt.Sprintf("VK provider config rate limit exceeded for VK %s, provider %s", vk.ID, config.Provider))
 		return true
@@ -395,4 +454,19 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 // isRateLimitViolation returns true if the decision indicates a rate limit violation
 func isRateLimitViolation(decision Decision) bool {
 	return decision == DecisionRateLimited || decision == DecisionTokenLimited || decision == DecisionRequestLimited
+}
+
+// isBudgetViolation returns true if the decision indicates a budget violation.
+func isBudgetViolation(decision Decision) bool {
+	return decision == DecisionBudgetExceeded
+}
+
+// reasonFromErr yields a non-nil-safe reason string. When the store returns a
+// non-allow decision without an accompanying error, err.Error() would panic —
+// fall back to a generic phrase that still names the decision.
+func reasonFromErr(err error, decision Decision) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("policy violation (%s)", decision)
 }

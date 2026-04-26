@@ -280,10 +280,17 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						TotalTokens:  chunk.Message.Usage.InputTokens + chunk.Message.Usage.OutputTokens,
 					}
 					if chunk.Message.Usage.CacheReadInputTokens > 0 || chunk.Message.Usage.CacheCreationInputTokens > 0 {
-						response.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+						inputTokensDetails := &schemas.ResponsesResponseInputTokens{
 							CachedReadTokens:  chunk.Message.Usage.CacheReadInputTokens,
 							CachedWriteTokens: chunk.Message.Usage.CacheCreationInputTokens,
 						}
+						if chunk.Message.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || chunk.Message.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+							inputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+								CachedWriteTokens5m: chunk.Message.Usage.CacheCreation.Ephemeral5mInputTokens,
+								CachedWriteTokens1h: chunk.Message.Usage.CacheCreation.Ephemeral1hInputTokens,
+							}
+						}
+						response.Usage.InputTokensDetails = inputTokensDetails
 						// Bifrost convention: InputTokens includes cached tokens
 						response.Usage.InputTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
 						response.Usage.TotalTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
@@ -2615,6 +2622,12 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
 		bifrostUsage.InputTokensDetails.CachedWriteTokens = anthropicUsage.CacheCreationInputTokens
+		if anthropicUsage.CacheCreation.Ephemeral5mInputTokens > 0 || anthropicUsage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			bifrostUsage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: anthropicUsage.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: anthropicUsage.CacheCreation.Ephemeral1hInputTokens,
+			}
+		}
 		bifrostUsage.InputTokens = bifrostUsage.InputTokens + anthropicUsage.CacheCreationInputTokens
 		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + anthropicUsage.CacheCreationInputTokens
 	}
@@ -2662,10 +2675,11 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		if bifrostUsage.InputTokensDetails.CachedWriteTokens > 0 {
 			anthropicUsage.CacheCreationInputTokens = bifrostUsage.InputTokensDetails.CachedWriteTokens
 			anthropicUsage.InputTokens = anthropicUsage.InputTokens - bifrostUsage.InputTokensDetails.CachedWriteTokens
-			// Populate the cache_creation breakdown — default to ephemeral (5m) since
-			// the Bifrost internal format doesn't distinguish TTL variants.
-			anthropicUsage.CacheCreation = AnthropicUsageCacheCreation{
-				Ephemeral5mInputTokens: bifrostUsage.InputTokensDetails.CachedWriteTokens,
+			if bifrostUsage.InputTokensDetails.CachedWriteTokenDetails != nil {
+				anthropicUsage.CacheCreation = AnthropicUsageCacheCreation{
+					Ephemeral5mInputTokens: bifrostUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m,
+					Ephemeral1hInputTokens: bifrostUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h,
+				}
 			}
 		}
 	}

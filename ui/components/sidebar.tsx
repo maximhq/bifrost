@@ -38,7 +38,7 @@ import {
 	UserRoundCheck,
 	Users,
 	Wallet,
-	WalletCards
+	WalletCards,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -167,6 +167,8 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 	return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
 };
 
+const TIME_FILTER_PAGES = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs"]);
+
 const SidebarItemView = ({
 	item,
 	isActive,
@@ -175,6 +177,7 @@ const SidebarItemView = ({
 	isExpanded,
 	onToggle,
 	pathname,
+	search,
 	isSidebarCollapsed,
 	expandSidebar,
 	highlightedUrl,
@@ -186,6 +189,7 @@ const SidebarItemView = ({
 	isExpanded?: boolean;
 	onToggle?: () => void;
 	pathname: string;
+	search: string;
 	isSidebarCollapsed: boolean;
 	expandSidebar: () => void;
 	highlightedUrl?: string;
@@ -296,10 +300,27 @@ const SidebarItemView = ({
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
-						const subItemHref = getSidebarItemHref(subItem);
+						const baseHref = getSidebarItemHref(subItem);
+						const subItemHref = (() => {
+							if (TIME_FILTER_PAGES.has(subItem.url) && TIME_FILTER_PAGES.has(pathname)) {
+								const currentParams = new URLSearchParams(search);
+								const startTime = currentParams.get("start_time");
+								const endTime = currentParams.get("end_time");
+								const period = currentParams.get("period");
+								if ((startTime && endTime) || period) {
+									const params = new URLSearchParams();
+									if (startTime) params.set("start_time", startTime);
+									if (endTime) params.set("end_time", endTime);
+									if (period) params.set("period", period);
+									const sep = baseHref.includes("?") ? "&" : "?";
+									return `${baseHref}${sep}${params.toString()}`;
+								}
+							}
+							return baseHref;
+						})();
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
-						const isSubItemHighlighted = highlightedUrl === subItemHref;
+						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
 						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
 							isSubItemHighlighted
@@ -385,6 +406,7 @@ const compareVersions = (v1: string, v2: string): number => {
 
 export default function AppSidebar() {
 	const pathname = useLocation({ select: (l) => l.pathname });
+	const search = useLocation({ select: (l) => l.searchStr ?? "" });
 	const tsNavigate = useNavigate();
 	// Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
 	// strictly typed, but our sidebar items come from a runtime config).
@@ -685,7 +707,6 @@ export default function AppSidebar() {
 							icon: FolderGit,
 							description: "Prompt repository",
 							hasAccess: hasPromptRepositoryAccess,
-							tag: "Beta",
 						},
 					]
 				: []),
@@ -889,7 +910,12 @@ export default function AppSidebar() {
 
 	// Flat list of navigable items for keyboard navigation
 	const navigableItems = useMemo(() => {
-		const result: { title: string; url: string; queryParam?: string; isExternal?: boolean }[] = [];
+		const result: {
+			title: string;
+			url: string;
+			queryParam?: string;
+			isExternal?: boolean;
+		}[] = [];
 		for (const item of filteredItems) {
 			if (item.isExternal) {
 				if (item.hasAccess) result.push({ title: item.title, url: item.url, isExternal: true });
@@ -901,7 +927,11 @@ export default function AppSidebar() {
 				if (searchQuery.trim() || expandedItems.has(item.title)) {
 					for (const sub of item.subItems!) {
 						if (sub.hasAccess === false) continue;
-						result.push({ title: sub.title, url: getSidebarItemHref(sub), queryParam: sub.queryParam });
+						result.push({
+							title: sub.title,
+							url: getSidebarItemHref(sub),
+							queryParam: sub.queryParam,
+						});
 					}
 				} else {
 					// Parent is collapsed - include parent as a toggle target
@@ -1149,6 +1179,7 @@ export default function AppSidebar() {
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
+										search={search}
 										isSidebarCollapsed={sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
 										highlightedUrl={highlightedUrl}

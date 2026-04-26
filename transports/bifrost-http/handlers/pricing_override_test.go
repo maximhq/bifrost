@@ -20,7 +20,7 @@ import (
 
 type pricingOverrideTestGovernanceManager struct{}
 
-func (pricingOverrideTestGovernanceManager) GetGovernanceData() *governance.GovernanceData {
+func (pricingOverrideTestGovernanceManager) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	return nil
 }
 func (pricingOverrideTestGovernanceManager) ReloadVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {

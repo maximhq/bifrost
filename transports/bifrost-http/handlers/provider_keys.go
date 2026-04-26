@@ -483,11 +483,11 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) error {
 	switch provider {
 	case schemas.Ollama:
-		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsDefined() {
+		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsSet() {
 			return fmt.Errorf("ollama_key_config.url is required for Ollama keys")
 		}
 	case schemas.SGL:
-		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsDefined() {
+		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
 		}
 	}

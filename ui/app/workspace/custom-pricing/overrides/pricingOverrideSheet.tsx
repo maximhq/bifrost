@@ -55,6 +55,10 @@ export const REQUEST_TYPE_GROUPS = [
 		label: "Video",
 		types: ["video_generation", "video_remix"],
 	},
+	{
+		label: "OCR",
+		types: ["ocr"],
+	},
 ] as const;
 
 export const REQUEST_TYPE_OPTIONS = REQUEST_TYPE_GROUPS.flatMap((g) => g.types);
@@ -232,6 +236,9 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["video"],
 	},
 	{ key: "output_cost_per_video_per_second", label: "Output / video second", group: "video", requestTypeGroups: ["video"] },
+	// OCR fields
+	{ key: "ocr_cost_per_page", label: "OCR / page", group: "ocr", requestTypeGroups: ["ocr"] },
+	{ key: "annotation_cost_per_page", label: "Annotation / page", group: "ocr", requestTypeGroups: ["ocr"] },
 ] as const;
 
 export type PricingFieldKey = (typeof PRICING_FIELDS)[number]["key"];

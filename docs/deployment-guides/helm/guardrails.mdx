@@ -8,6 +8,10 @@ icon: "shield-halved"
 Guardrails are an **enterprise-only** feature. They require the enterprise Bifrost image.
 </Note>
 
+<Warning>
+`env.*` references are currently **not supported** in `bifrost.guardrails` provider `config` values. Use explicit values there for now.
+</Warning>
+
 Guardrails are configured under `bifrost.guardrails` in your values file. The configuration has two parts:
 
 - **`providers`** — the backend that performs the check. Rules link to providers by `id`.
@@ -58,8 +62,8 @@ bifrost:
           guardrail_arn: "arn:aws:bedrock:us-east-1::guardrail/abc123"
           guardrail_version: "DRAFT"          # or a published version number
           region: "us-east-1"
-          access_key: "env.AWS_ACCESS_KEY_ID" # omit to use instance role
-          secret_key: "env.AWS_SECRET_ACCESS_KEY"
+          access_key: "YOUR_AWS_ACCESS_KEY_ID" # omit to use instance role
+          secret_key: "YOUR_AWS_SECRET_ACCESS_KEY"
 ```
 
 </Tab>
@@ -76,7 +80,7 @@ bifrost:
         timeout: 10
         config:
           endpoint: "https://your-resource.cognitiveservices.azure.com"
-          api_key: "env.AZURE_CONTENT_SAFETY_KEY"
+          api_key: "YOUR_AZURE_CONTENT_SAFETY_KEY"
           analyze_enabled: true
           analyze_severity_threshold: "medium"  # low | medium | high
           jailbreak_shield_enabled: true
@@ -99,7 +103,7 @@ bifrost:
         enabled: true
         timeout: 15
         config:
-          api_key: "env.GRAYSWAN_API_KEY"
+          api_key: "YOUR_GRAYSWAN_API_KEY"
           violation_threshold: 0.7        # 0.0–1.0; higher = more permissive
           reasoning_mode: "standard"      # standard | fast
           policy_id: ""                   # optional: single policy ID
@@ -220,7 +224,7 @@ bifrost:
         timeout: 10
         config:
           endpoint: "https://your-resource.cognitiveservices.azure.com"
-          api_key: "env.AZURE_CONTENT_SAFETY_KEY"
+          api_key: "YOUR_AZURE_CONTENT_SAFETY_KEY"
           analyze_enabled: true
           analyze_severity_threshold: "medium"
           jailbreak_shield_enabled: true
@@ -251,12 +255,5 @@ bifrost:
 ```
 
 ```bash
-kubectl create secret generic azure-content-safety \
-  --from-literal=key='your-azure-content-safety-api-key'
-
-helm install bifrost bifrost/bifrost \
-  -f guardrails-values.yaml \
-  --set env[0].name=AZURE_CONTENT_SAFETY_KEY \
-  --set env[0].valueFrom.secretKeyRef.name=azure-content-safety \
-  --set env[0].valueFrom.secretKeyRef.key=key
+helm install bifrost bifrost/bifrost -f guardrails-values.yaml
 ```

@@ -161,8 +161,16 @@ Ensure your application has the necessary permissions.
    - `email`
    - `offline_access` (for refresh tokens)
 
-6. Click **Add permissions**
-7. If required by your organization, click **Grant admin consent for [Your Organization]**
+6. In addition to above roles, following 4 roles are required
+    - `User.Read`
+    - `User.Read.All`
+    - `GroupMember.Read.All`
+    - `Group.Read.All`
+
+7. Click **Add permissions**
+8. If required by your organization, click **Grant admin consent for [Your Organization]**
+
+
 
 ---
 
@@ -225,7 +233,13 @@ and
       "source": null,                                                                                                                                                                                                                           
       "essential": false,                                                                                                                                                                                                                       
       "additionalProperties": []                                                                                                                                                                                                                
-    }                                                                                                                                                                                                                                           
+    },
+    {
+      "name": "groups",
+      "source": null,
+      "essential": false,
+      "additionalProperties": ["cloud_displayname", "sam_account_name"]
+    }
   ],                                                                                                                                                                                                                                            
   "accessToken": [],                                                                                                                                                                                                                            
   "saml2Token": []                                                                                                                                                                                                                              

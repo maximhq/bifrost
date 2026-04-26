@@ -151,6 +151,249 @@ func TestComputeTextCost_WithCachedPromptTokens(t *testing.T) {
 	assert.InDelta(t, 0.0096, cost, 1e-12)
 }
 
+func TestComputeTextCost_With1hrCacheCreationTokens(t *testing.T) {
+	// claude-3-5-sonnet-20241022-v2:0 on Bedrock:
+	// input=$3/M, output=$15/M, cache_creation=$3.75/M, cache_creation_1hr=$7.50/M, cache_read=$0.3/M
+	p := chatPricing(0.000003, 0.000015)
+	p.CacheReadInputTokenCost = bifrost.Ptr(3e-7)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000375)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.0000075)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     2000,
+		CompletionTokens: 500,
+		TotalTokens:      2500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 1000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens1h: 600, // 600 at 1hr rate, 400 at standard rate
+			},
+		},
+	}
+
+	cost := computeTextCost(&p, usage, serviceTier{})
+
+	// Input (non-cached): (2000-1000)*0.000003 = 0.003
+	// Cache creation (1hr): 600*0.0000075 = 0.0045
+	// Cache creation (standard): 400*0.00000375 = 0.0015
+	// Output: 500*0.000015 = 0.0075
+	// Total: 0.003 + 0.0045 + 0.0015 + 0.0075 = 0.0165
+	assert.InDelta(t, 0.0165, cost, 1e-12)
+}
+
+func TestComputeTextCost_StandardCacheCreationPricingLesserThan1hr(t *testing.T) {
+	// Standard (5-min TTL) cache creation is cheaper than 1hr TTL cache creation.
+	// 1hr rate ($7.50/M) is 2x the standard rate ($3.75/M).
+	p := chatPricing(0.000003, 0.000015)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000375)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.0000075)
+
+	base := &schemas.BifrostLLMUsage{
+		PromptTokens:     2000,
+		CompletionTokens: 500,
+		TotalTokens:      2500,
+	}
+
+	usageStandard := *base
+	usageStandard.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+		CachedWriteTokens: 1000,
+	}
+
+	usage1hr := *base
+	usage1hr.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+		CachedWriteTokens: 1000,
+		CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+			CachedWriteTokens1h: 1000, // all 1000 tokens at 1hr rate
+		},
+	}
+
+	costStandard := computeTextCost(&p, &usageStandard, serviceTier{})
+	cost1hr := computeTextCost(&p, &usage1hr, serviceTier{})
+
+	assert.Less(t, costStandard, cost1hr, "standard cache creation should cost less than 1hr cache creation")
+}
+
+func TestComputeTextCost_1hrCacheCreationFallsBackToStandardWhenAbove1hrRateAbsent(t *testing.T) {
+	// claude-3-5-haiku on Bedrock has no cache_creation_input_token_cost_above_1hr entry.
+	// Tokens marked as 1hr cache writes must fall back to the standard cache creation rate.
+	p := chatPricing(8e-7, 0.000004)
+	p.CacheReadInputTokenCost = bifrost.Ptr(8e-8)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000001)
+	// CacheCreationInputTokenCostAbove1hr intentionally left nil
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     2000,
+		CompletionTokens: 500,
+		TotalTokens:      2500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 1000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens1h: 1000, // all 1hr tokens, but no above_1hr rate configured
+			},
+		},
+	}
+
+	cost := computeTextCost(&p, usage, serviceTier{})
+
+	// Input (non-cached): (2000-1000)*8e-7 = 0.0008
+	// Cache creation (1hr fallback → standard 0.000001): 1000*0.000001 = 0.001
+	// Output: 500*0.000004 = 0.002
+	// Total: 0.0008 + 0.001 + 0.002 = 0.0038
+	assert.InDelta(t, 0.0038, cost, 1e-12)
+}
+
+func TestComputeTextCost_CacheWriteTokenDetailsNil_FallsBackToStandardCreationRate(t *testing.T) {
+	// CachedWriteTokens is set but CachedWriteTokenDetails is nil.
+	// All write tokens must use the standard cache creation rate even though above_1hr is configured.
+	p := chatPricing(0.000003, 0.000015)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000375)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.0000075) // present but must not be used
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     2000,
+		CompletionTokens: 500,
+		TotalTokens:      2500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens:       1000,
+			CachedWriteTokenDetails: nil,
+		},
+	}
+
+	cost := computeTextCost(&p, usage, serviceTier{})
+
+	// Input (non-cached): (2000-1000)*0.000003 = 0.003
+	// Cache creation (standard, no 1hr details): 1000*0.00000375 = 0.00375
+	// Output: 500*0.000015 = 0.0075
+	// Total: 0.003 + 0.00375 + 0.0075 = 0.01425
+	assert.InDelta(t, 0.01425, cost, 1e-12)
+}
+
+func TestComputeTextCost_CacheWriteTokenDetails1hZero_FallsBackToStandardCreationRate(t *testing.T) {
+	// CachedWriteTokenDetails is present but CachedWriteTokens1h is 0 (e.g. all tokens
+	// used 5-min TTL). All write tokens must use the standard cache creation rate.
+	p := chatPricing(0.000003, 0.000015)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000375)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.0000075) // present but must not be used
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     2000,
+		CompletionTokens: 500,
+		TotalTokens:      2500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 1000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens1h: 0,
+			},
+		},
+	}
+
+	cost := computeTextCost(&p, usage, serviceTier{})
+
+	// Input (non-cached): (2000-1000)*0.000003 = 0.003
+	// Cache creation (standard, 1h count is 0): 1000*0.00000375 = 0.00375
+	// Output: 500*0.000015 = 0.0075
+	// Total: 0.003 + 0.00375 + 0.0075 = 0.01425
+	assert.InDelta(t, 0.01425, cost, 1e-12)
+}
+
+func TestComputeTextCost_1hrCacheCreationAbove200k_UsesAbove1hrAbove200kRate(t *testing.T) {
+	// claude-3-5-sonnet-20241022-v2:0 on Bedrock has all four cache creation tiers.
+	// When totalTokens > 200k and CachedWriteTokens1h > 0, the above_1hr_above_200k rate
+	// ($15/M) must be used — the most specific tier wins.
+	p := chatPricing(0.000003, 0.000015)
+	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = bifrost.Ptr(0.00003)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000375)
+	p.CacheCreationInputTokenCostAbove200kTokens = bifrost.Ptr(0.0000075)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.0000075)
+	p.CacheCreationInputTokenCostAbove1hrAbove200kTokens = bifrost.Ptr(0.000015)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     180000,
+		CompletionTokens: 25000,
+		TotalTokens:      205000, // above 200k threshold
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 10000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens1h: 10000,
+			},
+		},
+	}
+
+	cost := computeTextCost(&p, usage, serviceTier{})
+
+	// Input rate (>200k): 0.000006; output rate (>200k): 0.00003
+	// Input (non-cached): (180000-10000)*0.000006 = 170000*0.000006 = 1.02
+	// Cache creation 1hr above 200k: 10000*0.000015 = 0.15
+	// Output: 25000*0.00003 = 0.75
+	// Total: 1.02 + 0.15 + 0.75 = 1.92
+	assert.InDelta(t, 1.92, cost, 1e-9)
+}
+
+func TestComputeTextCost_1hrCacheCreationAbove200k_FallsBackToAbove1hrWhenAbove200kRateAbsent(t *testing.T) {
+	// When CacheCreationInputTokenCostAbove1hrAbove200kTokens is absent but
+	// CacheCreationInputTokenCostAbove1hr is present, the 1hr rate must be used
+	// even for >200k requests.
+	p := chatPricing(0.000003, 0.000015)
+	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = bifrost.Ptr(0.00003)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000375)
+	p.CacheCreationInputTokenCostAbove200kTokens = bifrost.Ptr(0.0000075)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.000009) // distinct from above_200k to make fallback unambiguous
+	// CacheCreationInputTokenCostAbove1hrAbove200kTokens intentionally left nil
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     180000,
+		CompletionTokens: 25000,
+		TotalTokens:      205000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 10000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens1h: 10000,
+			},
+		},
+	}
+
+	cost := computeTextCost(&p, usage, serviceTier{})
+
+	// Cache creation 1hr (no above_200k_1hr rate, uses above_1hr): 10000*0.000009 = 0.09
+	// Input (non-cached): 170000*0.000006 = 1.02
+	// Output: 25000*0.00003 = 0.75
+	// Total: 1.02 + 0.09 + 0.75 = 1.86
+	assert.InDelta(t, 1.86, cost, 1e-9)
+}
+
+func TestComputeTextCost_1hrCacheCreationAbove200k_FallsBackToStandardAbove200kWhenNo1hrRates(t *testing.T) {
+	// When neither above_1hr field is present, 1hr tokens on a >200k request fall back
+	// to the standard above_200k cache creation rate.
+	p := chatPricing(8e-7, 0.000004)
+	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.0000016)
+	p.OutputCostPerTokenAbove200kTokens = bifrost.Ptr(0.000008)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.000001)
+	p.CacheCreationInputTokenCostAbove200kTokens = bifrost.Ptr(0.000002)
+	// Neither CacheCreationInputTokenCostAbove1hr nor Above1hrAbove200k is set
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     180000,
+		CompletionTokens: 25000,
+		TotalTokens:      205000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 10000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens1h: 10000,
+			},
+		},
+	}
+
+	cost := computeTextCost(&p, usage, serviceTier{})
+
+	// Cache creation (1hr → no 1hr rates → standard above_200k): 10000*0.000002 = 0.02
+	// Input (non-cached): 170000*0.0000016 = 0.272
+	// Output: 25000*0.000008 = 0.2
+	// Total: 0.272 + 0.02 + 0.2 = 0.492
+	assert.InDelta(t, 0.492, cost, 1e-9)
+}
+
 func TestComputeTextCost_Tiered200k(t *testing.T) {
 	// Claude 3.5 Sonnet Bedrock 200k tier: input=$6/M, output=$30/M
 	p := chatPricing(0.000003, 0.000015)

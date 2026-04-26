@@ -54,10 +54,12 @@ func setupEncryptionTestStore(t *testing.T) (*RDBConfigStore, *gorm.DB) {
 	)
 	require.NoError(t, err)
 
-	store := &RDBConfigStore{
-		db:     db,
-		logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo),
+	store := &RDBConfigStore{logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	store.db.Store(db)
+	store.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, store.DB())
 	}
+	store.refreshPoolFn = func(ctx context.Context) error { return nil }
 	return store, db
 }
 
@@ -508,8 +510,10 @@ func TestEncryptPlaintextProviderProxies_EncryptsAndDecryptsCorrectly(t *testing
 	var found tables.TableProvider
 	require.NoError(t, db.Where("name = ?", "proxy-provider").First(&found).Error)
 	require.NotNil(t, found.ProxyConfig)
-	assert.Equal(t, "https://proxy.example.com", found.ProxyConfig.URL)
-	assert.Equal(t, "secret-proxy-pass", found.ProxyConfig.Password)
+	require.NotNil(t, found.ProxyConfig.URL)
+	assert.Equal(t, "https://proxy.example.com", found.ProxyConfig.URL.Val)
+	require.NotNil(t, found.ProxyConfig.Password)
+	assert.Equal(t, "secret-proxy-pass", found.ProxyConfig.Password.Val)
 }
 
 func TestEncryptPlaintextVectorStoreConfigs_EncryptsAndDecryptsCorrectly(t *testing.T) {

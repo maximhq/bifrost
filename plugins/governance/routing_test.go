@@ -246,7 +246,7 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	}
 
 	// Store the rule
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
 
 	// Create routing context
 	ctx := &RoutingContext{
@@ -312,7 +312,7 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
 
 	routingCtx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -364,7 +364,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(globalRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), globalRule))
 
 	// Create VK-specific rule (should take precedence)
 	vkRule := &configstoreTables.TableRoutingRule{
@@ -379,7 +379,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		ScopeID:  bifrost.Ptr("vk-123"),
 		Priority: 10,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(vkRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), vkRule))
 
 	// Create routing context with VirtualKey
 	vk := &configstoreTables.TableVirtualKey{
@@ -428,7 +428,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		Scope:    "global",
 		Priority: 10,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule1))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule1))
 
 	// High precedence rule (evaluated first): lower priority number
 	rule2 := &configstoreTables.TableRoutingRule{
@@ -442,7 +442,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule2))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule2))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -477,7 +477,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -543,7 +543,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		Scope:    "global",
 		Priority: 10,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(disabledRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), disabledRule))
 
 	// Create enabled rule
 	enabledRule := &configstoreTables.TableRoutingRule{
@@ -557,7 +557,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(enabledRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), enabledRule))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -594,7 +594,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
 
 	// Test with matching headers
 	ctx := &RoutingContext{
@@ -638,7 +638,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -675,7 +675,7 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
 
 	// Create context WITHOUT the header
 	ctx := &RoutingContext{
@@ -721,7 +721,7 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 		Priority:  0,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleA))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleA))
 
 	// Rule B: matches gpt-4-turbo → routes to azure/gpt-4, terminal (chain_rule=false).
 	ruleB := &configstoreTables.TableRoutingRule{
@@ -736,7 +736,7 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 		Priority:  1,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleB))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleB))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -779,7 +779,7 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 		Priority:  0,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleA))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleA))
 
 	// Rule B: would match gpt-4-turbo, but should never be reached because Rule A is terminal.
 	ruleB := &configstoreTables.TableRoutingRule{
@@ -794,7 +794,7 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 		Priority:  1,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleB))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleB))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -836,7 +836,7 @@ func TestEvaluateRoutingRules_ConvergenceStopsChain(t *testing.T) {
 		Priority:  0,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleA))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleA))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -879,7 +879,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Priority:  0,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleA))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleA))
 
 	// Rule B: gpt-4-turbo → azure/gpt-4, chain continues (would proceed to step 2 if depth allowed).
 	ruleB := &configstoreTables.TableRoutingRule{
@@ -894,7 +894,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Priority:  1,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleB))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleB))
 
 	// Rule C: gpt-4 → anthropic/claude-3, would match at step 2 but max depth is 2.
 	ruleC := &configstoreTables.TableRoutingRule{
@@ -909,7 +909,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Priority:  2,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ruleC))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleC))
 
 	ctx := &RoutingContext{
 		Provider:    schemas.OpenAI,
@@ -948,12 +948,12 @@ func TestCompileAndCacheProgram_ValidExpression_Routing(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 
 	// Verify caching works - second call should return cached program
-	cached, err := store.GetRoutingProgram(rule)
+	cached, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, cached)
 }
@@ -975,7 +975,7 @@ func TestCompileAndCacheProgram_EmptyExpression_Routing(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 }
@@ -997,7 +997,7 @@ func TestCompileAndCacheProgram_InvalidExpression_Routing(t *testing.T) {
 		Enabled: true,
 	}
 
-	_, err = store.GetRoutingProgram(rule)
+	_, err = store.GetRoutingProgram(context.Background(), rule)
 	assert.Error(t, err)
 }
 
@@ -1008,7 +1008,7 @@ func TestCompileAndCacheProgram_NilRule(t *testing.T) {
 	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	_, err = store.GetRoutingProgram(nil)
+	_, err = store.GetRoutingProgram(context.Background(), nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be nil")
 }
@@ -1030,7 +1030,7 @@ func TestCompileAndCacheProgram_ListExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 }
@@ -1052,7 +1052,7 @@ func TestCompileAndCacheProgram_RegexExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 }
@@ -1074,7 +1074,7 @@ func TestCompileAndCacheProgram_HeaderExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 }
@@ -1096,7 +1096,7 @@ func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 }
@@ -1118,7 +1118,7 @@ func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 }
@@ -1140,7 +1140,7 @@ func TestCompileAndCacheProgram_ComplexExpression(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
 }
@@ -1195,7 +1195,7 @@ func TestEvaluateCELExpression_TrueResult(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 
 	variables := map[string]interface{}{
@@ -1226,7 +1226,7 @@ func TestEvaluateCELExpression_FalseResult(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 
 	variables := map[string]interface{}{
@@ -1257,7 +1257,7 @@ func TestEvaluateCELExpression_ListMembership(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 
 	// Test: model in list
@@ -1295,7 +1295,7 @@ func TestEvaluateCELExpression_HeaderAccess(t *testing.T) {
 		Enabled: true,
 	}
 
-	program, err := store.GetRoutingProgram(rule)
+	program, err := store.GetRoutingProgram(context.Background(), rule)
 	require.NoError(t, err)
 
 	variables := map[string]interface{}{

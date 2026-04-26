@@ -557,8 +557,19 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 		params.Set("scope", strings.Join(scopes, " "))
 	}
 
-	upstreamAuthorizeURL := templateConfig.AuthorizeURL + "?" + params.Encode()
-	ctx.Redirect(upstreamAuthorizeURL, fasthttp.StatusFound)
+	baseURL, err := url.Parse(templateConfig.AuthorizeURL)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Invalid upstream authorize URL")
+		return
+	}
+	existing := baseURL.Query()
+	for k, vals := range params {
+		for _, v := range vals {
+			existing.Set(k, v)
+		}
+	}
+	baseURL.RawQuery = existing.Encode()
+	ctx.Redirect(baseURL.String(), fasthttp.StatusFound)
 }
 
 // Ensure unused imports are referenced.

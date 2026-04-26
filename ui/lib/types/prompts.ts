@@ -43,19 +43,19 @@ export interface ModelParams {
 }
 
 export interface PromptVersion {
-  id: number
-  prompt_id: string
-  version_number: number
-  commit_message: string
-  messages: PromptVersionMessage[]
-  model_params: ModelParams
-  provider: string
-  model: string
-  variables?: Record<string, string>
-  is_latest: boolean
-  created_by_id?: number
-  created_by?: PromptUser
-  created_at: string // No updated_at - versions are immutable
+	id: number;
+	prompt_id: string;
+	version_number: number;
+	commit_message: string;
+	messages: PromptVersionMessage[];
+	model_params: ModelParams;
+	provider: string;
+	model: string;
+	variables?: Record<string, string>;
+	is_latest: boolean;
+	created_by_id?: number;
+	created_by?: PromptUser;
+	created_at: string; // No updated_at - versions are immutable
 }
 
 export interface PromptVersionMessage {
@@ -67,21 +67,21 @@ export interface PromptVersionMessage {
 }
 
 export interface PromptSession {
-  id: number
-  prompt_id: string
-  prompt?: Prompt
-  version_id?: number
-  version?: PromptVersion
-  name: string
-  messages: PromptSessionMessage[]
-  model_params: ModelParams
-  provider: string
-  model: string
-  variables?: Record<string, string>
-  created_by_id?: number
-  created_by?: PromptUser
-  created_at: string
-  updated_at: string
+	id: number;
+	prompt_id: string;
+	prompt?: Prompt;
+	version_id?: number;
+	version?: PromptVersion;
+	name: string;
+	messages: PromptSessionMessage[];
+	model_params: ModelParams;
+	provider: string;
+	model: string;
+	variables?: Record<string, string>;
+	created_by_id?: number;
+	created_by?: PromptUser;
+	created_at: string;
+	updated_at: string;
 }
 
 export interface PromptSessionMessage {
@@ -207,13 +207,13 @@ export interface GetSessionResponse {
 }
 
 export interface CreateSessionRequest {
-  name?: string
-  version_id?: number
-  messages?: PromptMessage[]
-  model_params: ModelParams
-  provider: string
-  model: string
-  variables?: Record<string, string>
+	name?: string;
+	version_id?: number;
+	messages?: PromptMessage[];
+	model_params: ModelParams;
+	provider: string;
+	model: string;
+	variables?: Record<string, string>;
 }
 
 export interface CreateSessionResponse {
@@ -221,12 +221,12 @@ export interface CreateSessionResponse {
 }
 
 export interface UpdateSessionRequest {
-  name?: string
-  messages: PromptMessage[]
-  model_params: ModelParams
-  provider: string
-  model: string
-  variables?: Record<string, string>
+	name?: string;
+	messages: PromptMessage[];
+	model_params: ModelParams;
+	provider: string;
+	model: string;
+	variables?: Record<string, string>;
 }
 
 export interface UpdateSessionResponse {

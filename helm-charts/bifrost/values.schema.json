@@ -238,7 +238,7 @@
         },
         "encryptionKey": {
           "type": "string",
-          "description": "Encryption key for sensitive data"
+          "description": "Encryption key for sensitive data. If not set, encryption is disabled and data is stored in plaintext."
         },
         "encryptionKeySecret": {
           "type": "object",
@@ -353,22 +353,22 @@
             "mcpAgentDepth": {
               "type": "integer",
               "minimum": 1,
-              "description": "Maximum depth for MCP agent mode tool execution"
+              "description": "DEPRECATED: Maximum depth for MCP agent mode tool execution. Use bifrost.mcp.toolManagerConfig.maxAgentDepth."
             },
             "mcpToolExecutionTimeout": {
               "type": "integer",
               "minimum": 1,
-              "description": "Timeout for individual MCP tool execution in seconds"
+              "description": "DEPRECATED: Timeout for individual MCP tool execution in seconds. Use bifrost.mcp.toolManagerConfig.toolExecutionTimeout."
             },
             "mcpCodeModeBindingLevel": {
               "type": "string",
               "enum": ["server", "tool"],
-              "description": "Code mode binding level for MCP tools"
+              "description": "DEPRECATED: Code mode binding level for MCP tools. Use bifrost.mcp.toolManagerConfig.codeModeBindingLevel."
             },
             "mcpToolSyncInterval": {
               "type": "integer",
               "minimum": 0,
-              "description": "Global tool sync interval in minutes (0 = disabled)"
+              "description": "DEPRECATED: Global tool sync interval in minutes (0 = disabled). Use bifrost.mcp.toolSyncInterval."
             },
             "asyncJobResultTTL": {
               "type": "integer",
@@ -402,7 +402,7 @@
             },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
-              "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers."
+              "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject."
             },
             "routingChainMaxDepth": {
               "type": "integer",
@@ -492,7 +492,13 @@
             },
             "toolSyncInterval": {
               "type": "string",
-              "description": "Global default interval for syncing tools from MCP servers (Go duration, e.g. '10m', '1h')"
+              "description": "Global default interval for syncing tools from MCP servers (Go duration string, e.g. '10m', '1h', '0s' to use runtime default)"
+            },
+            "toolGroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/mcpToolGroupConfig"
+              }
             }
           },
           "additionalProperties": false
@@ -944,6 +950,23 @@
                   "reset_duration": {
                     "type": "string"
                   },
+                  "virtual_key_id": {
+                    "type": "string",
+                    "description": "Associate this budget to a virtual key (mutually exclusive with provider_config_id and team_id)"
+                  },
+                  "provider_config_id": {
+                    "type": "integer",
+                    "description": "Associate this budget to a virtual key provider config (mutually exclusive with virtual_key_id and team_id)"
+                  },
+                  "team_id": {
+                    "type": "string",
+                    "description": "Associate this budget to a team (mutually exclusive with virtual_key_id and provider_config_id)"
+                  },
+                  "calendar_aligned": {
+                    "type": "boolean",
+                    "description": "Snap budget reset windows to calendar boundaries",
+                    "default": false
+                  },
                   "current_usage": {
                     "type": "number"
                   },
@@ -952,6 +975,32 @@
                     "format": "date-time"
                   }
                 },
+                "allOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "virtual_key_id",
+                        "provider_config_id"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "virtual_key_id",
+                        "team_id"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "provider_config_id",
+                        "team_id"
+                      ]
+                    }
+                  }
+                ],
                 "required": [
                   "id",
                   "max_limit",
@@ -1056,6 +1105,9 @@
                   "rate_limit_id": {
                     "type": "string"
                   },
+                  "business_unit_id": {
+                    "type": "string"
+                  },
                   "profile": {
                     "type": "object"
                   },
@@ -1064,6 +1116,45 @@
                   },
                   "claims": {
                     "type": "object"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ]
+              }
+            },
+            "businessUnits": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "budget_id": {
+                    "type": "string"
+                  },
+                  "rate_limit_id": {
+                    "type": "string"
+                  },
+                  "profile": {
+                    "type": "object"
+                  },
+                  "config": {
+                    "type": "object"
+                  },
+                  "claims": {
+                    "type": "object"
+                  },
+                  "teamIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 },
                 "required": [
@@ -1174,9 +1265,9 @@
                           "type": "string",
                           "description": "Target model name"
                         },
-                        "key_id": {
+                        "provider_key_name": {
                           "type": "string",
-                          "description": "Optional API key UUID to pin for this target"
+                          "description": "Optional provider key name. Resolved to internal key_id at config load time."
                         },
                         "weight": {
                           "type": "number",
@@ -1207,8 +1298,27 @@
                     "default": 0
                   },
                   "query": {
-                    "type": "object",
-                    "additionalProperties": true
+                    "description": "Visual rule builder state for the management UI (react-querybuilder). Omitted unless exported from the dashboard. Not evaluated at routing runtime (cel_expression is). When present, must include combinator and rules[].",
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "required": ["combinator", "rules"],
+                        "properties": {
+                          "combinator": {
+                            "type": "string",
+                            "enum": ["and", "or"]
+                          },
+                          "rules": {
+                            "type": "array",
+                            "description": "Leaf rules (field, operator, value) and/or nested combinator+rules groups from the query builder."
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    ]
                   }
                 },
                 "required": ["id", "name", "targets"]
@@ -1262,8 +1372,8 @@
                     "description": "Scope level for this override"
                   },
                   "virtual_key_id": { "type": "string", "description": "Virtual key ID (required for virtual_key* scopes)" },
-                  "provider_id": { "type": "string", "description": "Provider ID (required for provider* scopes)" },
-                  "provider_key_id": { "type": "string", "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)" },
+                  "provider_id": { "type": "string", "description": "Provider name (required for provider* scopes; field key remains provider_id for compatibility)" },
+                  "provider_key_name": { "type": "string", "description": "Provider key name alias. Resolved to internal provider key ID at config load time." },
                   "match_type": {
                     "type": "string",
                     "enum": ["exact", "wildcard"],
@@ -1356,6 +1466,10 @@
                   ],
                   "description": "Discovery type (empty when not configured)"
                 },
+                "serviceName": {
+                  "type": "string",
+                  "description": "Service name for discovery backends (required for consul/etcd/udp; used as default for mdns)"
+                },
                 "allowedAddressSpace": {
                   "type": "array",
                   "items": {
@@ -1393,6 +1507,18 @@
                   "type": "string"
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "type": { "const": "udp" }
+                    }
+                  },
+                  "then": {
+                    "required": ["udpBroadcastPort", "allowedAddressSpace"]
+                  }
+                }
+              ],
               "if": {
                 "properties": {
                   "enabled": {
@@ -1593,6 +1719,31 @@
                   "cel_expression": {
                     "type": "string"
                   },
+                  "query": {
+                    "description": "Visual rule builder state for the management UI (react-querybuilder). Omitted unless exported from the dashboard. Not evaluated at runtime (cel_expression is).",
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "required": ["combinator", "rules"],
+                        "properties": {
+                          "combinator": {
+                            "type": "string",
+                            "enum": ["and", "or"]
+                          },
+                          "rules": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    ]
+                  },
                   "apply_to": {
                     "type": "string",
                     "enum": [
@@ -1623,7 +1774,8 @@
                   "enabled",
                   "cel_expression",
                   "apply_to"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
             "providers": {
@@ -1657,9 +1809,132 @@
                   "provider_name",
                   "policy_name",
                   "enabled"
-                ]
+                ],
+                "additionalProperties": false
               }
             }
+          },
+          "additionalProperties": false
+        },
+        "accessProfiles": {
+          "type": "array",
+          "description": "Enterprise access profile templates rendered as top-level access_profiles in config.json",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "is_active": { "type": "boolean" },
+              "tags": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "budgets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "max_limit": { "type": "number" },
+                    "reset_duration": { "type": "string" }
+                  },
+                  "required": ["id", "max_limit", "reset_duration"],
+                  "additionalProperties": false
+                }
+              },
+              "rate_limit": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "token_max_limit": { "type": "integer" },
+                  "token_reset_duration": { "type": "string" },
+                  "request_max_limit": { "type": "integer" },
+                  "request_reset_duration": { "type": "string" }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+              },
+              "provider_configs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "provider_name": { "type": "string" },
+                    "all_models_allowed": { "type": "boolean" },
+                    "allowed_models": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "budgets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "max_limit": { "type": "number" },
+                          "reset_duration": { "type": "string" }
+                        },
+                        "required": ["id", "max_limit", "reset_duration"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "rate_limit": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "token_max_limit": { "type": "integer" },
+                        "token_reset_duration": { "type": "string" },
+                        "request_max_limit": { "type": "integer" },
+                        "request_reset_duration": { "type": "string" }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["provider_name"],
+                  "additionalProperties": false
+                }
+              },
+              "mcp_tool_groups": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tool_group_id": { "type": "integer" }
+                  },
+                  "required": ["tool_group_id"],
+                  "additionalProperties": false
+                }
+              },
+              "mcp_servers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "mcp_server_id": { "type": "string" }
+                  },
+                  "required": ["mcp_server_id"],
+                  "additionalProperties": false
+                }
+              },
+              "mcp_tool_overrides": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "mcp_client_id": { "type": "string" },
+                    "tool_name": { "type": "string" },
+                    "action": {
+                      "type": "string",
+                      "enum": ["include", "exclude"]
+                    }
+                  },
+                  "required": ["mcp_client_id", "tool_name", "action"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["name"],
+            "additionalProperties": false
           }
         },
         "auditLogs": {
@@ -2540,7 +2815,9 @@
         },
         "weight": {
           "type": "number",
-          "minimum": 0
+          "minimum": 0,
+          "default": 1,
+          "description": "Routing weight for this key. Optional; defaults to 1 when omitted."
         },
         "use_for_batch_api": {
           "type": "boolean"
@@ -2700,7 +2977,7 @@
           "additionalProperties": false
         }
       },
-      "required": [
+      "required":[
         "name",
         "weight"
       ],
@@ -2780,19 +3057,19 @@
         },
         "retry_backoff_initial_ms": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 100
         },
         "retry_backoff_max_ms": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 100
         },
         "insecure_skip_verify": {
           "type": "boolean",
-          "description": "Disable TLS certificate verification for provider connections"
+          "description": "Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments."
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for provider endpoint connections"
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections. Supports inline PEM or env.VAR_NAME."
         },
         "stream_idle_timeout_in_seconds": {
           "type": "integer",
@@ -2805,6 +3082,10 @@
           "minimum": 1,
           "maximum": 10000,
           "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
+        },
+        "enforce_http2": {
+          "type": "boolean",
+          "description": "Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)."
         },
         "beta_header_overrides": {
           "type": "object",
@@ -2843,17 +3124,32 @@
           ]
         },
         "url": {
-          "type": "string",
-          "format": "uri"
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\.[A-Za-z0-9_]+$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "not": {
+                "pattern": "^env\\.[A-Za-z0-9_]+$"
+              }
+            }
+          ],
+          "description": "URL of the proxy server (supports env.VAR_NAME)"
         },
         "username": {
-          "type": "string"
+          "type": "string",
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
         },
         "password": {
-          "type": "string"
+          "type": "string",
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
         },
         "ca_cert_pem": {
-          "type": "string"
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.VAR_NAME)"
         }
       },
       "required": [
@@ -3057,6 +3353,77 @@
         }
       ]
     },
+    "mcpToolGroupConfig": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcpClientId": {
+                "type": "string"
+              },
+              "mcpClientName": {
+                "type": "string"
+              },
+              "toolNames": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "anyOf": [
+              {
+                "required": ["mcpClientId"]
+              },
+              {
+                "required": ["mcpClientName"]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtualKeyIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "teamIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "customerIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "userIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "providerNames": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "apiKeyIds": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
+    },
     "virtualKeyProviderConfig": {
       "type": "object",
       "description": "Provider configuration for a virtual key",
@@ -3092,6 +3459,13 @@
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
+        },
+        "key_ids": {
+          "type": "array",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In Helm values, use provider key names.",
+          "items": {
+            "type": "string"
+          }
         },
         "keys": {
           "type": "array",

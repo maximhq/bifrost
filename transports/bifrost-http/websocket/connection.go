@@ -4,6 +4,8 @@
 package websocket
 
 import (
+	"errors"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -26,7 +28,8 @@ type UpstreamConn struct {
 	writeMu sync.Mutex
 	readMu  sync.Mutex
 
-	closed atomic.Bool
+	closed     atomic.Bool
+	validating atomic.Bool // guards concurrent ValidateIdleHeartbeat calls
 }
 
 // newUpstreamConn creates a new UpstreamConn wrapping the given websocket connection.
@@ -43,11 +46,17 @@ func newUpstreamConn(conn *ws.Conn, provider schemas.ModelProvider, keyID, endpo
 }
 
 // WriteMessage sends a message to the upstream provider. Thread-safe.
+// Closes the connection immediately on fatal write errors so resources are
+// released deterministically rather than waiting for the caller to call Close.
 func (c *UpstreamConn) WriteMessage(messageType int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	c.lastUsed.Store(time.Now().UnixNano())
-	return c.conn.WriteMessage(messageType, data)
+	writeErr := c.conn.WriteMessage(messageType, data)
+	if writeErr != nil && isConnectionDead(writeErr) {
+		_ = c.Close()
+	}
+	return writeErr
 }
 
 // WriteJSON sends a JSON-encoded message to the upstream provider. Thread-safe.
@@ -59,11 +68,17 @@ func (c *UpstreamConn) WriteJSON(v interface{}) error {
 }
 
 // ReadMessage reads a message from the upstream provider. Thread-safe.
+// Closes the connection immediately on fatal read errors so resources are
+// released deterministically rather than waiting for the caller to call Close.
 func (c *UpstreamConn) ReadMessage() (messageType int, p []byte, err error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 	c.lastUsed.Store(time.Now().UnixNano())
-	return c.conn.ReadMessage()
+	msgType, data, readErr := c.conn.ReadMessage()
+	if readErr != nil && isConnectionDead(readErr) {
+		_ = c.Close()
+	}
+	return msgType, data, readErr
 }
 
 // Close closes the underlying WebSocket connection.
@@ -119,12 +134,121 @@ func (c *UpstreamConn) SetPongHandler(h func(appData string) error) {
 	c.conn.SetPongHandler(h)
 }
 
-// WritePing sends a ping message to the upstream. Thread-safe.
-func (c *UpstreamConn) WritePing(data []byte) error {
+// WritePing sends a ping control frame to the upstream with an explicit deadline.
+// Uses WriteControl instead of WriteMessage so the deadline is actually enforced
+// (WriteMessage ignores SetWriteDeadline in fasthttp/websocket).
+func (c *UpstreamConn) WritePing(data []byte, deadline time.Time) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	c.lastUsed.Store(time.Now().UnixNano())
-	return c.conn.WriteMessage(ws.PingMessage, data)
+	return c.conn.WriteControl(ws.PingMessage, data, deadline)
+}
+
+// ValidateIdleHeartbeat probes an idle connection with a ping/pong round trip.
+// It returns true only when the connection stays usable for reuse.
+// The probe intentionally does NOT update lastUsed so that the pool's idle
+// timer reflects real application activity, not background health checks.
+//
+// Instead of blocking for the full timeout on healthy connections, it polls with
+// short read deadlines and returns as soon as the pong handler fires. This keeps
+// borrow-path latency low and avoids stalling the heartbeat sweep.
+func (c *UpstreamConn) ValidateIdleHeartbeat(timeout time.Duration) bool {
+	if c == nil || c.IsClosed() {
+		return false
+	}
+	// Prevent concurrent validation from heartbeat loop and borrow path.
+	if !c.validating.CompareAndSwap(false, true) {
+		return false // another goroutine is already probing this conn
+	}
+	defer c.validating.Store(false)
+
+	// Preserve the pre-probe idle timestamp so that heartbeat probes do not
+	// artificially extend the connection's idle lifetime.
+	savedLastUsed := c.lastUsed.Load()
+	defer c.lastUsed.Store(savedLastUsed)
+
+	var gotPong atomic.Bool
+	c.SetPongHandler(func(string) error {
+		gotPong.Store(true)
+		return nil
+	})
+	defer c.SetPongHandler(func(string) error { return nil })
+
+	if err := c.WritePing(nil, time.Now().Add(timeout)); err != nil {
+		_ = c.Close()
+		return false
+	}
+
+	// Poll with short read deadlines so we return as soon as the pong handler
+	// fires, rather than blocking for the full timeout on healthy connections.
+	// In fasthttp/websocket, pong frames are consumed internally by ReadMessage
+	// (the handler fires, then ReadMessage continues waiting for data frames),
+	// so we use short iterations to check gotPong between reads.
+	const pollInterval = 10 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		d := pollInterval
+		if remaining < d {
+			d = remaining
+		}
+
+		_ = c.SetReadDeadline(time.Now().Add(d))
+		_, _, err := c.ReadMessage()
+
+		if gotPong.Load() {
+			_ = c.SetReadDeadline(time.Time{})
+			return true
+		}
+
+		if err != nil {
+			if isHeartbeatTimeout(err) {
+				continue // poll again until total deadline
+			}
+			// Non-timeout error (close frame, EOF, etc.)
+			_ = c.Close()
+			return false
+		}
+
+		// Idle pooled connections should not have buffered application frames.
+		_ = c.Close()
+		return false
+	}
+
+	// Total timeout expired without receiving pong.
+	_ = c.Close()
+	return false
+}
+
+// isHeartbeatTimeout reports whether err is a net.Error timeout, which indicates
+// the read deadline fired before any data arrived (expected during ping/pong probes).
+func isHeartbeatTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// isConnectionDead returns true for errors that indicate the connection is permanently broken
+// (close frames, EOF, broken pipe) so callers can mark IsClosed() early.
+func isConnectionDead(err error) bool {
+	if err == nil {
+		return false
+	}
+	if ws.IsCloseError(err, ws.CloseNormalClosure, ws.CloseGoingAway,
+		ws.CloseAbnormalClosure, ws.CloseNoStatusReceived) {
+		return true
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := err.Error()
+	return msg == "EOF" || msg == "unexpected EOF"
 }
 
 // Dial creates a new WebSocket connection to the given URL with the provided headers.

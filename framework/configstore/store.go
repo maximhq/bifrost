@@ -9,21 +9,21 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
 
 // VirtualKeyQueryParams holds pagination, filtering, and search parameters for virtual key queries.
 type VirtualKeyQueryParams struct {
-	Limit      int
-	Offset     int
-	Search     string
-	CustomerID string
-	TeamID     string
-	SortBy     string // name, budget_spent, created_at, status (default: created_at)
-	Order      string // asc, desc (default: asc)
-	Export     bool   // When true, skip default pagination limits (caller controls limit)
+	Limit                              int
+	Offset                             int
+	Search                             string
+	CustomerID                         string
+	TeamID                             string
+	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
+	Order                              string // asc, desc (default: asc)
+	Export                             bool   // When true, skip default pagination limits (caller controls limit)
+	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles
 }
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
@@ -116,11 +116,11 @@ type ConfigStore interface {
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
+	GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
-	UpdateMCPClientDiscoveredTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// Vector store config CRUD
@@ -393,8 +393,25 @@ type ConfigStore interface {
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
 
-	// Migration manager
-	RunMigration(ctx context.Context, migration *migrator.Migration) error
+	// RunMigration opens a throwaway *gorm.DB against the same
+	// backing database, invokes fn with it, and closes the connection. Use
+	// this for DDL (typically downstream-consumer migrations) that must not
+	// leave cached prepared-statement plans on the runtime pool.
+	//
+	// After fn returns successfully, callers should invoke
+	// RefreshConnectionPool if the migration altered tables the runtime pool
+	// has already queried — otherwise SQLSTATE 0A000 can surface on reads
+	// whose cached plans predate the DDL.
+	//
+	// For SQLite backends, this is a pass-through that runs fn on the
+	// existing connection (no server-side plan cache, single-writer lock).
+	RunMigration(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
+
+	// RefreshConnectionPool tears down the runtime pool and opens a fresh
+	// one against the same configuration. In-flight queries on the old
+	// pool complete before it closes; subsequent DB() calls return the new
+	// pool, whose connections carry no cached plans. SQLite is a no-op.
+	RefreshConnectionPool(ctx context.Context) error
 
 	// Cleanup
 	Close(ctx context.Context) error

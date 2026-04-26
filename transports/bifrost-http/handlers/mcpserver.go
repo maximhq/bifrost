@@ -95,11 +95,8 @@ func injectMCPSessionIdentity(bifrostCtx *schemas.BifrostContext, session *table
 		if session.AccessToken != "" {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserSession, session.AccessToken)
 		}
-		if session.VirtualKeyID != nil && *session.VirtualKeyID != "" {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, *session.VirtualKeyID)
-			if session.VirtualKey != nil && session.VirtualKey.Name != "" {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, session.VirtualKey.Name)
-			}
+		if session.VirtualKeyID != nil && *session.VirtualKeyID != "" && session.VirtualKey != nil && session.VirtualKey.Value != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey.Value)
 		}
 		if session.UserID != nil && *session.UserID != "" {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, *session.UserID)

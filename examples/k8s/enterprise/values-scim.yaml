@@ -1,0 +1,41 @@
+# Enterprise overlay: SCIM/SSO bootstrap configuration.
+# This file is SAFE-BY-DEFAULT (scim.enabled=false) so placeholder values
+# do not crash startup.
+#
+# Notes:
+# - Set bifrost.scim.enabled=true only after real values are provided.
+# - provider must be one of: "entra", "okta"
+# - Replace placeholder values with real tenant/app credentials.
+# - teamIdsField and rolesField should match claims emitted by your IdP.
+#
+# If you want Okta instead, switch provider to "okta" and use the
+# commented example block at the bottom.
+bifrost:
+  scim:
+    enabled: false
+    provider: "entra"
+    config:
+      tenantId: "env.SCIM_ENTRA_TENANT_ID"
+      clientId: "env.SCIM_ENTRA_CLIENT_ID"
+      clientSecret: "env.SCIM_ENTRA_CLIENT_SECRET"
+      cloud: "commercial"
+      audience: "api://bifrost"
+      appIdUri: "api://bifrost"
+      userIdField: "oid"
+      teamIdsField: "groups"
+      rolesField: "roles"
+
+# Okta example (disabled by default)
+# bifrost:
+#   scim:
+#     enabled: true
+#     provider: "okta"
+#     config:
+#       issuerUrl: "https://dev-123456.okta.com/oauth2/default"
+#       clientId: "env.SCIM_OKTA_CLIENT_ID"
+#       clientSecret: "env.SCIM_OKTA_CLIENT_SECRET"
+#       apiToken: "env.SCIM_OKTA_API_TOKEN"
+#       audience: "api://default"
+#       userIdField: "sub"
+#       teamIdsField: "groups"
+#       rolesField: "roles"

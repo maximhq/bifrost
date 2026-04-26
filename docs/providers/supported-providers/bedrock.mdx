@@ -7,6 +7,7 @@ icon: "aws"
 ## Overview
 
 AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohere, Titan) with significant structural differences from OpenAI's format. Bifrost performs extensive conversion including:
+
 - **Model family detection** - Automatic routing based on model ID to handle family-specific parameters
 - **Parameter renaming** - e.g., `max_completion_tokens` → `maxTokens`, `stop` → `stopSequences`
 - **Reasoning transformation** - `reasoning` parameters mapped to model-specific thinking/reasoning structures (Anthropic, Nova)
@@ -18,48 +19,54 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 
 ### Model Family Support
 
-| Family | Chat | Responses | Text | Embeddings | Image Generation | Image Edit | Image Variation |
-|--------|------|-----------|------|------------|------------|------------|------------|
-| **Claude (Anthropic)** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Nova (Anthropic)** | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| **Mistral** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Llama** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Cohere** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
-| **Titan** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| **Stability AI** | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| Family                 | Chat | Responses | Text | Embeddings | Image Generation | Image Edit | Image Variation |
+| ---------------------- | ---- | --------- | ---- | ---------- | ---------------- | ---------- | --------------- |
+| **Claude (Anthropic)** | ✅   | ✅        | ✅   | ❌         | ❌               | ❌         | ❌              |
+| **Nova (Anthropic)**   | ✅   | ✅        | ❌   | ❌         | ✅               | ✅         | ✅              |
+| **Mistral**            | ✅   | ✅        | ✅   | ❌         | ❌               | ❌         | ❌              |
+| **Llama**              | ✅   | ✅        | ❌   | ❌         | ❌               | ❌         | ❌              |
+| **Cohere**             | ✅   | ✅        | ❌   | ✅         | ❌               | ❌         | ❌              |
+| **Titan**              | ✅   | ✅        | ❌   | ✅         | ✅               | ✅         | ✅              |
+| **Stability AI**       | ❌   | ❌        | ❌   | ❌         | ✅               | ✅         | ❌              |
 
 ### Supported Operations
 
-| Operation | Non-Streaming | Streaming | Endpoint |
-|-----------|---------------|-----------|----------|
-| Chat Completions | ✅ | ✅ | `converse` |
-| Responses API | ✅ | ✅ | `converse` |
-| Text Completions | ✅ | ❌ | `invoke` |
-| Embeddings | ✅ | - | `invoke` |
-| Files | ✅ | - | S3 (via SDK) |
-| Batch | ✅ | - | `batch` |
-| List Models | ✅ | - | `listFoundationModels` |
-| Image Generation | ✅ | ❌ | `invoke` |
-| Image Edit | ✅ | ❌ | `invoke` |
-| Image Variation | ✅ | ❌ | `invoke` |
-| Count Tokens | ✅ | - | `count-tokens` |
-| Speech (TTS) | ❌ | ❌ | - |
-| Transcriptions (STT) | ❌ | ❌ | - |
+| Operation            | Non-Streaming | Streaming | Endpoint               |
+| -------------------- | ------------- | --------- | ---------------------- |
+| Chat Completions     | ✅            | ✅        | `converse`             |
+| Responses API        | ✅            | ✅        | `converse`             |
+| Text Completions     | ✅            | ❌        | `invoke`               |
+| Embeddings           | ✅            | -         | `invoke`               |
+| Files                | ✅            | -         | S3 (via SDK)           |
+| Batch                | ✅            | -         | `batch`                |
+| List Models          | ✅            | -         | `listFoundationModels` |
+| Image Generation     | ✅            | ❌        | `invoke`               |
+| Image Edit           | ✅            | ❌        | `invoke`               |
+| Image Variation      | ✅            | ❌        | `invoke`               |
+| Count Tokens         | ✅            | -         | `count-tokens`         |
+| Speech (TTS)         | ❌            | ❌        | -                      |
+| Transcriptions (STT) | ❌            | ❌        | -                      |
 
 <Note>
 **Unsupported Operations** (❌): Speech (TTS) and Transcriptions (STT) are not supported by the upstream AWS Bedrock API. These return `UnsupportedOperationError`.
 
 **Limitations**: Images must be in base64 or data URI format (remote URLs not supported). Text completion streaming is not supported.
+
 </Note>
 
 ---
 
 ## Setup & Configuration
 
-Bifrost signs every Bedrock request with AWS Signature Version 4 (SigV4). Four credential methods are supported — choose the one that matches your deployment environment.
+Bedrock supports both SigV4-based authentication and direct API-key authentication. Four authentication flows are supported — choose the one that matches your deployment environment.
 
 <Note>
-The `aliases` field (mapping model names to inference profile IDs, ARNs, or deployment identifiers) requires **v1.5.0-prerelease2 or later**. On v1.4.x, use `deployments` inside `bedrock_key_config` instead — see the [v1.5.0 Migration Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases) for details.
+  The `aliases` field (mapping model names to inference profile IDs, ARNs, or
+  deployment identifiers) requires **v1.5.0-prerelease2 or later**. On v1.4.x,
+  use `deployments` inside `bedrock_key_config` instead — see the [v1.5.0
+  Migration
+  Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases)
+  for details.
 </Note>
 
 ### 1. Explicit Credentials
@@ -69,6 +76,13 @@ Provide `access_key` and `secret_key` directly. Optionally include `session_toke
 <Tabs>
 
 <Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-bedrock-explicit-credentials-auth-setup.png"
+    alt="AWS Bedrock explicit credentials authentication setup in the Bifrost Web UI showing Access Key, Secret Key, Session Token, and Region fields"
+  />
+</Frame>
 
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
 2. Click **"Add Key"** (or edit an existing key)
@@ -155,7 +169,8 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
 ```
 
 <Note>
-On **v1.4.x**, use `deployments` inside `bedrock_key_config` instead of the top-level `aliases` field.
+  On **v1.4.x**, use `deployments` inside `bedrock_key_config` instead of the
+  top-level `aliases` field.
 </Note>
 
 </Tab>
@@ -190,22 +205,32 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 </Tabs>
 
-### 2. IAM Role (IRSA / Instance Profile)
+### 2. Inherited AWS Credentials / IAM Role
 
-Leave `access_key` and `secret_key` empty. Bifrost calls AWS SDK's `config.LoadDefaultConfig()`, which runs the full credential chain. This section covers IAM-role-based sources: EKS IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`), ECS task role, and EC2 instance profile (IMDS). No static credentials are stored anywhere.
+Uses AWS's default credential chain when static credentials are not configured. That includes IAM roles (IRSA in EKS, ECS task role, EC2 instance profile), environment variables (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`), and shared credential files.
 
 <Tabs>
 
 <Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-bedrock-sts-assume-role-auth-setup.png"
+    alt="AWS Bedrock IAM Role authentication setup in the Bifrost Web UI showing optional Assume Role ARN, External ID, and Session Name fields"
+  />
+</Frame>
 
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
 2. Click **"Add Key"** (or edit an existing key)
 3. Under **Authentication Method**, select **"IAM Role (Inherited)"**
 4. Set **Region**: e.g., `us-east-1`
 5. Configure **Aliases** if needed
-6. Save
+6. _(Optional)_ Set **Assume Role ARN**: to assume an IAM role before signing (e.g., `arn:aws:iam::123456789012:role/BedrockRole`)
+7. _(Optional)_ Set **External ID**: required when the role's trust policy demands it
+8. _(Optional)_ Set **Session Name**: identifies the session in CloudTrail (default: `bifrost-session`)
+9. Save
 
-Ensure your workload has an IAM role with Bedrock permissions attached (via IRSA, ECS task role, or EC2 instance profile).
+For system identity, leave steps 6–8 blank. Ensure your workload has an IAM role with Bedrock permissions attached (via IRSA, ECS task role, or EC2 instance profile), or that `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are set in the environment.
 
 </Tab>
 
@@ -217,7 +242,7 @@ curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "bedrock"}'
 
-# Step 2: Create a key (IAM Role — no credentials)
+# Step 2a: System identity — leave credentials empty
 curl -X POST http://localhost:8080/api/providers/bedrock/keys \
   -H "Content-Type: application/json" \
   -d '{
@@ -231,12 +256,28 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
       "region": "us-east-1"
     }
   }'
+
+# Step 2b: AssumeRole — add role_arn on top
+curl -X POST http://localhost:8080/api/providers/bedrock/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "bedrock-assume-role",
+    "models": ["*"],
+    "weight": 1.0,
+    "bedrock_key_config": {
+      "region": "us-east-1",
+      "role_arn": "env.AWS_ROLE_ARN",
+      "external_id": "env.AWS_EXTERNAL_ID",
+      "session_name": "bifrost-session"
+    }
+  }'
 ```
 
 <Note>
-**On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
-- Replace the top-level `aliases` with `"deployments"` inside `bedrock_key_config`.
+  **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
+  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  endpoint. - Replace the top-level `aliases` with `"deployments"` inside
+  `bedrock_key_config`.
 </Note>
 
 </Tab>
@@ -256,7 +297,10 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
             "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
           },
           "bedrock_key_config": {
-            "region": "us-east-1"
+            "region": "us-east-1",
+            "role_arn": "env.AWS_ROLE_ARN",
+            "external_id": "env.AWS_EXTERNAL_ID",
+            "session_name": "bifrost-session"
           }
         }
       ]
@@ -264,6 +308,11 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
   }
 }
 ```
+
+<Note>
+  Omit `role_arn`, `external_id`, and `session_name` for plain system identity
+  with no role assumption.
+</Note>
 
 </Tab>
 
@@ -277,13 +326,15 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
             {
                 Models: []string{"*"},
                 Weight: 1.0,
-                // Leave Value empty — Bifrost uses the IAM role bound to the workload
                 Aliases: schemas.KeyAliases{
                     "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
                 },
                 BedrockKeyConfig: &schemas.BedrockKeyConfig{
-                    // Leave AccessKey and SecretKey empty — resolved from IRSA/instance profile
-                    Region: schemas.NewEnvVar("us-east-1"),
+                    // Leave AccessKey and SecretKey empty — resolved from IRSA/instance profile/env vars
+                    Region:          schemas.NewEnvVar("us-east-1"),
+                    RoleARN:         schemas.NewEnvVar("env.AWS_ROLE_ARN"),         // optional
+                    ExternalID:      schemas.NewEnvVar("env.AWS_EXTERNAL_ID"),      // optional
+                    RoleSessionName: schemas.NewEnvVar("bifrost-session"),          // optional
                 },
             },
         }, nil
@@ -296,29 +347,28 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 </Tabs>
 
-### 3. Default Credential Chain
+### 3. API Key
 
-Leave `access_key` and `secret_key` empty. Bifrost calls the same `config.LoadDefaultConfig()` as the IAM Role section — the full AWS SDK v2 credential chain runs. Use this when credentials come from environment variables or shared credential files rather than an attached IAM role.
-
-Full AWS SDK v2 credential resolution order:
-1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
-2. Web Identity Token File / IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`)
-3. Shared credentials and config files (`~/.aws/credentials`, `~/.aws/config`)
-4. EC2 instance metadata / IMDS
-5. ECS container credentials
+Set `value` to a Bearer token for direct API key authentication. This method uses a Bearer token instead of SigV4 signing and does not support STS AssumeRole.
 
 <Tabs>
 
 <Tab title="Web UI">
 
+<Frame>
+  <img
+    src="/media/ui-bedrock-api-key-auth-setup.png"
+    alt="AWS Bedrock API Key authentication setup in the Bifrost Web UI showing the API Key field and Region"
+  />
+</Frame>
+
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
 2. Click **"Add Key"** (or edit an existing key)
-3. Under **Authentication Method**, select **"IAM Role (Inherited)"** — this covers both assigned IAM roles and the default credential chain (env vars, `~/.aws/credentials`)
-4. Set **Region**: e.g., `us-east-1`
-5. Configure **Aliases** if needed
-6. Save
-
-Ensure `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set in the environment where Bifrost runs, or that `~/.aws/credentials` is configured.
+3. Under **Authentication Method**, select **"API Key"**
+4. Set **API Key**: Your Bedrock API key (Bearer token)
+5. Set **Region**: e.g., `us-east-1`
+6. Configure **Aliases** if needed
+7. Save
 
 </Tab>
 
@@ -330,11 +380,12 @@ curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "bedrock"}'
 
-# Step 2: Create a key (Default Credential Chain — no credentials)
+# Step 2: Create a key (API Key / Bearer token)
 curl -X POST http://localhost:8080/api/providers/bedrock/keys \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "bedrock-default-chain",
+    "name": "bedrock-api-key",
+    "value": "env.BEDROCK_API_KEY",
     "models": ["*"],
     "weight": 1.0,
     "bedrock_key_config": {
@@ -342,10 +393,6 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
     }
   }'
 ```
-
-<Note>
-**On v1.4.x**, pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
-</Note>
 
 </Tab>
 
@@ -357,7 +404,8 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
     "bedrock": {
       "keys": [
         {
-          "name": "bedrock-default-chain",
+          "name": "bedrock-api-key",
+          "value": "env.BEDROCK_API_KEY",
           "models": ["*"],
           "weight": 1.0,
           "bedrock_key_config": {
@@ -380,10 +428,10 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Bedrock:
         return []schemas.Key{
             {
+                Value:  *schemas.NewEnvVar("env.BEDROCK_API_KEY"),
                 Models: []string{"*"},
                 Weight: 1.0,
                 BedrockKeyConfig: &schemas.BedrockKeyConfig{
-                    // Leave AccessKey and SecretKey empty — resolved from env vars or ~/.aws/credentials
                     Region: schemas.NewEnvVar("us-east-1"),
                 },
             },
@@ -396,132 +444,26 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 </Tab>
 
 </Tabs>
-
-### 4. STS AssumeRole
-
-Set `role_arn` to assume an IAM role before signing requests. STS AssumeRole can layer on top of either explicit credentials or the default credential chain.
-
-<Tabs>
-
-<Tab title="Web UI">
-
-1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
-2. Click **"Add Key"** (or edit an existing key)
-3. Under **Authentication Method**, select **"IAM Role (Inherited)"** or **"Explicit Credentials"** — AssumeRole fields are available on both tabs
-4. Set **Region**: e.g., `us-east-1`
-5. Set **Assume Role ARN**: The IAM role ARN (e.g., `arn:aws:iam::123456789012:role/BedrockRole`)
-6. Set **External ID** (Optional): Required when the role's trust policy demands it
-7. Set **Session Name** (Optional): Identifies the session in CloudTrail (default: `bifrost-session`)
-8. Save
-
-</Tab>
-
-<Tab title="API">
-
-```bash
-# Step 1: Create the provider
-curl -X POST http://localhost:8080/api/providers \
-  -H "Content-Type: application/json" \
-  -d '{"provider": "bedrock"}'
-
-# Step 2: Create a key (STS AssumeRole)
-curl -X POST http://localhost:8080/api/providers/bedrock/keys \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "bedrock-assume-role",
-    "models": ["*"],
-    "weight": 1.0,
-    "bedrock_key_config": {
-      "role_arn": "env.AWS_ROLE_ARN",
-      "external_id": "env.AWS_EXTERNAL_ID",
-      "session_name": "bifrost-session",
-      "region": "us-east-1"
-    }
-  }'
-```
-
-<Note>
-**On v1.4.x**, pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
-</Note>
-
-</Tab>
-
-<Tab title="config.json">
-
-```json
-{
-  "providers": {
-    "bedrock": {
-      "keys": [
-        {
-          "name": "bedrock-assume-role",
-          "models": ["*"],
-          "weight": 1.0,
-          "bedrock_key_config": {
-            "role_arn": "env.AWS_ROLE_ARN",
-            "external_id": "env.AWS_EXTERNAL_ID",
-            "session_name": "bifrost-session",
-            "region": "us-east-1"
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-</Tab>
-
-<Tab title="Go SDK">
-
-```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
-    switch provider {
-    case schemas.Bedrock:
-        return []schemas.Key{
-            {
-                Models: []string{"*"},
-                Weight: 1.0,
-                BedrockKeyConfig: &schemas.BedrockKeyConfig{
-                    RoleARN:         schemas.NewEnvVar("env.AWS_ROLE_ARN"),
-                    ExternalID:      schemas.NewEnvVar("env.AWS_EXTERNAL_ID"), // optional
-                    RoleSessionName: schemas.NewEnvVar("bifrost-session"),     // optional
-                    Region:      bifrost.Ptr("us-east-1"),
-                },
-            },
-        }, nil
-    }
-    return nil, fmt.Errorf("provider %s not supported", provider)
-}
-```
-
-</Tab>
-
-</Tabs>
-
-<Note>
-AssumeRole requires a valid source identity — it works when credentials are available via explicit `access_key`/`secret_key` or via the default credential chain. If no credentials are available from either source, AssumeRole will fail.
-</Note>
 
 **`bedrock_key_config` fields:**
 
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `region` | Yes | — | AWS region (e.g., `us-east-1`) |
-| `access_key` | No | — | AWS access key ID |
-| `secret_key` | No | — | AWS secret access key |
-| `session_token` | No | — | AWS session token (for temporary credentials) |
-| `arn` | No | — | ARN prefix for constructing inference profile URLs (see [Inference Profiles](#inference-profiles--arn-configuration)) |
-| `role_arn` | No | — | IAM role ARN for STS AssumeRole |
-| `external_id` | No | — | External ID for AssumeRole (when required by trust policy) |
-| `session_name` | No | `bifrost-session` | Session name for AssumeRole CloudTrail logs |
+| Field           | Required | Default           | Description                                                                                                           |
+| --------------- | -------- | ----------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `region`        | Yes      | —                 | AWS region (e.g., `us-east-1`)                                                                                        |
+| `access_key`    | No       | —                 | AWS access key ID                                                                                                     |
+| `secret_key`    | No       | —                 | AWS secret access key                                                                                                 |
+| `session_token` | No       | —                 | AWS session token (for temporary credentials)                                                                         |
+| `arn`           | No       | —                 | ARN prefix for constructing inference profile URLs (see [Inference Profiles](#inference-profiles--arn-configuration)) |
+| `role_arn`      | No       | —                 | IAM role ARN for STS AssumeRole                                                                                       |
+| `external_id`   | No       | —                 | External ID for AssumeRole (when required by trust policy)                                                            |
+| `session_name`  | No       | `bifrost-session` | Session name for AssumeRole CloudTrail logs                                                                           |
 
 **Key-level fields:**
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `aliases` | No | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+) |
-| `models` | Yes | Models this key can serve; use `["*"]` to allow all |
+| Field     | Required | Description                                                                         |
+| --------- | -------- | ----------------------------------------------------------------------------------- |
+| `aliases` | No       | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+) |
+| `models`  | Yes      | Models this key can serve; use `["*"]` to allow all                                 |
 
 ---
 
@@ -535,9 +477,11 @@ For Claude models on Bedrock, Bifrost validates `anthropic-beta` headers and dro
 
 You can override these defaults per provider via the **Beta Headers** tab in provider configuration or via [`beta_header_overrides`](/quickstart/gateway/provider-configuration#beta-header-overrides). See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
 
-
 <Frame>
-        <img src="/media/aws-bedrock-anthropic-beta-headers.png" alt="AWS bedrock Beta Headers configuration tab showing supported and unsupported Anthropic beta features with override options" />
+  <img
+    src="/media/aws-bedrock-anthropic-beta-headers.png"
+    alt="AWS bedrock Beta Headers configuration tab showing supported and unsupported Anthropic beta features with override options"
+  />
 </Frame>
 
 ---
@@ -548,18 +492,18 @@ You can override these defaults per provider via the **Beta Headers** tab in pro
 
 ### Parameter Mapping
 
-| Parameter | Transformation | Notes |
-|-----------|----------------|-------|
-| `max_completion_tokens` | → `inferenceConfig.maxTokens` | Required field in Bedrock |
-| `temperature`, `top_p` | Direct pass-through to `inferenceConfig` | |
-| `stop` | → `inferenceConfig.stopSequences` | Array of strings |
-| `response_format` | → Structured output tool (see [Structured Output](#structured-output)) | Creates `bf_so_*` tool |
-| `tools` | Schema restructured (see [Tool Conversion](#tool-conversion)) | |
-| `tool_choice` | Type mapped (see [Tool Conversion](#tool-conversion)) | |
-| `reasoning` | Model-specific thinking config (see [Reasoning / Thinking](#reasoning--thinking)) | |
-| `user` | → `metadata.userID` (if provided) | Bedrock-specific metadata |
-| `service_tier` | → `serviceModelTier` (if provided) | Performance tier selection |
-| `top_k` | Via `extra_params` (model-specific) | Bedrock-specific sampling |
+| Parameter               | Transformation                                                                    | Notes                      |
+| ----------------------- | --------------------------------------------------------------------------------- | -------------------------- |
+| `max_completion_tokens` | → `inferenceConfig.maxTokens`                                                     | Required field in Bedrock  |
+| `temperature`, `top_p`  | Direct pass-through to `inferenceConfig`                                          |                            |
+| `stop`                  | → `inferenceConfig.stopSequences`                                                 | Array of strings           |
+| `response_format`       | → Structured output tool (see [Structured Output](#structured-output))            | Creates `bf_so_*` tool     |
+| `tools`                 | Schema restructured (see [Tool Conversion](#tool-conversion))                     |                            |
+| `tool_choice`           | Type mapped (see [Tool Conversion](#tool-conversion))                             |                            |
+| `reasoning`             | Model-specific thinking config (see [Reasoning / Thinking](#reasoning--thinking)) |                            |
+| `user`                  | → `metadata.userID` (if provided)                                                 | Bedrock-specific metadata  |
+| `service_tier`          | → `serviceModelTier` (if provided)                                                | Performance tier selection |
+| `top_k`                 | Via `extra_params` (model-specific)                                               | Bedrock-specific sampling  |
 
 ### Dropped Parameters
 
@@ -616,6 +560,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 </Tabs>
 
 **Available Extra Parameters:**
+
 - `guardrailConfig` - Bedrock guardrail configuration with `guardrailIdentifier`, `guardrailVersion`, `trace`
 - `performanceConfig` - Performance optimization with `latency` ("optimized" or "standard")
 - `additionalModelRequestFieldPaths` - Pass-through for model-specific fields not in standard schema
@@ -708,10 +653,12 @@ Reasoning/thinking support varies by model family:
 ### Anthropic Claude Models
 
 **Parameter Mapping:**
+
 - `reasoning.effort` → `thinkingConfig.type = "enabled"` (always enabled when reasoning present)
 - `reasoning.max_tokens` → `thinkingConfig.budgetTokens` (token budget for thinking)
 
 **Critical Constraints:**
+
 - **Minimum budget**: 1024 tokens required; requests below this **fail with error**
 - **Dynamic budget**: `-1` is converted to `1024` automatically
 
@@ -726,6 +673,7 @@ Reasoning/thinking support varies by model family:
 ### Anthropic Nova Models
 
 **Parameter Mapping:**
+
 - `reasoning.effort` → `reasoningConfig.thinkingLevel` ("low" → `low`, "high" → `high`)
 - `reasoning.max_tokens` → Max reasoning tokens (affects inference configuration)
 
@@ -750,13 +698,13 @@ Reasoning/thinking support varies by model family:
 
 The Chat Completions request format is OpenAI-compatible for standard blocks (`type: "text"`, `type: "image_url"`, `type: "file"`). Bifrost converts these blocks to Bedrock Converse blocks internally. Bedrock-specific extensions (for example, standalone `cachePoint`) are also accepted when using the Bedrock provider.
 
-| Block Type | Request Shape (Bifrost/OpenAI) | Bedrock Handling | Support |
-|------------|--------------------------------|------------------|---------|
-| Text | `{"type":"text","text":"..."}` | Converted to Bedrock `text` block | ✅ |
-| Image | `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` | Converted to Bedrock `image.source.bytes` | ✅ (base64/data URI only) |
-| File | `{"type":"file","file":{...}}` | Converted to Bedrock `document` block | ✅ |
-| Input audio | `{"type":"input_audio",...}` | Returns `audio input not supported in Bedrock Converse API` | ❌ |
-| Standalone cache point | `{"cachePoint":{"type":"default"}}` (no outer `type` field) | Converted to Bedrock `cachePoint` marker | ✅ (Bedrock-specific extension) |
+| Block Type             | Request Shape (Bifrost/OpenAI)                                         | Bedrock Handling                                            | Support                         |
+| ---------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------- |
+| Text                   | `{"type":"text","text":"..."}`                                         | Converted to Bedrock `text` block                           | ✅                              |
+| Image                  | `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` | Converted to Bedrock `image.source.bytes`                   | ✅ (base64/data URI only)       |
+| File                   | `{"type":"file","file":{...}}`                                         | Converted to Bedrock `document` block                       | ✅                              |
+| Input audio            | `{"type":"input_audio",...}`                                           | Returns `audio input not supported in Bedrock Converse API` | ❌                              |
+| Standalone cache point | `{"cachePoint":{"type":"default"}}` (no outer `type` field)            | Converted to Bedrock `cachePoint` marker                    | ✅ (Bedrock-specific extension) |
 
 ### Image Conversion
 
@@ -898,8 +846,8 @@ Formats currently supported by Bifrost's Bedrock document conversion path: `pdf`
 {
   "role": "system",
   "content": [
-    {"type": "text", "text": "Long context to cache"},
-    {"cachePoint": {"type": "default"}}
+    { "type": "text", "text": "Long context to cache" },
+    { "cachePoint": { "type": "default" } }
   ]
 }
 ```
@@ -914,6 +862,7 @@ This standalone `cachePoint` block is a Bifrost/Bedrock extension (not OpenAI-st
 ### Cache Control Locations
 
 Cache directives supported on:
+
 - System content blocks (entire system message)
 - User message content blocks (specific parts)
 - Tool definitions within tool configuration
@@ -921,22 +870,24 @@ Cache directives supported on:
 ## Tool Conversion
 
 Tool definitions are restructured:
+
 - `function.name` → `name` (preserved)
 - `function.parameters` → `inputSchema` (Schema format)
 - `function.strict` → Dropped (not supported by Bedrock)
 
 ### Tool Choice Mapping
 
-| OpenAI | Bedrock |
-|--------|---------|
-| `"auto"` | `auto` (default) |
-| `"none"` | Omitted (not explicitly supported) |
-| `"required"` | `any` |
-| Specific tool | `{type: "tool", name: "X"}` |
+| OpenAI        | Bedrock                            |
+| ------------- | ---------------------------------- |
+| `"auto"`      | `auto` (default)                   |
+| `"none"`      | Omitted (not explicitly supported) |
+| `"required"`  | `any`                              |
+| Specific tool | `{type: "tool", name: "X"}`        |
 
 ### Tool Call Handling
 
 Tool calls are converted between formats:
+
 - **Bifrost → Bedrock**: Tool call arguments converted from JSON object to `input` field
 - **Bedrock → Bifrost**: Tool use results with `toolUseId`, converted back to Bifrost format
 - **Tool results**: Merged consecutive tool messages into single user message
@@ -996,6 +947,7 @@ Structured output uses a special tool-based approach:
 ### Structured Output Response
 
 When structured output is detected:
+
 - Tool call with name `bf_so_*` is treated as structured output
 - `input` object is extracted and returned as `contentStr`
 - Removed from `toolCalls` array
@@ -1016,6 +968,7 @@ Event sequence from Bedrock Converse Stream API:
 5. **Usage metrics**: Token counts, cached tokens, performance metrics
 
 **Streaming event conversion**:
+
 - Each Bedrock streaming event → Multiple Bifrost chunks as needed
 - Tool arguments accumulated across deltas and emitted on block end
 - Reasoning content emitted with signature if present
@@ -1027,6 +980,7 @@ Event sequence from Bedrock Converse Stream API:
 ### Responses API Streaming
 
 Streaming responses use OpenAI-compatible lifecycle events:
+
 - `response.created`
 - `response.in_progress`
 - `content_part.start`
@@ -1037,6 +991,7 @@ Streaming responses use OpenAI-compatible lifecycle events:
 - `output_item.done`
 
 Special handling:
+
 - Tool arguments accumulated across deltas
 - Content block indices mapped to output indices
 - Synthetic events emitted for text/reasoning content
@@ -1051,18 +1006,18 @@ The Responses API uses the same underlying `converse` endpoint but converts betw
 
 ### Parameter Mapping
 
-| Parameter | Transformation |
-|-----------|----------------|
-| `max_output_tokens` | Renamed to `maxTokens` (via `inferenceConfig`) |
-| `temperature`, `top_p` | Direct pass-through |
-| `instructions` | Becomes system message |
-| `tools` | Schema restructured (see [Chat Completions](#1-chat-completions)) |
-| `tool_choice` | Type mapped (see [Chat Completions](#1-chat-completions)) |
-| `reasoning` | Mapped to thinking/reasoning config (see [Reasoning / Thinking](#reasoning--thinking)) |
-| `text` | Converted to `output_format` (Bedrock-specific) |
-| `include` | Via `extra_params` (Bedrock-specific) |
-| `stop` | Via `extra_params`, renamed to `stopSequences` |
-| `truncation` | Auto-set to `"auto"` for computer tools |
+| Parameter              | Transformation                                                                         |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `max_output_tokens`    | Renamed to `maxTokens` (via `inferenceConfig`)                                         |
+| `temperature`, `top_p` | Direct pass-through                                                                    |
+| `instructions`         | Becomes system message                                                                 |
+| `tools`                | Schema restructured (see [Chat Completions](#1-chat-completions))                      |
+| `tool_choice`          | Type mapped (see [Chat Completions](#1-chat-completions))                              |
+| `reasoning`            | Mapped to thinking/reasoning config (see [Reasoning / Thinking](#reasoning--thinking)) |
+| `text`                 | Converted to `output_format` (Bedrock-specific)                                        |
+| `include`              | Via `extra_params` (Bedrock-specific)                                                  |
+| `stop`                 | Via `extra_params`, renamed to `stopSequences`                                         |
+| `truncation`           | Auto-set to `"auto"` for computer tools                                                |
 
 ### Extra Parameters
 
@@ -1122,10 +1077,12 @@ Event sequence: `response.created` → `response.in_progress` → `content_part.
 # 3. Text Completions (Legacy)
 
 <Warning>
-Legacy API using `invoke` endpoint. Streaming not supported. Only Claude (Anthropic) and Mistral models supported.
+  Legacy API using `invoke` endpoint. Streaming not supported. Only Claude
+  (Anthropic) and Mistral models supported.
 </Warning>
 
 **Request conversion**:
+
 - **Claude models**: Uses Anthropic's `/v1/complete` format with prompt wrapping
   - `prompt` auto-wrapped with `\n\nHuman: {prompt}\n\nAssistant:`
   - `max_tokens` → `max_tokens_to_sample`
@@ -1138,6 +1095,7 @@ Legacy API using `invoke` endpoint. Streaming not supported. Only Claude (Anthro
   - `stop` → `stop`
 
 **Response conversion**:
+
 - **Claude**: `completion` → `choices[0].text`
 - **Mistral**: `outputs[].text` → `choices[]` (supports multiple)
 - `stopReason` → `finish_reason`
@@ -1152,17 +1110,19 @@ Supported embedding models: **Titan**, **Cohere**
 
 ### Parameter Mapping
 
-| Parameter | Transformation | Notes |
-|-----------|----------------|-------|
-| `input` | Direct pass-through | Text or array of texts |
-| `dimensions` | ⚠️ Not supported | Titan has fixed dimensions per model |
-| `encoding_format` | Via `extra_params` | "base64" or "float" |
+| Parameter         | Transformation      | Notes                                |
+| ----------------- | ------------------- | ------------------------------------ |
+| `input`           | Direct pass-through | Text or array of texts               |
+| `dimensions`      | ⚠️ Not supported    | Titan has fixed dimensions per model |
+| `encoding_format` | Via `extra_params`  | "base64" or "float"                  |
 
 **Titan-specific**:
+
 - No dimension customization
 - Fixed output size per model version
 
 **Cohere-specific**:
+
 - Reuses Cohere format conversion
 - Similar parameter mapping to standard Cohere
 
@@ -1180,33 +1140,33 @@ Supported image generation models: **Titan Image Generator v1**, **Titan Image G
 
 ## Request Conversion
 
-| Parameter(Bifrost) | Transformation (Bedrock) |
-|---------------------|----------------|
-| `prompt` | `textToImageParams.text` |
-| `n` | `imageGenerationConfig.numberOfImages` |
-| `negativePrompt` | `textToImageParams.negativeText` |
-| `seed` | `imageGenerationConfig.seed` |
-| `quality` | `imageGenerationConfig.quality` (see [Quality Mapping](#quality-mapping)) |
-| `style` | `textToImageParams.style` |
-| `size` | `imageGenerationConfig.width` & `imageGenerationConfig.height` |
+| Parameter(Bifrost) | Transformation (Bedrock)                                                  |
+| ------------------ | ------------------------------------------------------------------------- |
+| `prompt`           | `textToImageParams.text`                                                  |
+| `n`                | `imageGenerationConfig.numberOfImages`                                    |
+| `negativePrompt`   | `textToImageParams.negativeText`                                          |
+| `seed`             | `imageGenerationConfig.seed`                                              |
+| `quality`          | `imageGenerationConfig.quality` (see [Quality Mapping](#quality-mapping)) |
+| `style`            | `textToImageParams.style`                                                 |
+| `size`             | `imageGenerationConfig.width` & `imageGenerationConfig.height`            |
 
 ### Quality Mapping
 
 The `quality` parameter is automatically mapped to Bedrock's expected format:
 
-| Input Value | Bedrock Value | Notes |
-|-------------|---------------|-------|
-| `"low"` | `"standard"` | Mapped automatically |
-| `"medium"` | `"standard"` | Mapped automatically |
-| `"high"` | `"premium"` | Mapped automatically |
-| `"default"` | `"standard"` | Passed through (case-insensitive) |
-| `"premium"` | `"premium"` | Passed through (case-insensitive) |
+| Input Value | Bedrock Value | Notes                             |
+| ----------- | ------------- | --------------------------------- |
+| `"low"`     | `"standard"`  | Mapped automatically              |
+| `"medium"`  | `"standard"`  | Mapped automatically              |
+| `"high"`    | `"premium"`   | Mapped automatically              |
+| `"default"` | `"standard"`  | Passed through (case-insensitive) |
+| `"premium"` | `"premium"`   | Passed through (case-insensitive) |
 
 ## Response Conversion
 
 | Parameter(Bedrock) | Transformation (Bifrost) |
-|---------------------|--------------------------|
-| `images` | `data.b64_json` |
+| ------------------ | ------------------------ |
+| `images`           | `data.b64_json`          |
 
 ### Example Request
 
@@ -1258,13 +1218,13 @@ These models use a flat JSON body (not the nested Bedrock `taskType` structure).
 
 **Request Parameters**
 
-| Parameter | Type | Required | Notes |
-|-----------|------|----------|-------|
-| `prompt` | string | ✅ | Text description of the image |
-| `negative_prompt` | string | ❌ | What to exclude |
-| `seed` | int | ❌ | Reproducibility seed |
-| `aspect_ratio` | string | ❌ | e.g. `"16:9"`, `"1:1"`, `"21:9"` — via `aspect_ratio` param or `ExtraParams["aspect_ratio"]` |
-| `output_format` | string | ❌ | `"png"`, `"jpeg"`, `"webp"` — via `output_format` param |
+| Parameter         | Type   | Required | Notes                                                                                        |
+| ----------------- | ------ | -------- | -------------------------------------------------------------------------------------------- |
+| `prompt`          | string | ✅       | Text description of the image                                                                |
+| `negative_prompt` | string | ❌       | What to exclude                                                                              |
+| `seed`            | int    | ❌       | Reproducibility seed                                                                         |
+| `aspect_ratio`    | string | ❌       | e.g. `"16:9"`, `"1:1"`, `"21:9"` — via `aspect_ratio` param or `ExtraParams["aspect_ratio"]` |
+| `output_format`   | string | ❌       | `"png"`, `"jpeg"`, `"webp"` — via `output_format` param                                      |
 
 ### Example Request
 
@@ -1310,9 +1270,7 @@ resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schema
 
 # 6. Image Edit
 
-<Warning>
-Requests use **multipart/form-data**, not JSON.
-</Warning>
+<Warning>Requests use **multipart/form-data**, not JSON.</Warning>
 
 Supported image edit models: **Titan Image Generator v1**, **Titan Image Generator v2**, **Nova Canvas v1**
 
@@ -1320,21 +1278,21 @@ Bedrock supports three image edit task types: **INPAINTING**, **OUTPAINTING**, a
 
 **Request Parameters**
 
-| Parameter | Type | Required | Notes |
-|-----------|------|----------|-------|
-| `model` | string | ✅ | Model identifier (must be Titan or Nova Canvas model) |
-| `type` | string | ✅ | Edit type: `"inpainting"`, `"outpainting"`, or `"background_removal"` |
-| `prompt` | string | ❌ | Text description of the edit (required for inpainting/outpainting) |
-| `image[]` | binary | ✅ | Image file(s) to edit (only first image used) |
-| `mask` | binary | ❌ | Mask image file (for inpainting/outpainting) |
-| `n` | int | ❌ | Number of images to generate (1-10, for inpainting/outpainting only) |
-| `size` | string | ❌ | Image size: `"WxH"` format (e.g., `"1024x1024"`, for inpainting/outpainting only) |
-| `quality` | string | ❌ | Image quality (for inpainting/outpainting only). See [Quality Mapping](#quality-mapping) for supported values. |
-| `cfgScale` | float | ❌ | CFG scale (via `ExtraParams["cfgScale"]`, for inpainting/outpainting only) |
-| `negative_text` | string | ❌ | Negative prompt (via `ExtraParams["negative_text"]`, for inpainting/outpainting only) |
-| `mask_prompt` | string | ❌ | Mask prompt (via `ExtraParams["mask_prompt"]`, for inpainting/outpainting only) |
-| `return_mask` | bool | ❌ | Return mask in response (via `ExtraParams["return_mask"]`, for inpainting/outpainting only) |
-| `outpainting_mode` | string | ❌ | Outpainting mode (via `ExtraParams["outpainting_mode"]`, outpainting only): `"DEFAULT"` or `"PRECISE"` |
+| Parameter          | Type   | Required | Notes                                                                                                          |
+| ------------------ | ------ | -------- | -------------------------------------------------------------------------------------------------------------- |
+| `model`            | string | ✅       | Model identifier (must be Titan or Nova Canvas model)                                                          |
+| `type`             | string | ✅       | Edit type: `"inpainting"`, `"outpainting"`, or `"background_removal"`                                          |
+| `prompt`           | string | ❌       | Text description of the edit (required for inpainting/outpainting)                                             |
+| `image[]`          | binary | ✅       | Image file(s) to edit (only first image used)                                                                  |
+| `mask`             | binary | ❌       | Mask image file (for inpainting/outpainting)                                                                   |
+| `n`                | int    | ❌       | Number of images to generate (1-10, for inpainting/outpainting only)                                           |
+| `size`             | string | ❌       | Image size: `"WxH"` format (e.g., `"1024x1024"`, for inpainting/outpainting only)                              |
+| `quality`          | string | ❌       | Image quality (for inpainting/outpainting only). See [Quality Mapping](#quality-mapping) for supported values. |
+| `cfgScale`         | float  | ❌       | CFG scale (via `ExtraParams["cfgScale"]`, for inpainting/outpainting only)                                     |
+| `negative_text`    | string | ❌       | Negative prompt (via `ExtraParams["negative_text"]`, for inpainting/outpainting only)                          |
+| `mask_prompt`      | string | ❌       | Mask prompt (via `ExtraParams["mask_prompt"]`, for inpainting/outpainting only)                                |
+| `return_mask`      | bool   | ❌       | Return mask in response (via `ExtraParams["return_mask"]`, for inpainting/outpainting only)                    |
+| `outpainting_mode` | string | ❌       | Outpainting mode (via `ExtraParams["outpainting_mode"]`, outpainting only): `"DEFAULT"` or `"PRECISE"`         |
 
 ---
 
@@ -1387,84 +1345,84 @@ Bedrock supports three image edit task types: **INPAINTING**, **OUTPAINTING**, a
 
 ## Stability AI models
 
-<Warning>
-Requests use **multipart/form-data**, not JSON.
-</Warning>
+<Warning>Requests use **multipart/form-data**, not JSON.</Warning>
 
 Stability AI edit models are automatically detected by their model ID (contains `"stability."`). The **task type is inferred from the model name** by default, but you can also set the `type` field explicitly — useful when using deployment aliases. See [Type values for explicit task selection](#type-values-for-explicit-task-selection) below.
 
 ### Supported models
 
-| Model ID | Task | Images required | Prompt |
-|----------|------|-----------------|--------|
-| `stability.stable-image-inpaint-v1:0` | inpaint | 1 + mask | ✅ |
-| `stability.stable-outpaint-v1:0` | outpaint | 1 (optional mask) | ✅ |
-| `stability.stable-image-search-recolor-v1:0` | recolor | 1 | ✅ |
-| `stability.stable-image-search-replace-v1:0` | search-replace | 1 | ✅ |
-| `stability.stable-image-erase-object-v1:0` | erase-object | 1 + mask | ❌ |
-| `stability.stable-image-remove-background-v1:0` | remove-bg | 1 | ❌ |
-| `stability.stable-image-control-sketch-v1:0` | control-sketch | 1 | ✅ |
-| `stability.stable-image-control-structure-v1:0` | control-structure | 1 | ✅ |
-| `stability.stable-image-style-guide-v1:0` | style-guide | 1 | ✅ |
-| `stability.stable-style-transfer-v1:0` | style-transfer | **2 required** | ✅ |
-| `stability.stable-creative-upscale-v1:0` | upscale-creative | 1 | ✅ |
-| `stability.stable-conservative-upscale-v1:0` | upscale-conservative | 1 | ✅ |
-| `stability.stable-fast-upscale-v1:0` | upscale-fast | 1 | ❌ |
+| Model ID                                        | Task                 | Images required   | Prompt |
+| ----------------------------------------------- | -------------------- | ----------------- | ------ |
+| `stability.stable-image-inpaint-v1:0`           | inpaint              | 1 + mask          | ✅     |
+| `stability.stable-outpaint-v1:0`                | outpaint             | 1 (optional mask) | ✅     |
+| `stability.stable-image-search-recolor-v1:0`    | recolor              | 1                 | ✅     |
+| `stability.stable-image-search-replace-v1:0`    | search-replace       | 1                 | ✅     |
+| `stability.stable-image-erase-object-v1:0`      | erase-object         | 1 + mask          | ❌     |
+| `stability.stable-image-remove-background-v1:0` | remove-bg            | 1                 | ❌     |
+| `stability.stable-image-control-sketch-v1:0`    | control-sketch       | 1                 | ✅     |
+| `stability.stable-image-control-structure-v1:0` | control-structure    | 1                 | ✅     |
+| `stability.stable-image-style-guide-v1:0`       | style-guide          | 1                 | ✅     |
+| `stability.stable-style-transfer-v1:0`          | style-transfer       | **2 required**    | ✅     |
+| `stability.stable-creative-upscale-v1:0`        | upscale-creative     | 1                 | ✅     |
+| `stability.stable-conservative-upscale-v1:0`    | upscale-conservative | 1                 | ✅     |
+| `stability.stable-fast-upscale-v1:0`            | upscale-fast         | 1                 | ❌     |
 
 ### Common parameters
 
-| Parameter | Type | Required | Notes |
-|-----------|------|----------|-------|
-| `model` | string | ✅ | Stability AI model ID (see table above) |
-| `image[]` | binary | ✅ | Input image(s). `style-transfer` requires exactly 2. |
-| `prompt` | string | task-dependent | Required for all tasks except `remove-bg`, `upscale-fast`, and `erase-object`. For these no-prompt operations, set `type` to `remove_background`, `upscale_fast`, or `erase_object` to skip prompt validation at the gateway level. |
-| `negative_prompt` | string | ❌ | Not applied for: `remove-bg`, `upscale-fast`, `erase-object` |
-| `seed` | int | ❌ | Not applied for: `remove-bg`, `upscale-fast` |
-| `mask` | binary | task-dependent | Required for: `inpaint`, `erase-object`; ignored for others |
+| Parameter         | Type   | Required       | Notes                                                                                                                                                                                                                               |
+| ----------------- | ------ | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`           | string | ✅             | Stability AI model ID (see table above)                                                                                                                                                                                             |
+| `image[]`         | binary | ✅             | Input image(s). `style-transfer` requires exactly 2.                                                                                                                                                                                |
+| `prompt`          | string | task-dependent | Required for all tasks except `remove-bg`, `upscale-fast`, and `erase-object`. For these no-prompt operations, set `type` to `remove_background`, `upscale_fast`, or `erase_object` to skip prompt validation at the gateway level. |
+| `negative_prompt` | string | ❌             | Not applied for: `remove-bg`, `upscale-fast`, `erase-object`                                                                                                                                                                        |
+| `seed`            | int    | ❌             | Not applied for: `remove-bg`, `upscale-fast`                                                                                                                                                                                        |
+| `mask`            | binary | task-dependent | Required for: `inpaint`, `erase-object`; ignored for others                                                                                                                                                                         |
 
 ### Task-specific extra parameters
 
 Pass these via `extra_params` (Go SDK) or as top-level form fields (Gateway).
 
-| Extra parameter | Type | Task(s) |
-|-----------------|------|---------|
-| `output_format` | string | All — `"png"`, `"jpeg"`, `"webp"` |
-| `style_preset` | string | inpaint, outpaint, recolor, search-replace, control-sketch, control-structure, style-guide, upscale-creative |
-| `grow_mask` | int | inpaint, recolor, search-replace, erase-object |
-| `left`, `right`, `up`, `down` | int | outpaint — pixels to expand in each direction |
-| `creativity` | float | upscale-creative, upscale-conservative, outpaint |
-| `select_prompt` | string | recolor — which region to recolor |
-| `search_prompt` | string | search-replace — what object to find and replace |
-| `control_strength` | float | control-sketch, control-structure — 0.0–1.0 |
-| `aspect_ratio` | string | style-guide — output aspect ratio |
-| `fidelity` | float | style-guide — 0.0–1.0 |
-| `style_strength` | float | style-transfer — 0.0–1.0 |
-| `composition_fidelity` | float | style-transfer — 0.0–1.0 |
-| `change_strength` | float | style-transfer — 0.0–1.0 |
+| Extra parameter               | Type   | Task(s)                                                                                                      |
+| ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------ |
+| `output_format`               | string | All — `"png"`, `"jpeg"`, `"webp"`                                                                            |
+| `style_preset`                | string | inpaint, outpaint, recolor, search-replace, control-sketch, control-structure, style-guide, upscale-creative |
+| `grow_mask`                   | int    | inpaint, recolor, search-replace, erase-object                                                               |
+| `left`, `right`, `up`, `down` | int    | outpaint — pixels to expand in each direction                                                                |
+| `creativity`                  | float  | upscale-creative, upscale-conservative, outpaint                                                             |
+| `select_prompt`               | string | recolor — which region to recolor                                                                            |
+| `search_prompt`               | string | search-replace — what object to find and replace                                                             |
+| `control_strength`            | float  | control-sketch, control-structure — 0.0–1.0                                                                  |
+| `aspect_ratio`                | string | style-guide — output aspect ratio                                                                            |
+| `fidelity`                    | float  | style-guide — 0.0–1.0                                                                                        |
+| `style_strength`              | float  | style-transfer — 0.0–1.0                                                                                     |
+| `composition_fidelity`        | float  | style-transfer — 0.0–1.0                                                                                     |
+| `change_strength`             | float  | style-transfer — 0.0–1.0                                                                                     |
 
 <Note>
-**Style-transfer image order matters.** The first image (`image[0]`) becomes `init_image` (the content to transform) and the second (`image[1]`) becomes `style_image` (the artistic reference). Both images must be non-empty.
+  **Style-transfer image order matters.** The first image (`image[0]`) becomes
+  `init_image` (the content to transform) and the second (`image[1]`) becomes
+  `style_image` (the artistic reference). Both images must be non-empty.
 </Note>
 
 ### Type values for explicit task selection
 
 You can set the `type` field to override model-name inference. This is especially useful with deployment aliases where the alias name may not contain the Stability AI model pattern.
 
-| `type` value | Stability AI task |
-|---|---|
-| `inpainting` or `inpaint` | inpaint |
-| `outpainting` or `outpaint` | outpaint |
-| `background_removal` or `remove_background` or `remove_bg` | remove-bg |
-| `erase_object` | erase-object |
-| `upscale_fast` | upscale-fast |
-| `upscale_creative` | upscale-creative |
-| `upscale_conservative` | upscale-conservative |
-| `recolor` | recolor |
-| `search_replace` | search-replace |
-| `control_sketch` | control-sketch |
-| `control_structure` | control-structure |
-| `style_guide` | style-guide |
-| `style_transfer` | style-transfer |
+| `type` value                                               | Stability AI task    |
+| ---------------------------------------------------------- | -------------------- |
+| `inpainting` or `inpaint`                                  | inpaint              |
+| `outpainting` or `outpaint`                                | outpaint             |
+| `background_removal` or `remove_background` or `remove_bg` | remove-bg            |
+| `erase_object`                                             | erase-object         |
+| `upscale_fast`                                             | upscale-fast         |
+| `upscale_creative`                                         | upscale-creative     |
+| `upscale_conservative`                                     | upscale-conservative |
+| `recolor`                                                  | recolor              |
+| `search_replace`                                           | search-replace       |
+| `control_sketch`                                           | control-sketch       |
+| `control_structure`                                        | control-structure    |
+| `style_guide`                                              | style-guide          |
+| `style_transfer`                                           | style-transfer       |
 
 ### Example requests
 
@@ -1557,25 +1515,23 @@ curl -X POST http://localhost:8080/v1/images/edits \
 
 # 7. Image Variation
 
-<Warning>
-Requests use **multipart/form-data**, not JSON.
-</Warning>
+<Warning>Requests use **multipart/form-data**, not JSON.</Warning>
 
 Supported image variation models: **Titan Image Generator v1**, **Titan Image Generator v2**, **Nova Canvas v1**
 
 **Request Parameters**
 
-| Parameter | Type | Required | Notes |
-|-----------|------|----------|-------|
-| `model` | string | ✅ | Model identifier (must be Titan or Nova Canvas model) |
-| `image` | binary | ✅ | Image file to create variations from (supports multiple images via `image[]`) |
-| `n` | int | ❌ | Number of images to generate (1-10) |
-| `size` | string | ❌ | Image size: `"WxH"` format (e.g., `"1024x1024"`) |
-| `quality` | string | ❌ | Image quality. See [Quality Mapping](#quality-mapping) for supported values. |
-| `cfgScale` | float | ❌ | CFG scale (via `ExtraParams["cfgScale"]`) |
-| `prompt` | string | ❌ | Prompt/text for variation (via `ExtraParams["prompt"]`) |
-| `negativeText` | string | ❌ | Negative prompt (via `ExtraParams["negativeText"]`) |
-| `similarityStrength` | float | ❌ | Similarity strength (via `ExtraParams["similarityStrength"]`): Range 0.2 to 1.0 |
+| Parameter            | Type   | Required | Notes                                                                           |
+| -------------------- | ------ | -------- | ------------------------------------------------------------------------------- |
+| `model`              | string | ✅       | Model identifier (must be Titan or Nova Canvas model)                           |
+| `image`              | binary | ✅       | Image file to create variations from (supports multiple images via `image[]`)   |
+| `n`                  | int    | ❌       | Number of images to generate (1-10)                                             |
+| `size`               | string | ❌       | Image size: `"WxH"` format (e.g., `"1024x1024"`)                                |
+| `quality`            | string | ❌       | Image quality. See [Quality Mapping](#quality-mapping) for supported values.    |
+| `cfgScale`           | float  | ❌       | CFG scale (via `ExtraParams["cfgScale"]`)                                       |
+| `prompt`             | string | ❌       | Prompt/text for variation (via `ExtraParams["prompt"]`)                         |
+| `negativeText`       | string | ❌       | Negative prompt (via `ExtraParams["negativeText"]`)                             |
+| `similarityStrength` | float  | ❌       | Similarity strength (via `ExtraParams["similarityStrength"]`): Range 0.2 to 1.0 |
 
 ---
 
@@ -1615,6 +1571,7 @@ Supported image variation models: **Titan Image Generator v1**, **Titan Image Ge
 **Pagination**: Cursor-based with `afterId`, `beforeId`, `limit`
 
 **Endpoints**:
+
 - POST `/batch` - Create batch
 - GET `/batch` - List batches
 - GET `/batch/{batch_id}` - Retrieve batch
@@ -1640,12 +1597,14 @@ Supported image variation models: **Titan Image Generator v1**, **Titan Image Ge
 # 9. Files API
 
 <Note>
-S3-backed file operations. Files are stored in S3 buckets integrated with Bedrock.
+  S3-backed file operations. Files are stored in S3 buckets integrated with
+  Bedrock.
 </Note>
 
 **Upload**: Multipart/form-data with `file` (required) and `filename` (optional)
 
 **Field mapping**:
+
 - `id` (file ID)
 - `filename`
 - `size_bytes` (from S3 object size)
@@ -1653,6 +1612,7 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 - `mime_type` (derived from content or explicitly set)
 
 **Endpoints**:
+
 - POST `/v1/files` - Upload
 - GET `/v1/files` - List (cursor pagination)
 - GET `/v1/files/{file_id}` - Retrieve metadata
@@ -1668,6 +1628,7 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 **Request**: GET `/v1/models` (no body)
 
 **Field mapping**:
+
 - `id` (model name with deployment prefix if applicable)
 - `display_name` → `name`
 - `created_at` (Unix timestamp)
@@ -1675,6 +1636,7 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 **Pagination**: Token-based with `NextPageToken`, `FirstID`, `LastID`
 
 **Filtering**:
+
 - Region-based model filtering
 - Deployment mapping from configuration
 - Model allowlist support (`allowed_models` config)
@@ -1737,12 +1699,11 @@ Set `role_arn` to assume an IAM role before signing requests. AssumeRole require
 }
 ```
 
-| Field | Required | Default | Notes |
-|---|---|---|---|
-| `role_arn` | Yes (for STS) | - | IAM role ARN to assume |
-| `external_id` | No | - | Required when the role's trust policy demands it |
-| `session_name` | No | `bifrost-session` | Identifies the session in CloudTrail logs |
-
+| Field          | Required      | Default           | Notes                                            |
+| -------------- | ------------- | ----------------- | ------------------------------------------------ |
+| `role_arn`     | Yes (for STS) | -                 | IAM role ARN to assume                           |
+| `external_id`  | No            | -                 | Required when the role's trust policy demands it |
+| `session_name` | No            | `bifrost-session` | Identifies the session in CloudTrail logs        |
 
 ## Inference Profiles & ARN Configuration
 
@@ -1750,13 +1711,16 @@ Set `role_arn` to assume an IAM role before signing requests. AssumeRole require
 
 When using AWS Bedrock inference profiles or application inference profiles, you must split the configuration correctly to avoid `UnknownOperationException`:
 
-| Field | Purpose |
-|-------|---------|
-| **`arn`** | The ARN prefix (everything before the final `/resource-id`). Required for URL formation when using inference profiles. |
+| Field         | Purpose                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`arn`**     | The ARN prefix (everything before the final `/resource-id`). Required for URL formation when using inference profiles.                                       |
 | **`aliases`** | Map logical model names to the **model ID or inference profile resource ID only** — not the full ARN. Set at the key level, not inside `bedrock_key_config`. |
 
 <Warning>
-**Do not** put the full ARN in the aliases mapping. The resource ID (e.g., `abc12xyz`) goes in `aliases`; the ARN prefix goes in the dedicated `arn` field inside `bedrock_key_config`. Putting the full ARN in `aliases` causes malformed URLs and `UnknownOperationException`.
+  **Do not** put the full ARN in the aliases mapping. The resource ID (e.g.,
+  `abc12xyz`) goes in `aliases`; the ARN prefix goes in the dedicated `arn`
+  field inside `bedrock_key_config`. Putting the full ARN in `aliases` causes
+  malformed URLs and `UnknownOperationException`.
 </Warning>
 
 **Application inference profiles** — use the resource ID (short alphanumeric suffix) in aliases:
@@ -1806,17 +1770,18 @@ When using AWS Bedrock inference profiles or application inference profiles, you
 
 **HTTP Status Mapping**:
 
-| Status | Bifrost Error Type | Notes |
-|---|---|---|
-| 400 | `invalid_request_error` | Bad request parameters |
-| 401 | `authentication_error` | Invalid/expired credentials |
-| 403 | `permission_denied_error` | Access denied to model/resource |
-| 404 | `not_found_error` | Model or resource not found |
-| 429 | `rate_limit_error` | Rate limit exceeded |
-| 500 | `api_error` | Server error |
-| 529 | `overloaded_error` | Service overloaded |
+| Status | Bifrost Error Type        | Notes                           |
+| ------ | ------------------------- | ------------------------------- |
+| 400    | `invalid_request_error`   | Bad request parameters          |
+| 401    | `authentication_error`    | Invalid/expired credentials     |
+| 403    | `permission_denied_error` | Access denied to model/resource |
+| 404    | `not_found_error`         | Model or resource not found     |
+| 429    | `rate_limit_error`        | Rate limit exceeded             |
+| 500    | `api_error`               | Server error                    |
+| 529    | `overloaded_error`        | Service overloaded              |
 
 **Error Response Structure**:
+
 ```go
 type BifrostError struct {
     IsBifrostError bool
@@ -1830,6 +1795,7 @@ type BifrostError struct {
 ```
 
 **Special Cases**:
+
 - Context cancellation → `RequestCancelled`
 - Request timeout → `ErrProviderRequestTimedOut`
 - Streaming errors → Sent via channel with stream end indicator
@@ -1840,10 +1806,9 @@ type BifrostError struct {
 ## Caveats
 
 <Accordion title="Image Format Restriction">
-**Severity**: High
-**Behavior**: Only base64/data URI images supported; remote URLs not supported
-**Impact**: Requests with URL-based images fail
-**Code**: `chat.go:image handling`
+  **Severity**: High **Behavior**: Only base64/data URI images supported; remote
+  URLs not supported **Impact**: Requests with URL-based images fail **Code**:
+  `chat.go:image handling`
 </Accordion>
 
 <Accordion title="Minimum Reasoning Budget (Claude)">
@@ -1854,43 +1819,37 @@ type BifrostError struct {
 </Accordion>
 
 <Accordion title="System Message Extraction">
-**Severity**: High
-**Behavior**: System messages removed from array, placed in separate `system` field
-**Impact**: Message array structure differs from input
-**Code**: `chat.go:message conversion`
+  **Severity**: High **Behavior**: System messages removed from array, placed in
+  separate `system` field **Impact**: Message array structure differs from input
+  **Code**: `chat.go:message conversion`
 </Accordion>
 
 <Accordion title="Tool Message Grouping">
-**Severity**: High
-**Behavior**: Consecutive tool messages merged into single user message
-**Impact**: Message count and structure changes
-**Code**: `chat.go:tool message handling`
+  **Severity**: High **Behavior**: Consecutive tool messages merged into single
+  user message **Impact**: Message count and structure changes **Code**:
+  `chat.go:tool message handling`
 </Accordion>
 
 <Accordion title="Model Family-Specific Parameters">
-**Severity**: Medium
-**Behavior**: Reasoning/thinking config varies significantly by model family
-**Impact**: Parameter mapping differs for Claude vs Nova vs other families
-**Code**: `chat.go, utils.go:model detection`
+  **Severity**: Medium **Behavior**: Reasoning/thinking config varies
+  significantly by model family **Impact**: Parameter mapping differs for Claude
+  vs Nova vs other families **Code**: `chat.go, utils.go:model detection`
 </Accordion>
 
 <Accordion title="Text Completion Streaming Not Supported">
-**Severity**: Medium
-**Behavior**: Text completion streaming returns error
-**Impact**: Streaming not available for legacy completions API
-**Code**: `text.go:streaming`
+  **Severity**: Medium **Behavior**: Text completion streaming returns error
+  **Impact**: Streaming not available for legacy completions API **Code**:
+  `text.go:streaming`
 </Accordion>
 
 <Accordion title="Structured Output via Tool">
-**Severity**: Low
-**Behavior**: `response_format` converted to special `bf_so_*` tool
-**Impact**: Tool call count and structure changes internally
-**Code**: `chat.go:structured output handling`
+  **Severity**: Low **Behavior**: `response_format` converted to special
+  `bf_so_*` tool **Impact**: Tool call count and structure changes internally
+  **Code**: `chat.go:structured output handling`
 </Accordion>
 
 <Accordion title="Deployment Region Prefix Handling">
-**Severity**: Low
-**Behavior**: Model IDs with region prefixes matched against deployment config
-**Impact**: Model availability depends on deployment configuration
-**Code**: `models.go:deployment matching`
+  **Severity**: Low **Behavior**: Model IDs with region prefixes matched against
+  deployment config **Impact**: Model availability depends on deployment
+  configuration **Code**: `models.go:deployment matching`
 </Accordion>

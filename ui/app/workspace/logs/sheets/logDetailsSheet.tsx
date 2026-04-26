@@ -55,11 +55,16 @@ export function LogDetailSheet({
 	}, [shouldPoll]);
 
 	// Keyboard navigation: arrow up/down to navigate between logs
-	useHotkeys("up", () => onNavigate?.("prev"), { enabled: open && hasPrev, preventDefault: true });
-	useHotkeys("down", () => onNavigate?.("next"), { enabled: open && hasNext, preventDefault: true });
+	useHotkeys("up", () => onNavigate?.("prev"), {
+		enabled: open && hasPrev,
+		preventDefault: true,
+	});
+	useHotkeys("down", () => onNavigate?.("next"), {
+		enabled: open && hasNext,
+		preventDefault: true,
+	});
 
 	if (!log) return null;
-
 
 	// Show a loader only on the initial fetch, not during background polling refetches.
 	const displayLog: LogEntry = isFullDataReady && fullLog ? fullLog : log;
@@ -67,7 +72,7 @@ export function LogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
+			<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-8 sm:max-w-[60%]">
 				{!isFullDataReady ? (
 					<div className="flex h-full items-center justify-center">
 						<SheetTitle className="sr-only">Loading log details</SheetTitle>

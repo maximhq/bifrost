@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"time"
@@ -59,7 +60,7 @@ type NetworkConfig struct {
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
-	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections
+	CACertPEM                      *EnvVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
@@ -79,7 +80,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
-		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
+		CACertPEM                      *EnvVar           `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
@@ -144,11 +145,17 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		RetryBackoffInitial:        int64(nc.RetryBackoffInitial / time.Millisecond),
 		RetryBackoffMax:            int64(nc.RetryBackoffMax / time.Millisecond),
 		InsecureSkipVerify:         nc.InsecureSkipVerify,
-		CACertPEM:                  nc.CACertPEM,
 		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
+	}
+	if nc.CACertPEM != nil {
+		if nc.CACertPEM.IsFromEnv() {
+			alias.CACertPEM = nc.CACertPEM.EnvVar
+		} else {
+			alias.CACertPEM = nc.CACertPEM.GetValue()
+		}
 	}
 
 	return json.Marshal(alias)
@@ -160,8 +167,8 @@ func (nc *NetworkConfig) Redacted() *NetworkConfig {
 		return nil
 	}
 	redacted := *nc
-	if nc.CACertPEM != "" {
-		redacted.CACertPEM = "<REDACTED>"
+	if nc.CACertPEM != nil && nc.CACertPEM.IsSet() {
+		redacted.CACertPEM = nc.CACertPEM.Redacted()
 	}
 	return &redacted
 }
@@ -205,16 +212,13 @@ const (
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
 	Type      ProxyType `json:"type"`        // Type of proxy to use
-	URL       string    `json:"url"`         // URL of the proxy server
-	Username  string    `json:"username"`    // Username for proxy authentication
-	Password  string    `json:"password"`    // Password for proxy authentication
-	CACertPEM string    `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy
+	URL       *EnvVar   `json:"url"`         // URL of the proxy server (supports env.*)
+	Username  *EnvVar   `json:"username"`    // Username for proxy authentication (supports env.*)
+	Password  *EnvVar   `json:"password"`    // Password for proxy authentication (supports env.*)
+	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
-// IsRedactedValue returns true if the value is redacted.
-func (pc *ProxyConfig) IsRedactedValue(value string) bool {
-	return value == "<REDACTED>" || value == "********"
-}
+
 
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
@@ -224,11 +228,19 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 		URL:      pc.URL,
 		Username: pc.Username,
 	}
-	if pc.Password != "" {
-		redactedConfig.Password = "<REDACTED>"
+	if pc.Password != nil && pc.Password.IsSet() {
+		if pc.Password.IsFromEnv() {
+			redactedConfig.Password = pc.Password
+		} else {
+			redactedConfig.Password = NewEnvVar("<REDACTED>")
+		}
 	}
-	if pc.CACertPEM != "" {
-		redactedConfig.CACertPEM = "<REDACTED>"
+	if pc.CACertPEM != nil && pc.CACertPEM.IsSet() {
+		if pc.CACertPEM.IsFromEnv() {
+			redactedConfig.CACertPEM = pc.CACertPEM
+		} else {
+			redactedConfig.CACertPEM = NewEnvVar("<REDACTED>")
+		}
 	}
 	return &redactedConfig
 }
@@ -498,16 +510,19 @@ type Provider interface {
 	ListModels(ctx *BifrostContext, keys []Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx *BifrostContext, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
-	// TextCompletionStream performs a text completion stream request
-	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostTextCompletionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	// TextCompletionStream performs a text completion stream request.
+	// postHookSpanFinalizer is invoked by the provider's stream goroutine on stream completion
+	// (or on its panic-recovery defer) to finalize aggregated post-hook spans and release the
+	// per-attempt plugin pipeline. Pass nil if the caller does not need finalization.
+	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTextCompletionRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ChatCompletion performs a chat completion request
 	ChatCompletion(ctx *BifrostContext, key Key, request *BifrostChatRequest) (*BifrostChatResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
-	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostChatRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostChatRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// Responses performs a completion request using the Responses API (uses chat completion request internally for non-openai providers)
 	Responses(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostResponsesResponse, *BifrostError)
 	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
-	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// CountTokens performs a count tokens request
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
@@ -519,21 +534,21 @@ type Provider interface {
 	// Speech performs a text to speech request
 	Speech(ctx *BifrostContext, key Key, request *BifrostSpeechRequest) (*BifrostSpeechResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
-	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostSpeechRequest) (chan *BifrostStreamChunk, *BifrostError)
+	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostSpeechRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// Transcription performs a transcription request
 	Transcription(ctx *BifrostContext, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
-	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTranscriptionRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageGeneration performs an image generation request
 	ImageGeneration(ctx *BifrostContext, key Key, request *BifrostImageGenerationRequest) (
 		*BifrostImageGenerationResponse, *BifrostError)
 	// ImageGenerationStream performs an image generation stream request
-	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
 		request *BifrostImageGenerationRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageEdit performs an image edit request
 	ImageEdit(ctx *BifrostContext, key Key, request *BifrostImageEditRequest) (*BifrostImageGenerationResponse, *BifrostError)
 	// ImageEditStream performs an image edit stream request
-	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
 		request *BifrostImageEditRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageVariation performs an image variation request
 	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
@@ -592,7 +607,7 @@ type Provider interface {
 	// Passthrough executes a non-streaming passthrough; body is fully buffered.
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
-	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
 }
 
 // WebSocketCapableProvider is an optional interface that providers can implement

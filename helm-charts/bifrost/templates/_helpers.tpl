@@ -325,7 +325,72 @@ false
 {{- end }}
 {{- end }}
 {{- if .Values.bifrost.providers }}
-{{- $_ := set $config "providers" .Values.bifrost.providers }}
+{{- $providers := dict }}
+{{- range $providerName, $providerConfig := .Values.bifrost.providers }}
+{{- $providerCopy := deepCopy $providerConfig }}
+{{- if $providerConfig.network_config }}
+{{- $networkConfig := dict }}
+{{- if $providerConfig.network_config.base_url }}
+{{- $_ := set $networkConfig "base_url" $providerConfig.network_config.base_url }}
+{{- end }}
+{{- if $providerConfig.network_config.extra_headers }}
+{{- $_ := set $networkConfig "extra_headers" $providerConfig.network_config.extra_headers }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "default_request_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "default_request_timeout_in_seconds" $providerConfig.network_config.default_request_timeout_in_seconds }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "max_retries" }}
+{{- $_ := set $networkConfig "max_retries" $providerConfig.network_config.max_retries }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_initial" }}
+{{- $_ := set $networkConfig "retry_backoff_initial" $providerConfig.network_config.retry_backoff_initial }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_initial_ms" }}
+{{- $_ := set $networkConfig "retry_backoff_initial" $providerConfig.network_config.retry_backoff_initial_ms }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_max" }}
+{{- $_ := set $networkConfig "retry_backoff_max" $providerConfig.network_config.retry_backoff_max }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "retry_backoff_max_ms" }}
+{{- $_ := set $networkConfig "retry_backoff_max" $providerConfig.network_config.retry_backoff_max_ms }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "insecure_skip_verify" }}
+{{- $_ := set $networkConfig "insecure_skip_verify" $providerConfig.network_config.insecure_skip_verify }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "ca_cert_pem" }}
+{{- $_ := set $networkConfig "ca_cert_pem" $providerConfig.network_config.ca_cert_pem }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "stream_idle_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "stream_idle_timeout_in_seconds" $providerConfig.network_config.stream_idle_timeout_in_seconds }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "max_conns_per_host" }}
+{{- $_ := set $networkConfig "max_conns_per_host" $providerConfig.network_config.max_conns_per_host }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "enforce_http2" }}
+{{- $_ := set $networkConfig "enforce_http2" $providerConfig.network_config.enforce_http2 }}
+{{- end }}
+{{- if $providerConfig.network_config.beta_header_overrides }}
+{{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
+{{- end }}
+{{- $_ := set $providerCopy "network_config" $networkConfig }}
+{{- end }}
+{{- if $providerConfig.keys }}
+{{- $keys := list }}
+{{- range $key := $providerConfig.keys }}
+{{- $keyCopy := deepCopy $key }}
+{{- if and (not (hasKey $keyCopy "id")) (hasKey $keyCopy "name") $keyCopy.name }}
+{{- $_ := set $keyCopy "id" $keyCopy.name }}
+{{- end }}
+{{- if not (hasKey $keyCopy "weight") }}
+{{- $_ := set $keyCopy "weight" 1 }}
+{{- end }}
+{{- $keys = append $keys $keyCopy }}
+{{- end }}
+{{- $_ := set $providerCopy "keys" $keys }}
+{{- end }}
+{{- $_ := set $providers $providerName $providerCopy }}
+{{- end }}
+{{- $_ := set $config "providers" $providers }}
 {{- end }}
 {{- /* Governance */ -}}
 {{- if .Values.bifrost.governance }}
@@ -351,6 +416,20 @@ false
 {{- if .Values.bifrost.governance.teams }}
 {{- $_ := set $governance "teams" .Values.bifrost.governance.teams }}
 {{- end }}
+{{- if .Values.bifrost.governance.businessUnits }}
+{{- $businessUnits := list }}
+{{- range .Values.bifrost.governance.businessUnits }}
+{{- $bu := dict "id" .id "name" .name }}
+{{- if .budget_id }}{{- $_ := set $bu "budget_id" .budget_id }}{{- end }}
+{{- if .rate_limit_id }}{{- $_ := set $bu "rate_limit_id" .rate_limit_id }}{{- end }}
+{{- if .profile }}{{- $_ := set $bu "profile" .profile }}{{- end }}
+{{- if .config }}{{- $_ := set $bu "config" .config }}{{- end }}
+{{- if .claims }}{{- $_ := set $bu "claims" .claims }}{{- end }}
+{{- if .teamIds }}{{- $_ := set $bu "team_ids" .teamIds }}{{- end }}
+{{- $businessUnits = append $businessUnits $bu }}
+{{- end }}
+{{- $_ := set $governance "business_units" $businessUnits }}
+{{- end }}
 {{- if .Values.bifrost.governance.virtualKeys }}
 {{- $vks := list }}
 {{- range .Values.bifrost.governance.virtualKeys }}
@@ -360,7 +439,6 @@ false
 {{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
-{{- if .budget_id }}{{- $_ := set $vk "budget_id" .budget_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
@@ -402,7 +480,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -461,6 +539,13 @@ false
 {{- end }}
 {{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
 {{- $discovery := dict "enabled" true "type" .Values.bifrost.cluster.discovery.type }}
+{{- $serviceName := .Values.bifrost.cluster.discovery.serviceName }}
+{{- if and (not $serviceName) (or (eq .Values.bifrost.cluster.discovery.type "consul") (eq .Values.bifrost.cluster.discovery.type "etcd") (eq .Values.bifrost.cluster.discovery.type "udp")) }}
+{{- fail "ERROR: bifrost.cluster.discovery.serviceName is required for consul/etcd/udp discovery." }}
+{{- end }}
+{{- if $serviceName }}
+{{- $_ := set $discovery "service_name" $serviceName }}
+{{- end }}
 {{- if .Values.bifrost.cluster.discovery.allowedAddressSpace }}
 {{- $_ := set $discovery "allowed_address_space" .Values.bifrost.cluster.discovery.allowedAddressSpace }}
 {{- end }}
@@ -520,6 +605,7 @@ false
 {{- range .Values.bifrost.guardrails.rules }}
 {{- $rule := dict "id" .id "name" .name "enabled" .enabled "cel_expression" .cel_expression "apply_to" .apply_to }}
 {{- if .description }}{{- $_ := set $rule "description" .description }}{{- end }}
+{{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
@@ -540,6 +626,10 @@ false
 {{- if or $guardrails.guardrail_rules $guardrails.guardrail_providers }}
 {{- $_ := set $config "guardrails_config" $guardrails }}
 {{- end }}
+{{- end }}
+{{- /* Access Profiles (Enterprise) */ -}}
+{{- if .Values.bifrost.accessProfiles }}
+{{- $_ := set $config "access_profiles" .Values.bifrost.accessProfiles }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
@@ -783,17 +873,25 @@ false
 {{- if $client.headers }}
 {{- $_ := set $cc "headers" $client.headers }}
 {{- end }}
-{{- if $client.tools_to_execute }}
+{{- if hasKey $client "tools_to_execute" }}
 {{- $_ := set $cc "tools_to_execute" $client.tools_to_execute }}
+{{- else if hasKey $client "toolsToExecute" }}
+{{- $_ := set $cc "tools_to_execute" $client.toolsToExecute }}
 {{- end }}
-{{- if $client.tools_to_auto_execute }}
+{{- if hasKey $client "tools_to_auto_execute" }}
 {{- $_ := set $cc "tools_to_auto_execute" $client.tools_to_auto_execute }}
+{{- else if hasKey $client "toolsToAutoExecute" }}
+{{- $_ := set $cc "tools_to_auto_execute" $client.toolsToAutoExecute }}
 {{- end }}
-{{- if $client.auth_type }}
+{{- if hasKey $client "auth_type" }}
 {{- $_ := set $cc "auth_type" $client.auth_type }}
+{{- else if hasKey $client "authType" }}
+{{- $_ := set $cc "auth_type" $client.authType }}
 {{- end }}
-{{- if $client.oauth_config_id }}
+{{- if hasKey $client "oauth_config_id" }}
 {{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
+{{- else if hasKey $client "oauthConfigId" }}
+{{- $_ := set $cc "oauth_config_id" $client.oauthConfigId }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
@@ -845,15 +943,46 @@ false
 {{- if .Values.bifrost.mcp.toolSyncInterval }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
 {{- end }}
+{{- if .Values.bifrost.mcp.toolGroups }}
+{{- $toolGroups := list }}
+{{- range .Values.bifrost.mcp.toolGroups }}
+{{- $group := dict "name" .name }}
+{{- if hasKey . "enabled" }}{{- $_ := set $group "enabled" .enabled }}{{- end }}
+{{- if .description }}{{- $_ := set $group "description" .description }}{{- end }}
+{{- if .tools }}
+{{- $tools := list }}
+{{- range .tools }}
+{{- $tool := dict }}
+{{- if .mcpClientId }}{{- $_ := set $tool "mcp_client_id" .mcpClientId }}{{- end }}
+{{- if .mcpClientName }}{{- $_ := set $tool "mcp_client_name" .mcpClientName }}{{- end }}
+{{- if .toolNames }}{{- $_ := set $tool "tool_names" .toolNames }}{{- end }}
+{{- $tools = append $tools $tool }}
+{{- end }}
+{{- $_ := set $group "tools" $tools }}
+{{- end }}
+{{- if .virtualKeyIds }}{{- $_ := set $group "virtual_key_ids" .virtualKeyIds }}{{- end }}
+{{- if .teamIds }}{{- $_ := set $group "team_ids" .teamIds }}{{- end }}
+{{- if .customerIds }}{{- $_ := set $group "customer_ids" .customerIds }}{{- end }}
+{{- if .userIds }}{{- $_ := set $group "user_ids" .userIds }}{{- end }}
+{{- if .providerNames }}{{- $_ := set $group "provider_names" .providerNames }}{{- end }}
+{{- if .apiKeyIds }}{{- $_ := set $group "api_key_ids" .apiKeyIds }}{{- end }}
+{{- $toolGroups = append $toolGroups $group }}
+{{- end }}
+{{- $_ := set $mcpConfig "tool_groups" $toolGroups }}
+{{- end }}
 {{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
 {{- /* Plugins - as array per schema */ -}}
 {{- $plugins := list }}
 {{- if .Values.bifrost.plugins.telemetry.enabled }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "telemetry" "config" .Values.bifrost.plugins.telemetry.config) }}
+{{- $plugin := dict "enabled" true "name" "telemetry" "config" .Values.bifrost.plugins.telemetry.config }}
+{{- if hasKey .Values.bifrost.plugins.telemetry "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.telemetry.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.logging.enabled }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config) }}
+{{- $plugin := dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config }}
+{{- if hasKey .Values.bifrost.plugins.logging "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.logging.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.governance.enabled }}
 {{- $governanceConfig := dict }}
@@ -866,7 +995,9 @@ false
 {{- if hasKey .Values.bifrost.plugins.governance.config "is_enterprise" }}
 {{- $_ := set $governanceConfig "is_enterprise" .Values.bifrost.plugins.governance.config.is_enterprise }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "governance" "config" $governanceConfig) }}
+{{- $plugin := dict "enabled" true "name" "governance" "config" $governanceConfig }}
+{{- if hasKey .Values.bifrost.plugins.governance "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.governance.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.maxim.enabled }}
 {{- $maximConfig := dict }}
@@ -878,7 +1009,9 @@ false
 {{- if .Values.bifrost.plugins.maxim.config.log_repo_id }}
 {{- $_ := set $maximConfig "log_repo_id" .Values.bifrost.plugins.maxim.config.log_repo_id }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "maxim" "config" $maximConfig) }}
+{{- $plugin := dict "enabled" true "name" "maxim" "config" $maximConfig }}
+{{- if hasKey .Values.bifrost.plugins.maxim "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.maxim.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
 {{- $scConfig := dict }}
@@ -925,7 +1058,9 @@ false
 {{- if hasKey $inputConfig "cleanup_on_shutdown" }}
 {{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "semantic_cache" "config" $scConfig) }}
+{{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
+{{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
@@ -960,7 +1095,9 @@ false
 {{- if hasKey $inputConfig "insecure" }}
 {{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
+{{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
+{{- if hasKey .Values.bifrost.plugins.otel "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.otel.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.datadog.enabled }}
 {{- $datadogConfig := dict }}
@@ -983,14 +1120,16 @@ false
 {{- if hasKey $inputConfig "enable_traces" }}
 {{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "datadog" "config" $datadogConfig) }}
+{{- $plugin := dict "enabled" true "name" "datadog" "config" $datadogConfig }}
+{{- if hasKey .Values.bifrost.plugins.datadog "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.datadog.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- /* Custom plugins */ -}}
 {{- if .Values.bifrost.plugins.custom }}
 {{- range .Values.bifrost.plugins.custom }}
 {{- $customPlugin := dict "enabled" .enabled "name" .name }}
 {{- if .path }}{{- $_ := set $customPlugin "path" .path }}{{- end }}
-{{- if .version }}{{- $_ := set $customPlugin "version" .version }}{{- end }}
+{{- if hasKey . "version" }}{{- $_ := set $customPlugin "version" (.version | int) }}{{- end }}
 {{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
 {{- if .placement }}{{- $_ := set $customPlugin "placement" .placement }}{{- end }}
 {{- if .order }}{{- $_ := set $customPlugin "order" (.order | int) }}{{- end }}
@@ -1079,6 +1218,50 @@ Call this template at the beginning of deployment/stateful templates
 {{- define "bifrost.validate" -}}
 
 {{/* Validate semantic cache plugin when enabled */}}
+{{- if and .Values.bifrost.plugins.telemetry.enabled (hasKey .Values.bifrost.plugins.telemetry "version") (lt (int .Values.bifrost.plugins.telemetry.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.telemetry.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.telemetry.enabled (hasKey .Values.bifrost.plugins.telemetry "version") (gt (int .Values.bifrost.plugins.telemetry.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.telemetry.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.logging.enabled (hasKey .Values.bifrost.plugins.logging "version") (lt (int .Values.bifrost.plugins.logging.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.logging.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.logging.enabled (hasKey .Values.bifrost.plugins.logging "version") (gt (int .Values.bifrost.plugins.logging.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.logging.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.governance.enabled (hasKey .Values.bifrost.plugins.governance "version") (lt (int .Values.bifrost.plugins.governance.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.governance.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.governance.enabled (hasKey .Values.bifrost.plugins.governance "version") (gt (int .Values.bifrost.plugins.governance.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.governance.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.maxim.enabled (hasKey .Values.bifrost.plugins.maxim "version") (lt (int .Values.bifrost.plugins.maxim.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.maxim.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.maxim.enabled (hasKey .Values.bifrost.plugins.maxim "version") (gt (int .Values.bifrost.plugins.maxim.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.maxim.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.semanticCache.enabled (hasKey .Values.bifrost.plugins.semanticCache "version") (lt (int .Values.bifrost.plugins.semanticCache.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.semanticCache.enabled (hasKey .Values.bifrost.plugins.semanticCache "version") (gt (int .Values.bifrost.plugins.semanticCache.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.otel.enabled (hasKey .Values.bifrost.plugins.otel "version") (lt (int .Values.bifrost.plugins.otel.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.otel.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.otel.enabled (hasKey .Values.bifrost.plugins.otel "version") (gt (int .Values.bifrost.plugins.otel.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.otel.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.datadog.enabled (hasKey .Values.bifrost.plugins.datadog "version") (lt (int .Values.bifrost.plugins.datadog.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.datadog.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.datadog.enabled (hasKey .Values.bifrost.plugins.datadog "version") (gt (int .Values.bifrost.plugins.datadog.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.datadog.version must be <= 32767." }}
+{{- end }}
+
+{{/* Validate semantic cache plugin when enabled */}}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
 {{/* When dimension is 1, direct (hash-based) caching is used — provider and keys are not required. */}}
 {{- if ne (int .Values.bifrost.plugins.semanticCache.config.dimension) 1 }}
@@ -1161,6 +1344,14 @@ Call this template at the beginning of deployment/stateful templates
 {{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
 {{- if not .Values.bifrost.cluster.discovery.type }}
 {{- fail "ERROR: bifrost.cluster.discovery.type is required when cluster discovery is enabled. Supported types: kubernetes, dns, udp, consul, etcd, mdns" }}
+{{- end }}
+{{- if eq .Values.bifrost.cluster.discovery.type "udp" }}
+{{- if not .Values.bifrost.cluster.discovery.udpBroadcastPort }}
+{{- fail "ERROR: bifrost.cluster.discovery.udpBroadcastPort is required when using udp discovery." }}
+{{- end }}
+{{- if not .Values.bifrost.cluster.discovery.allowedAddressSpace }}
+{{- fail "ERROR: bifrost.cluster.discovery.allowedAddressSpace is required when using udp discovery." }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -1259,6 +1450,18 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- end }}
 
+{{/* Validate governance business units */}}
+{{- if .Values.bifrost.governance.businessUnits }}
+{{- range $idx, $bu := .Values.bifrost.governance.businessUnits }}
+{{- if not $bu.id }}
+{{- fail (printf "ERROR: bifrost.governance.businessUnits[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $bu.name }}
+{{- fail (printf "ERROR: bifrost.governance.businessUnits[%d].name is required for business unit '%s'." $idx $bu.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{/* Validate governance virtual keys */}}
 {{- if .Values.bifrost.governance.virtualKeys }}
 {{- range $idx, $vk := .Values.bifrost.governance.virtualKeys }}
@@ -1346,6 +1549,16 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if .Values.bifrost.mcp.toolGroups }}
+{{- range $idx, $group := .Values.bifrost.mcp.toolGroups }}
+{{- if not $group.name }}
+{{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].name is required." $idx) }}
+{{- end }}
+{{- if not $group.tools }}
+{{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].tools is required for group '%s'." $idx $group.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/* Validate custom plugins */}}
@@ -1356,6 +1569,12 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not (hasKey $plugin "enabled") }}
 {{- fail (printf "ERROR: bifrost.plugins.custom[%d].enabled is required for plugin '%s'." $idx $plugin.name) }}
+{{- end }}
+{{- if and (hasKey $plugin "version") (lt (int $plugin.version) 1) }}
+{{- fail (printf "ERROR: bifrost.plugins.custom[%d].version must be >= 1 for plugin '%s'." $idx $plugin.name) }}
+{{- end }}
+{{- if and (hasKey $plugin "version") (gt (int $plugin.version) 32767) }}
+{{- fail (printf "ERROR: bifrost.plugins.custom[%d].version must be <= 32767 for plugin '%s'." $idx $plugin.name) }}
 {{- end }}
 {{- end }}
 {{- end }}

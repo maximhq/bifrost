@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -15,11 +16,17 @@ import (
 
 // mockModelsManager returns stable filtered and unfiltered model lists for handler tests.
 type mockModelsManager struct {
-	filtered   map[schemas.ModelProvider][]string
-	unfiltered map[schemas.ModelProvider][]string
+	filtered     map[schemas.ModelProvider][]string
+	unfiltered   map[schemas.ModelProvider][]string
+	reloadCalls  []schemas.ModelProvider
+	reloadErr    error
 }
 
-func (m *mockModelsManager) ReloadProvider(_ context.Context, _ schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
+func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
+	m.reloadCalls = append(m.reloadCalls, provider)
+	if m.reloadErr != nil {
+		return nil, m.reloadErr
+	}
 	return nil, nil
 }
 
@@ -59,6 +66,94 @@ func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, 
 				provider: unfiltered,
 			},
 		},
+	}
+}
+
+func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	modelsManager := &mockModelsManager{}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: modelsManager,
+	}
+
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider: "mock-openai",
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			IsKeyLess:        true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if len(modelsManager.reloadCalls) != 1 || modelsManager.reloadCalls[0] != "mock-openai" {
+		t.Fatalf("expected provider reload for mock-openai, got %#v", modelsManager.reloadCalls)
+	}
+	if _, exists := h.inMemoryStore.Providers["mock-openai"]; !exists {
+		t.Fatalf("expected provider to be added to in-memory store")
+	}
+}
+
+func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	modelsManager := &mockModelsManager{reloadErr: context.DeadlineExceeded}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: modelsManager,
+	}
+
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider: "mock-openai",
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			IsKeyLess:        true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if len(modelsManager.reloadCalls) != 1 || modelsManager.reloadCalls[0] != "mock-openai" {
+		t.Fatalf("expected single provider reload for mock-openai, got %#v", modelsManager.reloadCalls)
+	}
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to unmarshal error response: %v", err)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message == "" {
+		t.Fatalf("expected error message in response, got %#v", bifrostErr)
+	}
+	if bifrostErr.Error.Message != "Failed to initialize provider after add: context deadline exceeded" {
+		t.Fatalf("unexpected error message: %q", bifrostErr.Error.Message)
+	}
+	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
+		t.Fatalf("expected provider rollback after reload failure")
 	}
 }
 

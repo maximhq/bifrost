@@ -29,10 +29,10 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      teamBudget,
 				ResetDuration: teamResetDuration,
-			},
+			}},
 		},
 	})
 
@@ -221,10 +221,10 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       teamName,
 			CustomerID: &customerID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // Medium
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -1086,10 +1086,10 @@ func TestTeamDeletionCascade(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 

@@ -88,7 +88,7 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost embedding request is nil")
 	}
-	if bifrostReq.Input == nil {
+	if bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0) {
 		return nil, fmt.Errorf("no input provided for embedding")
 	}
 

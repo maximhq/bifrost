@@ -172,8 +172,8 @@ func buildTeam(id, name string, budget *configstoreTables.TableBudget) *configst
 		Name: name,
 	}
 	if budget != nil {
-		team.Budget = budget
-		team.BudgetID = &budget.ID
+		budget.TeamID = &team.ID
+		team.Budgets = []configstoreTables.TableBudget{*budget}
 	}
 	return team
 }

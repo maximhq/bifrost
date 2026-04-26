@@ -1,6 +1,10 @@
 package compat
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"fmt"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // dropUnsupportedParams removes unsupported model parameters from a request in place.
 func dropUnsupportedParams(req *schemas.BifrostRequest, supportedParams []string) []string {
@@ -167,6 +171,10 @@ func dropUnsupportedParams(req *schemas.BifrostRequest, supportedParams []string
 			params.Tools = nil
 			dropped = append(dropped, "tools")
 		}
+		if !isSupported["web_search"] {
+			droppedKeys := dropWebsearchToolCalls(req)
+			dropped = append(dropped, droppedKeys...)
+		}
 	}
 
 	if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
@@ -213,6 +221,21 @@ func dropUnsupportedParams(req *schemas.BifrostRequest, supportedParams []string
 			dropped = append(dropped, "top_p")
 		}
 	}
+	return dropped
+}
 
+// dropWebsearchToolCalls drops web search tool calls from the request
+func dropWebsearchToolCalls(req *schemas.BifrostRequest) []string {
+	dropped := []string{}
+	tools := req.ResponsesRequest.Params.Tools
+	kept := tools[:0]
+	for i, tool := range tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebSearchPreview {
+			dropped = append(dropped, fmt.Sprintf("tools[%d].%s", i, tool.Type))
+		} else {
+			kept = append(kept, tool)
+		}
+	}
+	req.ResponsesRequest.Params.Tools = kept
 	return dropped
 }

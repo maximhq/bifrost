@@ -92,7 +92,7 @@ kubectl get secret bifrost-encryption -o jsonpath='{.data.key}' | base64 -d
 kubectl logs -l app.kubernetes.io/name=bifrost --previous --tail=50
 
 # Common causes shown in logs:
-# "encryption key is required" → bifrost.encryptionKey or encryptionKeySecret not set
+# "encryption key is not initialized" → no key provided; optional, but data will be stored in plaintext
 # "failed to connect to database" → see Database section below
 # "image.tag is required" → set image.tag in values
 ```

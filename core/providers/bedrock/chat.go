@@ -234,20 +234,32 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 			}
 			usage.PromptTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			if response.Usage.CacheDetails != nil {
+				if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+					usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+				}
+				for _, cacheDetail := range *response.Usage.CacheDetails {
+					if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+						usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					}
+					if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+						usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					}
+				}
+			}
 			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostChatResponse{
-		ID:      uuid.New().String(),
-		Model:   model,
-		Object:  "chat.completion",
-		Choices: choices,
-		Usage:   usage,
-		Created: int(time.Now().Unix()),
-		ExtraFields: schemas.BifrostResponseExtraFields{
-		},
+		ID:          uuid.New().String(),
+		Model:       model,
+		Object:      "chat.completion",
+		Choices:     choices,
+		Usage:       usage,
+		Created:     int(time.Now().Unix()),
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 
 	if response.ServiceTier != nil && response.ServiceTier.Type != "" {

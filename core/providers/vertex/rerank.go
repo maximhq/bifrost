@@ -132,9 +132,11 @@ func ToVertexRankRequest(bifrostReq *schemas.BifrostRerankRequest, options *vert
 		rankRequest.TopN = &topN
 	}
 
-	if trimmedModel := strings.TrimSpace(bifrostReq.Model); trimmedModel != "" {
-		rankRequest.Model = &trimmedModel
+	trimmedModel := strings.TrimSpace(bifrostReq.Model)
+	if trimmedModel == "" {
+		trimmedModel = vertexDefaultRerankModel
 	}
+	rankRequest.Model = &trimmedModel
 
 	ignoreRecordDetailsInResponse := options.IgnoreRecordDetailsInResponse
 	rankRequest.IgnoreRecordDetailsInResponse = &ignoreRecordDetailsInResponse

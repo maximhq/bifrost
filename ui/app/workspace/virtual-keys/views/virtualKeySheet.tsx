@@ -1,23 +1,24 @@
+import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import MultiBudgetLines from "@/components/ui/multiBudgetLines";
+import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -34,17 +35,16 @@ import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import {
-	getErrorMessage,
-	useCreateVirtualKeyMutation,
-	useGetAllKeysQuery,
-	useGetMCPClientsQuery,
-	useGetProvidersQuery,
-	useUpdateVirtualKeyMutation,
+  getErrorMessage,
+  useCreateVirtualKeyMutation,
+  useGetAllKeysQuery,
+  useGetMCPClientsQuery,
+  useGetProvidersQuery,
+  useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { Building, Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
@@ -58,6 +58,9 @@ interface VirtualKeySheetProps {
 	virtualKey?: VirtualKey | null;
 	teams: Team[];
 	customers: Customer[];
+	// When set and not editing, the new VK is created owned by this team and the sheet locks
+	// all fields except name/description (same treatment as access-profile-managed keys).
+	defaultTeamId?: string;
 	onSave: () => void;
 	onCancel: () => void;
 }
@@ -150,7 +153,7 @@ type VirtualKeyType = {
 	provider: string;
 };
 
-export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, onCancel }: VirtualKeySheetProps) {
+export default function VirtualKeySheet({ virtualKey, teams, customers, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
@@ -163,6 +166,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook } = useVirtualKeyUsage(virtualKey);
 	const isManagedByProfile = isEditing && isManagedByProfileHook;
+	// Team attachment: when a VK already belongs to a team (edit) or will be created for one
+	// (create from team detail sheet via defaultTeamId), the team assignment is fixed — users
+	// can still edit providers/budgets/rate limits/MCP, but not reparent the VK.
+	const attachedTeamId = isEditing ? (virtualKey?.team_id || "") : (defaultTeamId || "");
+	const attachedTeam = attachedTeamId ? teams.find((t) => t.id === attachedTeamId) : undefined;
+	const isTeamLocked = !!attachedTeamId;
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -215,8 +224,14 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					mcp_client_name: config.mcp_client?.name || "",
 					tools_to_execute: config.tools_to_execute || [],
 				})) || [],
-			entityType: virtualKey?.team_id ? "team" : virtualKey?.customer_id ? "customer" : "none",
-			teamId: virtualKey?.team_id || "",
+			entityType: virtualKey?.team_id
+				? "team"
+				: virtualKey?.customer_id
+					? "customer"
+					: !isEditing && defaultTeamId
+						? "team"
+						: "none",
+			teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
 			customerId: virtualKey?.customer_id || "",
 			isActive: virtualKey?.is_active ?? true,
 			budgets:
@@ -540,6 +555,25 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 								</Alert>
 							)}
 
+							{isTeamLocked && !isManagedByProfile && (
+								<Alert variant="info">
+									<Users className="h-4 w-4" />
+									<AlertDescription>
+										<p>This virtual key is attached to team{" "}
+										<a
+											data-testid="vk-team-link"
+											href={`/workspace/governance/teams?team=${encodeURIComponent(attachedTeamId)}`}
+											target="_blank"
+											rel="noopener noreferrer"
+											className="font-medium underline underline-offset-2 hover:no-underline"
+										>
+											{attachedTeam?.name ?? virtualKey?.team?.name ?? attachedTeamId}
+										</a>
+										. The team assignment can't be changed here — all other fields remain editable.</p>
+									</AlertDescription>
+								</Alert>
+							)}
+
 							{/* Assigned User */}
 							{assignedUsers.length > 0 && (
 								<div className="space-y-1">
@@ -582,7 +616,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 								/>
 
 							</div>
-							<fieldset disabled={isManagedByProfile} className={isManagedByProfile ? "space-y-4 opacity-50" : "space-y-4"}>
+							<fieldset
+								disabled={isManagedByProfile}
+								aria-disabled={isManagedByProfile}
+								inert={isManagedByProfile ? true : undefined}
+								className={isManagedByProfile ? "pointer-events-none space-y-4 opacity-50" : "space-y-4"}
+							>
 							<div className="space-y-4">
 								<FormField
 									control={form.control}
@@ -1363,6 +1402,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																}
 															}}
 															defaultValue={field.value}
+															disabled={isTeamLocked}
 														>
 															<FormControl className="w-full">
 																<SelectTrigger data-testid="vk-entity-type-select">
@@ -1386,7 +1426,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 													render={({ field }) => (
 														<FormItem>
 															<FormLabel className="font-normal">Select Team</FormLabel>
-															<Select onValueChange={field.onChange} defaultValue={field.value}>
+															<Select onValueChange={field.onChange} defaultValue={field.value} disabled={isTeamLocked}>
 																<FormControl className="w-full">
 																	<SelectTrigger data-testid="vk-team-select">
 																		<SelectValue placeholder="Select a team" />

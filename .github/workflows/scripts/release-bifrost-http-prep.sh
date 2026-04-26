@@ -147,7 +147,7 @@ if ! git diff --cached --quiet; then
   git config user.name "github-actions[bot]"
   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   echo "🔧 Committing and pushing changes..."
-  git commit -m "transports: update dependencies --skip-pipeline"
+  git commit -m "transports: update dependencies --skip-ci"
   git push -u origin HEAD
 else
   echo "ℹ️ No staged changes to commit"

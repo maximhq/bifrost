@@ -88,7 +88,7 @@ spec:
               value: {{ .Values.bifrost.logLevel | quote }}
             - name: LOG_STYLE
               value: {{ .Values.bifrost.logStyle | quote }}
-            {{- if .Values.bifrost.encryptionKeySecret }}
+            {{- if .Values.bifrost.encryptionKeySecret.name }}
             - name: BIFROST_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:

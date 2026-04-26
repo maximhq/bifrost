@@ -1,1 +1,0 @@
-- refactor: Updates prompt plugin flow to change the headers used, and better code quality

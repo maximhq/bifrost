@@ -5,7 +5,7 @@ icon: "server"
 ---
 
 <Note>
-**Latest Chart Version:** 2.1.0 | [View on Artifact Hub](https://artifacthub.io/packages/helm/bifrost/bifrost)
+**Latest Chart Version**: [View on Artifact Hub](https://artifacthub.io/packages/helm/bifrost/bifrost)
 </Note>
 
 <Tabs>
@@ -179,10 +179,13 @@ bifrost:
   plugins:
     telemetry:
       enabled: true
+      version: 1
     logging:
       enabled: true
+      version: 1
     governance:
       enabled: true
+      version: 1
 ```
 
 ```bash
@@ -441,14 +444,18 @@ bifrost:
   plugins:
     telemetry:
       enabled: true
+      version: 1
     logging:
       enabled: true
+      version: 1
     governance:
       enabled: true
+      version: 1
       config:
         is_vk_mandatory: true
     semanticCache:
       enabled: true
+      version: 1
       config:
         provider: "openai"
         embedding_model: "text-embedding-3-small"
@@ -470,6 +477,10 @@ helm install bifrost bifrost/bifrost -f enterprise.yaml
 ```
 
 Next steps: jump to [Next Steps](#next-steps).
+
+<Note>
+For DB-backed deployments, built-in plugins support a top-level `version` field (for example: `telemetry`, `logging`, `governance`, `semanticCache`, `otel`, `maxim`, `datadog`). Increase this number when you want config from Helm to overwrite an older plugin record in the DB.
+</Note>
 
 ## Enterprise Support
 

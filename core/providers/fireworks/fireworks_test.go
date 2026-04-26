@@ -399,7 +399,7 @@ func TestFireworksResponsesStreamUsesNativeResponsesEndpoint(t *testing.T) {
 		return result, err
 	}
 
-	stream, err := provider.ResponsesStream(ctx, postHookRunner, key, &schemas.BifrostResponsesRequest{
+	stream, err := provider.ResponsesStream(ctx, postHookRunner, nil, key, &schemas.BifrostResponsesRequest{
 		Provider: schemas.Fireworks,
 		Model:    "accounts/fireworks/models/deepseek-v3p2",
 		Input: []schemas.ResponsesMessage{

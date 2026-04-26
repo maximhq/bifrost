@@ -43,10 +43,10 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       "test-team-criss-cross-" + generateRandomID(),
 			CustomerID: &customerID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      teamBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 

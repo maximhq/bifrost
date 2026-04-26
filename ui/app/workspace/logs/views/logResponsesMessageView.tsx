@@ -191,7 +191,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 				case "function_call":
 					return `Function Call: ${message.name || "Unknown"}`;
 				case "function_call_output":
-					return "Function Call Output";
+					return `Function Call Output${message.call_id ? `: ${message.call_id}` : ""}`;
 				case "file_search_call":
 					return "File Search";
 				case "web_search_call":
@@ -344,9 +344,48 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 				</CollapsibleBox>
 			)}
 
+			{/* Handle function call output */}
+			{message.output !== undefined && (
+				<CollapsibleBox
+					title="Output"
+					onCopy={() => (typeof message.output === "string" ? message.output : JSON.stringify(message.output, null, 2))}
+					collapsedHeight={100}
+				>
+					{typeof message.output === "string" ? (
+						isJson(message.output) ? (
+							<CodeEditor
+								className="z-0 w-full"
+								shouldAdjustInitialHeight={true}
+								maxHeight={400}
+								wrap={true}
+								code={JSON.stringify(cleanJson(message.output), null, 2)}
+								lang="json"
+								readonly={true}
+								options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+							/>
+						) : (
+							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+								{message.output}
+							</div>
+						)
+					) : (
+						<CodeEditor
+							className="z-0 w-full"
+							shouldAdjustInitialHeight={true}
+							maxHeight={400}
+							wrap={true}
+							code={JSON.stringify(message.output, null, 2)}
+							lang="json"
+							readonly={true}
+							options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+						/>
+					)}
+				</CollapsibleBox>
+			)}
+
 			{/* Handle additional tool-specific fields */}
 			{Object.keys(message).some(
-				(key) => !["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content"].includes(key),
+				(key) => !["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content", "output"].includes(key),
 			) && (
 				<CollapsibleBox
 					title="Additional Fields"
@@ -355,7 +394,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 							Object.fromEntries(
 								Object.entries(message).filter(
 									([key]) =>
-										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content"].includes(
+										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content", "output"].includes(
 											key,
 										),
 								),
@@ -375,7 +414,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 							Object.fromEntries(
 								Object.entries(message).filter(
 									([key]) =>
-										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content"].includes(
+										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content", "output"].includes(
 											key,
 										),
 								),

@@ -34,6 +34,13 @@ UserObject:
     updated_at:
       type: string
       format: date-time
+    teams:
+      type: array
+      description: Teams the user belongs to.
+      items:
+        $ref: '#/UserTeamSummaryEntry'
+    access_profile:
+      $ref: '#/AccessProfile'
 
 CreateUserRequest:
   type: object
@@ -47,6 +54,7 @@ CreateUserRequest:
     email:
       type: string
       format: email
+      pattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
       description: User's email address (must be unique)
     role_id:
       type: integer
@@ -109,6 +117,24 @@ AssignUserRoleRequest:
 
 # ---- User Teams ----
 
+UserTeamSummaryEntry:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Team ID
+    name:
+      type: string
+      description: Team name
+    business_unit_id:
+      type: string
+      nullable: true
+      description: Business unit ID associated with this team (if any)
+    business_unit_name:
+      type: string
+      nullable: true
+      description: Business unit name associated with this team (if any)
+
 UserTeamEntry:
   type: object
   properties:
@@ -121,6 +147,33 @@ UserTeamEntry:
     source:
       type: string
       description: How the user was added to this team (e.g. "manual", "scim_sync")
+
+AccessProfile:
+  type: object
+  nullable: true
+  description: Active or fallback user access profile, if assigned.
+  properties:
+    id:
+      type: integer
+    user_id:
+      type: string
+    parent_profile_id:
+      type: integer
+      nullable: true
+    name:
+      type: string
+    is_active:
+      type: boolean
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
 
 UserTeamsResponse:
   type: object

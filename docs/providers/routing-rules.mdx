@@ -116,6 +116,23 @@ tokens_used < 50           // Route to fast provider when below 50% token limit
 request > 90               // Switch providers when request limit near max
 ```
 
+#### How Capacity Metrics Are Resolved
+
+Each variable reflects **current usage as a percentage of the configured limit** for the request's provider and model combination. Values above 100 mean the limit is exhausted.
+
+Bifrost resolves which limits to read in this order (most specific first):
+
+1. **Model + provider config** — a budget or rate limit set on a specific `provider/model` pair (e.g., `openai/gpt-4o`)
+2. **Model-only config** — a budget or rate limit set on a model name without a provider (matched across all providers)
+3. **Global provider config** — a budget or rate limit attached to the provider itself (e.g., all `openai` traffic)
+4. **Virtual Key provider config** — a rate limit or budget attached to a provider entry inside the Virtual Key's provider configs
+
+When multiple levels are configured for the same request, **the highest percentage across all matched levels is used**. For example, if the model-only budget is 95% consumed and the global provider budget is 60% consumed, `budget_used` will be `95`.
+
+**If no limit is configured** for the current provider/model, the variable is `0.0` — a rule like `budget_used > 80` will never match.
+
+In [chained rules](#rule-chaining), capacity values are **re-read at every chain step** against the resolved provider/model, so downstream rules always see fresh data.
+
 ### CEL Operators & Functions
 
 #### Comparison Operators

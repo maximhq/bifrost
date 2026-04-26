@@ -137,6 +137,7 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 			TranscriptionOutput: accResult.TranscriptionOutput,
 			FinishReason:        accResult.FinishReason,
 			RawResponse:         accResult.RawResponse,
+			CacheDebug:          accResult.CacheDebug,
 		},
 		RawRequest: &accResult.RawRequest,
 	}

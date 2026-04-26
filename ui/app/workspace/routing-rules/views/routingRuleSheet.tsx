@@ -3,37 +3,21 @@
  * Create/Edit form for routing rules
  */
 
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import {
-	Sheet,
-	SheetContent,
-	SheetDescription,
-	SheetHeader,
-	SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
-import {
-	useGetCustomersQuery,
-	useGetTeamsQuery,
-	useGetVirtualKeysQuery,
-} from "@/lib/store/apis/governanceApi";
+import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
-import {
-	useCreateRoutingRuleMutation,
-	useGetRoutingRulesQuery,
-	useUpdateRoutingRuleMutation,
-} from "@/lib/store/apis/routingRulesApi";
+import { useCreateRoutingRuleMutation, useGetRoutingRulesQuery, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import {
 	DEFAULT_ROUTING_RULE_FORM_DATA,
 	DEFAULT_ROUTING_TARGET,
@@ -42,10 +26,8 @@ import {
 	RoutingRuleFormData,
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
-import {
-	validateRateLimitAndBudgetRules,
-	validateRoutingRules
-} from "@/lib/utils/celConverterRouting";
+import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
+import { normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { Plus, Save, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -149,12 +131,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			} else {
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			}
-			// Restore the query object if it exists, otherwise use default
-			if (editingRule.query) {
-				setQuery(editingRule.query);
-			} else {
-				setQuery(defaultQuery);
-			}
+			// Only react-querybuilder-shaped queries are valid; config may store other JSON under `query`.
+			setQuery(normalizeRoutingRuleGroupQuery(editingRule.query));
 			setBuilderKey((prev) => prev + 1);
 		} else {
 			reset();
@@ -252,9 +230,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		const submitPromise =
 			isEditing && editingRule
 				? updateRoutingRule({
-						id: editingRule.id,
-						data: payload,
-					}).unwrap()
+					id: editingRule.id,
+					data: payload,
+				}).unwrap()
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
@@ -432,10 +410,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							{((scope === "team" && teamsData.teams.length === 0) ||
 								(scope === "customer" && customersData.customers.length === 0) ||
 								(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-								<p className="text-muted-foreground text-sm">
-									No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
-								</p>
-							)}
+									<p className="text-muted-foreground text-sm">
+										No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+									</p>
+								)}
 							{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 						</div>
 					)}
@@ -516,7 +494,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					{/* Fallbacks */}
 					<div className="space-y-3">
 						<div className="flex items-center justify-between">
-							<Label>Fallbacks</Label>
+							<div>
+								<Label>Fallbacks</Label>								<p className="text-muted-foreground text-xs mt-0.5">
+									Provider is required, but model is optional. Leave model empty to use the incoming request value.
+								</p>
+							</div>
 							<Button
 								type="button"
 								variant="outline"
@@ -583,7 +565,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 													provider={fbProvider || undefined}
 													value={fbModel}
 													onChange={handleModelChange}
-													placeholder="Select model..."
+													placeholder="Incoming (optional)"
 													isSingleSelect
 													disabled={!fbProvider}
 													className="!h-9 !min-h-9 w-full"

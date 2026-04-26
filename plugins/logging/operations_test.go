@@ -182,7 +182,6 @@ func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing
 	}
 }
 
-
 func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 	// Simulate fallback/retry scenario where multiple PostLLMHook calls
 	// store entries under the same traceID. All entries must be preserved.
@@ -248,6 +247,24 @@ func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 	// Verify pendingLogsToInject was cleaned up
 	if _, ok := plugin.pendingLogsToInject.Load(traceID); ok {
 		t.Fatal("expected pendingLogsToInject to be cleaned up after Inject")
+	}
+}
+
+func TestConvertToProcessedStreamResponseUsesResponsesStreamTypeForWebSocketResponses(t *testing.T) {
+	result := &schemas.StreamAccumulatorResult{
+		RequestID:      "req-ws-3000",
+		RequestedModel: "gpt-4o-mini",
+		ResolvedModel:  "gpt-4o-mini",
+		Provider:       schemas.OpenAI,
+		Status:         "success",
+	}
+
+	processed := convertToProcessedStreamResponse(result, schemas.WebSocketResponsesRequest)
+	if processed == nil {
+		t.Fatal("expected processed stream response, got nil")
+	}
+	if processed.StreamType != "responses" {
+		t.Fatalf("expected stream type responses, got %s", processed.StreamType)
 	}
 }
 

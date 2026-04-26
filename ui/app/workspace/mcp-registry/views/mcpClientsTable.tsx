@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
@@ -161,15 +160,16 @@ export default function MCPClientsTable({
 				<MCPClientSheet mcpClient={selectedMCPClient} onClose={handleDetailSheetClose} onSubmitSuccess={handleEditTools} />
 			)}
 
-			<CardHeader className="mb-4 px-0">
-				<CardTitle className="flex items-center justify-between">
-					<h1 className="text-foreground text-lg font-semibold">MCP server catalog</h1>
-					<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess} data-testid="create-mcp-client-btn">
-						<Plus className="h-4 w-4" /> New MCP Server
-					</Button>
-				</CardTitle>
-				<CardDescription>Manage servers that can connect to the MCP Tools endpoint.</CardDescription>
-			</CardHeader>
+			<div className="flex items-center justify-between gap-4">
+				<div>
+					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
+					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
+				</div>
+				<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess} data-testid="create-mcp-client-btn" aria-label="New MCP Server" className="gap-2">
+					<Plus className="h-4 w-4" />
+					<span className="hidden sm:inline">New MCP Server</span>
+				</Button>
+			</div>
 
 			{/* Toolbar: Search */}
 			<div className="flex items-center gap-3">

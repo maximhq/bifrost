@@ -38,6 +38,7 @@ interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
 	unfiltered?: boolean;
 	value: string;
 	onChange: (model: string) => void;
+	clearable?: boolean;
 }
 
 interface ModelMultiselectPropsMulti extends ModelMultiselectPropsBase {
@@ -46,6 +47,7 @@ interface ModelMultiselectPropsMulti extends ModelMultiselectPropsBase {
 	unfiltered?: boolean;
 	value: string[];
 	onChange: (models: string[]) => void;
+	clearable?: boolean;
 }
 
 export type ModelMultiselectProps = ModelMultiselectPropsSingle | ModelMultiselectPropsMulti;
@@ -71,6 +73,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		className,
 		loadModelsOnEmptyProvider = false,
 		allowAllOption = false,
+		clearable = false,
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
 
@@ -266,7 +269,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			className={cn("!min-h-9 w-full", className)}
 			triggerClassName="!shadow-none !border-border !min-h-9 px-1"
 			menuClassName="!z-[100] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
-			isClearable={false}
+			isClearable={clearable}
 			closeMenuOnSelect={isSingleSelect}
 			menuPlacement="auto"
 			menuPosition={props.menuPosition}

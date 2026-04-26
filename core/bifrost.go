@@ -171,7 +171,12 @@ type PluginPipeline struct {
 	preHookErrors  []error
 	postHookErrors []error
 
-	// Streaming post-hook timing accumulation (for aggregated spans)
+	// streamingMu guards the streaming post-hook accumulators below. Per-chunk
+	// writes (accumulatePluginTiming) run in the provider goroutine while the
+	// end-of-stream finalizer (FinalizeStreamingPostHookSpans) and
+	// resetPluginPipeline can run in a different goroutine, so unsynchronised
+	// access triggers "concurrent map read and map write" panics.
+	streamingMu         sync.Mutex
 	postHookTimings     map[string]*pluginTimingAccumulator // keyed by plugin name
 	postHookPluginOrder []string                            // order in which post-hooks ran (for nested span creation)
 	chunkCount          int
@@ -4044,10 +4049,20 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		bifrost.releasePluginPipeline(pipeline)
 	}
 
+	// Capture provider/model from the original request for early-exit paths below.
+	// RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed are always
+	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
+	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
+	reqProvider, reqModel, _ := req.GetRequestFields()
+
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
+		bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 		_, bifrostErr = pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		if bifrostErr != nil {
+			bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+		}
 		drainAndAttachPluginLogs(ctx)
 		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
 			tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
@@ -4057,7 +4072,11 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	}
 	if shortCircuit != nil {
 		if shortCircuit.Error != nil {
+			shortCircuit.Error.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 			_, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+			}
 			drainAndAttachPluginLogs(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
 				tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
@@ -4069,7 +4088,13 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 			return nil, shortCircuit.Error
 		}
 		if shortCircuit.Response != nil {
+			shortCircuit.Response.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+			}
 			drainAndAttachPluginLogs(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
 				tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
@@ -4098,8 +4123,17 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 		if IsFinalChunk(ctx) {
 			drainAndAttachPluginLogs(ctx)
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
+				tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
+			}
 		}
-		return resp, bifrostErr
+		if bifrostErr != nil {
+			bifrostErr.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
+			return nil, bifrostErr
+		} else if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
+		}
+		return resp, nil
 	}
 
 	return &WSStreamHooks{
@@ -4186,11 +4220,25 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		}
 	}
 
+	provider, model, _ = preReq.GetRequestFields()
+
 	return &RealtimeTurnHooks{
 		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if result != nil {
+				result.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+			}
+			if err != nil {
+				err.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+			}
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 			drainAndAttachPluginLogs(ctx)
-			return resp, bifrostErr
+			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+				return nil, bifrostErr
+			} else if resp != nil {
+				resp.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+			}
+			return resp, nil
 		},
 		Cleanup: cleanup,
 	}, nil
@@ -4593,24 +4641,37 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
 
+	// RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed are always
+	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
+	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
+			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
-			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+			}
+			drainAndAttachPluginLogs(ctx)
+			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
 			return resp, nil
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
+			shortCircuit.Error.PopulateExtraFields(req.RequestType, provider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
-			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+			}
+			drainAndAttachPluginLogs(ctx)
+			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
 			return resp, nil
@@ -4621,6 +4682,8 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
+
+	provider, model, _ = preReq.GetRequestFields()
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -4646,6 +4709,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 				RequestType:            req.RequestType,
 				Provider:               provider,
 				OriginalModelRequested: model,
+				ResolvedModelUsed:      model,
 			}
 			return nil, bifrostErr
 		}
@@ -4703,6 +4767,11 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	select {
 	case result = <-msg.Response:
 		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
+		if bifrostErr != nil {
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		} else if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, provider, model, model)
+		}
 		drainAndAttachPluginLogs(msg.Context)
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
@@ -4727,6 +4796,11 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
+		if bifrostErrPtr != nil {
+			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
+		} else if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, provider, model, model)
+		}
 		drainAndAttachPluginLogs(msg.Context)
 		bifrost.releaseChannelMessage(msg)
 		// Strip raw fields on error path too.
@@ -4818,14 +4892,22 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 	}()
 
+	// RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed are always
+	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
+	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
+			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
-			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+			}
+			drainAndAttachPluginLogs(ctx)
+			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
 			return newBifrostMessageChan(resp), nil
@@ -4837,11 +4919,23 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 			// Create a post hook runner cause pipeline object is put back in the pool on defer
 			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if result != nil {
+					result.PopulateExtraFields(req.RequestType, provider, model, model)
+				}
+				if err != nil {
+					err.PopulateExtraFields(req.RequestType, provider, model, model)
+				}
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 				if IsFinalChunk(ctx) {
 					drainAndAttachPluginLogs(ctx)
 				}
-				return resp, bifrostErr
+				if bifrostErr != nil {
+					bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+					return nil, bifrostErr
+				} else if resp != nil {
+					resp.PopulateExtraFields(req.RequestType, provider, model, model)
+				}
+				return resp, nil
 			}
 
 			go func() {
@@ -4904,10 +4998,15 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
+			shortCircuit.Error.PopulateExtraFields(req.RequestType, provider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
-			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+			}
+			drainAndAttachPluginLogs(ctx)
+			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
 			return newBifrostMessageChan(resp), nil
@@ -4918,6 +5017,8 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
+
+	provider, model, _ = preReq.GetRequestFields()
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -5008,6 +5109,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
 		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
+		if recoveredErr != nil {
+			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		} else if recoveredResp != nil {
+			recoveredResp.PopulateExtraFields(req.RequestType, provider, model, model)
+		}
 		drainAndAttachPluginLogs(ctx)
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
@@ -5563,59 +5669,78 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		originalModelRequested := model
 		// resolvedModel is set inside the handler closures below on every attempt so that each
-		// key's own alias mapping is applied. postHookRunner captures resolvedModel by reference
-		// (Go closure semantics) and will therefore always see the value from the last attempt.
+		// key's own alias mapping is applied. The outer var holds the LAST attempt's value and is
+		// read single-threaded by the worker after retries finish (e.g. the error-fallback at
+		// line 5653). Streaming postHookRunner must NOT capture this var by reference — it
+		// snapshots its own attemptResolvedModel inside the per-attempt closure.
 		var resolvedModel string
+		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
+		// worker-level error fallback below. Single-threaded write (assigned by the retry
+		// loop's per-attempt closure) and single-threaded read (after retries finish), so
+		// no synchronization needed. Earlier attempts' finalizers fire via their provider
+		// goroutines' defers — passed via the postHookSpanFinalizer parameter directly to
+		// handleProviderStreamRequest, never via the shared req.Context.
+		var lastAttemptFinalizer func(context.Context)
 
-		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
-		var postHookRunner schemas.PostHookRunner
-		var pipeline *PluginPipeline
-		if IsStreamRequestType(req.RequestType) {
-			pipeline = bifrost.getPluginPipeline()
-			postHookRunner = func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
-				// can read requestType/provider/model from the chunk or error.
-				// resolvedModel is captured by reference and reflects the alias from the last attempt.
-				if result != nil {
-					result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
-				}
-				if err != nil {
-					err.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
-				}
-				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
-				if IsFinalChunk(ctx) {
-					drainAndAttachPluginLogs(ctx)
-				}
-				if bifrostErr != nil {
-					bifrostErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
-					return nil, bifrostErr
-				} else if resp != nil {
-					resp.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
-				}
-				return resp, nil
-			}
-			// Store a finalizer callback to create aggregated post-hook spans at stream end.
-			// Wrapped in sync.Once so the normal end-of-stream invocation and a deferred
-			// safety-net invocation (e.g. from a provider goroutine's panic path) cannot
-			// double-release the pipeline.
-			var finalizerOnce sync.Once
-			postHookSpanFinalizer := func(ctx context.Context) {
-				finalizerOnce.Do(func() {
-					pipeline.FinalizeStreamingPostHookSpans(ctx)
-					bifrost.releasePluginPipeline(pipeline)
-				})
-			}
-			req.Context.SetValue(schemas.BifrostContextKeyPostHookSpanFinalizer, postHookSpanFinalizer)
-		}
-
-		// Execute request with retries. Each handler invocation resolves the alias for the key
-		// selected by keyProvider on that attempt and mutates the worker-local request model.
-		// resolvedModel (captured by reference in postHookRunner) is updated accordingly.
+		// Execute request with retries. For streaming, the plugin pipeline,
+		// postHookRunner, and finalizer are allocated per-attempt inside the
+		// request handler closure. If they were request-scoped, a retry
+		// triggered by CheckFirstStreamChunkForError could run against a
+		// pipeline the previous attempt's provider goroutine has already
+		// returned to the pool via its deferred finalizer.
 		if IsStreamRequestType(req.RequestType) {
 			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				resolvedModel = k.Aliases.Resolve(originalModelRequested)
 				req.SetModel(resolvedModel)
-				return bifrost.handleProviderStreamRequest(provider, req, k, postHookRunner)
+				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
+				// alias while this attempt's provider goroutine is still emitting chunks.
+				attemptResolvedModel := resolvedModel
+				pipeline := bifrost.getPluginPipeline()
+				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
+					// can read requestType/provider/model from the chunk or error.
+					// Uses the per-attempt snapshot — capturing the outer resolvedModel by
+					// reference would let a later retry's alias bleed into this attempt's chunks.
+					if result != nil {
+						result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+					}
+					if err != nil {
+						err.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+					}
+					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
+					if IsFinalChunk(ctx) {
+						drainAndAttachPluginLogs(ctx)
+					}
+					if bifrostErr != nil {
+						bifrostErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						return nil, bifrostErr
+					} else if resp != nil {
+						resp.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+					}
+					return resp, nil
+				}
+				// Store a finalizer callback to create aggregated post-hook spans at stream end.
+				// Wrapped in sync.Once so the normal end-of-stream invocation and a deferred
+				// safety-net invocation (e.g. from a provider goroutine's panic path) cannot
+				// double-release the pipeline.
+				var finalizerOnce sync.Once
+				postHookSpanFinalizer := func(ctx context.Context) {
+					finalizerOnce.Do(func() {
+						pipeline.FinalizeStreamingPostHookSpans(ctx)
+						bifrost.releasePluginPipeline(pipeline)
+					})
+				}
+				lastAttemptFinalizer = postHookSpanFinalizer
+				streamCh, streamErr := bifrost.handleProviderStreamRequest(provider, req, k, postHookRunner, postHookSpanFinalizer)
+				// If stream setup failed before any provider goroutine started,
+				// no deferred finalizer will run — release the pipeline directly
+				// so a retry doesn't inherit a leaked pool entry.
+				if streamErr != nil && streamCh == nil {
+					finalizerOnce.Do(func() {
+						bifrost.releasePluginPipeline(pipeline)
+					})
+				}
+				return streamCh, streamErr
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -5625,11 +5750,20 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}
 
-		// Release pipeline immediately for non-streaming requests only
-		// For streaming, the pipeline is released in the postHookSpanFinalizer after streaming completes
-		// Exception: if streaming request has an error, release immediately since finalizer won't be called
-		if pipeline != nil && (!IsStreamRequestType(req.RequestType) || bifrostError != nil) {
-			bifrost.releasePluginPipeline(pipeline)
+		// For streaming with an error, route release through the LAST attempt's
+		// finalizer (wrapped in sync.Once) so we don't double-Put into the pool
+		// or race the provider goroutine's deferred FinalizeStreamingPostHookSpans
+		// call. lastAttemptFinalizer is set inside the per-attempt closure on every
+		// iteration; after retries finish, it holds the LAST attempt's finalizer.
+		// Earlier attempts' finalizers have already fired via their provider
+		// goroutines' defers (passed via the postHookSpanFinalizer parameter
+		// directly to handleProviderStreamRequest). For streaming without error,
+		// the finalizer is invoked by completeDeferredSpan / the provider
+		// goroutine's defer.
+		if IsStreamRequestType(req.RequestType) && bifrostError != nil {
+			if lastAttemptFinalizer != nil {
+				lastAttemptFinalizer(req.Context)
+			}
 		}
 
 		if bifrostError != nil {
@@ -5985,36 +6119,36 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 }
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
-func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), key, chatRequest)
+				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, chatRequest)
 			}
 		}
-		return provider.TextCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.TextCompletionRequest)
+		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
 	case schemas.ChatCompletionStreamRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), key, responsesRequest)
+				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, responsesRequest)
 			}
 		}
-		return provider.ChatCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.ChatRequest)
+		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
-		return provider.ResponsesStream(req.Context, postHookRunner, key, req.BifrostRequest.ResponsesRequest)
+		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
 	case schemas.SpeechStreamRequest:
-		return provider.SpeechStream(req.Context, postHookRunner, key, req.BifrostRequest.SpeechRequest)
+		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:
-		return provider.TranscriptionStream(req.Context, postHookRunner, key, req.BifrostRequest.TranscriptionRequest)
+		return provider.TranscriptionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TranscriptionRequest)
 	case schemas.ImageGenerationStreamRequest:
-		return provider.ImageGenerationStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageGenerationRequest)
+		return provider.ImageGenerationStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageGenerationRequest)
 	case schemas.ImageEditStreamRequest:
-		return provider.ImageEditStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageEditRequest)
+		return provider.ImageEditStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageEditRequest)
 	case schemas.PassthroughStreamRequest:
-		return provider.PassthroughStream(req.Context, postHookRunner, key, req.BifrostRequest.PassthroughRequest)
+		return provider.PassthroughStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.PassthroughRequest)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{
@@ -6316,7 +6450,9 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 	}
 	// Increment chunk count for streaming
 	if isStreaming {
+		p.streamingMu.Lock()
 		p.chunkCount++
+		p.streamingMu.Unlock()
 	}
 	// Final logic: if both are set, error takes precedence, unless error is nil
 	if bifrostErr != nil {
@@ -6445,20 +6581,39 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 // which nils out their pluginLogs pointer. The drain reads from the shared store
 // on the root context, so it must happen while the store is still referenced.
 func (p *PluginPipeline) resetPluginPipeline() {
+	// Drop cross-request references while the object sits in the pool.
+	// getPluginPipeline rebinds all four on acquisition, so nil'ing here
+	// only affects GC hygiene — important when plugins are hot-swapped.
+	p.llmPlugins = nil
+	p.mcpPlugins = nil
 	p.executedPreHooks = 0
+	clear(p.preHookErrors)
 	p.preHookErrors = p.preHookErrors[:0]
+	clear(p.postHookErrors)
 	p.postHookErrors = p.postHookErrors[:0]
-	// Reset streaming timing accumulation
+	// Reset streaming timing accumulation under lock — the provider goroutine's
+	// deferred finalizer may still be iterating these fields when the pipeline
+	// is returned to the pool. logger/tracer are nilled here too so the write
+	// is synchronized with the finalizer's read under the same mutex.
+	p.streamingMu.Lock()
+	p.logger = nil
+	p.tracer = nil
 	p.chunkCount = 0
 	if p.postHookTimings != nil {
+		// clear() drops *pluginTimingAccumulator values (freeing them for GC)
+		// while retaining the map's backing hash table for reuse.
 		clear(p.postHookTimings)
 	}
+	// clear() zeros elements in [0, len) — scrub before [:0] so the backing
+	// array doesn't retain live string references once the slice is truncated.
+	clear(p.postHookPluginOrder)
 	p.postHookPluginOrder = p.postHookPluginOrder[:0]
 	// Release cached scoped contexts for streaming
 	for _, scopedCtx := range p.streamScopedCtxs {
 		scopedCtx.ReleasePluginScope()
 	}
 	p.streamScopedCtxs = nil
+	p.streamingMu.Unlock()
 }
 
 // drainAndAttachPluginLogs drains accumulated plugin logs from the BifrostContext
@@ -6477,6 +6632,8 @@ func drainAndAttachPluginLogs(ctx *schemas.BifrostContext) {
 
 // accumulatePluginTiming accumulates timing for a plugin during streaming
 func (p *PluginPipeline) accumulatePluginTiming(pluginName string, duration time.Duration, hasError bool) {
+	p.streamingMu.Lock()
+	defer p.streamingMu.Unlock()
 	if p.postHookTimings == nil {
 		p.postHookTimings = make(map[string]*pluginTimingAccumulator)
 	}
@@ -6498,7 +6655,40 @@ func (p *PluginPipeline) accumulatePluginTiming(pluginName string, duration time
 // This should be called once at the end of streaming to create one span per plugin with average timing.
 // Spans are nested to mirror the pre-hook hierarchy (each post-hook is a child of the previous one).
 func (p *PluginPipeline) FinalizeStreamingPostHookSpans(ctx context.Context) {
-	if p.postHookTimings == nil || len(p.postHookPluginOrder) == 0 {
+	// Snapshot the accumulators under lock so per-chunk writers in the
+	// provider goroutine can't race with the finalizer. Tracer calls below
+	// run unlocked — we don't want to stall chunk writers on span I/O.
+	type snapshotEntry struct {
+		pluginName    string
+		totalDuration time.Duration
+		invocations   int
+		errors        int
+	}
+	p.streamingMu.Lock()
+	// Capture tracer under the same lock that guards resetPluginPipeline's
+	// writes so the read/write pair on p.tracer is synchronized and the
+	// unlocked tracer calls below use a stable local.
+	tracer := p.tracer
+	if tracer == nil || p.postHookTimings == nil || len(p.postHookPluginOrder) == 0 {
+		p.streamingMu.Unlock()
+		return
+	}
+	snapshot := make([]snapshotEntry, 0, len(p.postHookPluginOrder))
+	for _, pluginName := range p.postHookPluginOrder {
+		timing, ok := p.postHookTimings[pluginName]
+		if !ok || timing.invocations == 0 {
+			continue
+		}
+		snapshot = append(snapshot, snapshotEntry{
+			pluginName:    pluginName,
+			totalDuration: timing.totalDuration,
+			invocations:   timing.invocations,
+			errors:        timing.errors,
+		})
+	}
+	p.streamingMu.Unlock()
+
+	if len(snapshot) == 0 {
 		return
 	}
 
@@ -6507,50 +6697,47 @@ func (p *PluginPipeline) FinalizeStreamingPostHookSpans(ctx context.Context) {
 		handle    schemas.SpanHandle
 		hasErrors bool
 	}
-	spans := make([]spanInfo, 0, len(p.postHookPluginOrder))
+	spans := make([]spanInfo, 0, len(snapshot))
 	currentCtx := ctx
 
 	// Start spans in execution order (nested: each is a child of the previous)
-	for _, pluginName := range p.postHookPluginOrder {
-		timing, ok := p.postHookTimings[pluginName]
-		if !ok || timing.invocations == 0 {
-			continue
-		}
-
+	for _, entry := range snapshot {
 		// Create span as child of the previous span (nested hierarchy)
-		newCtx, handle := p.tracer.StartSpan(currentCtx, fmt.Sprintf("plugin.%s.posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		newCtx, handle := tracer.StartSpan(currentCtx, fmt.Sprintf("plugin.%s.posthook", sanitizeSpanName(entry.pluginName)), schemas.SpanKindPlugin)
 		if handle == nil {
 			continue
 		}
 
 		// Calculate average duration in milliseconds
-		avgMs := float64(timing.totalDuration.Milliseconds()) / float64(timing.invocations)
+		avgMs := float64(entry.totalDuration.Milliseconds()) / float64(entry.invocations)
 
 		// Set aggregated attributes
-		p.tracer.SetAttribute(handle, schemas.AttrPluginInvocations, timing.invocations)
-		p.tracer.SetAttribute(handle, schemas.AttrPluginAvgDurationMs, avgMs)
-		p.tracer.SetAttribute(handle, schemas.AttrPluginTotalDurationMs, timing.totalDuration.Milliseconds())
+		tracer.SetAttribute(handle, schemas.AttrPluginInvocations, entry.invocations)
+		tracer.SetAttribute(handle, schemas.AttrPluginAvgDurationMs, avgMs)
+		tracer.SetAttribute(handle, schemas.AttrPluginTotalDurationMs, entry.totalDuration.Milliseconds())
 
-		if timing.errors > 0 {
-			p.tracer.SetAttribute(handle, schemas.AttrPluginErrorCount, timing.errors)
+		if entry.errors > 0 {
+			tracer.SetAttribute(handle, schemas.AttrPluginErrorCount, entry.errors)
 		}
 
-		spans = append(spans, spanInfo{handle: handle, hasErrors: timing.errors > 0})
+		spans = append(spans, spanInfo{handle: handle, hasErrors: entry.errors > 0})
 		currentCtx = newCtx
 	}
 
 	// End spans in reverse order (innermost first, like unwinding a call stack)
 	for i := len(spans) - 1; i >= 0; i-- {
 		if spans[i].hasErrors {
-			p.tracer.EndSpan(spans[i].handle, schemas.SpanStatusError, "some invocations failed")
+			tracer.EndSpan(spans[i].handle, schemas.SpanStatusError, "some invocations failed")
 		} else {
-			p.tracer.EndSpan(spans[i].handle, schemas.SpanStatusOk, "")
+			tracer.EndSpan(spans[i].handle, schemas.SpanStatusOk, "")
 		}
 	}
 }
 
 // GetChunkCount returns the number of chunks processed during streaming
 func (p *PluginPipeline) GetChunkCount() int {
+	p.streamingMu.Lock()
+	defer p.streamingMu.Unlock()
 	return p.chunkCount
 }
 
@@ -6760,6 +6947,9 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 	if ctx != nil {
 		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 		if ok {
+			if err := validateKey(baseProviderType, &key); err != nil {
+				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
+			}
 			// If a direct key is specified, return it as a single-element slice
 			return []schemas.Key{key}, nil
 		}
@@ -6807,6 +6997,9 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 	if ctx != nil {
 		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 		if ok {
+			if err := validateKey(baseProviderType, &key); err != nil {
+				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
+			}
 			// If a direct key is specified, return it as a single-element slice
 			return []schemas.Key{key}, nil
 		}
@@ -6895,6 +7088,9 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	// DirectKey: caller supplied a key directly — no pool, no rotation.
 	if ctx != nil {
 		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+			if err := validateKey(baseProviderType, &key); err != nil {
+				return nil, false, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
+			}
 			return []schemas.Key{key}, false, nil
 		}
 	}

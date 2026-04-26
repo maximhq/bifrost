@@ -1,0 +1,154 @@
+---
+title: "Cluster"
+description: "Configure enterprise cluster mode in config.json using peers or automatic discovery"
+icon: "circle-nodes"
+---
+
+<Warning>
+`cluster_config` is an enterprise capability. OSS builds ignore this section.
+
+</Warning>
+
+`cluster_config` enables multi-node Bifrost enterprise clustering with gossip-based membership and optional automatic node discovery.
+
+You can form a cluster in two ways:
+
+- Define static `peers` (`host:port`)
+- Enable `discovery` with one of: `kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns`
+
+<Tip>
+At least one of `peers` or `discovery.enabled: true` must be configured when `cluster_config.enabled` is true.
+</Tip>
+
+---
+
+## Minimal Runnable Configs
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "mdns",
+      "service_name": "bifrost-cluster"
+    }
+  }
+}
+```
+
+Use this for local testing. At startup, cluster init requires either:
+
+- non-empty `peers`, or
+- `discovery.enabled: true`
+
+If neither is set, cluster initialization fails.
+
+---
+
+## Static Peers
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "region": "us-east-1",
+    "peers": [
+      "10.0.1.10:10101",
+      "10.0.1.11:10101"
+    ],
+    "gossip": {
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
+    }
+  }
+}
+```
+
+---
+
+## Discovery Example (etcd)
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "region": "us-east-1",
+    "gossip": {
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
+    },
+    "discovery": {
+      "enabled": true,
+      "type": "etcd",
+      "service_name": "bifrost-cluster",
+      "etcd_endpoints": [
+        "http://etcd-1:2379",
+        "http://etcd-2:2379"
+      ],
+      "dial_timeout": "10s"
+    }
+  }
+}
+```
+
+---
+
+## Field Reference
+
+### `cluster_config`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Enables cluster mode |
+| `region` | string | Region label for this node (defaults to `"unknown"` at runtime when omitted) |
+| `peers` | array of strings | Static peer addresses in `host:port` format |
+| `gossip` | object | Gossip/memberlist settings |
+| `discovery` | object | Automatic node discovery settings |
+
+### `cluster_config.gossip`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | integer | Gossip port for this node |
+| `config.timeout_seconds` | integer | Liveness timeout |
+| `config.success_threshold` | integer | Success count before healthy |
+| `config.failure_threshold` | integer | Failure count before unhealthy |
+
+### `cluster_config.discovery`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Enables discovery process |
+| `type` | string | `kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns` |
+| `service_name` | string | Service identifier (required for `consul`, `etcd`, `udp`, typically `mdns`; optional for `kubernetes` and `dns`) |
+| `bind_port` | integer | Port appended to discovered hosts if missing |
+| `dial_timeout` | string | Go duration string (`"5s"`, `"30s"`, `"1m"`) |
+| `allowed_address_space` | array of strings | CIDR filters for discovered nodes |
+| `k8s_namespace` | string | Kubernetes namespace for pod discovery |
+| `k8s_label_selector` | string | Kubernetes label selector |
+| `dns_names` | array of strings | DNS names to resolve |
+| `udp_broadcast_port` | integer | UDP broadcast port (required for `udp`) |
+| `consul_address` | string | Consul address |
+| `etcd_endpoints` | array of strings | etcd endpoint URLs |
+| `mdns_service` | string | Optional mDNS service type override (e.g. `"_bifrost-cluster._tcp"`) |
+
+<Note>
+For `discovery.type: "mdns"`, `service_name` is sufficient for most setups. When `mdns_service` is omitted, Bifrost derives the mDNS service type as `"_<service_name>._tcp"`. If you set `mdns_service`, it **overrides** the derived value and is used for both mDNS registration and browsing.
+</Note>
+
+<Warning>
+For `discovery.type: "udp"`, configure both `udp_broadcast_port` and `allowed_address_space`.
+</Warning>
+
+---
+
+For discovery-method deep dives and deployment patterns, see [Enterprise Clustering](/enterprise/clustering).

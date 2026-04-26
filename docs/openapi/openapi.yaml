@@ -78,6 +78,8 @@ tags:
     description: Text completion generation
   - name: Responses
     description: OpenAI Responses API compatible endpoints
+  - name: OCR
+    description: Optical character recognition for documents and images
   - name: Rerank
     description: Document reranking by relevance to a query
   - name: Embeddings
@@ -147,6 +149,8 @@ paths:
     $ref: './paths/inference/text-completions.yaml#/text-completions'
   /v1/responses:
     $ref: './paths/inference/responses.yaml#/responses'
+  /v1/ocr:
+    $ref: './paths/inference/ocr.yaml#/ocr'
   /v1/rerank:
     $ref: './paths/inference/rerank.yaml#/rerank'
   /v1/embeddings:
@@ -233,6 +237,14 @@ paths:
     $ref: './paths/inference/async.yaml#/async-image-edit-job'
   /v1/async/images/variations/{job_id}:
     $ref: './paths/inference/async.yaml#/async-image-variation-job'
+  /v1/async/rerank:
+    $ref: './paths/inference/async.yaml#/async-rerank'
+  /v1/async/rerank/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-rerank-job'
+  /v1/async/ocr:
+    $ref: './paths/inference/ocr.yaml#/async-ocr'
+  /v1/async/ocr/{job_id}:
+    $ref: './paths/inference/ocr.yaml#/async-ocr-job'
 
   # ==================== OpenAI Integration ====================
   # Chat Completions
@@ -957,6 +969,22 @@ components:
       $ref: './schemas/inference/files.yaml#/FileUploadResponse'
     FileListResponse:
       $ref: './schemas/inference/files.yaml#/FileListResponse'
+
+    # ==================== OCR ====================
+    OCRRequest:
+      $ref: './schemas/inference/ocr.yaml#/OCRRequest'
+    OCRDocument:
+      $ref: './schemas/inference/ocr.yaml#/OCRDocument'
+    OCRResponse:
+      $ref: './schemas/inference/ocr.yaml#/OCRResponse'
+    OCRPage:
+      $ref: './schemas/inference/ocr.yaml#/OCRPage'
+    OCRPageImage:
+      $ref: './schemas/inference/ocr.yaml#/OCRPageImage'
+    OCRPageDimensions:
+      $ref: './schemas/inference/ocr.yaml#/OCRPageDimensions'
+    OCRUsageInfo:
+      $ref: './schemas/inference/ocr.yaml#/OCRUsageInfo'
 
     # ==================== OpenAI Integration ====================
     OpenAIChatRequest:

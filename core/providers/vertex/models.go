@@ -24,6 +24,7 @@ func (*VertexRankRequest) GetExtraParams() map[string]interface{} {
 
 const (
 	vertexDefaultRankingConfigID   = "default_ranking_config"
+	vertexDefaultRerankModel       = "semantic-ranker-default@latest"
 	vertexMaxRerankRecordsPerQuery = 200
 	vertexSyntheticRecordPrefix    = "idx:"
 )

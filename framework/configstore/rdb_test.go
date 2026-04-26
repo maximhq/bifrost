@@ -53,10 +53,13 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	err = db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{})
 	require.NoError(t, err, "Failed to setup join table")
 
-	return &RDBConfigStore{
-		db:     db,
-		logger: nil,
+	s := &RDBConfigStore{logger: nil}
+	s.db.Store(db)
+	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, s.DB())
 	}
+	s.refreshPoolFn = func(ctx context.Context) error { return nil }
+	return s
 }
 
 // =============================================================================
@@ -718,7 +721,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 
 	// Load with keys
 	var configWithKeys tables.TableVirtualKeyProviderConfig
-	err = store.db.Preload("Keys").First(&configWithKeys, "id = ?", configs[0].ID).Error
+	err = store.DB().Preload("Keys").First(&configWithKeys, "id = ?", configs[0].ID).Error
 	require.NoError(t, err)
 	assert.Len(t, configWithKeys.Keys, 1)
 }
@@ -753,6 +756,96 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 
 	var unresolvedErr *ErrUnresolvedKeys
 	assert.ErrorAs(t, err, &unresolvedErr, "Should be ErrUnresolvedKeys")
+}
+
+func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+				{ID: "key-b", Name: "openai-key-b", Value: *schemas.NewEnvVar("sk-b"), Weight: 1.0},
+			},
+		},
+	}
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err)
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-update-provider-cleanup",
+		Name:     "VK Update Provider Cleanup",
+		Value:    "vk-update-provider-cleanup-value",
+		IsActive: true,
+	}
+	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	weight := 1.0
+	pc := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-update-provider-cleanup",
+		Provider:     "openai",
+		Weight:       &weight,
+		Keys: []tables.TableKey{
+			{Name: "openai-key-b"},
+		},
+	}
+	err = store.CreateVirtualKeyProviderConfig(ctx, pc)
+	require.NoError(t, err)
+
+	updatedProviderConfig := ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+		},
+	}
+	err = store.UpdateProvider(ctx, "openai", updatedProviderConfig)
+	require.NoError(t, err)
+
+	result, err := store.GetVirtualKey(ctx, "vk-update-provider-cleanup")
+	require.NoError(t, err)
+	require.Len(t, result.ProviderConfigs, 1)
+	assert.Equal(t, "openai", result.ProviderConfigs[0].Provider)
+	assert.False(t, result.ProviderConfigs[0].AllowAllKeys)
+	assert.Empty(t, result.ProviderConfigs[0].Keys)
+}
+
+func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{{ID: "key-delete", Name: "openai-key-delete", Value: *schemas.NewEnvVar("sk-delete"), Weight: 1.0}},
+		},
+	}
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err)
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-delete-provider-cleanup",
+		Name:     "VK Delete Provider Cleanup",
+		Value:    "vk-delete-provider-cleanup-value",
+		IsActive: true,
+	}
+	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	weight := 1.0
+	pc := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-delete-provider-cleanup",
+		Provider:     "openai",
+		Weight:       &weight,
+	}
+	err = store.CreateVirtualKeyProviderConfig(ctx, pc)
+	require.NoError(t, err)
+
+	err = store.DeleteProvider(ctx, "openai")
+	require.NoError(t, err)
+
+	result, err := store.GetVirtualKey(ctx, "vk-delete-provider-cleanup")
+	require.NoError(t, err)
+	assert.Empty(t, result.ProviderConfigs)
 }
 
 // =============================================================================
@@ -1203,7 +1296,7 @@ func createTestPromptTree(t *testing.T, store *RDBConfigStore, ctx context.Conte
 func countRows(t *testing.T, store *RDBConfigStore, model interface{}) int64 {
 	t.Helper()
 	var count int64
-	require.NoError(t, store.db.Model(model).Count(&count).Error)
+	require.NoError(t, store.DB().Model(model).Count(&count).Error)
 	return count
 }
 
@@ -1389,7 +1482,7 @@ func TestDeletePromptSession(t *testing.T) {
 
 		// Session messages for that session should be gone
 		var msgCount int64
-		require.NoError(t, store.db.Model(&tables.TablePromptSessionMessage{}).Where("session_id = ?", sessionID).Count(&msgCount).Error)
+		require.NoError(t, store.DB().Model(&tables.TablePromptSessionMessage{}).Where("session_id = ?", sessionID).Count(&msgCount).Error)
 		assert.Equal(t, int64(0), msgCount)
 	})
 

@@ -890,6 +890,9 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		isEmbedding = true
 	}
 
+	headers := extractHeadersFromRequest(ctx)
+	schemas.ExtractAndSetUserAgentFromHeaders(headers, bifrostCtx)
+
 	// Set the model and flags in the request
 	switch r := req.(type) {
 	case *gemini.GeminiGenerationRequest:

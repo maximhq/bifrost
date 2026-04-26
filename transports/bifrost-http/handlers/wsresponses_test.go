@@ -1,12 +1,17 @@
 package handlers
 
 import (
+	"errors"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
 )
 
 type testWSHandlerStore struct {
@@ -43,6 +48,56 @@ func (s testWSHandlerStore) GetKVStore() *kvstore.Store {
 
 func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return nil
+}
+
+type timeoutNetError struct{}
+
+func (timeoutNetError) Error() string   { return "i/o timeout" }
+func (timeoutNetError) Timeout() bool   { return true }
+func (timeoutNetError) Temporary() bool { return false }
+
+func TestResolveWSStreamIdleTimeoutUsesProviderOverride(t *testing.T) {
+	cfg := &lib.Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {
+				NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 7},
+			},
+		},
+	}
+
+	timeout := resolveWSStreamIdleTimeout(cfg, schemas.OpenAI)
+	assert.Equal(t, 7*time.Second, timeout)
+}
+
+func TestResolveWSStreamIdleTimeoutFallsBackToDefault(t *testing.T) {
+	timeout := resolveWSStreamIdleTimeout(&lib.Config{}, schemas.OpenAI)
+	assert.Equal(t, time.Duration(schemas.DefaultStreamIdleTimeoutInSeconds)*time.Second, timeout)
+}
+
+func TestIsWSReadTimeout(t *testing.T) {
+	assert.True(t, isWSReadTimeout(timeoutNetError{}))
+	assert.False(t, isWSReadTimeout(net.UnknownNetworkError("unknown")))
+	assert.False(t, isWSReadTimeout(errors.New("boom")))
+	assert.False(t, isWSReadTimeout(nil))
+}
+
+func TestNewBifrostError(t *testing.T) {
+	bifrostErr := newBifrostError(504, "upstream_timeout", "upstream websocket stream timed out")
+	if bifrostErr == nil {
+		t.Fatal("expected bifrost error, got nil")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 504 {
+		t.Fatalf("status code = %#v, want 504", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil {
+		t.Fatal("expected error field, got nil")
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != "upstream_timeout" {
+		t.Fatalf("error type = %#v, want upstream_timeout", bifrostErr.Error.Type)
+	}
+	if bifrostErr.Error.Message != "upstream websocket stream timed out" {
+		t.Fatalf("error message = %q, want upstream websocket stream timed out", bifrostErr.Error.Message)
+	}
 }
 
 func TestCreateBifrostContextFromAuth_BaggageSessionIDSetsGrouping(t *testing.T) {

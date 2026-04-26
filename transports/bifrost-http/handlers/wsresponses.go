@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -174,7 +177,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
 	if provider == "" || modelName == "" {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
 		return
@@ -290,6 +293,16 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		return true
 	}
 
+	finalizeTerminalPostHooks := func(bifrostErr *schemas.BifrostError) {
+		if bifrostErr == nil {
+			return
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		if _, postErr := hooks.PostHookRunner(ctx, nil, bifrostErr); postErr != nil {
+			logger.Warn("failed to finalize WS post-hooks for %s: %v", req.Provider, postErr)
+		}
+	}
+
 	// Forward the raw event to upstream
 	if err := upstream.WriteMessage(ws.TextMessage, rawEvent); err != nil {
 		logger.Warn("upstream WS write failed for %s: %v, falling back to HTTP bridge", req.Provider, err)
@@ -301,20 +314,45 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	// Retrieve tracer and traceID for chunk accumulation
 	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	streamIdleTimeout := resolveWSStreamIdleTimeout(h.config, req.Provider)
 
 	// Read response events from upstream and relay to client, running post-hooks per chunk
 	forwardedAny := false
 	for {
+		if err := upstream.SetReadDeadline(time.Now().Add(streamIdleTimeout)); err != nil {
+			// Fail closed: if we can't arm the idle timeout, don't risk hanging forever.
+			logger.Warn("failed to set upstream WS read deadline for %s: %v, treating as terminal", req.Provider, err)
+			h.pool.Discard(upstream)
+			session.SetUpstream(nil)
+			finalizeTerminalPostHooks(newBifrostError(502, "upstream_connection_error", "failed to arm upstream read deadline"))
+			writeWSError(session, 502, "upstream_connection_error", "upstream websocket connection error")
+			return true
+		}
+
 		msgType, data, readErr := upstream.ReadMessage()
 		if readErr != nil {
+			if isWSReadTimeout(readErr) {
+				logger.Warn("upstream WS idle timeout for %s after %s", req.Provider, streamIdleTimeout)
+				h.pool.Discard(upstream)
+				session.SetUpstream(nil)
+				finalizeTerminalPostHooks(newBifrostError(504, "upstream_timeout", "upstream websocket stream timed out"))
+				writeWSError(session, 504, "upstream_timeout", "upstream websocket stream timed out")
+				return true
+			}
+
 			logger.Warn("upstream WS read failed for %s: %v, falling back to HTTP bridge", req.Provider, readErr)
 			h.pool.Discard(upstream)
 			session.SetUpstream(nil)
 			if !forwardedAny {
 				return false
 			}
+			finalizeTerminalPostHooks(newBifrostError(502, "upstream_connection_error", "upstream websocket stream interrupted"))
 			writeWSError(session, 502, "upstream_connection_error", "upstream websocket stream interrupted")
 			return true
+		}
+
+		if err := upstream.SetReadDeadline(time.Time{}); err != nil {
+			logger.Warn("failed to clear upstream WS read deadline for %s: %v", req.Provider, err)
 		}
 
 		streamResp := parseUpstreamWSEvent(data, req.Provider, req.Model)
@@ -343,6 +381,12 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		if writeErr := session.WriteMessage(msgType, data); writeErr != nil {
 			h.pool.Discard(upstream)
 			session.SetUpstream(nil)
+			// Only finalize post-hooks if they haven't already run for this chunk.
+			// When isTerminal && streamResp != nil, PostHookRunner already ran above (line 366),
+			// so calling finalizeTerminalPostHooks again would double-fire the end-of-stream signal.
+			if streamResp == nil || !isTerminal {
+				finalizeTerminalPostHooks(newBifrostError(499, "client_connection_error", "client websocket connection interrupted"))
+			}
 			return true
 		}
 		forwardedAny = true
@@ -351,6 +395,38 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			h.trackResponseID(session, data)
 			return true
 		}
+	}
+}
+
+func resolveWSStreamIdleTimeout(config *lib.Config, provider schemas.ModelProvider) time.Duration {
+	idleTimeoutSeconds := schemas.DefaultStreamIdleTimeoutInSeconds
+	if config != nil {
+		if providerCfg, err := config.GetProviderConfigRaw(provider); err == nil && providerCfg != nil &&
+			providerCfg.NetworkConfig != nil && providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
+			idleTimeoutSeconds = providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds
+		}
+	}
+	if idleTimeoutSeconds <= 0 {
+		idleTimeoutSeconds = schemas.DefaultStreamIdleTimeoutInSeconds
+	}
+	return time.Duration(idleTimeoutSeconds) * time.Second
+}
+
+func isWSReadTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func newBifrostError(statusCode int, errType, message string) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(statusCode),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr(errType),
+			Message: message,
+		},
 	}
 }
 
@@ -419,7 +495,7 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
 func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
 	if provider == "" || modelName == "" {
 		return nil, errModelFormat
 	}

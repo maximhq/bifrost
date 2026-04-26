@@ -42,21 +42,10 @@ function ContentBlockView({ block }: { block: ContentBlock; index: number }) {
 
 	// Handle image content
 	if (block.image_url) {
-		const jsonContent = JSON.stringify(block.image_url, null, 2);
-		return (
-			<CollapsibleBox title={blockType} onCopy={() => jsonContent} collapsedHeight={100}>
-				<CodeEditor
-					className="z-0 w-full"
-					shouldAdjustInitialHeight={true}
-					maxHeight={150}
-					wrap={true}
-					code={jsonContent}
-					lang="json"
-					readonly={true}
-					options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-				/>
-			</CollapsibleBox>
-		);
+		const src = block.image_url.url;
+		if (src) {
+			return <img src={src} alt="Attached image" className="max-w-full rounded border" />;
+		}
 	}
 
 	// Handle audio content
@@ -185,7 +174,7 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 					{message.tool_calls.map((toolCall, index) => {
 						const jsonContent = JSON.stringify(toolCall, null, 2);
 						return (
-							<CollapsibleBox key={index} title={`Tool Call #${index + 1}`} onCopy={() => jsonContent} collapsedHeight={100}>
+							<CollapsibleBox key={index} title={`Tool Call: ${toolCall.function?.name || `#${index + 1}`}`} onCopy={() => jsonContent} collapsedHeight={100}>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}

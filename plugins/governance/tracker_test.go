@@ -45,7 +45,7 @@ func TestUsageTracker_UpdateUsage_FailedRequest(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify budget was NOT updated - retrieve from store
-	budgets := store.GetGovernanceData().Budgets
+	budgets := store.GetGovernanceData(context.Background()).Budgets
 	updatedBudget, exists := budgets["budget1"]
 	require.True(t, exists)
 	require.NotNil(t, updatedBudget)
@@ -116,7 +116,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Retrieve the updated rate limit from the main RateLimits map
-	governanceData := store.GetGovernanceData()
+	governanceData := store.GetGovernanceData(context.Background())
 	updatedRateLimit, exists := governanceData.RateLimits["rl1"]
 	require.True(t, exists, "Rate limit should exist")
 	require.NotNil(t, updatedRateLimit)
@@ -142,7 +142,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Retrieve the updated rate limit again
-	governanceData = store.GetGovernanceData()
+	governanceData = store.GetGovernanceData(context.Background())
 	updatedRateLimit, exists = governanceData.RateLimits["rl1"]
 	require.True(t, exists, "Rate limit should exist")
 	require.NotNil(t, updatedRateLimit)

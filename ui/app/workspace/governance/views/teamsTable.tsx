@@ -173,13 +173,11 @@ export default function TeamsTable({
 										const vks = getVirtualKeysForTeam(team.id);
 										const customerName = getCustomerName(team.customer_id);
 
-										// Budget calculations
-										const isBudgetExhausted =
-											team.budget?.max_limit && team.budget.max_limit > 0 && team.budget.current_usage >= team.budget.max_limit;
-										const budgetPercentage =
-											team.budget?.max_limit && team.budget.max_limit > 0
-												? Math.min((team.budget.current_usage / team.budget.max_limit) * 100, 100)
-												: 0;
+										// Budget calculations — any of the team's budgets exhausted
+										const teamBudgets = team.budgets ?? [];
+										const isBudgetExhausted = teamBudgets.some(
+											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
+										);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -224,36 +222,47 @@ export default function TeamsTable({
 													</div>
 												</TableCell>
 												<TableCell className="min-w-[180px]">
-													{team.budget ? (
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<div className="space-y-2">
-																	<div className="flex items-center justify-between gap-4">
-																		<span className="font-medium">{formatCurrency(team.budget.max_limit)}</span>
-																		<span className="text-muted-foreground text-xs">{formatResetDuration(team.budget.reset_duration)}</span>
-																	</div>
-																	<Progress
-																		value={budgetPercentage}
-																		className={cn(
-																			"bg-muted/70 dark:bg-muted/30 h-1.5",
-																			isBudgetExhausted
-																				? "[&>div]:bg-red-500/70"
-																				: budgetPercentage > 80
-																					? "[&>div]:bg-amber-500/70"
-																					: "[&>div]:bg-emerald-500/70",
-																		)}
-																	/>
-																</div>
-															</TooltipTrigger>
-															<TooltipContent>
-																<p className="font-medium">
-																	{formatCurrency(team.budget.current_usage)} / {formatCurrency(team.budget.max_limit)}
-																</p>
-																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(team.budget.reset_duration)}
-																</p>
-															</TooltipContent>
-														</Tooltip>
+													{teamBudgets.length > 0 ? (
+														<div className="space-y-2.5">
+															{teamBudgets.map((b) => {
+																const budgetPercentage =
+																	b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
+																const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
+																return (
+																	<Tooltip key={b.id}>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1.5">
+																				<div className="flex items-center justify-between gap-4">
+																					<span className="font-medium">{formatCurrency(b.max_limit)}</span>
+																					<span className="text-muted-foreground text-xs">
+																						{formatResetDuration(b.reset_duration)}
+																					</span>
+																				</div>
+																				<Progress
+																					value={budgetPercentage}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1.5",
+																						isExhausted
+																							? "[&>div]:bg-red-500/70"
+																							: budgetPercentage > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
+																			</div>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				Resets {formatResetDuration(b.reset_duration)}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																);
+															})}
+														</div>
 													) : (
 														<span className="text-muted-foreground text-sm">-</span>
 													)}

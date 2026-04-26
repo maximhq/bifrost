@@ -81,8 +81,8 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 			Attributes: p.getResourceAttributes(),
 		},
 		ScopeSpans: []*ScopeSpan{{
-			Scope:  p.getInstrumentationScope(),
-			Spans:  otelSpans,
+			Scope: p.getInstrumentationScope(),
+			Spans: otelSpans,
 		}},
 	}
 }
@@ -210,6 +210,20 @@ func anyToKeyValue(key string, value any) *KeyValue {
 			vals[i] = &AnyValue{Value: &DoubleValue{DoubleValue: n}}
 		}
 		return kvAny(key, arrValue(vals...))
+	case []any:
+		if len(v) == 0 {
+			return nil
+		}
+		vals := make([]*AnyValue, 0, len(v))
+		for _, item := range v {
+			if kv := anyToKeyValue("_", item); kv != nil {
+				vals = append(vals, kv.Value)
+			}
+		}
+		if len(vals) == 0 {
+			return nil
+		}
+		return kvAny(key, arrValue(vals...))
 	case map[string]any:
 		if len(v) == 0 {
 			return nil
@@ -223,8 +237,15 @@ func anyToKeyValue(key string, value any) *KeyValue {
 		}
 		return kvAny(key, listValue(kvList...))
 	default:
-		// For any other type, convert to string
-		return kvStr(key, fmt.Sprintf("%v", v))
+		data, err := schemas.MarshalSorted(v)
+		if err != nil {
+			return kvStr(key, fmt.Sprintf("%v", v))
+		}
+		var generic any
+		if err := schemas.Unmarshal(data, &generic); err != nil {
+			return kvStr(key, string(data))
+		}
+		return anyToKeyValue(key, generic)
 	}
 }
 
