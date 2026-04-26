@@ -203,58 +203,11 @@ func hasFastModeBetaHeader(headers map[string][]string) bool {
 	return false
 }
 
-// filterVertexUnsupportedBetaHeaders removes beta headers that Vertex AI doesn't support.
-// Vertex AI doesn't support: structured-outputs, advanced-tool-use, prompt-caching-scope, mcp-client.
-func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string][]string {
-	var betaHeaderKey string
-	var betaHeaders []string
-	var found bool
-	for k, v := range headers {
-		if strings.ToLower(k) == anthropic.AnthropicBetaHeader {
-			betaHeaderKey = k
-			betaHeaders = v
-			found = true
-			break
-		}
-	}
-
-	if found {
-		var filteredBetas []string
-		for _, headerValue := range betaHeaders {
-			// Split comma-separated beta headers
-			for beta := range strings.SplitSeq(headerValue, ",") {
-				beta = strings.TrimSpace(beta)
-				if beta == "" {
-					continue
-				}
-				// Skip unsupported headers for Vertex.
-				// Use prefix matching so that future date bumps
-				// (e.g. structured-outputs-2025-12-15) are still caught.
-				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicSkillsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicRedactThinkingBetaHeaderPrefix) {
-					continue
-				}
-				filteredBetas = append(filteredBetas, beta)
-			}
-		}
-		if len(filteredBetas) > 0 {
-			headers[betaHeaderKey] = []string{strings.Join(filteredBetas, ",")}
-		} else {
-			delete(headers, betaHeaderKey)
-		}
-	}
-
-	return headers
-}
-
 // extractPassthroughHeaders filters headers to only include those in the safe whitelist.
-// Header matching is case-insensitive.
-func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.ModelProvider) map[string][]string {
+// Header matching is case-insensitive. Provider-aware beta-header filtering happens
+// downstream at each provider's wire layer (e.g. anthropic.go, vertex.go), where
+// networkConfig.BetaHeaderOverrides is in scope.
+func extractPassthroughHeaders(allHeaders map[string][]string) map[string][]string {
 	filtered := make(map[string][]string)
 	for k, v := range allHeaders {
 		if passthroughSafeHeaders[strings.ToLower(k)] {
@@ -371,7 +324,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 		} else {
 			// API key flow: pass only whitelisted safe headers (like anthropic-beta for feature detection)
-			passthroughHeaders := extractPassthroughHeaders(headers, provider)
+			passthroughHeaders := extractPassthroughHeaders(headers)
 			if len(passthroughHeaders) > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}

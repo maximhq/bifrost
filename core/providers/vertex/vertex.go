@@ -404,7 +404,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
@@ -474,6 +474,13 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 		}
 		jsonBody = remappedBody
+
+		// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
+		var stripErr error
+		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, request.Model)
+		if stripErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
+		}
 	}
 
 	// Auth query is used for fine-tuned models to pass the API key in the query string
@@ -726,7 +733,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
@@ -755,6 +762,13 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex)
 			if remapErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
+			}
+
+			// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
+			var stripErr error
+			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, request.Model)
+			if stripErr != nil {
+				return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
 			}
 		}
 

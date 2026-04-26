@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -453,36 +454,44 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
-	// context_management.edits[] — gate per edit.type.
-	if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
-		edits := editsResult.Array()
-		// Collect indices to drop (iterate forwards, delete in reverse).
-		dropIndices := []int{}
-		for i, edit := range edits {
-			editType := edit.Get("type").String()
-			keep := true
-			switch editType {
-			case string(ContextManagementEditTypeCompact):
-				keep = features.Compaction
-			case string(ContextManagementEditTypeClearToolUses), string(ContextManagementEditTypeClearThinking):
-				keep = features.ContextEditing
-			}
-			if !keep {
-				dropIndices = append(dropIndices, i)
-			}
-		}
-		if len(dropIndices) == len(edits) && len(edits) > 0 {
-			// All edits unsupported — drop the whole context_management.
+	// context_management — if the provider doesn't accept the field at all (e.g. Vertex),
+	// drop it entirely. Otherwise gate per edit.type.
+	if providerUtils.JSONFieldExists(jsonBody, "context_management") {
+		if !features.ContextManagementField {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw context_management: %w", err)
 			}
-		} else {
-			for i := len(dropIndices) - 1; i >= 0; i-- {
-				path := fmt.Sprintf("context_management.edits.%d", dropIndices[i])
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+		} else if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
+			edits := editsResult.Array()
+			// Collect indices to drop (iterate forwards, delete in reverse).
+			dropIndices := []int{}
+			for i, edit := range edits {
+				editType := edit.Get("type").String()
+				keep := true
+				switch editType {
+				case string(ContextManagementEditTypeCompact):
+					keep = features.Compaction
+				case string(ContextManagementEditTypeClearToolUses), string(ContextManagementEditTypeClearThinking):
+					keep = features.ContextEditing
+				}
+				if !keep {
+					dropIndices = append(dropIndices, i)
+				}
+			}
+			if len(dropIndices) == len(edits) {
+				// No edits to keep (either empty input or all unsupported) — drop the whole context_management.
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 				if err != nil {
-					return nil, fmt.Errorf("strip raw context_management.edits[%d]: %w", dropIndices[i], err)
+					return nil, fmt.Errorf("strip raw context_management: %w", err)
+				}
+			} else {
+				for i := len(dropIndices) - 1; i >= 0; i-- {
+					path := fmt.Sprintf("context_management.edits.%d", dropIndices[i])
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+					if err != nil {
+						return nil, fmt.Errorf("strip raw context_management.edits[%d]: %w", dropIndices[i], err)
+					}
 				}
 			}
 		}
@@ -1138,11 +1147,11 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
-func MergeBetaHeaders(providerExtraHeaders map[string]string, ctx context.Context) []string {
+func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]string) []string {
 	seen := make(map[string]bool)
 	var all []string
 	add := func(v string) {
-		for _, part := range strings.Split(v, ",") {
+		for part := range strings.SplitSeq(v, ",") {
 			if t := strings.TrimSpace(part); t != "" && !seen[t] {
 				seen[t] = true
 				all = append(all, t)
@@ -1185,8 +1194,7 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 	filtered := make([]string, 0, len(headers))
 	for _, h := range headers {
-		tokens := strings.Split(h, ",")
-		for _, token := range tokens {
+		for token := range strings.SplitSeq(h, ",") {
 			token = strings.TrimSpace(token)
 
 			if token == "" {
@@ -1252,10 +1260,8 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 // appendUniqueHeader adds a header to the slice if not already present
 func appendUniqueHeader(slice []string, item string) []string {
-	for _, s := range slice {
-		if s == item {
-			return slice
-		}
+	if slices.Contains(slice, item) {
+		return slice
 	}
 	return append(slice, item)
 }
