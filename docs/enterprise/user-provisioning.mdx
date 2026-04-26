@@ -85,7 +85,7 @@ All providers share the same outer config shape in `config.json`:
 {
   "scim_config": {
     "enabled": true,
-    "provider": "okta | entra | zitadel | keycloak | google",
+    "provider": "okta | entra | zitadel | keycloak | google | sailpoint",
     "config": {
       "...": "provider-specific fields — see each IdP guide"
     }
@@ -109,6 +109,108 @@ Provider-specific fields (domain, tenant ID, server URL, service-account credent
 <Note>
   Changing `scim_config` at runtime through the UI is applied after saving. For file-based configuration, restart the Bifrost server to pick up changes.
 </Note>
+
+---
+
+## Environment variable support
+
+Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a literal value — Bifrost resolves the variable from the process environment at startup. Attribute mapping arrays are always plain JSON (they cannot reference env vars).
+
+### Okta
+
+| Field | JSON key | Required | env.\* supported | Notes |
+| --- | --- | --- | --- | --- |
+| Issuer URL | `issuerUrl` | Yes | Yes | Org server: `https://domain.okta.com`; Custom: `…/oauth2/default` |
+| Client ID | `clientId` | Yes | Yes | Application Client ID |
+| Client Secret | `clientSecret` | No | Yes | Required for token revocation |
+| API Token | `apiToken` | No | Yes | Required for bulk user / team sync |
+| Audience | `audience` | No | Yes | Only applies to Custom Authorization Server |
+| Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
+| Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
+
+### Microsoft Entra ID
+
+| Field | JSON key | Required | env.\* supported | Notes |
+| --- | --- | --- | --- | --- |
+| Tenant ID | `tenantId` | Yes | Yes | Azure tenant ID or `"common"` for multi-tenant |
+| Client ID | `clientId` | Yes | Yes | Application (client) ID |
+| Client Secret | `clientSecret` | Yes | Yes | Client secret for OAuth authentication |
+| Cloud | `cloud` | No | Yes | `"commercial"` (default) \| `"gcc-high"` \| `"dod"` |
+| Audience | `audience` | No | Yes | JWT audience override (default: `clientId`) |
+| App ID URI | `appIdUri` | No | Yes | App ID URI for v1.0 tokens (e.g. `api://{clientId}`) |
+| Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
+| Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
+
+### Keycloak
+
+| Field | JSON key | Required | env.\* supported | Notes |
+| --- | --- | --- | --- | --- |
+| Server URL | `serverUrl` | Yes | Yes | Base URL, e.g. `https://keycloak.company.com` (no `/realms/…`) |
+| Realm | `realm` | Yes | Yes | e.g. `"master"` or `"my-app"` |
+| Client ID | `clientId` | Yes | Yes | Application client ID |
+| Client Secret | `clientSecret` | No | Yes | For confidential clients |
+| Audience | `audience` | No | Yes | JWT audience for token validation |
+| Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
+| Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
+
+### Zitadel
+
+| Field | JSON key | Required | env.\* supported | Notes |
+| --- | --- | --- | --- | --- |
+| Domain | `domain` | Yes | Yes | e.g. `"my-instance.zitadel.cloud"` or `"auth.company.com"` |
+| Client ID | `clientId` | Yes | Yes | Application client ID |
+| Client Secret | `clientSecret` | No | Yes | For confidential clients |
+| Project ID | `projectId` | No | Yes | For project-scoped role claims |
+| Audience | `audience` | No | Yes | Access-token audience override |
+| Service account client ID | `serviceAccountClientId` | No | Yes | Service account for provisioning API access |
+| Service account client secret | `serviceAccountClientSecret` | No | Yes | Service account secret |
+| Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs |
+| Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
+
+### Google Workspace
+
+| Field | JSON key | Required | env.\* supported | Notes |
+| --- | --- | --- | --- | --- |
+| Domain | `domain` | Yes | Yes | Google Workspace domain (e.g. `"company.com"`) |
+| Client ID | `clientId` | Yes | Yes | Google OAuth2 client ID |
+| Client Secret | `clientSecret` | No | Yes | For token revocation |
+| Credential mode | `credentialMode` | No | Yes | `"inherit"` (ADC) \| `"env"` \| `"file"` |
+| Service account JSON | `serviceAccountJson` | No | Yes | Raw service account JSON string |
+| Service account env var | `serviceAccountEnvVar` | No | Yes | Env var containing the service account JSON |
+| Service account file | `serviceAccountFile` | No | Yes | Path to the service account JSON key file |
+| Admin email | `adminEmail` | Conditional | Yes | Required for Directory API / domain-wide delegation |
+| Impersonate service account | `impersonateServiceAccount` | No | Yes | GCP SA email to impersonate when using ADC + Workload Identity |
+| Audience | `audience` | No | Yes | Optional JWT audience override |
+| Team IDs field | `teamIdsField` | No | Yes | Claim field for group IDs (default: `"groups"`) |
+| Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
+
+### SailPoint
+
+SailPoint fields are **plain values only** — `env.*` references are not supported for any SailPoint config field.
+
+| Field | JSON key | Required | Notes |
+| --- | --- | --- | --- |
+| Product | `product` | Yes | `"isc"` (SailPoint Identity Security Cloud) \| `"iiq"` (IdentityIQ) |
+| Tenant | `tenant` | Conditional | ISC only: tenant name (e.g. `"acme"`) |
+| Client ID | `clientId` | Conditional | Required for ISC; optional for IIQ OAuth |
+| Client Secret | `clientSecret` | Conditional | Required for ISC; optional for IIQ OAuth |
+| Base URL | `baseUrl` | Conditional | IIQ only: SCIM base URL |
+| Username | `username` | Conditional | IIQ basic auth username |
+| Password | `password` | Conditional | IIQ basic auth password |
+| Team IDs field | `teamIdsField` | No | JWT claim for group IDs |
+| Role mappings | `attributeRoleMappings` | No | Array of `{ attribute, value, role }` objects |
+| Team mappings | `attributeTeamMappings` | No | Array of `{ attribute, value, team }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | Array of `{ attribute, value, businessUnit }` objects |
 
 ---
 

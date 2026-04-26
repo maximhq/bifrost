@@ -346,6 +346,10 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
 	hasRoutingRules := p.store.HasRoutingRules(ctx)
 
+	if strings.Contains(req.Path, "passthrough") {
+		return nil, nil
+	}
+
 	// If no virtual key and no routing rules configured, skip all processing
 	if virtualKeyValue == nil && !hasRoutingRules {
 		return nil, nil
