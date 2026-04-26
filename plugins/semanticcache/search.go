@@ -377,19 +377,19 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 			}
 
 			// Unmarshal the chunk as BifrostResponse
-		var cachedResponse schemas.BifrostResponse
-		if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
-			plugin.logger.Warn("%s Failed to unmarshal stream chunk %d, skipping: %v", PluginLoggerPrefix, i, err)
-			continue
-		}
+			var cachedResponse schemas.BifrostResponse
+			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
+				plugin.logger.Warn("%s Failed to unmarshal stream chunk %d, skipping: %v", PluginLoggerPrefix, i, err)
+				continue
+			}
 
-		// Ensure RequestType is set on every chunk so downstream consumers
-		// (logging, telemetry, etc.) correctly identify this as a streaming response.
-		if ef := cachedResponse.GetExtraFields(); ef != nil && ef.RequestType == "" {
-			ef.RequestType = req.RequestType
-		}
+			// Ensure RequestType is set on every chunk so downstream consumers
+			// (logging, telemetry, etc.) correctly identify this as a streaming response.
+			if ef := cachedResponse.GetExtraFields(); ef != nil && ef.RequestType == "" {
+				ef.RequestType = req.RequestType
+			}
 
-		// Add cache debug to only the last chunk
+			// Add cache debug to only the last chunk
 			if i == len(streamArray)-1 {
 				extraFields := cachedResponse.GetExtraFields()
 				cacheDebug := schemas.BifrostCacheDebug{
