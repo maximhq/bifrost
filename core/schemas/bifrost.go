@@ -315,9 +315,10 @@ type KeyAttemptRecord struct {
 // RoutingEngineLogEntry represents a log entry from a routing engine
 // format: [timestamp] [engine] - message
 type RoutingEngineLogEntry struct {
-	Engine    string // e.g., "governance", "routing-rule", "openrouter"
-	Message   string // Human-readable decision/action message
-	Timestamp int64  // Unix milliseconds
+	Engine    string   `json:"engine"`    // e.g., "governance", "routing-rule", "openrouter"
+	Level     LogLevel `json:"level"`
+	Message   string   `json:"message"`   // Human-readable decision/action message
+	Timestamp int64    `json:"timestamp"` // Unix milliseconds
 }
 
 // PluginLogEntry represents a structured log entry emitted by a plugin via ctx.Log().

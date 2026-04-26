@@ -83,6 +83,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 		}
 		setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
+		// The outer HTTP anthropic-beta header is consumed by Bedrock's edge and not forwarded
+		// to the underlying Claude model, so the beta value must also live in
+		// additionalModelRequestFields for the model to recognise output_config.format.
+		appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicStructuredOutputsBetaHeader)
 	}
 
 	// Filter provider-unsupported server tools once; both convertToolConfig and
@@ -114,8 +118,8 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 		}
 		bedrockReq.AdditionalModelRequestFields.Set("tools", serverTools)
-		if len(betaHeaders) > 0 {
-			bedrockReq.AdditionalModelRequestFields.Set("anthropic_beta", betaHeaders)
+		for _, h := range betaHeaders {
+			appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, h)
 		}
 		// Skip the tunneled tool_choice when response_format forces the synthetic
 		// bf_so_* tool at lines 263-275 below; otherwise Bedrock receives two
@@ -479,10 +483,50 @@ func mergeOrderedMapInto(dst, src *schemas.OrderedMap) {
 }
 
 func newAnthropicOutputFormatOrderedMap(schemaObj any) *schemas.OrderedMap {
+	// Normalize multi-type arrays (["string","null"], ["string","integer"]) into anyOf branches
+	// so Bedrock's schema validator accepts them. Pure in-memory map ops; no JSON round-trips.
+	// OrderedMap schemas are passed through unchanged.
+	if m, ok := schemaObj.(map[string]interface{}); ok {
+		schemaObj = anthropic.NormalizeSchemaForAnthropic(m)
+	}
 	return schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "json_schema"),
 		schemas.KV("schema", schemaObj),
 	)
+}
+
+// appendAnthropicBetaToFields merges a single beta header value into
+// additionalModelRequestFields.anthropic_beta without creating duplicates.
+// This is needed for Bedrock: the outer HTTP anthropic-beta header is consumed
+// by Bedrock's edge and NOT forwarded to the underlying Claude model; the value
+// must live in additionalModelRequestFields so Bedrock passes it through.
+func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
+	if fields == nil || header == "" {
+		return
+	}
+	var existing []string
+	if raw, ok := fields.Get("anthropic_beta"); ok {
+		switch v := raw.(type) {
+		case []string:
+			existing = v
+		case []interface{}:
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					existing = append(existing, s)
+				}
+			}
+		case string:
+			if v != "" {
+				existing = []string{v}
+			}
+		}
+	}
+	for _, h := range existing {
+		if h == header {
+			return
+		}
+	}
+	fields.Set("anthropic_beta", append(existing, header))
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists

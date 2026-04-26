@@ -1952,6 +1952,12 @@ func filterEnumValuesByType(enumValues []interface{}, schemaType string) []inter
 	return filtered
 }
 
+// NormalizeSchemaForAnthropic is the exported entry point for normalizeSchemaForAnthropic,
+// used by providers (e.g. Bedrock) that share Anthropic's schema validation rules.
+func NormalizeSchemaForAnthropic(schema map[string]interface{}) map[string]interface{} {
+	return normalizeSchemaForAnthropic(schema)
+}
+
 // normalizeSchemaForAnthropic recursively normalizes a JSON schema to be compatible with Anthropic's API.
 // This handles cases where:
 // 1. type is an array like ["string", "null"] - converted to single type

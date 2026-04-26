@@ -159,6 +159,10 @@ func isStreamTransportError(err error) bool {
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
+	var checksumErr eventstream.ChecksumError
+	if errors.As(err, &checksumErr) {
+		return true
+	}
 	var opErr *net.OpError
 	var dnsErr *net.DNSError
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
