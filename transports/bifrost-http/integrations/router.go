@@ -50,9 +50,9 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"errors"
 	"mime"
 	"mime/multipart"
 	"strconv"
@@ -1550,7 +1550,6 @@ func (g *GenericRouter) handleAsyncRetrieve(
 	}
 
 	g.handleAsyncJobResponse(ctx, bifrostCtx, config, job)
-	return
 }
 
 func (g *GenericRouter) handleAsyncJobResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, job *logstore.AsyncJob) {

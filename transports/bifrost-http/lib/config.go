@@ -3389,6 +3389,19 @@ func (c *Config) GetPerUserOAuthMCPClientsForVirtualKey(ctx context.Context, vir
 	return result
 }
 
+// GetProvidersForModel returns the list of providers for a given model, sorted
+// deterministically so callers picking providers[0] always get the same result.
+func (c *Config) GetProvidersForModel(model string) []schemas.ModelProvider {
+	if c.ModelCatalog == nil {
+		return []schemas.ModelProvider{}
+	}
+	providers := c.ModelCatalog.GetProvidersForModel(model)
+	slices.SortFunc(providers, func(a, b schemas.ModelProvider) int {
+		return strings.Compare(string(a), string(b))
+	})
+	return providers
+}
+
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
 // This method is lock-free and safe for concurrent access from hot paths.
 // Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
