@@ -19,10 +19,10 @@ func (r *recordingLogger) Info(msg string, args ...any)  {}
 func (r *recordingLogger) Warn(msg string, args ...any) {
 	r.warns = append(r.warns, fmt.Sprintf(msg, args...))
 }
-func (r *recordingLogger) Error(msg string, args ...any)                     {}
-func (r *recordingLogger) Fatal(msg string, args ...any)                     {}
-func (r *recordingLogger) SetLevel(schemas.LogLevel)                         {}
-func (r *recordingLogger) SetOutputType(schemas.LoggerOutputType)            {}
+func (r *recordingLogger) Error(msg string, args ...any)          {}
+func (r *recordingLogger) Fatal(msg string, args ...any)          {}
+func (r *recordingLogger) SetLevel(schemas.LogLevel)              {}
+func (r *recordingLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (r *recordingLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
 }
@@ -36,9 +36,9 @@ func TestNormalizeFallbacks_DropsAreLoggedInLenientMode(t *testing.T) {
 	l := &recordingLogger{}
 
 	input := []schemas.Fallback{
-		{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},    // valid
-		{Provider: schemas.Bedrock},                          // invalid: no model
-		{Provider: "", Model: "gpt-4.1"},                     // invalid: no provider
+		{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},                   // valid
+		{Provider: schemas.Bedrock},                                        // invalid: no model
+		{Provider: "", Model: "gpt-4.1"},                                   // invalid: no provider
 		{Provider: schemas.Anthropic, Model: "claude-3-5-sonnet-20241022"}, // valid
 	}
 
@@ -83,9 +83,9 @@ func TestFallbackStringsToFallbacks_DropsAreLoggedInLenientMode(t *testing.T) {
 	l := &recordingLogger{}
 
 	input := []string{
-		"openai/gpt-4o-mini",  // valid
-		"openai/",              // invalid: empty model
-		"",                     // invalid: empty string
+		"openai/gpt-4o-mini", // valid
+		"openai/",            // invalid: empty model
+		"",                   // invalid: empty string
 		"bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0", // valid
 	}
 
@@ -108,7 +108,7 @@ func TestNormalizeFallbacks_StrictModeRejectsFirstInvalid(t *testing.T) {
 	_, err := schemas.NormalizeFallbacks(
 		[]schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}, // valid first
-			{Provider: schemas.Bedrock},                       // invalid second
+			{Provider: schemas.Bedrock},                      // invalid second
 		},
 		schemas.FallbackValidationStrict,
 	)
@@ -117,5 +117,75 @@ func TestNormalizeFallbacks_StrictModeRejectsFirstInvalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), schemas.InvalidFallbackEntryError) {
 		t.Errorf("expected error to contain canonical error string, got: %v", err)
+	}
+}
+
+// TestNormalizeAndValidateFallback_CrossProviderModelID guards the fix for the
+// case where the model string itself contains a slash that belongs to the model
+// ID rather than a "provider/model" qualifier. The canonical example is
+// OpenRouter where upstream model IDs like "openai/gpt-4o" are opaque strings
+// passed verbatim to the provider.
+//
+// Before the fix, NormalizeAndValidateFallback would re-parse "openai/gpt-4o"
+// via ParseModelString, derive provider="openai", and then reject the entry
+// because "openai" != "openrouter". The fix treats the explicit provider field
+// as authoritative and only strips a matching "<provider>/" prefix.
+func TestNormalizeAndValidateFallback_CrossProviderModelID(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        schemas.Fallback
+		wantProvider schemas.ModelProvider
+		wantModel    string
+		wantValid    bool
+	}{
+		{
+			name:         "openrouter with cross-provider model id is accepted",
+			input:        schemas.Fallback{Provider: "openrouter", Model: "openai/gpt-4o"},
+			wantProvider: "openrouter",
+			wantModel:    "openai/gpt-4o",
+			wantValid:    true,
+		},
+		{
+			name:         "matching prefix is stripped",
+			input:        schemas.Fallback{Provider: schemas.OpenAI, Model: "openai/gpt-4o-mini"},
+			wantProvider: schemas.OpenAI,
+			wantModel:    "gpt-4o-mini",
+			wantValid:    true,
+		},
+		{
+			name:         "bedrock colon model id is accepted",
+			input:        schemas.Fallback{Provider: schemas.Bedrock, Model: "us.anthropic.claude-3-5-sonnet-20241022-v2:0"},
+			wantProvider: schemas.Bedrock,
+			wantModel:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+			wantValid:    true,
+		},
+		{
+			name:      "missing model is rejected",
+			input:     schemas.Fallback{Provider: schemas.OpenAI, Model: ""},
+			wantValid: false,
+		},
+		{
+			name:      "matching prefix that empties model is rejected",
+			input:     schemas.Fallback{Provider: schemas.OpenAI, Model: "openai/"},
+			wantValid: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok, err := schemas.NormalizeAndValidateFallback(tc.input, 0)
+			if ok != tc.wantValid {
+				t.Fatalf("wantValid=%v got ok=%v err=%v", tc.wantValid, ok, err)
+			}
+			if !tc.wantValid {
+				return
+			}
+			if got.Provider != tc.wantProvider {
+				t.Errorf("provider: want %q got %q", tc.wantProvider, got.Provider)
+			}
+			if got.Model != tc.wantModel {
+				t.Errorf("model: want %q got %q", tc.wantModel, got.Model)
+			}
+		})
 	}
 }

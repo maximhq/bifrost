@@ -4572,6 +4572,8 @@ func extraParamsFromRequest(req *schemas.BifrostRequest) map[string]interface{} 
 		return req.ChatRequest.Params.ExtraParams
 	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
 		return req.ResponsesRequest.Params.ExtraParams
+	case req.CountTokensRequest != nil && req.CountTokensRequest.Params != nil:
+		return req.CountTokensRequest.Params.ExtraParams
 	case req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil:
 		return req.EmbeddingRequest.Params.ExtraParams
 	case req.RerankRequest != nil && req.RerankRequest.Params != nil:

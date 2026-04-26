@@ -459,13 +459,23 @@ func NormalizeAndValidateFallback(fallback Fallback, index int) (Fallback, bool,
 		return Fallback{}, false, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, index)
 	}
 
-	parsedProvider, parsedModel := ParseModelString(model, provider)
-	if parsedProvider == "" || parsedModel == "" || parsedProvider != provider {
-		return Fallback{}, false, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, index)
+	// For object-form fallbacks the explicit provider field is authoritative.
+	// The model field may legitimately contain slashes (e.g. "openai/gpt-4o" as
+	// an OpenRouter model ID, or Bedrock ARN-style identifiers). We only strip a
+	// leading "<provider>/" prefix when it exactly matches the supplied provider —
+	// this handles the common copy-paste pattern where users write the full
+	// "provider/model" string in the model field even though provider is already
+	// set. Any other slash content is part of the model ID and must be preserved.
+	prefix := string(provider) + "/"
+	if strings.HasPrefix(model, prefix) {
+		model = strings.TrimPrefix(model, prefix)
+		if model == "" {
+			return Fallback{}, false, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, index)
+		}
 	}
 
-	fallback.Provider = parsedProvider
-	fallback.Model = parsedModel
+	fallback.Provider = provider
+	fallback.Model = model
 	return fallback, true, nil
 }
 
