@@ -2988,3 +2988,93 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestMergeFallbackParams_OverridePrecedence locks in the precedence rule:
+// fallback params override base params on key collision. This guards the
+// contract documented on mergeFallbackParams — anyone changing it should make
+// the change explicit by updating this test.
+func TestMergeFallbackParams_OverridePrecedence(t *testing.T) {
+base := map[string]interface{}{
+"shared":   "from-base",
+"only_base": 1,
+}
+fallback := map[string]any{
+"shared":      "from-fallback",
+"only_fallback": 2,
+}
+
+merged := mergeFallbackParams(base, fallback)
+
+if merged["shared"] != "from-fallback" {
+t.Fatalf("expected fallback to override base for 'shared', got %#v", merged["shared"])
+}
+if merged["only_base"] != 1 {
+t.Fatalf("expected base-only key preserved, got %#v", merged["only_base"])
+}
+if merged["only_fallback"] != 2 {
+t.Fatalf("expected fallback-only key included, got %#v", merged["only_fallback"])
+}
+
+// Inputs must remain untouched (immutability contract).
+if base["shared"] != "from-base" {
+t.Fatal("merge mutated base map")
+}
+if fallback["shared"] != "from-fallback" {
+t.Fatal("merge mutated fallback map")
+}
+}
+
+// TestMergeFallbackParams_EmptyInputsReturnNil verifies that an empty merge
+// produces nil rather than an allocated empty map. ExtraParams is consumed by
+// downstream code that distinguishes nil from non-nil maps for "no extras"
+// signalling — keep the nil contract stable.
+func TestMergeFallbackParams_EmptyInputsReturnNil(t *testing.T) {
+if got := mergeFallbackParams(nil, nil); got != nil {
+t.Fatalf("expected nil for empty inputs, got %#v", got)
+}
+if got := mergeFallbackParams(map[string]interface{}{}, map[string]any{}); got != nil {
+t.Fatalf("expected nil for empty (non-nil) inputs, got %#v", got)
+}
+}
+
+// TestPrepareFallbackRequest_LogsOverrideAtDebug makes sure the override
+// detection helper does not panic when called with various param shapes. We
+// don't assert on the log output (the default logger doesn't expose a hook),
+// but exercising the path catches nil-deref regressions in
+// extraParamsFromRequest's switch and logFallbackParamOverrides.
+func TestPrepareFallbackRequest_LogsOverrideAtDebug(t *testing.T) {
+account := NewMockAccount()
+account.AddProvider(schemas.OpenAI, 1, 1)
+account.AddProvider(schemas.Bedrock, 1, 1)
+
+b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelDebug)}
+
+// Case 1: overlapping key triggers debug log path.
+req := &schemas.BifrostRequest{
+RequestType: schemas.ChatCompletionRequest,
+ChatRequest: &schemas.BifrostChatRequest{
+Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{"reasoning_effort": "low"}},
+},
+}
+if got := b.prepareFallbackRequest(req, schemas.Fallback{
+Provider: schemas.Bedrock,
+Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+Params:   map[string]any{"reasoning_effort": "high"},
+}); got == nil {
+t.Fatal("expected fallback request, got nil")
+}
+
+// Case 2: nil base params must not panic.
+req2 := &schemas.BifrostRequest{
+RequestType: schemas.ChatCompletionRequest,
+ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+}
+if got := b.prepareFallbackRequest(req2, schemas.Fallback{
+Provider: schemas.Bedrock,
+Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+Params:   map[string]any{"x": 1},
+}); got == nil {
+t.Fatal("expected fallback request with nil base params, got nil")
+}
+}

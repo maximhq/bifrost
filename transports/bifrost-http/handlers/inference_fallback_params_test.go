@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"mime/multipart"
-	"strings"
 	"testing"
 
 	"github.com/valyala/fasthttp"
@@ -101,7 +100,10 @@ func TestPrepareChatCompletionRequest_AcceptsMultipleFallbacks(t *testing.T) {
 	}
 }
 
-func TestPrepareChatCompletionRequest_RejectsInvalidFallbackObject(t *testing.T) {
+func TestPrepareChatCompletionRequest_LenientlyIgnoresInvalidFallbackObject(t *testing.T) {
+	// Backward-compatibility contract: prior to per-fallback params support,
+	// malformed fallback entries were silently dropped. Lenient validation
+	// keeps that behaviour so existing clients aren't suddenly broken.
 	ctx := newChatRequestCtx(`{
 		"model": "openai/gpt-4o-mini",
 		"messages": [{"role": "user", "content": "hello"}],
@@ -110,14 +112,96 @@ func TestPrepareChatCompletionRequest_RejectsInvalidFallbackObject(t *testing.T)
 		]
 	}`)
 
-	_, _, err := prepareChatCompletionRequest(ctx)
-	if err == nil {
-		t.Fatal("expected invalid fallback object to fail")
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	if err != nil {
+		t.Fatalf("expected lenient mode to accept request and drop the invalid fallback, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), invalidFallbackEntryError) {
-		t.Fatalf("expected invalid fallback error, got %v", err)
+	if bifrostReq == nil {
+		t.Fatal("expected bifrost request, got nil")
+	}
+	if len(bifrostReq.Fallbacks) != 0 {
+		t.Fatalf("expected invalid fallback to be dropped, got %d fallbacks", len(bifrostReq.Fallbacks))
 	}
 }
+
+func TestPrepareChatCompletionRequest_DropsOnlyInvalidEntriesInMixedBatch(t *testing.T) {
+	// Mixed batches must keep valid entries while silently dropping malformed
+	// ones — anything else would be a hidden DoS vector for clients that
+	// occasionally typo a fallback model.
+	ctx := newChatRequestCtx(`{
+		"model": "openai/gpt-4o-mini",
+		"messages": [{"role": "user", "content": "hello"}],
+		"fallbacks": [
+			{"provider": "bedrock", "model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0"},
+			{"provider": "bedrock"},
+			{"provider": "openai", "model": "gpt-4.1-mini", "params": {"reasoning_effort": "low"}}
+		]
+	}`)
+
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	if err != nil {
+		t.Fatalf("expected lenient mode to accept mixed batch, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 2 {
+		t.Fatalf("expected 2 valid fallbacks (invalid dropped), got %d", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected first fallback: %+v", bifrostReq.Fallbacks[0])
+	}
+	if bifrostReq.Fallbacks[1].Provider != "openai" {
+		t.Fatalf("unexpected second fallback provider: %s", bifrostReq.Fallbacks[1].Provider)
+	}
+	if bifrostReq.Fallbacks[1].Params["reasoning_effort"] != "low" {
+		t.Fatalf("expected params on second fallback to be preserved, got %#v", bifrostReq.Fallbacks[1].Params)
+	}
+}
+
+func TestPrepareChatCompletionRequest_EmptyFallbackArrayIsAccepted(t *testing.T) {
+	ctx := newChatRequestCtx(`{
+		"model": "openai/gpt-4o-mini",
+		"messages": [{"role": "user", "content": "hello"}],
+		"fallbacks": []
+	}`)
+
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	if err != nil {
+		t.Fatalf("expected empty fallback array to be accepted, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 0 {
+		t.Fatalf("expected zero fallbacks, got %d", len(bifrostReq.Fallbacks))
+	}
+}
+
+func TestPrepareChatCompletionRequest_DuplicateFallbacksArePreserved(t *testing.T) {
+	// Duplicate entries are a legitimate use case (different params per attempt)
+	// and must not be deduplicated by the validation layer — fallback ordering
+	// and multiplicity are the caller's contract.
+	ctx := newChatRequestCtx(`{
+		"model": "openai/gpt-4o-mini",
+		"messages": [{"role": "user", "content": "hello"}],
+		"fallbacks": [
+			{"provider": "openai", "model": "gpt-4.1-mini", "params": {"temperature": 0.1}},
+			{"provider": "openai", "model": "gpt-4.1-mini", "params": {"temperature": 0.9}}
+		]
+	}`)
+
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	if err != nil {
+		t.Fatalf("expected duplicates to be accepted, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 2 {
+		t.Fatalf("expected duplicates preserved, got %d fallbacks", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Params["temperature"] == bifrostReq.Fallbacks[1].Params["temperature"] {
+		t.Fatalf("duplicates were merged: %#v", bifrostReq.Fallbacks)
+	}
+}
+
+// invalidFallbackEntryError is intentionally still referenced here to keep the
+// constant usage expectation in the test surface — even though we no longer
+// expect validation to surface it on the happy path. If a future refactor
+// removes the constant, this reference will catch it at compile time.
+var _ = invalidFallbackEntryError
 
 func buildMultipartImageRequestCtx(t *testing.T, uri string, fields map[string]string) *fasthttp.RequestCtx {
 	t.Helper()
@@ -237,19 +321,19 @@ func TestPrepareImageVariationRequest_StringFallbacksRemainSupported(t *testing.
 	}
 }
 
-func TestPrepareImageEditRequest_RejectsInvalidJSONFallbackObject(t *testing.T) {
+func TestPrepareImageEditRequest_LenientlyIgnoresInvalidJSONFallbackObject(t *testing.T) {
 	ctx := buildMultipartImageRequestCtx(t, "/v1/images/edits", map[string]string{
 		"model":     "openai/gpt-image-1",
 		"prompt":    "edit this",
 		"fallbacks": `[{"model":"bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0"}]`,
 	})
 
-	_, _, err := prepareImageEditRequest(ctx)
-	if err == nil {
-		t.Fatal("expected invalid JSON fallback object to fail")
+	_, bifrostReq, err := prepareImageEditRequest(ctx)
+	if err != nil {
+		t.Fatalf("expected lenient mode to accept multipart with invalid fallback, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), invalidFallbackEntryError) {
-		t.Fatalf("expected invalid fallback error, got %v", err)
+	if len(bifrostReq.Fallbacks) != 0 {
+		t.Fatalf("expected invalid multipart fallback to be dropped, got %d", len(bifrostReq.Fallbacks))
 	}
 }
 

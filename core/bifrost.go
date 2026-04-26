@@ -4437,6 +4437,25 @@ type fallbackParamsTypeConstraint interface {
 // mergeFallbackParams merges fallback parameters with base parameters while
 // preserving immutability of the input maps.
 //
+// Precedence
+//
+//   - When a key exists in both maps, the value from `fallback` wins. This is
+//     intentional: the per-fallback `params` block is the explicit way for a
+//     caller to override request-level extras for that fallback (e.g. raise
+//     reasoning_effort only when falling over to a thinking model).
+//   - Neither input map is mutated; the result is a freshly allocated map.
+//
+// Caveats / future work
+//
+//   - Fallback params share the same namespace as the request's ExtraParams,
+//     so a stray base key with the same name as a provider-specific control
+//     will be silently shadowed when the fallback fires. This is acceptable
+//     because callers opt-in to the override by setting `fallback.params`,
+//     but anyone debugging a missing param should look here first. The
+//     overlap is deliberately surfaced via debug logging in the caller
+//     (prepareFallbackRequest) so it shows up in traces without spamming
+//     production logs.
+//
 // Deterministic ordering is required because downstream prompt-caching behavior
 // can be sensitive to serialized JSON key order. Base keys are copied in sorted
 // order first, then fallback keys are applied in sorted order and override base
@@ -4541,6 +4560,54 @@ func applyFallbackParams[T fallbackParamsTypeConstraint](params T, fallbackParam
 	}
 }
 
+// extraParamsFromRequest pulls the request-level ExtraParams map out of a
+// BifrostRequest, regardless of which typed payload is set. Returns nil when
+// the request has no recognised payload — callers must handle that.
+func extraParamsFromRequest(req *schemas.BifrostRequest) map[string]interface{} {
+	switch {
+	case req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil:
+		return req.TextCompletionRequest.Params.ExtraParams
+	case req.ChatRequest != nil && req.ChatRequest.Params != nil:
+		return req.ChatRequest.Params.ExtraParams
+	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
+		return req.ResponsesRequest.Params.ExtraParams
+	case req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil:
+		return req.EmbeddingRequest.Params.ExtraParams
+	case req.RerankRequest != nil && req.RerankRequest.Params != nil:
+		return req.RerankRequest.Params.ExtraParams
+	case req.SpeechRequest != nil && req.SpeechRequest.Params != nil:
+		return req.SpeechRequest.Params.ExtraParams
+	case req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil:
+		return req.TranscriptionRequest.Params.ExtraParams
+	case req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil:
+		return req.ImageGenerationRequest.Params.ExtraParams
+	case req.ImageVariationRequest != nil && req.ImageVariationRequest.Params != nil:
+		return req.ImageVariationRequest.Params.ExtraParams
+	case req.VideoGenerationRequest != nil && req.VideoGenerationRequest.Params != nil:
+		return req.VideoGenerationRequest.Params.ExtraParams
+	}
+	return nil
+}
+
+// logFallbackParamOverrides emits a debug log line for every fallback param
+// key that shadows a base request ExtraParams key. Centralised here so the
+// per-request-type type switch in prepareFallbackRequest stays focused on
+// cloning and the merge math stays in mergeFallbackParams.
+func (bifrost *Bifrost) logFallbackParamOverrides(req *schemas.BifrostRequest, fallback schemas.Fallback) {
+	base := extraParamsFromRequest(req)
+	if len(base) == 0 {
+		return
+	}
+	for key := range fallback.Params {
+		if _, exists := base[key]; exists {
+			bifrost.logger.Debug(
+				"fallback param overriding base extra_param: provider=%s model=%s key=%s",
+				fallback.Provider, fallback.Model, key,
+			)
+		}
+	}
+}
+
 // prepareFallbackRequest creates a fallback request and validates the provider config
 // Returns the fallback request or nil if this fallback should be skipped
 func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fallback schemas.Fallback) *schemas.BifrostRequest {
@@ -4549,6 +4616,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	if err != nil {
 		bifrost.logger.Warn("config not found for provider %s, skipping fallback: %v", fallback.Provider, err)
 		return nil
+	}
+
+	// Surface fallback param overrides at debug level. This makes silent
+	// shadowing of base ExtraParams visible in traces without polluting the
+	// happy-path log stream — see the precedence comment on mergeFallbackParams.
+	if len(fallback.Params) > 0 {
+		bifrost.logFallbackParamOverrides(req, fallback)
 	}
 
 	// Create a new request with the fallback provider and model

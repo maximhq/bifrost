@@ -19,22 +19,16 @@ import (
 
 var bifrostContextKeyProvider = schemas.BifrostContextKey("provider")
 
-const invalidFallbackEntryError = "invalid fallback entry: provider and model must be specified"
+// invalidFallbackEntryError is preserved as a package-local alias so existing
+// tests that match on the legacy string keep working. The canonical definition
+// now lives in the schemas package and is used by all transports.
+const invalidFallbackEntryError = schemas.InvalidFallbackEntryError
 
-func normalizeAndValidateFallbackEntryForIntegration(fallback schemas.Fallback, index int) (schemas.Fallback, error) {
-	if fallback.Provider == "" || strings.TrimSpace(fallback.Model) == "" {
-		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
-	}
-
-	parsedProvider, parsedModel := schemas.ParseModelString(fallback.Model, fallback.Provider)
-	if parsedProvider == "" || parsedModel == "" || parsedProvider != fallback.Provider {
-		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
-	}
-
-	fallback.Provider = parsedProvider
-	fallback.Model = parsedModel
-	return fallback, nil
-}
+// fallbackValidationMode controls fallback validation policy for the
+// integration router. Lenient mirrors the legacy behaviour where malformed
+// entries were dropped silently, preserving backward compatibility for
+// integration clients (OpenAI/Anthropic SDKs etc.).
+const fallbackValidationMode = schemas.FallbackValidationLenient
 
 var availableIntegrations = []string{
 	"openai",
@@ -446,13 +440,21 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 	switch fallbacksField.Kind() {
 	case reflect.Slice:
 		if fallbacksField.Type().Elem().Kind() == reflect.String {
-			// []string case
+			// []string case — note: integration mode uses defaultProvider as
+			// the fallback provider when the entry omits the "provider/" prefix
+			// (e.g. an OpenAI SDK client passing bare model names). This is
+			// intentionally different from the HTTP transport, which has no
+			// implicit provider. We still honour the configured validation
+			// mode: lenient drops malformed entries silently, strict rejects.
 			fallbacks := make([]schemas.Fallback, 0, fallbacksField.Len())
 			for i := 0; i < fallbacksField.Len(); i++ {
 				fallbackStr := fallbacksField.Index(i).String()
 				provider, model := schemas.ParseModelString(fallbackStr, defaultProvider)
 				if provider == "" || model == "" {
-					return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+					if fallbackValidationMode == schemas.FallbackValidationStrict {
+						return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+					}
+					continue
 				}
 				fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
 			}
@@ -461,19 +463,18 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 
 		fallbackType := reflect.TypeOf(schemas.Fallback{})
 		if fallbacksField.Type().Elem() == fallbackType {
-			fallbacks := make([]schemas.Fallback, 0, fallbacksField.Len())
+			raw := make([]schemas.Fallback, 0, fallbacksField.Len())
 			for i := 0; i < fallbacksField.Len(); i++ {
 				fallback, ok := fallbacksField.Index(i).Interface().(schemas.Fallback)
 				if !ok {
-					return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+					if fallbackValidationMode == schemas.FallbackValidationStrict {
+						return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+					}
+					continue
 				}
-				normalized, normalizeErr := normalizeAndValidateFallbackEntryForIntegration(fallback, i)
-				if normalizeErr != nil {
-					return nil, normalizeErr
-				}
-				fallbacks = append(fallbacks, normalized)
+				raw = append(raw, fallback)
 			}
-			return fallbacks, nil
+			return schemas.NormalizeFallbacks(raw, fallbackValidationMode)
 		}
 	case reflect.String:
 		// Single string case - treat as one fallback
@@ -481,7 +482,10 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 		if provider != "" && model != "" {
 			return []schemas.Fallback{{Provider: provider, Model: model}}, nil
 		}
-		return nil, fmt.Errorf("%s (index 0)", invalidFallbackEntryError)
+		if fallbackValidationMode == schemas.FallbackValidationStrict {
+			return nil, fmt.Errorf("%s (index 0)", invalidFallbackEntryError)
+		}
+		return nil, nil
 	}
 
 	return nil, nil

@@ -365,47 +365,37 @@ type BifrostParams struct {
 
 type FallbacksInput []schemas.Fallback
 
-const invalidFallbackEntryError = "invalid fallback entry: provider and model must be specified"
+// invalidFallbackEntryError is preserved for tests and existing callers that
+// match on the legacy error string. The canonical definition lives in
+// schemas.InvalidFallbackEntryError so all transports validate consistently.
+const invalidFallbackEntryError = schemas.InvalidFallbackEntryError
 
-func normalizeAndValidateFallbackEntry(fallback schemas.Fallback, index int) (schemas.Fallback, error) {
-	if fallback.Provider == "" || strings.TrimSpace(fallback.Model) == "" {
-		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
-	}
-
-	parsedProvider, parsedModel := schemas.ParseModelString(fallback.Model, fallback.Provider)
-	if parsedProvider == "" || parsedModel == "" || parsedProvider != fallback.Provider {
-		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
-	}
-
-	fallback.Provider = parsedProvider
-	fallback.Model = parsedModel
-	return fallback, nil
-}
+// fallbackValidationMode controls the validation policy applied to incoming
+// HTTP fallback payloads. Bifrost historically dropped malformed fallback
+// entries silently — we preserve that contract by defaulting to lenient mode
+// so the transition to typed/object fallbacks is non-breaking. Strict mode is
+// reserved for opt-in callers (e.g. config validators) and is plumbed through
+// the shared schemas helpers so behaviour stays identical across packages.
+const fallbackValidationMode = schemas.FallbackValidationLenient
 
 func (f *FallbacksInput) UnmarshalJSON(data []byte) error {
+	// Try the legacy ["provider/model"] string form first.
 	var fallbackStrings []string
 	if err := sonic.Unmarshal(data, &fallbackStrings); err == nil {
-		parsed := make([]schemas.Fallback, 0, len(fallbackStrings))
-		for i, fallback := range fallbackStrings {
-			provider, model := schemas.ParseModelString(fallback, "")
-			if provider == "" || model == "" {
-				return fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
-			}
-			parsed = append(parsed, schemas.Fallback{Provider: provider, Model: model})
+		parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode)
+		if err != nil {
+			return err
 		}
 		*f = parsed
 		return nil
 	}
 
+	// Fall back to the typed object form, including optional per-entry params.
 	var fallbackObjects []schemas.Fallback
 	if err := sonic.Unmarshal(data, &fallbackObjects); err == nil {
-		parsed := make([]schemas.Fallback, 0, len(fallbackObjects))
-		for i, fallback := range fallbackObjects {
-			normalized, normalizeErr := normalizeAndValidateFallbackEntry(fallback, i)
-			if normalizeErr != nil {
-				return normalizeErr
-			}
-			parsed = append(parsed, normalized)
+		parsed, err := schemas.NormalizeFallbacks(fallbackObjects, fallbackValidationMode)
+		if err != nil {
+			return err
 		}
 		*f = parsed
 		return nil
@@ -649,22 +639,19 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 }
 
-// parseFallbacks normalizes fallback entries while preserving per-fallback params.
+// parseFallbacks returns the normalised fallback slice. Entries are already
+// validated and normalised by FallbacksInput.UnmarshalJSON (or by
+// parseMultipartFallbacks for multipart routes), so this is intentionally a
+// passthrough — re-running validation here would either produce noise or, in
+// strict mode, double-report the same error. Returning an error remains in the
+// signature so future strict-mode wiring stays a one-line change.
 func parseFallbacks(rawFallbacks FallbacksInput) ([]schemas.Fallback, error) {
-	fallbacks := make([]schemas.Fallback, 0, len(rawFallbacks))
-	for i, fallback := range rawFallbacks {
-		normalized, err := normalizeAndValidateFallbackEntry(fallback, i)
-		if err != nil {
-			return nil, err
-		}
-
-		fallbacks = append(fallbacks, schemas.Fallback{
-			Provider: normalized.Provider,
-			Model:    normalized.Model,
-			Params:   normalized.Params,
-		})
+	if len(rawFallbacks) == 0 {
+		return nil, nil
 	}
-	return fallbacks, nil
+	out := make([]schemas.Fallback, len(rawFallbacks))
+	copy(out, rawFallbacks)
+	return out, nil
 }
 
 func effectiveStream(bodyStream *bool) bool {
@@ -675,18 +662,11 @@ func effectiveStream(bodyStream *bool) bool {
 }
 
 func fallbackStringsToInput(fallbackStrings []string) (FallbacksInput, error) {
-	parsed := make(FallbacksInput, 0, len(fallbackStrings))
-	for i, fallback := range fallbackStrings {
-		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		if fallbackProvider == "" || fallbackModelName == "" {
-			return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
-		}
-		parsed = append(parsed, schemas.Fallback{
-			Provider: fallbackProvider,
-			Model:    fallbackModelName,
-		})
+	parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode)
+	if err != nil {
+		return nil, err
 	}
-	return parsed, nil
+	return FallbacksInput(parsed), nil
 }
 
 func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
@@ -694,6 +674,10 @@ func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
 		trimmed := strings.TrimSpace(values[0])
 		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
 			var parsed FallbacksInput
+			// Defer to FallbacksInput.UnmarshalJSON so JSON-encoded multipart
+			// fallbacks share the exact same lenient/strict semantics as the
+			// JSON request body path. Anything else would be a silent skew
+			// between routes.
 			if err := sonic.Unmarshal([]byte(trimmed), &parsed); err != nil {
 				return nil, err
 			}
