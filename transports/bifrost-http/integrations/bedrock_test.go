@@ -30,7 +30,7 @@ func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return m.headerMatcher
 }
 
-func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+func (m *mockHandlerStore) GetAvailableProviders(model string) []schemas.ModelProvider {
 	return m.availableProviders
 }
 

@@ -64,8 +64,8 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// GetHeaderMatcher returns the precompiled header matcher for header filtering
 	GetHeaderMatcher() *HeaderMatcher
-	// GetAvailableProviders returns the list of available providers
-	GetAvailableProviders() []schemas.ModelProvider
+	// GetAvailableProviders returns the list of available providers for the given model
+	GetAvailableProviders(model string) []schemas.ModelProvider
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
 	// Returns nil if no plugins are loaded or streaming interception is not needed.
 	GetStreamChunkInterceptor() StreamChunkInterceptor
@@ -4933,20 +4933,25 @@ func (c *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstoreTa
 	return nil
 }
 
-func (c *Config) GetAvailableProviders() []schemas.ModelProvider {
+func (c *Config) GetAvailableProviders(model string) []schemas.ModelProvider {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
 	availableProviders := []schemas.ModelProvider{}
-	for provider, config := range c.Providers {
-		// Check if the provider has at least one key with a non-empty value. If so, add the provider to the list.
-		// If the provider allows empty keys, add the provider to the list.
-		for _, key := range config.Keys {
-			if key.Value.GetValue() != "" || bifrost.CanProviderKeyValueBeEmpty(provider) {
-				if key.Enabled != nil && !*key.Enabled {
-					continue
+	if c.ModelCatalog != nil {
+		availableProviders = c.ModelCatalog.GetProvidersForModel(model)
+	} else {
+		// Return all providers that have at least one key with a non-empty value.
+		for provider, config := range c.Providers {
+			// Check if the provider has at least one key with a non-empty value. If so, add the provider to the list.
+			// If the provider allows empty keys, add the provider to the list.
+			for _, key := range config.Keys {
+				if key.Value.GetValue() != "" || bifrost.CanProviderKeyValueBeEmpty(provider) {
+					if key.Enabled != nil && !*key.Enabled {
+						continue
+					}
+					availableProviders = append(availableProviders, provider)
+					break
 				}
-				availableProviders = append(availableProviders, provider)
-				break
 			}
 		}
 	}

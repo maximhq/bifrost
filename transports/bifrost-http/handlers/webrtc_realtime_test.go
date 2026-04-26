@@ -18,9 +18,9 @@ type testHandlerStore struct {
 	kv *kvstore.Store
 }
 
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                    { return true }
-func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher           { return nil }
-func (s testHandlerStore) GetAvailableProviders() []schemas.ModelProvider { return nil }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                                { return true }
+func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher                       { return nil }
+func (s testHandlerStore) GetAvailableProviders(model string) []schemas.ModelProvider { return nil }
 func (s testHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
 	return nil
 }

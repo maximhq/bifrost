@@ -55,6 +55,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -354,6 +355,10 @@ type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp in
 // returns a schemas.RequestType indicating the HTTP request type derived from the context.
 type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 
+// RequestModelGetter is a function type that accepts only a *fasthttp.RequestCtx and
+// returns a string indicating the model derived from the context.
+type RequestModelGetter func(ctx *fasthttp.RequestCtx, req interface{}) (string, error)
+
 // ShortCircuit is a function that determines if the request should be short-circuited.
 type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
 
@@ -397,6 +402,14 @@ const (
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
 )
 
+var RouteConfigTypeToProvider = map[RouteConfigType]schemas.ModelProvider{
+	RouteConfigTypeOpenAI:    schemas.OpenAI,
+	RouteConfigTypeAnthropic: schemas.Anthropic,
+	RouteConfigTypeGenAI:     schemas.Gemini,
+	RouteConfigTypeBedrock:   schemas.Bedrock,
+	RouteConfigTypeCohere:    schemas.Cohere,
+}
+
 // RouteConfig defines the configuration for a single route in an integration.
 // It specifies the path, method, and handlers for request/response conversion.
 type RouteConfig struct {
@@ -404,6 +417,7 @@ type RouteConfig struct {
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
 	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
+	GetRequestModel                        RequestModelGetter                     // Function to get the model from the context (SHOULD NOT BE NIL)
 	GetRequestTypeInstance                 func(ctx context.Context) interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter                       RequestConverter                       // Function to convert request to BifrostRequest (for inference requests)
@@ -621,10 +635,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Set integration type to context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
-		// Set available providers to context
-		availableProviders := g.handlerStore.GetAvailableProviders()
-		bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
-
 		// Async retrieve: check x-bf-async-id header early (before body parsing)
 		if asyncID := string(ctx.Request.Header.Peek(schemas.AsyncHeaderGetID)); asyncID != "" {
 			defer cancel()
@@ -725,6 +735,44 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}
 
+		// Set available providers to context
+		if config.GetRequestModel != nil {
+			model, err := config.GetRequestModel(ctx, req)
+			if err != nil {
+				cancel()
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to get model from context"))
+				return
+			}
+			extractedProvider, extractedModel := schemas.ParseModelString(model, "")
+			if extractedProvider == "" {
+				availableProviders := g.handlerStore.GetAvailableProviders(extractedModel)
+				availableProvidersStrs := make([]string, len(availableProviders))
+				for i, p := range availableProviders {
+					availableProvidersStrs[i] = string(p)
+				}
+				bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+					"No provider specified for model %s, found %d options in model catalog: [%s]",
+					extractedModel, len(availableProviders), strings.Join(availableProvidersStrs, ", "),
+				))
+				if len(availableProviders) > 0 {
+					if slices.Contains(availableProviders, RouteConfigTypeToProvider[config.Type]) {
+						availableProviders = []schemas.ModelProvider{RouteConfigTypeToProvider[config.Type]}
+						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+							"Integration route default provider %s is found in the available providers list, selecting it",
+							RouteConfigTypeToProvider[config.Type],
+						))
+					} else {
+						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+							"Integration route default provider %s is not found in the available providers list, selecting first: %s",
+							RouteConfigTypeToProvider[config.Type], availableProviders[0],
+						))
+					}
+					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+				}
+				schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
+			}
+		}
+
 		// Handle batch requests if BatchRequestConverter is set
 		// GenAI has two cases: (1) Dedicated batch routes (list/retrieve) have only BatchRequestConverter — always use batch path.
 		// (2) The models path has both BatchRequestConverter and RequestConverter — use batch path only for batch create.
@@ -795,10 +843,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Convert the integration-specific request to Bifrost format (inference requests)
 		bifrostReq, err := config.RequestConverter(bifrostCtx, req)
 		if err != nil {
+			defer cancel()
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert request to Bifrost format"))
 			return
 		}
 		if bifrostReq == nil {
+			defer cancel()
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid request"))
 			return
 		}
@@ -808,6 +858,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Extract and parse fallbacks from the request if present
 		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
+			defer cancel()
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
@@ -842,9 +893,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	// streaming requests (where we actively detect write errors), but still provides a mechanism
 	// for providers to respect cancellation.
 	var response interface{}
-
 	var err error
-
 	var providerResponseHeaders map[string]string
 
 	switch {
