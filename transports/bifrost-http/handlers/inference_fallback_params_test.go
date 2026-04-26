@@ -32,7 +32,7 @@ func TestPrepareChatCompletionRequest_AcceptsObjectFallbacksWithParams(t *testin
 		]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected object-form fallbacks to parse successfully, got error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestPrepareChatCompletionRequest_StringFallbacksRemainSupported(t *testing.
 		"fallbacks": ["bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0"]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected string-form fallbacks to parse successfully, got error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestPrepareChatCompletionRequest_AcceptsMultipleFallbacks(t *testing.T) {
 		]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected multiple fallbacks to parse successfully, got error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestPrepareChatCompletionRequest_LenientlyIgnoresInvalidFallbackObject(t *t
 		]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected lenient mode to accept request and drop the invalid fallback, got error: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestPrepareChatCompletionRequest_DropsOnlyInvalidEntriesInMixedBatch(t *tes
 		]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected lenient mode to accept mixed batch, got error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestPrepareChatCompletionRequest_EmptyFallbackArrayIsAccepted(t *testing.T)
 		"fallbacks": []
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected empty fallback array to be accepted, got error: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestPrepareChatCompletionRequest_DuplicateFallbacksArePreserved(t *testing.
 		]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx)
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected duplicates to be accepted, got error: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestPrepareImageEditRequest_AcceptsObjectFallbacks(t *testing.T) {
 		"fallbacks": `[{"provider":"bedrock","model":"us.anthropic.claude-3-5-sonnet-20241022-v2:0","params":{"reasoning_effort":"high","thinking_budget":2048}}]`,
 	})
 
-	_, bifrostReq, err := prepareImageEditRequest(ctx)
+	_, bifrostReq, err := prepareImageEditRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected multipart object-form fallbacks to parse successfully, got error: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestPrepareImageEditRequest_StringFallbacksRemainSupported(t *testing.T) {
 		"fallbacks": "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
 	})
 
-	_, bifrostReq, err := prepareImageEditRequest(ctx)
+	_, bifrostReq, err := prepareImageEditRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected multipart string-form fallbacks to parse successfully, got error: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestPrepareImageVariationRequest_AcceptsObjectFallbacks(t *testing.T) {
 		"fallbacks": `[{"provider":"bedrock","model":"us.anthropic.claude-3-5-sonnet-20241022-v2:0","params":{"reasoning_effort":"high","thinking_budget":2048}}]`,
 	})
 
-	bifrostReq, err := prepareImageVariationRequest(ctx)
+	bifrostReq, err := prepareImageVariationRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected multipart object-form fallbacks to parse successfully, got error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestPrepareImageVariationRequest_StringFallbacksRemainSupported(t *testing.
 		"fallbacks": "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
 	})
 
-	bifrostReq, err := prepareImageVariationRequest(ctx)
+	bifrostReq, err := prepareImageVariationRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected multipart string-form fallbacks to parse successfully, got error: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestPrepareImageEditRequest_LenientlyIgnoresInvalidJSONFallbackObject(t *te
 		"fallbacks": `[{"model":"bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0"}]`,
 	})
 
-	_, bifrostReq, err := prepareImageEditRequest(ctx)
+	_, bifrostReq, err := prepareImageEditRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected lenient mode to accept multipart with invalid fallback, got error: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestPrepareTranscriptionRequest_AcceptsObjectFallbacks(t *testing.T) {
 		"fallbacks": `[{"provider":"bedrock","model":"us.anthropic.claude-3-5-sonnet-20241022-v2:0","params":{"reasoning_effort":"high","thinking_budget":2048}}]`,
 	})
 
-	bifrostReq, _, err := prepareTranscriptionRequest(ctx)
+	bifrostReq, _, err := prepareTranscriptionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected multipart object-form transcription fallbacks to parse successfully, got error: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestPrepareTranscriptionRequest_StringFallbacksRemainSupported(t *testing.T
 		"fallbacks": "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
 	})
 
-	bifrostReq, _, err := prepareTranscriptionRequest(ctx)
+	bifrostReq, _, err := prepareTranscriptionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("expected multipart string-form transcription fallbacks to parse successfully, got error: %v", err)
 	}

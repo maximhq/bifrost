@@ -541,7 +541,7 @@ func FallbackStringsToFallbacks(input []string, mode FallbackValidationMode, log
 
 	out := make([]Fallback, 0, len(input))
 	for i, raw := range input {
-		provider, model := ParseModelString(raw, "")
+		provider, model := ParseModelString(strings.TrimSpace(raw), "")
 		if provider == "" || model == "" {
 			if mode == FallbackValidationStrict {
 				return nil, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, i)

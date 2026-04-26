@@ -189,3 +189,30 @@ func TestNormalizeAndValidateFallback_CrossProviderModelID(t *testing.T) {
 		})
 	}
 }
+
+// TestFallbackStringsToFallbacks_TrimsWhitespace verifies that legacy string
+// fallbacks with surrounding whitespace are accepted rather than silently
+// dropped. Object-form fallbacks trim in NormalizeAndValidateFallback; the
+// string path must apply the same normalisation via strings.TrimSpace before
+// calling ParseModelString.
+func TestFallbackStringsToFallbacks_TrimsWhitespace(t *testing.T) {
+	inputs := []string{
+		"  openai/gpt-4o-mini  ",
+		"\tanthropic/claude-3-5-haiku-20241022\t",
+		" openrouter/openai/gpt-4o ",
+	}
+	got, err := schemas.FallbackStringsToFallbacks(inputs, schemas.FallbackValidationStrict)
+	if err != nil {
+		t.Fatalf("unexpected error for whitespace-padded strings: %v", err)
+	}
+	if len(got) != len(inputs) {
+		t.Fatalf("want %d fallbacks, got %d", len(inputs), len(got))
+	}
+	// Spot-check first entry: provider and model must be trimmed/parsed correctly.
+	if got[0].Provider != schemas.OpenAI {
+		t.Errorf("entry 0 provider: want %q got %q", schemas.OpenAI, got[0].Provider)
+	}
+	if got[0].Model != "gpt-4o-mini" {
+		t.Errorf("entry 0 model: want %q got %q", "gpt-4o-mini", got[0].Model)
+	}
+}

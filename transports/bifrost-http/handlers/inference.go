@@ -408,13 +408,13 @@ func (f *FallbacksInput) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("invalid fallbacks format: expected array of strings or array of fallback objects")
 }
 
-func (b BifrostParams) getModel() string       { return b.Model }
-func (b BifrostParams) getFallbacks() []string { return b.Fallbacks }
+func (b BifrostParams) getModel() string             { return b.Model }
+func (b BifrostParams) getFallbacks() FallbacksInput { return b.Fallbacks }
 
 // baseRequest is satisfied by any type that embeds BifrostParams.
 type baseRequest interface {
 	getModel() string
-	getFallbacks() []string
+	getFallbacks() FallbacksInput
 }
 
 // requestBase holds the fields common to every JSON-body prepare function
