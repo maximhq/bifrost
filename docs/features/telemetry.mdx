@@ -9,6 +9,7 @@ icon: "gauge"
 Bifrost provides built-in telemetry and monitoring capabilities through Prometheus metrics collection. The telemetry system tracks both HTTP-level performance metrics and upstream provider interactions, giving you complete visibility into your AI gateway's performance and usage patterns.
 
 **Key Features:**
+
 - **Prometheus Integration** - Native metrics collection at `/metrics` endpoint
 - **Comprehensive Tracking** - Success/error rates, token usage, costs, and cache performance
 - **Custom Labels** - Configurable dimensions for detailed analysis
@@ -28,14 +29,15 @@ The telemetry plugin operates asynchronously to ensure metrics collection doesn'
 
 These metrics track all incoming HTTP requests to Bifrost:
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `http_requests_total` | Counter | Total number of HTTP requests |
-| `http_request_duration_seconds` | Histogram | Duration of HTTP requests |
-| `http_request_size_bytes` | Histogram | Size of incoming HTTP requests |
-| `http_response_size_bytes` | Histogram | Size of outgoing HTTP responses |
+| Metric                          | Type      | Description                     |
+| ------------------------------- | --------- | ------------------------------- |
+| `http_requests_total`           | Counter   | Total number of HTTP requests   |
+| `http_request_duration_seconds` | Histogram | Duration of HTTP requests       |
+| `http_request_size_bytes`       | Histogram | Size of incoming HTTP requests  |
+| `http_response_size_bytes`      | Histogram | Size of outgoing HTTP responses |
 
 Labels:
+
 - `path`: HTTP endpoint path
 - `method`: HTTP verb (e.g., `GET`, `POST`, `PUT`, `DELETE`)
 - `status`: HTTP status code
@@ -45,24 +47,25 @@ Labels:
 
 These metrics track requests forwarded to AI providers:
 
-| Metric | Type | Description | Labels |
-|--------|------|-------------|---------|
-| `bifrost_upstream_requests_total` | Counter | Total requests forwarded to upstream providers | Base Labels, custom labels |
-| `bifrost_success_requests_total` | Counter | Total successful requests to upstream providers | Base Labels, custom labels |
-| `bifrost_error_requests_total` | Counter | Total failed requests to upstream providers | Base Labels, `status_code`, custom labels |
-| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests | Base Labels, `is_success`, custom labels |
-| `bifrost_input_tokens_total` | Counter | Total input tokens sent to upstream providers | Base Labels, custom labels |
-| `bifrost_output_tokens_total` | Counter | Total output tokens received from upstream providers | Base Labels, custom labels |
-| `bifrost_cache_hits_total` | Counter | Total cache hits by type (direct/semantic) | Base Labels, `cache_type`, custom labels |
-| `bifrost_cost_total` | Counter | Total cost in USD for upstream provider requests | Base Labels, custom labels |
+| Metric                             | Type      | Description                                          | Labels                                    |
+| ---------------------------------- | --------- | ---------------------------------------------------- | ----------------------------------------- |
+| `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers       | Base Labels, custom labels                |
+| `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers      | Base Labels, custom labels                |
+| `bifrost_error_requests_total`     | Counter   | Total failed requests to upstream providers          | Base Labels, `status_code`, custom labels |
+| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                | Base Labels, `is_success`, custom labels  |
+| `bifrost_input_tokens_total`       | Counter   | Total input tokens sent to upstream providers        | Base Labels, custom labels                |
+| `bifrost_output_tokens_total`      | Counter   | Total output tokens received from upstream providers | Base Labels, custom labels                |
+| `bifrost_cache_hits_total`         | Counter   | Total cache hits by type (direct/semantic)           | Base Labels, `cache_type`, custom labels  |
+| `bifrost_cost_total`               | Counter   | Total cost in USD for upstream provider requests     | Base Labels, custom labels                |
 
 Base Labels:
+
 - `provider`: AI provider name (e.g., `openai`, `anthropic`, `azure`)
 - `model`: Model name (e.g., `gpt-4o-mini`, `claude-3-sonnet`)
 - `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
 - `virtual_key_id`: Virtual key ID
 - `virtual_key_name`: Virtual key name
-- `routing_engines_used`: Comma-separated routing engines used ("routing-rule", "governance", "loadbalancing")
+- `routing_engines_used`: Comma-separated routing engines used ("routing-rule", "governance", "loadbalancing", "model-catalog")
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
 - `selected_key_id`: ID of the key that successfully served the request (`null` on final errors)
@@ -75,40 +78,43 @@ Base Labels:
 
 These metrics capture latency characteristics specific to streaming responses:
 
-| Metric | Type | Description | Labels |
-|--------|------|-------------|---------|
+| Metric                                       | Type      | Description                                     | Labels      |
+| -------------------------------------------- | --------- | ----------------------------------------------- | ----------- |
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time from request start to first streamed token | Base Labels |
-| `bifrost_stream_inter_token_latency_seconds` | Histogram | Latency between subsequent streamed tokens | Base Labels |
+| `bifrost_stream_inter_token_latency_seconds` | Histogram | Latency between subsequent streamed tokens      | Base Labels |
 
 ---
 
 ## Monitoring Examples
 
 ### Success Rate Monitoring
+
 Track the success rate of requests to different providers:
 
 ```promql
 # Success rate by provider
-rate(bifrost_success_requests_total[5m]) / 
+rate(bifrost_success_requests_total[5m]) /
 rate(bifrost_upstream_requests_total[5m]) * 100
 ```
 
 ### Token Usage Analysis
+
 Monitor token consumption across different models:
 
 ```promql
 # Input tokens per minute by model
 increase(bifrost_input_tokens_total[1m])
 
-# Output tokens per minute by model  
+# Output tokens per minute by model
 increase(bifrost_output_tokens_total[1m])
 
 # Token efficiency (output/input ratio)
-rate(bifrost_output_tokens_total[5m]) / 
+rate(bifrost_output_tokens_total[5m]) /
 rate(bifrost_input_tokens_total[5m])
 ```
 
 ### Cost Tracking
+
 Monitor spending across providers and models:
 
 ```promql
@@ -119,16 +125,17 @@ sum by (provider) (rate(bifrost_cost_total[1m]))
 sum by (provider) (increase(bifrost_cost_total[1d]))
 
 # Cost per request by provider and model
-sum by (provider, model) (rate(bifrost_cost_total[5m])) / 
+sum by (provider, model) (rate(bifrost_cost_total[5m])) /
 sum by (provider, model) (rate(bifrost_upstream_requests_total[5m]))
 ```
 
 ### Cache Performance
+
 Track cache effectiveness:
 
 ```promql
 # Cache hit rate by type
-rate(bifrost_cache_hits_total[5m]) / 
+rate(bifrost_cache_hits_total[5m]) /
 rate(bifrost_upstream_requests_total[5m]) * 100
 
 # Direct vs semantic cache hits
@@ -136,11 +143,12 @@ sum by (cache_type) (rate(bifrost_cache_hits_total[5m]))
 ```
 
 ### Error Rate Analysis
+
 Monitor error patterns:
 
 ```promql
 # Error rate by provider
-rate(bifrost_error_requests_total[5m]) / 
+rate(bifrost_error_requests_total[5m]) /
 rate(bifrost_upstream_requests_total[5m]) * 100
 
 # Errors by model
@@ -216,6 +224,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 **Header Format:**
+
 - Prefix: `x-bf-prom-`
 - Label name: Any string after the prefix
 - Value: String value for the label
@@ -242,7 +251,9 @@ docker-compose up -d
 ```
 
 <Warning>
-**Development Only**: The provided Docker Compose setup is for testing purposes only. Do not use in production without proper security, scaling, and persistence configuration.
+  **Development Only**: The provided Docker Compose setup is for testing
+  purposes only. Do not use in production without proper security, scaling, and
+  persistence configuration.
 </Warning>
 
 You can use the Prometheus scraping endpoint to create your own Grafana dashboards. Given below are few examples created using the Docker Compose setup.
@@ -259,6 +270,7 @@ For production environments:
 4. **Configure alerts** based on your SLA requirements
 
 **Prometheus Scrape Configuration:**
+
 ```yaml
 scrape_configs:
   - job_name: "bifrost-gateway"
@@ -273,7 +285,10 @@ scrape_configs:
 ```
 
 <Info>
-  If you have Bifrost authentication enabled (`auth_config`), you must include `basic_auth` in the scrape config with your `admin_username` and `admin_password`. See the [Prometheus docs](/features/observability/prometheus#pull-based-scraping) for details.
+  If you have Bifrost authentication enabled (`auth_config`), you must include
+  `basic_auth` in the scrape config with your `admin_username` and
+  `admin_password`. See the [Prometheus
+  docs](/features/observability/prometheus#pull-based-scraping) for details.
 </Info>
 
 ### Production Alerting Examples
@@ -281,6 +296,7 @@ scrape_configs:
 Configure alerts for critical scenarios using the new metrics:
 
 **High Error Rate Alert:**
+
 ```yaml
 - alert: BifrostHighErrorRate
   expr: sum by (provider) (rate(bifrost_error_requests_total[5m])) / sum by (provider) (rate(bifrost_upstream_requests_total[5m])) > 0.05
@@ -292,17 +308,19 @@ Configure alerts for critical scenarios using the new metrics:
 ```
 
 **High Cost Alert:**
+
 ```yaml
 - alert: BifrostHighCosts
-  expr: sum by (provider) (increase(bifrost_cost_total[1d])) > 100  # $100/day threshold
+  expr: sum by (provider) (increase(bifrost_cost_total[1d])) > 100 # $100/day threshold
   for: 10m
   labels:
     severity: warning
   annotations:
-    summary: "Daily cost for provider {{ $labels.provider }} exceeds $100 ({{ $value | printf \"%.2f\" }})"
+    summary: 'Daily cost for provider {{ $labels.provider }} exceeds $100 ({{ $value | printf "%.2f" }})'
 ```
 
 **Cache Performance Alert:**
+
 ```yaml
 - alert: BifrostLowCacheHitRate
   expr: sum by (provider) (rate(bifrost_cache_hits_total[15m])) / sum by (provider) (rate(bifrost_upstream_requests_total[15m])) < 0.1
