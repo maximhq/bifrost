@@ -20,73 +20,91 @@ npm install -g @anthropic-ai/claude-code
 
 ## Configuring Claude Code to work with Bifrost
 
+<Note>
+  **To avoid getting into different caching issues of Claude code** - 
+  - Ensure there is no `model` field in `settings.json`. If it's present remove it. This overwrites the `env` model selection. 
+  - Once you update the `settings.json`, start claude, and execute /logout. And restart - select use API key even if its not recommended.
+    <Frame>
+      <img src="/media/cli/select-api-claude-code.png" alt="Claude cli API selection"/>
+    </Frame>
+</Note>
+
 Claude Code supports multiple authentication methods. Choose the one that matches your account type.
 
-1. **Set environment variables**
+1. **Update settings.json**
 
-   ```bash
-   export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled
-   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
-   ```
+Global `settings.json` is placed in your home folder.
 
-2. **Run Claude Code**
+- macOS / Linux / WSL (User Global): `~/.claude/settings.json`
+- Windows (User Global): `%USERPROFILE%\.claude\settings.json`
+- Project-Specific: `.claude/settings.json` (located within your individual project's root directory)
+- Local Overrides: `.claude/settings.local.json` (also in the project root, used for personal preferences that aren't shared via Git)
 
-```bash
-claude
-```
+You will need to update the most granular `settings.json`. 
 
-## Setup with the VS Code extension
 
-If you prefer using Claude Code inside VS Code, install the [Claude Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code) and point it to Bifrost using the same environment variables you use for the CLI.
+### 1. Using alias
 
-### 1. Install the extension
+1. Add following routing rules in Bifrost
 
-1. Open **Extensions** in VS Code (`Cmd+Shift+X` on macOS)
-2. Search for **Claude Code**
-3. Install **Claude Code** by Anthropic
+**`sonnet-model` route**
 
-### 2. Configure Bifrost endpoint
+- Keep it a global level and assign priority you want to assign
+- Add model condition as `model` `=` `sonnet-model`. This option is not available out of the box - so type this string and select `Create sonnet-model`
+- And add second header condition; to check if the `user-agent` starts with `claude-cli`.
+- And then you can map this model to any model you want. In the configuration given - we are using `vertex/claude-sonnet-4-6`.
 
-Add Bifrost variables in your editor settings:
+<Frame>
+<img src="/media/cli/sonnet-model-mapping.png" alt="sonnet-model routing example"/>
+</Frame>
+
+**`haiku-model` route**
+- Repeat the above steps by replacing `sonnet-model` with `haiku-model`.
+
+
+2. Update `settings.json`
+
+<Note>
+  The JSON snippets below show only the `env` key. Merge them into your existing `settings.json` top-level
+  object — do not paste them as a standalone file, or you will overwrite other settings like `permissions`,
+  `model`, and `apiKeyHelper`.
+</Note>
 
 ```json
-{
-  "claudeCode.disableLoginPrompt": true,
-  "claudeCode.environmentVariables": [
-    {
-      "name": "ANTHROPIC_BASE_URL",
-      "value": "http://localhost:8080/anthropic"
-    },
-    {
-      "name": "ANTHROPIC_DEFAULT_SONNET_MODEL",
-      "value": "vertex/claude-sonnet-4-6"
-    },
-    {
-      "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-      "value": "vertex/claude-haiku-4-5"
-    }
-  ]
+"env": {
+  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+  "ANTHROPIC_API_KEY": "your-virtual-key",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-model",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-model"
 }
 ```
 
-If virtual keys are enabled, also add `ANTHROPIC_API_KEY` in the same list (use your Bifrost virtual key value). If not, set it to `dummy`.
+### 2. Using provider-specific model pinning
 
-## Amazon Bedrock via Bifrost
+#### Anthropic
 
-### Setup
+Update `settings.json` to pick Anthropic models. For Anthropic models, you don't need to prefix models with provider name.
 
-Configure environment variables
-
-```bash
-   export ANTHROPIC_API_KEY=bifrost-virtual-key
-   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+```json
+"env": {
+  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+  "ANTHROPIC_API_KEY": "your-virtual-key",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-6",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6"
+}
 ```
 
-### Pin model versions (recommended)
+#### Bedrock
 
-```bash
-export ANTHROPIC_DEFAULT_SONNET_MODEL="bedrock/global.anthropic.claude-sonnet-4-6"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+Update `settings.json` to pick Anthropic models on Bedrock. 
+
+```json
+"env": {
+  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+  "ANTHROPIC_API_KEY": "your-virtual-key",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "bedrock/global.anthropic.claude-haiku-4-6",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL": "bedrock/global.anthropic.claude-sonnet-4-6"
+}
 ```
 
 If you don't pin using CLI - you can pin these in UI. Go to Dashboard > Models > Model Providers > AWS Bedrock > Key. And add deployments
@@ -95,99 +113,45 @@ If you don't pin using CLI - you can pin these in UI. Go to Dashboard > Models >
   <img src="/media/cli/claude-bedrock-pinning.png" alt="Claude bedrock pinning" />
 </Frame>
 
-### Start Claude Code
+#### Vertex
 
-```
-claude
-```
+Update `settings.json` to pick Anthropic models on Vertex. 
 
-<Warning>
-  Always pin model versions with `ANTHROPIC_DEFAULT_*_MODEL` when using Bedrock. Without pinning, Claude Code aliases
-  resolve to the latest version, which may not be enabled in your Bedrock account.
-</Warning>
-
-## Google Vertex AI via Bifrost
-
-### Setup
-
-Configure environment variables
-
-```bash
-   export ANTHROPIC_API_KEY=bifrost-virtual-key
-   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+```json
+"env": {
+  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+  "ANTHROPIC_API_KEY": "your-virtual-key",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "vertex/claude-haiku-4-6",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL": "vertex/claude-sonnet-4-6"
+}
 ```
 
-### Pin model versions (recommended)
+#### Azure
 
-```bash
-export ANTHROPIC_DEFAULT_SONNET_MODEL="vertex/claude-sonnet-4-6"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="vertex/claude-haiku-4-5"
+Update `settings.json` to pick Anthropic models on Azure. 
+
+```json
+"env": {
+  "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+  "ANTHROPIC_API_KEY": "your-virtual-key",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "azure/claude-haiku-4-6",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL": "azure/claude-sonnet-4-6"
+}
 ```
-
-### Start Claude Code
-
-```
-claude
-```
-
-## Azure via Bifrost
-
-### Setup
-
-Configure environment variables
-
-```bash
-   export ANTHROPIC_API_KEY=bifrost-virtual-key
-   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
-```
-
-### Pin model versions (recommended)
-
-```bash
-export ANTHROPIC_DEFAULT_SONNET_MODEL="azure/claude-sonnet-4-6"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="azure/claude-haiku-4-5"
-```
-
-You will also have to map these model names to actual deployment names on Bifrost dashboard.
 
 <Frame>
-  <img src="/media/cli/claude-azure-pinning.png" alt="Claude bedrock pinning" />
+  <img src="/media/cli/claude-azure-pinning.png" alt="Azure model  pinning" />
 </Frame>
-
-### Start Claude Code
-
-```
-claude
-```
 
 <Warning>
   Azure-hosted models must support **tool use capabilities** for Claude Code to function properly. Verify tool calling
   support before configuring Azure models.
 </Warning>
 
+
 ## Model Configuration
 
 Claude Code uses three model tiers: **Sonnet** (default), **Opus** (complex tasks), and **Haiku** (fast, lightweight). With Bifrost, you can override these defaults to use any model from any provider.
-
-**Override Default Models:**
-
-Set environment variables to replace Claude Code's default model tiers with any Bifrost-configured model:
-
-```bash
-# Replace Sonnet tier with GPT-5
-export ANTHROPIC_DEFAULT_SONNET_MODEL="openai/gpt-5"
-
-# Replace Opus tier with Claude Opus 4.5
-export ANTHROPIC_DEFAULT_OPUS_MODEL="anthropic/claude-opus-4-5-20251101"
-
-# Replace Haiku tier with Azure-hosted Claude
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="azure/claude-haiku-4-5"
-```
-
-<Warning>
-  Alternative models must support **tool use capabilities** for file operations, terminal commands, and code editing to
-  work properly with Claude Code.
-</Warning>
 
 **Start with a Specific Model:**
 
@@ -240,3 +204,19 @@ Use the `/model` command to switch models during an active session:
 If you experience issues with tool calls not executing properly, try switching to a different provider in your Bifrost configuration.
 
 </Warning>
+
+## Checklist
+
+1. Ensure the model selected is same as you configured in the `settings.json`. 
+<Frame>
+  <img src="/media/cli/claude-cli-model-selection.png" alt="Selected model in Claude cli"/>
+</Frame>
+If this is not the case - 
+  1. Select model using /config
+    1. Execute `/config`
+    2. Search for model
+    3. Select the correct model
+    <Frame>
+      <img src="/media/cli/claude-code-config-model-selection.png" alt="Claude code model selection using /config"/>
+    </Frame>
+  2. Or pass the model using `/model <model_name>` e.g., `/model sonnet-model`
