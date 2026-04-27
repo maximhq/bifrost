@@ -1172,10 +1172,14 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 			config.ClientConfig.MCPAgentDepth = mcpCfg.ToolManagerConfig.MaxAgentDepth
 			changed = true
 		}
-		toolTimeoutSec := int(mcpCfg.ToolManagerConfig.ToolExecutionTimeout / time.Second)
-		if toolTimeoutSec > 0 && config.ClientConfig.MCPToolExecutionTimeout != toolTimeoutSec {
-			config.ClientConfig.MCPToolExecutionTimeout = toolTimeoutSec
-			changed = true
+		if d := mcpCfg.ToolManagerConfig.ToolExecutionTimeout.D(); d > 0 {
+			// Ceiling-round to whole seconds: any sub-second value (e.g. 500ms) becomes 1s
+			// rather than being truncated to 0 and silently treated as "unset".
+			toolTimeoutSec := int(math.Ceil(d.Seconds()))
+			if config.ClientConfig.MCPToolExecutionTimeout != toolTimeoutSec {
+				config.ClientConfig.MCPToolExecutionTimeout = toolTimeoutSec
+				changed = true
+			}
 		}
 		if mcpCfg.ToolManagerConfig.CodeModeBindingLevel != "" {
 			codeModeLevel := string(mcpCfg.ToolManagerConfig.CodeModeBindingLevel)

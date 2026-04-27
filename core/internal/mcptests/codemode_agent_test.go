@@ -534,7 +534,7 @@ func TestCodeModeAgent_MaxDepth(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        3,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -607,7 +607,7 @@ func TestCodeModeAgent_MaxDepth_ChatFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -679,7 +679,7 @@ func TestCodeModeAgent_MaxDepth_ResponsesFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -750,7 +750,7 @@ func TestCodeModeAgent_Timeout(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        10,
-		ToolExecutionTimeout: 2 * time.Second, // Short timeout
+		ToolExecutionTimeout: schemas.Duration(2 * time.Second), // Short timeout
 	})
 
 	ctx := createTestContext()
@@ -814,7 +814,7 @@ func TestCodeModeAgent_Timeout_ChatFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        10,
-		ToolExecutionTimeout: 1 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(1 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -876,7 +876,7 @@ func TestCodeModeAgent_Timeout_ResponsesFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        10,
-		ToolExecutionTimeout: 1 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(1 * time.Second),
 	})
 
 	ctx := createTestContext()

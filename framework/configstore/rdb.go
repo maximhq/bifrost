@@ -1232,7 +1232,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			return &schemas.MCPConfig{
 				ClientConfigs: clientConfigs,
 				ToolManagerConfig: &schemas.MCPToolManagerConfig{
-					ToolExecutionTimeout: 30 * time.Second, // default from TableClientConfig
+					ToolExecutionTimeout: schemas.Duration(30 * time.Second), // default from TableClientConfig
 					MaxAgentDepth:        10,               // default from TableClientConfig
 				},
 			}, nil
@@ -1240,7 +1240,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		return nil, err
 	}
 	toolManagerConfig := schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout:  time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
+		ToolExecutionTimeout:  schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
 		MaxAgentDepth:         clientConfig.MCPAgentDepth,
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,

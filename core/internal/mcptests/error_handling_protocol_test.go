@@ -364,7 +364,7 @@ func TestErrorHandling_STDIO_TimeoutScenario(t *testing.T) {
 
 	// Set a short timeout for this test
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout: 2 * time.Second, // 2 second timeout
+		ToolExecutionTimeout: schemas.Duration(2 * time.Second), // 2 second timeout
 	})
 
 	err := manager.AddClient(&errorServerConfig)

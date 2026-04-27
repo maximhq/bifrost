@@ -38,7 +38,7 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 		Scheme:  scheme,
 		Host:    host,
 		APIKey:  apiKey,
-		Timeout: time.Duration(timeout) * time.Second,
+		Timeout: schemas.Duration(time.Duration(timeout) * time.Second),
 	}
 }
 
@@ -66,7 +66,7 @@ func getRedisConfigFromEnv() vectorstore.RedisConfig {
 		Username:       username,
 		Password:       password,
 		DB:             db,
-		ContextTimeout: timeout,
+		ContextTimeout: schemas.Duration(timeout),
 	}
 }
 
