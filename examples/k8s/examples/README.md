@@ -63,6 +63,9 @@ RELEASE_NAME="bifrost-statefulset-upgrade"
 
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
+# Ensure metadata.namespace in examples/k8s/examples/secrets-providers-sample.yaml matches the NAMESPACE defined above
+kubectl -n "${NAMESPACE}" apply -f examples/k8s/examples/secrets-providers-sample.yaml
+
 # SQLite base stack
 helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   --namespace "${NAMESPACE}" \
