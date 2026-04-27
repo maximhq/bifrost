@@ -162,15 +162,21 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		OutputCostPerTokenPriority:        entry.OutputCostPerTokenPriority,
 		InputCostPerTokenFlex:             entry.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:            entry.OutputCostPerTokenFlex,
-		InputCostPerTokenAbove200kTokens:         entry.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority: entry.InputCostPerTokenAbove200kTokensPriority,
-		OutputCostPerTokenAbove200kTokens:         entry.OutputCostPerTokenAbove200kTokens,
-		OutputCostPerTokenAbove200kTokensPriority: entry.OutputCostPerTokenAbove200kTokensPriority,
 		// Costs - 272k Tier
 		InputCostPerTokenAbove272kTokens:          entry.InputCostPerTokenAbove272kTokens,
 		InputCostPerTokenAbove272kTokensPriority:  entry.InputCostPerTokenAbove272kTokensPriority,
 		OutputCostPerTokenAbove272kTokens:         entry.OutputCostPerTokenAbove272kTokens,
 		OutputCostPerTokenAbove272kTokensPriority: entry.OutputCostPerTokenAbove272kTokensPriority,
+		// Costs - 256k Tier
+		InputCostPerTokenAbove256kTokens:          entry.InputCostPerTokenAbove256kTokens,
+		InputCostPerTokenAbove256kTokensPriority:  entry.InputCostPerTokenAbove256kTokensPriority,
+		OutputCostPerTokenAbove256kTokens:         entry.OutputCostPerTokenAbove256kTokens,
+		OutputCostPerTokenAbove256kTokensPriority: entry.OutputCostPerTokenAbove256kTokensPriority,
+		// Costs - 200k Tier
+		InputCostPerTokenAbove200kTokens:         entry.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority: entry.InputCostPerTokenAbove200kTokensPriority,
+		OutputCostPerTokenAbove200kTokens:         entry.OutputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokensPriority: entry.OutputCostPerTokenAbove200kTokensPriority,
 		// Costs - Character
 		InputCostPerCharacter: entry.InputCostPerCharacter,
 		// Costs - 128k Tier
@@ -179,6 +185,11 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		InputCostPerVideoPerSecondAbove128kTokens: entry.InputCostPerVideoPerSecondAbove128kTokens,
 		InputCostPerAudioPerSecondAbove128kTokens: entry.InputCostPerAudioPerSecondAbove128kTokens,
 		OutputCostPerTokenAbove128kTokens:         entry.OutputCostPerTokenAbove128kTokens,
+		// Costs - 32k Tier
+		InputCostPerTokenAbove32kTokens:          entry.InputCostPerTokenAbove32kTokens,
+		InputCostPerTokenAbove32kTokensPriority:  entry.InputCostPerTokenAbove32kTokensPriority,
+		OutputCostPerTokenAbove32kTokens:         entry.OutputCostPerTokenAbove32kTokens,
+		OutputCostPerTokenAbove32kTokensPriority: entry.OutputCostPerTokenAbove32kTokensPriority,
 
 		// Costs - Cache
 		CacheCreationInputTokenCost:                        entry.CacheCreationInputTokenCost,

@@ -24,6 +24,11 @@ type TableModelPricing struct {
 	InputCostPerTokenFlex      *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex     *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
 	InputCostPerCharacter      *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
+	// Costs - 32k Tier
+	InputCostPerTokenAbove32kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_32k_tokens" json:"input_cost_per_token_above_32k_tokens,omitempty"`
+	InputCostPerTokenAbove32kTokensPriority  *float64 `gorm:"default:null;column:input_cost_per_token_above_32k_tokens_priority" json:"input_cost_per_token_above_32k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove32kTokens         *float64 `gorm:"default:null;column:output_cost_per_token_above_32k_tokens" json:"output_cost_per_token_above_32k_tokens,omitempty"`
+	OutputCostPerTokenAbove32kTokensPriority *float64 `gorm:"default:null;column:output_cost_per_token_above_32k_tokens_priority" json:"output_cost_per_token_above_32k_tokens_priority,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`
@@ -35,6 +40,11 @@ type TableModelPricing struct {
 	InputCostPerTokenAbove200kTokensPriority  *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens_priority" json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
 	OutputCostPerTokenAbove200kTokens         *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens" json:"output_cost_per_token_above_200k_tokens,omitempty"`
 	OutputCostPerTokenAbove200kTokensPriority *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens_priority" json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
+	// Costs - 256k Tier
+	InputCostPerTokenAbove256kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_256k_tokens" json:"input_cost_per_token_above_256k_tokens,omitempty"`
+	InputCostPerTokenAbove256kTokensPriority  *float64 `gorm:"default:null;column:input_cost_per_token_above_256k_tokens_priority" json:"input_cost_per_token_above_256k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove256kTokens         *float64 `gorm:"default:null;column:output_cost_per_token_above_256k_tokens" json:"output_cost_per_token_above_256k_tokens,omitempty"`
+	OutputCostPerTokenAbove256kTokensPriority *float64 `gorm:"default:null;column:output_cost_per_token_above_256k_tokens_priority" json:"output_cost_per_token_above_256k_tokens_priority,omitempty"`
 	// Costs - 272k Tier
 	InputCostPerTokenAbove272kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens" json:"input_cost_per_token_above_272k_tokens,omitempty"`
 	InputCostPerTokenAbove272kTokensPriority  *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens_priority" json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`

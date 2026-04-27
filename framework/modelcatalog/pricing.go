@@ -12,8 +12,10 @@ import (
 // Default sync interval and config key
 const (
 	TokenTierAbove272K = 272000
+	TokenTierAbove256K = 256000
 	TokenTierAbove200K = 200000
 	TokenTierAbove128K = 128000
+	TokenTierAbove32K = 32000
 )
 
 // PricingEntry represents a single model's pricing information.
@@ -79,6 +81,11 @@ type PricingOptions struct {
 	InputCostPerTokenFlex      *float64 `json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex     *float64 `json:"output_cost_per_token_flex,omitempty"`
 	InputCostPerCharacter      *float64 `json:"input_cost_per_character,omitempty"`
+	// Costs - 32k Tier
+	InputCostPerTokenAbove32kTokens          *float64 `json:"input_cost_per_token_above_32k_tokens,omitempty"`
+	InputCostPerTokenAbove32kTokensPriority  *float64 `json:"input_cost_per_token_above_32k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove32kTokens         *float64 `json:"output_cost_per_token_above_32k_tokens,omitempty"`
+	OutputCostPerTokenAbove32kTokensPriority *float64 `json:"output_cost_per_token_above_32k_tokens_priority,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
@@ -90,6 +97,11 @@ type PricingOptions struct {
 	InputCostPerTokenAbove200kTokensPriority  *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
 	OutputCostPerTokenAbove200kTokens         *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 	OutputCostPerTokenAbove200kTokensPriority *float64 `json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
+	// Costs - 256k Tier
+	InputCostPerTokenAbove256kTokens          *float64 `json:"input_cost_per_token_above_256k_tokens,omitempty"`
+	InputCostPerTokenAbove256kTokensPriority  *float64 `json:"input_cost_per_token_above_256k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove256kTokens         *float64 `json:"output_cost_per_token_above_256k_tokens,omitempty"`
+	OutputCostPerTokenAbove256kTokensPriority *float64 `json:"output_cost_per_token_above_256k_tokens_priority,omitempty"`
 	// Costs - 272k Tier
 	InputCostPerTokenAbove272kTokens          *float64 `json:"input_cost_per_token_above_272k_tokens,omitempty"`
 	InputCostPerTokenAbove272kTokensPriority  *float64 `json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
@@ -860,6 +872,14 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 			return *pricing.InputCostPerTokenAbove272kTokens
 		}
 	}
+	if totalTokens > TokenTierAbove256K {
+		if tier.isPriority && pricing.InputCostPerTokenAbove256kTokensPriority != nil {
+			return *pricing.InputCostPerTokenAbove256kTokensPriority
+		}
+		if pricing.InputCostPerTokenAbove256kTokens != nil {
+			return *pricing.InputCostPerTokenAbove256kTokens
+		}
+	}
 	if totalTokens > TokenTierAbove200K {
 		if tier.isPriority && pricing.InputCostPerTokenAbove200kTokensPriority != nil {
 			return *pricing.InputCostPerTokenAbove200kTokensPriority
@@ -871,6 +891,16 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if totalTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil {
 		return *pricing.InputCostPerTokenAbove128kTokens
 	}
+
+	if totalTokens > TokenTierAbove32K {
+		if tier.isPriority && pricing.InputCostPerTokenAbove32kTokensPriority != nil {
+			return *pricing.InputCostPerTokenAbove32kTokensPriority
+		}
+		if pricing.InputCostPerTokenAbove32kTokens != nil {
+			return *pricing.InputCostPerTokenAbove32kTokens
+		}
+	}
+
 	if tier.isPriority && pricing.InputCostPerTokenPriority != nil {
 		return *pricing.InputCostPerTokenPriority
 	}
