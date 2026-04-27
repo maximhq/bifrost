@@ -1456,7 +1456,8 @@ export function LogDetailView({
               </span>
             ) : null}
           </TabsTrigger>
-          {!isPassthrough && (
+
+          {!isPassthrough && !log.list_models_output && (
             <TabsTrigger value="tools" className="px-3">
               Tools
               {log.params?.tools?.length ? (
@@ -1979,6 +1980,28 @@ export function LogDetailView({
               </CollapsibleBox>
             )}
 
+          {log.list_models_output && (
+            <CollapsibleBox
+              title={`List Models Output (${log.list_models_output.length})`}
+              onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
+            >
+              <CodeEditor
+                className="z-0 w-full"
+                shouldAdjustInitialHeight={true}
+                maxHeight={450}
+                wrap={true}
+                code={JSON.stringify(log.list_models_output, null, 2)}
+                lang="json"
+                readonly={true}
+                options={{
+                  scrollBeyondLastLine: false,
+                  lineNumbers: "off",
+                  alwaysConsumeMouseWheel: false,
+                }}
+              />
+            </CollapsibleBox>
+          )}
+
           {(log.error_details?.error.message ||
             log.error_details?.error.error != null) && (
             <div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
@@ -2246,32 +2269,10 @@ export function LogDetailView({
               </CollapsibleBox>
             </>
           )}
-          {log.list_models_output && (
-            <CollapsibleBox
-              title={`List Models Output (${log.list_models_output.length})`}
-              onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
-            >
-              <CodeEditor
-                className="z-0 w-full"
-                shouldAdjustInitialHeight={true}
-                maxHeight={450}
-                wrap={true}
-                code={JSON.stringify(log.list_models_output, null, 2)}
-                lang="json"
-                readonly={true}
-                options={{
-                  scrollBeyondLastLine: false,
-                  lineNumbers: "off",
-                  alwaysConsumeMouseWheel: false,
-                }}
-              />
-            </CollapsibleBox>
-          )}
           {!rawRequest &&
             !rawResponse &&
             !passthroughRequestBody &&
-            !passthroughResponseBody &&
-            !log.list_models_output && (
+            !passthroughResponseBody && (
               <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
                 No raw JSON available.
               </div>
