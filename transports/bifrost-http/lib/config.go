@@ -2623,8 +2623,8 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 					Order:     plugin.Order,
 				}
 				if plugin.Name == semanticcache.PluginName {
-					if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
-						logger.Warn("failed to add provider keys to semantic cache config: %v", err)
+					if err := config.ValidateSemanticCacheConfig(pluginConfig); err != nil {
+						logger.Warn("failed to validate semantic cache config: %v", err)
 					}
 				}
 				config.PluginConfigs[i] = pluginConfig
@@ -2693,16 +2693,6 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 		}
 	}
 
-	// Process semantic cache plugin
-	for i, plugin := range config.PluginConfigs {
-		if plugin.Name == semanticcache.PluginName {
-			if err := config.AddProviderKeysToSemanticCacheConfig(plugin); err != nil {
-				logger.Warn("failed to add provider keys to semantic cache config: %v", err)
-			}
-			config.PluginConfigs[i] = plugin
-		}
-	}
-
 	// Update store
 	if config.ConfigStore != nil {
 		logger.Debug("updating plugins in store")
@@ -2723,11 +2713,6 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 				Version:   *plugin.Version,
 				Placement: plugin.Placement,
 				Order:     plugin.Order,
-			}
-			if plugin.Name == semanticcache.PluginName {
-				if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {
-					logger.Warn("failed to remove provider keys from semantic cache config: %v", err)
-				}
 			}
 			if err := config.ConfigStore.UpsertPlugin(ctx, pluginConfig); err != nil {
 				logger.Warn("failed to update plugin: %v", err)
@@ -4787,7 +4772,7 @@ func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.Provider
 	return nil
 }
 
-func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConfig) error {
+func (c *Config) ValidateSemanticCacheConfig(config *schemas.PluginConfig) error {
 	if config.Name != semanticcache.PluginName {
 		return nil
 	}
@@ -4856,12 +4841,10 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	}
 	configMap["embedding_model"] = embeddingModel
 
-	keys, err := c.GetProviderConfigRaw(schemas.ModelProvider(provider))
-	if err != nil {
+	// Validate that the provider is configured in the global client (keys are inherited automatically).
+	if _, err := c.GetProviderConfigRaw(schemas.ModelProvider(provider)); err != nil {
 		return fmt.Errorf("failed to get provider config for %s: %w", provider, err)
 	}
-
-	configMap["keys"] = keys.Keys
 
 	return nil
 }
@@ -4909,30 +4892,6 @@ func semanticCacheConfigDimension(configMap map[string]interface{}) (int, bool, 
 		return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be numeric, got %T", dimensionVal)
 	}
 }
-
-func (c *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstoreTables.TablePlugin) error {
-	if config.Name != semanticcache.PluginName {
-		return nil
-	}
-
-	// Check if config.Config exists
-	if config.Config == nil {
-		return fmt.Errorf("semantic_cache plugin config is nil")
-	}
-
-	// Type assert config.Config to map[string]interface{}
-	configMap, ok := config.Config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
-	}
-
-	configMap["keys"] = []schemas.Key{}
-
-	config.Config = configMap
-
-	return nil
-}
-
 func (c *Config) GetAvailableProviders(model string) []schemas.ModelProvider {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()

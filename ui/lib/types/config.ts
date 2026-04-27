@@ -540,13 +540,11 @@ interface BaseCacheConfig {
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
 	provider?: undefined;
-	keys?: ModelProviderKey[];
 	embedding_model?: undefined;
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {
 	provider: ModelProviderName;
-	keys?: ModelProviderKey[];
 	embedding_model: string;
 	dimension: number;
 }
@@ -555,7 +553,6 @@ export type CacheConfig = DirectCacheConfig | ProviderBackedCacheConfig;
 
 export interface EditorCacheConfig extends BaseCacheConfig {
 	provider?: ModelProviderName;
-	keys?: ModelProviderKey[];
 	embedding_model?: string;
 	dimension?: number;
 }
