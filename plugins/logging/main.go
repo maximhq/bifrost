@@ -412,6 +412,18 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 		}
 	}
 
+	// Include x-bf-dim-* dimensions in metadata.
+	if dims, ok := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string); ok {
+		for k, v := range dims {
+			if metadata == nil {
+				metadata = make(map[string]interface{})
+			}
+			if _, exists := metadata[k]; !exists {
+				metadata[k] = v
+			}
+		}
+	}
+
 	return metadata
 }
 

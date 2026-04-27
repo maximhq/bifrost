@@ -552,6 +552,8 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 	generationID, hasGenerationID := ctx.Value(GenerationIDKey).(string)
 	traceID, hasTraceID := ctx.Value(TraceIDKey).(string)
 	tags, hasTags := ctx.Value(TagsKey).(map[string]string)
+	// Also capture x-bf-dim-* dimensions to forward as tags
+	dims, hasDims := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -662,6 +664,20 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 				}
 				if traceID != "" {
 					logger.AddTagToTrace(traceID, key, value)
+				}
+			}
+		}
+		// add x-bf-dim-* dimensions as tags (lower priority than explicit x-bf-maxim-* tags)
+		if hasDims {
+			for key, value := range dims {
+				// Only add if not already set by x-bf-maxim-* (to avoid overriding explicit tags)
+				if _, alreadyInTags := tags[key]; !alreadyInTags {
+					if generationID != "" {
+						logger.AddTagToGeneration(generationID, key, value)
+					}
+					if traceID != "" {
+						logger.AddTagToTrace(traceID, key, value)
+					}
 				}
 			}
 		}
