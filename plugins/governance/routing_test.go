@@ -813,9 +813,9 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 	assert.Equal(t, "terminal-a", decision.MatchedRuleID)
 }
 
-// TestEvaluateRoutingRules_ConvergenceStopsChain tests that the cycle-detection mechanism stops
-// the chain when a chain_rule=true rule resolves to a provider/model already visited (no-op loop).
-func TestEvaluateRoutingRules_ConvergenceStopsChain(t *testing.T) {
+// TestEvaluateRoutingRules_SelfLoopContinuesToNextRule tests that a chain_rule=true rule which
+// resolves to the same provider/model (self-loop) fires once and then allows the next rule to run.
+func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
@@ -823,10 +823,67 @@ func TestEvaluateRoutingRules_ConvergenceStopsChain(t *testing.T) {
 	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
-	// Rule A: chain_rule=true but resolves back to the initial provider/model — creates a cycle.
+	// Rule A: matches gpt-4o, chain_rule=true but resolves back to openai/gpt-4o (self-loop).
+	// Should fire once and then be skipped so Rule B can run.
 	ruleA := &configstoreTables.TableRoutingRule{
-		ID:            "converge-a",
-		Name:          "Convergence Rule A",
+		ID:            "self-loop-a",
+		Name:          "Self-Loop Rule A",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
+		},
+		Enabled:   true,
+		Scope:     "global",
+		Priority:  0,
+		ChainRule: true,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleA))
+
+	// Rule B: also matches gpt-4o, terminal — should be reached after Rule A fires once.
+	ruleB := &configstoreTables.TableRoutingRule{
+		ID:            "self-loop-b",
+		Name:          "Self-Loop Rule B",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("claude-3"), Weight: 1.0},
+		},
+		Enabled:   true,
+		Scope:     "global",
+		Priority:  1,
+		ChainRule: false,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), ruleB))
+
+	ctx := &RoutingContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	}
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, ctx)
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+
+	// Rule A fired once (self-loop), then was skipped. Rule B matched on the second step.
+	assert.Equal(t, "anthropic", decision.Provider)
+	assert.Equal(t, "claude-3", decision.Model)
+	assert.Equal(t, "self-loop-b", decision.MatchedRuleID)
+}
+
+// TestEvaluateRoutingRules_SelfLoopAloneTerminates tests that a self-looping chain rule with no
+// other rules terminates cleanly after firing once (TERMINATION 1: no remaining rule matches).
+func TestEvaluateRoutingRules_SelfLoopAloneTerminates(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	ruleA := &configstoreTables.TableRoutingRule{
+		ID:            "solo-self-loop",
+		Name:          "Solo Self-Loop",
 		CelExpression: "model == 'gpt-4o'",
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
@@ -849,10 +906,10 @@ func TestEvaluateRoutingRules_ConvergenceStopsChain(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, decision)
 
-	// Cycle detected after the first match; the last matched decision (openai/gpt-4o) is returned.
+	// Rule A fired once, then was skipped. No other rules → terminates with Rule A's decision.
 	assert.Equal(t, "openai", decision.Provider)
 	assert.Equal(t, "gpt-4o", decision.Model)
-	assert.Equal(t, "converge-a", decision.MatchedRuleID)
+	assert.Equal(t, "solo-self-loop", decision.MatchedRuleID)
 }
 
 // TestEvaluateRoutingRules_MaxDepthCutoff tests that the chain stops once chainMaxDepth is reached,

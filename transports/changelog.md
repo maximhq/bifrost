@@ -1,3 +1,4 @@
+- fix: routing rule chain no longer halts when a chain_rule resolves to the same provider/model (self-loop); subsequent rules now continue to evaluate correctly
 - fix: response extra fields request type corruption for streaming requests on high concurrency
 - feat: added support for per-request content logging toggle via `x-bf-disable-content-logging` header
 - feat: auto-resolve provider when model string has no provider prefix

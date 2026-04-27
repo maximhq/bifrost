@@ -1,0 +1,1 @@
+- fix: routing rule chain no longer halts when a chain_rule resolves to the same provider/model (self-loop); subsequent rules now continue to evaluate correctly
