@@ -105,8 +105,8 @@ export function SettingsPanel() {
 	}, [apiKeyId, providerKeys, providerVirtualKeys]);
 
 	const filterVks = useMemo(() => {
-		const isVirtualKey = providerVirtualKeys.some((vk) => vk.id === apiKeyId);
-		if (isVirtualKey) return [apiKeyId];
+		const virtualKey = providerVirtualKeys.find((vk) => vk.value === apiKeyId);
+		if (virtualKey) return [virtualKey.id];
 		return undefined;
 	}, [apiKeyId, providerVirtualKeys]);
 
