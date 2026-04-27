@@ -371,13 +371,6 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: true,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
-		},
 	})
 }
 
@@ -426,6 +419,9 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 
 	// Get a mocked Bifrost client
 	client := getMockedBifrostClient(t, ctx, logger, plugin)
+
+	// Wire the global client as the embedding executor so semantic search works.
+	pluginImpl.SetEmbeddingRequestExecutor(client.EmbeddingRequest)
 
 	return &TestSetup{
 		Logger: logger,
@@ -648,13 +644,6 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -669,13 +658,6 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		CleanUpOnShutdown:   true,
 		Threshold:           0.8,
 		ExcludeSystemPrompt: &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -691,13 +673,6 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 		ExcludeSystemPrompt:          &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)

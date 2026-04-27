@@ -1393,13 +1393,6 @@
                         "huggingface"
                       ]
                     },
-                    "keys": {
-                      "type": "array",
-                      "description": "API keys for the embedding provider. These are injected at runtime for config-driven setups and are not needed for direct caching with dimension: 1.",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
                     "embedding_model": {
                       "type": "string",
                       "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."

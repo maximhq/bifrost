@@ -35,25 +35,23 @@ func NewPluginsHandler(pluginsLoader PluginsLoader, configStore configstore.Conf
 	}
 }
 
-
-
 // CreatePluginRequest is the request body for creating a plugin
 type CreatePluginRequest struct {
-	Name      string           `json:"name"`
-	Enabled   bool             `json:"enabled"`
-	Config    map[string]any   `json:"config"`
-	Path      *string          `json:"path"`
+	Name      string                   `json:"name"`
+	Enabled   bool                     `json:"enabled"`
+	Config    map[string]any           `json:"config"`
+	Path      *string                  `json:"path"`
 	Placement *schemas.PluginPlacement `json:"placement,omitempty"`
-	Order     *int             `json:"order,omitempty"`
+	Order     *int                     `json:"order,omitempty"`
 }
 
 // UpdatePluginRequest is the request body for updating a plugin
 type UpdatePluginRequest struct {
-	Enabled   bool             `json:"enabled"`
-	Path      *string          `json:"path"`
-	Config    map[string]any   `json:"config"`
+	Enabled   bool                     `json:"enabled"`
+	Path      *string                  `json:"path"`
+	Config    map[string]any           `json:"config"`
 	Placement *schemas.PluginPlacement `json:"placement,omitempty"`
-	Order     *int             `json:"order,omitempty"`
+	Order     *int                     `json:"order,omitempty"`
 }
 
 // RegisterRoutes registers the routes for the PluginsHandler
@@ -66,15 +64,15 @@ func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 }
 
 type PluginResponse struct {
-	Name       string               `json:"name"`
-	ActualName string               `json:"actualName"`
-	Enabled    bool                 `json:"enabled"`
-	Config     any                  `json:"config"`
-	IsCustom   bool                 `json:"isCustom"`
-	Path       *string              `json:"path"`
-	Placement  *schemas.PluginPlacement     `json:"placement,omitempty"`
-	Order      *int                 `json:"order,omitempty"`
-	Status     schemas.PluginStatus `json:"status"`
+	Name       string                   `json:"name"`
+	ActualName string                   `json:"actualName"`
+	Enabled    bool                     `json:"enabled"`
+	Config     any                      `json:"config"`
+	IsCustom   bool                     `json:"isCustom"`
+	Path       *string                  `json:"path"`
+	Placement  *schemas.PluginPlacement `json:"placement,omitempty"`
+	Order      *int                     `json:"order,omitempty"`
+	Status     schemas.PluginStatus     `json:"status"`
 }
 
 // buildPluginResponse constructs a PluginResponse with status for a given TablePlugin.

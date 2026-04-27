@@ -67,8 +67,16 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 		},
 	}
 
-	// Generate embedding using bifrost client
-	response, err := plugin.client.EmbeddingRequest(ctx, embeddingReq)
+	// Create a new context from incoming context. Parent ctx will be used for cancellation.
+	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	defer embeddingCtx.ReleasePluginScope()
+
+	embeddingCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+
+	if plugin.embeddingRequestExecutor == nil {
+		return nil, 0, fmt.Errorf("embedding request executor is not configured")
+	}
+	response, err := plugin.embeddingRequestExecutor(embeddingCtx, embeddingReq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to generate embedding: %v", err)
 	}
