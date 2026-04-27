@@ -174,8 +174,17 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 		return
 	}
 
-	for k, v := range PopulateRequestAttributes(req) {
+	attrs := PopulateRequestAttributes(req)
+	for k, v := range attrs {
 		span.SetAttribute(k, v)
+	}
+
+	// Propagate input messages to root span so observability backends (e.g. Langfuse)
+	// can display Input at the top-level trace without requiring users to drill into llm.call.
+	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
+		if v, ok := attrs[schemas.AttrInputMessages]; ok {
+			rootSpan.SetAttribute(schemas.AttrInputMessages, v)
+		}
 	}
 }
 
@@ -193,7 +202,8 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if span == nil {
 		return
 	}
-	for k, v := range PopulateResponseAttributes(resp) {
+	respAttrs := PopulateResponseAttributes(resp)
+	for k, v := range respAttrs {
 		span.SetAttribute(k, v)
 	}
 	for k, v := range PopulateErrorAttributes(err) {
@@ -203,6 +213,14 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if t.pricingManager != nil && resp != nil {
 		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
 		span.SetAttribute(schemas.AttrUsageCost, cost)
+	}
+
+	// Propagate output messages to root span so observability backends (e.g. Langfuse)
+	// can display Output at the top-level trace without requiring users to drill into llm.call.
+	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
+		if v, ok := respAttrs[schemas.AttrOutputMessages]; ok {
+			rootSpan.SetAttribute(schemas.AttrOutputMessages, v)
+		}
 	}
 }
 
