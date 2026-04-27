@@ -599,6 +599,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPriorityTierPricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAdd32kTierPricingColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddFlexTierPricingColumns(ctx, db); err != nil {
 		return err
 	}
@@ -6676,6 +6679,63 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error 
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running flex tier pricing columns migration: %s", err.Error())
 
+	}
+	return nil
+}
+
+// migrationAdd32kTierPricingColumns adds pricing columns for the 32k token tier.
+func migrationAdd32kTierPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_32k_tier_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"input_cost_per_token_above_32k_tokens",
+				"input_cost_per_token_above_32k_tokens_priority",
+				"output_cost_per_token_above_32k_tokens",
+				"output_cost_per_token_above_32k_tokens_priority",
+				"input_cost_per_token_above_256k_tokens",
+				"input_cost_per_token_above_256k_tokens_priority",
+				"output_cost_per_token_above_256k_tokens",
+				"output_cost_per_token_above_256k_tokens_priority",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"input_cost_per_token_above_32k_tokens",
+				"input_cost_per_token_above_32k_tokens_priority",
+				"output_cost_per_token_above_32k_tokens",
+				"output_cost_per_token_above_32k_tokens_priority",
+				"input_cost_per_token_above_256k_tokens",
+				"input_cost_per_token_above_256k_tokens_priority",
+				"output_cost_per_token_above_256k_tokens",
+				"output_cost_per_token_above_256k_tokens_priority",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running 32k tier pricing columns migration: %s", err.Error())
 	}
 	return nil
 }
