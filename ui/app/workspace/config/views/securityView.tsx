@@ -12,18 +12,21 @@ import { EnvVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { Link } from "@tanstack/react-router";
-import { AlertTriangle, Info } from "lucide-react";
+import { AlertTriangle, Info, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const { data: authType, isLoading: authTypeLoading, error: authTypeError } = useGetAuthTypeQuery(undefined, { skip: !IS_ENTERPRISE });
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
-	const hideAuthDashboard = IS_ENTERPRISE;
+	const showPasswordSection =
+		!IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type === "password");
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
@@ -77,11 +80,12 @@ export default function SecurityView() {
 			authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value ||
 			authConfig.admin_password?.env_var !== bifrostConfig?.auth_config?.admin_password?.env_var ||
 			authConfig.admin_password?.from_env !== bifrostConfig?.auth_config?.admin_password?.from_env;
-		const authChanged =
-			authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
-			usernameChanged ||
-			passwordChanged ||
-			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference;
+		const authChanged = showPasswordSection
+			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
+			  usernameChanged ||
+			  passwordChanged ||
+			  authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference
+			: false;
 
 		const localRequired = localConfig.required_headers?.slice().sort().join(",");
 		const serverRequired = config.required_headers?.slice().sort().join(",");
@@ -103,7 +107,7 @@ export default function SecurityView() {
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged
 		);
-	}, [config, localConfig, authConfig, bifrostConfig]);
+	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
 	const needsRestart = useMemo(() => {
 		if (!config) return false;
@@ -172,13 +176,18 @@ export default function SecurityView() {
 			await updateCoreConfig({
 				...bifrostConfig!,
 				client_config: localConfig,
-				auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+				...(showPasswordSection
+					? {
+							auth_config:
+								authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+						}
+					: {}),
 			}).unwrap();
 			toast.success("Security settings updated successfully.");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, authConfig, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -208,8 +217,22 @@ export default function SecurityView() {
 					</Alert>
 				)}
 				{/* Password Protect the Dashboard */}
-				{!hideAuthDashboard && (
-					<div>
+				{IS_ENTERPRISE && authTypeLoading && (
+					<div className="flex items-center justify-center rounded-lg border p-8" data-testid="security-auth-type-loading">
+						<Loader2 className="text-muted-foreground h-5 w-5 animate-spin" aria-hidden />
+						<span className="sr-only">Loading authentication settings</span>
+					</div>
+				)}
+				{IS_ENTERPRISE && !authTypeLoading && authTypeError && (
+					<Alert variant="destructive" data-testid="security-auth-type-error">
+						<AlertTriangle className="h-4 w-4" />
+						<AlertDescription>
+							Could not load authentication type. Dashboard password settings are hidden until this request succeeds.{" "}
+							{getErrorMessage(authTypeError)}
+						</AlertDescription>
+					</Alert>
+				)}
+				{showPasswordSection && <div>
 						<div className="space-y-4 rounded-lg border p-4">
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
@@ -266,8 +289,7 @@ export default function SecurityView() {
 								</div>
 							</div>
 						</div>
-					</div>
-				)}
+					</div>}
 				{/* Enable Auth on Inference */}
 				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
 					<div className="space-y-0.5">

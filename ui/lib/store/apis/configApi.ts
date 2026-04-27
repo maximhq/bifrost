@@ -1,4 +1,3 @@
-import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { BifrostConfig, GlobalProxyConfig, LatestReleaseResponse } from "@/lib/types/config";
 import axios from "axios";
 import { baseApi } from "./baseApi";
@@ -72,7 +71,7 @@ export const configApi = baseApi.injectEndpoints({
 			query: (data) => ({
 				url: "/config",
 				method: "PUT",
-				body: IS_ENTERPRISE ? { ...data, auth_config: undefined } : data,
+				body: data,
 			}),
 			invalidatesTags: ["Config"],
 		}),
