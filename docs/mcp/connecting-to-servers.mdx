@@ -921,6 +921,44 @@ if err != nil {
 
 ---
 
+## Disabling and Re-enabling Clients
+
+You can temporarily disable an MCP client without removing it. When disabled, Bifrost shuts down the client's connection, health monitor, and tool syncer. The client entry is preserved and its tools are invisible to inference requests until it is re-enabled.
+
+<Tabs>
+<Tab title="Web UI">
+
+Use the **Enabled** toggle in the MCP Server Catalog table to disable or re-enable a client with a single click. The toggle shows a loading spinner while the API call is in flight and automatically reflects the updated state.
+
+![MCP client enable/disable toggle in the server catalog table](/images/placeholder-mcp-disable-toggle.png)
+
+</Tab>
+<Tab title="Gateway API">
+
+```bash
+# Disable a client
+curl -X PUT http://localhost:8080/api/mcp/client/{id} \
+  -H "Content-Type: application/json" \
+  -d '{"disabled": true}'
+
+# Re-enable a client (reconnects automatically)
+curl -X PUT http://localhost:8080/api/mcp/client/{id} \
+  -H "Content-Type: application/json" \
+  -d '{"disabled": false}'
+```
+
+</Tab>
+<Tab title="config.json">
+
+The `disabled` field is a runtime API state and **cannot** be set in `config.json`. Clients defined in `config.json` always start enabled. Use the Web UI or Gateway API to disable a client after it has been created.
+
+</Tab>
+</Tabs>
+
+The `disabled` state persists across restarts — a disabled client is loaded into memory on boot but its connection is not established until it is explicitly re-enabled. Config changes (name, tools, headers) sent in the same PUT request as a `disabled` change are applied before the connection is shut down or re-established.
+
+---
+
 ## Naming Conventions
 
 MCP client names have specific requirements:

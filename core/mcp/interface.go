@@ -62,6 +62,12 @@ type MCPManagerInterface interface {
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
 
+	// DisableClient shuts down a client's connection and workers without removing it
+	DisableClient(id string) error
+
+	// EnableClient reconnects a disabled client and restarts its workers
+	EnableClient(id string) error
+
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection
 	// is closed after verification.

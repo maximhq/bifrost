@@ -17,8 +17,14 @@ MCPConnectionType:
 
 MCPConnectionState:
   type: string
-  enum: [connected, disconnected, error]
-  description: Connection state of an MCP client
+  enum: [connected, disconnected, error, pending_tools, disabled]
+  description: |
+    Connection state of an MCP client:
+    - connected: Client is connected and ready to use
+    - disconnected: Client is not connected (will be auto-recovered by health monitor)
+    - error: Client is in an unrecoverable error state
+    - pending_tools: Connected but tools not yet populated (per-user OAuth clients)
+    - disabled: Client has been intentionally disabled; no connection or workers are active
 
 MCPStdioConfig:
   type: object
@@ -242,6 +248,13 @@ MCPClientUpdateRequest:
         When true, this MCP client's tools are accessible to all virtual keys without requiring
         explicit per-key assignment. All tools are allowed by default. If a virtual key has an
         explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+    disabled:
+      type: boolean
+      default: false
+      description: |
+        When true, the client's connection, health monitor, and tool syncer are shut down.
+        The client entry is preserved so it can be re-enabled later by sending disabled: false.
+        Disabled clients do not expose tools to inference requests.
     vk_configs:
       type: array
       items:
@@ -342,6 +355,12 @@ MCPClientConfig:
         When true, this MCP client's tools are accessible to all virtual keys without requiring
         explicit per-key assignment. All tools are allowed by default. If a virtual key has an
         explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+    disabled:
+      type: boolean
+      default: false
+      description: |
+        Whether the client is intentionally disabled.
+        When true, the client has no active connection or workers and its tools are not available for inference.
 
 ChatToolFunction:
   type: object

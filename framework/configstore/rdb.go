@@ -1247,6 +1247,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
 					AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 				}
@@ -1285,6 +1286,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			IsPingAvailable:           dbClient.IsPingAvailable,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+			Disabled:                  dbClient.Disabled,
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
@@ -1369,6 +1371,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		IsPingAvailable:           dbClient.IsPingAvailable,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+		Disabled:                  dbClient.Disabled,
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
@@ -1423,6 +1426,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+			Disabled:                  clientConfigCopy.Disabled,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -1527,6 +1531,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"allow_on_all_virtual_keys":  clientConfigCopy.AllowOnAllVirtualKeys,
+			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
 		}
 		if encrypt.IsEnabled() {

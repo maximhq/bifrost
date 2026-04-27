@@ -27,6 +27,8 @@ type MCPManager interface {
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
 	ReconnectMCPClient(ctx context.Context, id string) error
+	DisableMCPClient(ctx context.Context, id string) error
+	EnableMCPClient(ctx context.Context, id string) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary access
 	// token and discovers available tools. The connection is closed after verification.
 	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
@@ -295,6 +297,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolPricing:           dbClient.ToolPricing,
 			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
+			Disabled:              dbClient.Disabled,
 		}
 		// Enrich VK assignments using the pre-fetched batch result (no extra DB call per client)
 		vkConfigs := []MCPVKConfigResponse{}
@@ -347,6 +350,18 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
+	}
+	// Reject reconnect requests for disabled clients — the client must be enabled first.
+	if h.store.MCPConfig != nil {
+		for _, client := range h.store.MCPConfig.ClientConfigs {
+			if client.ID == id {
+				if client.Disabled {
+					SendError(ctx, fasthttp.StatusBadRequest, "cannot reconnect a disabled MCP client: enable the client first")
+					return
+				}
+				break
+			}
+		}
 	}
 	if err := h.mcpManager.ReconnectMCPClient(ctx, id); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client: %v", err))
@@ -791,8 +806,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolSyncInterval:      toolSyncInterval,
 		ToolPricing:           req.ToolPricing,
 		AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
+		Disabled:              req.Disabled,
 	}
-	// Update MCP client in memory
+
+	// Update MCP client config in memory (always — applies name/tools/header changes,
+	// and also triggers disable/enable lifecycle if the Disabled flag toggled)
 	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
 		// Rollback DB update to keep DB and memory in sync
 		if h.store.ConfigStore != nil && oldDBConfig != nil {

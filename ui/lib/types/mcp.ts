@@ -3,7 +3,7 @@ import { EnvVar } from "./schemas";
 
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
-export type MCPConnectionState = "connected" | "disconnected" | "error";
+export type MCPConnectionState = "connected" | "disconnected" | "error" | "pending_tools" | "disabled";
 
 export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth";
 
@@ -42,6 +42,7 @@ export interface MCPClientConfig {
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	disabled?: boolean; // When true, connection/workers are shut down; tools are unavailable until re-enabled
 }
 
 export interface MCPVKConfigResponse {
@@ -106,6 +107,7 @@ export interface UpdateMCPClientRequest {
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 

@@ -3738,6 +3738,25 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	return bifrost.MCPManager.ReconnectClient(id)
 }
 
+// DisableMCPClient shuts down an MCP client's connection, health monitor, and tool
+// syncer without removing it. The client entry is kept in a "disabled" state so it
+// can be re-enabled via EnableMCPClient.
+func (bifrost *Bifrost) DisableMCPClient(id string) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.DisableClient(id)
+}
+
+// EnableMCPClient reconnects a previously disabled MCP client and restarts its
+// health monitor and tool syncer.
+func (bifrost *Bifrost) EnableMCPClient(id string) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.EnableClient(id)
+}
+
 // VerifyPerUserOAuthConnection delegates to the MCP manager to verify an MCP
 // server using a temporary access token and discover available tools. The
 // connection is closed after verification. If the MCP manager is not yet

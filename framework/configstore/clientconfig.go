@@ -1239,6 +1239,9 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 			}
 		}
 	}
+
+	// will enable it in the future with a migration
+	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

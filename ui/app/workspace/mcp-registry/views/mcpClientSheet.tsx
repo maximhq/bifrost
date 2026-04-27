@@ -141,6 +141,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
+			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -157,6 +158,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
+			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -175,6 +177,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					is_code_mode_client: data.is_code_mode_client,
 					is_ping_available: data.is_ping_available,
 					allow_on_all_virtual_keys: data.allow_on_all_virtual_keys,
+					disabled: data.disabled,
 					headers: data.headers ?? {},
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
@@ -420,6 +423,37 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													checked={field.value === true}
 													onCheckedChange={field.onChange}
 													data-testid="mcpclient-allow-on-all-virtual-keys-switch"
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="disabled"
+									render={({ field }) => (
+										<FormItem className="flex items-center justify-between rounded-lg border p-4">
+											<div className="flex items-center gap-2">
+												<FormLabel>Disable Client</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																When enabled, the client's connection, health monitor, and tool syncer are shut down. Tools from this
+																client will not be available for inference until it is re-enabled.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+											<FormControl>
+												<Switch
+													checked={field.value === true}
+													onCheckedChange={field.onChange}
+													data-testid="mcpclient-disabled-switch"
 												/>
 											</FormControl>
 										</FormItem>
