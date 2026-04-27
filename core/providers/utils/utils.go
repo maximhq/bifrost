@@ -1920,6 +1920,64 @@ func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.Bifr
 	return streamResponse
 }
 
+// GateSendChunk routes a stream chunk through the tracer's pause/resume/end
+// gate ONLY when a plugin has engaged the gate for this stream (via
+// ctx.PauseStream/ResumeStream/EndStream, which sets BifrostContextKeyStreamGated).
+// Streams that never engage the gate (the overwhelmingly common case) take the
+// fast path: a direct channel send with ctx.Done() guard — same code as before
+// the gate was introduced, no extra lookups or locks.
+func GateSendChunk(ctx *schemas.BifrostContext, chunk *schemas.BifrostStreamChunk, responseChan chan *schemas.BifrostStreamChunk) (ok bool) {
+	if gated, _ := ctx.Value(schemas.BifrostContextKeyStreamGated).(bool); gated {
+		isFinal := false
+		if v := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); v != nil {
+			if b, ok := v.(bool); ok {
+				isFinal = b
+			}
+		}
+		isHardErr := chunk != nil && chunk.BifrostError != nil && chunk.BifrostError.IsBifrostError
+		if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				return tracer.GateSend(traceID, chunk, isFinal, isHardErr, responseChan, ctx)
+			}
+		}
+	}
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	select {
+	case responseChan <- chunk:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// CloseStream closes a provider's response channel, coordinating with the
+// pause/resume gate when one has been engaged for this stream. If gating is
+// active, the close blocks on the tracer's WaitForFlusher so any chunks
+// buffered while paused (including a terminal chunk that arrived during
+// pause) reach the consumer before EOS. For non-gated streams (the common
+// case), this is a single map read on the context — identical cost to a
+// bare close.
+//
+// Provider streaming goroutines should `defer providerUtils.CloseStream(ctx,
+// responseChan)` instead of `defer close(responseChan)`.
+func CloseStream(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk) {
+	if gated, _ := ctx.Value(schemas.BifrostContextKeyStreamGated).(bool); gated {
+		if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				// Force-end so a still-paused gate transitions and the flusher exits.
+				// End is idempotent; flusher (if any) drains buffered chunks before returning.
+				tracer.EndStream(traceID, nil)
+				tracer.WaitForFlusher(traceID)
+			}
+		}
+	}
+	close(ch)
+}
+
 // ProcessAndSendResponse handles post-hook processing and sends the response to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
@@ -1954,9 +2012,7 @@ func ProcessAndSendResponse(
 
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-	select {
-	case responseChan <- streamResponse:
-	case <-ctx.Done():
+	if !GateSendChunk(ctx, streamResponse, responseChan) {
 		return
 	}
 
@@ -1996,10 +2052,7 @@ func ProcessAndSendBifrostError(
 
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-	select {
-	case responseChan <- streamResponse:
-	case <-ctx.Done():
-	}
+	GateSendChunk(ctx, streamResponse, responseChan)
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -2262,10 +2315,7 @@ func ProcessAndSendError(
 		streamResponse.BifrostError = processedError
 	}
 
-	select {
-	case responseChan <- streamResponse:
-	case <-ctx.Done():
-	}
+	GateSendChunk(ctx, streamResponse, responseChan)
 }
 
 // CreateBifrostTextCompletionChunkResponse creates a bifrost text completion chunk response.

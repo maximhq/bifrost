@@ -25,6 +25,7 @@ var reservedKeys = []any{
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
 	BifrostContextKeyAttemptTrail,
+	BifrostContextKeyStreamGated,
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -285,6 +286,23 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	bc.userValues[key] = value
 }
 
+// setReservedValue writes a Bifrost-owned reserved key, bypassing the
+// blockRestrictedWrites check that gates the public SetValue path. It mirrors
+// SetValue's valueDelegate recursion so writes from scoped plugin contexts
+// reach the root. Internal use only — exposing this would defeat reservedKeys.
+func (bc *BifrostContext) setReservedValue(key, value any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.setReservedValue(key, value)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	bc.userValues[key] = value
+}
+
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {
@@ -357,6 +375,109 @@ func (bc *BifrostContext) GetParentCtxWithUserValues() context.Context {
 	}
 	bc.valuesMu.RUnlock()
 	return parentCtx
+}
+
+// PauseStream marks the active streaming response associated with this context
+// as paused. While paused, chunks continue to flow through PostLLMHook (so
+// plugins can still inspect them), but they are buffered instead of delivered
+// to the client. Buffered chunks are flushed in order when ResumeStream is
+// called. Idempotent. No-op if no Tracer or trace ID is present in ctx.
+//
+// Calling this method engages the pause/resume gate for the stream: provider
+// send sites switch from a direct channel send to Tracer.GateSend. Streams that
+// never call Pause/Resume/End pay no extra cost.
+//
+// Requires a real Tracer to be wired via the Bifrost config (e.g.
+// `framework/streaming/Accumulator`). Under `DefaultTracer()` (the
+// `*NoOpTracer` fall-back used when `config.Tracer` is nil), this call is
+// silently inert — chunks continue to flow direct to the client. See
+// `DefaultTracer()` for the architectural reason core cannot ship a built-in
+// gate impl.
+func (bc *BifrostContext) PauseStream() {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return
+	}
+	bc.setReservedValue(BifrostContextKeyStreamGated, true)
+	tr.PauseStream(tid)
+}
+
+// ResumeStream resumes a previously paused stream. Buffered chunks are flushed
+// to the client in order, then live streaming continues. Idempotent. No-op if
+// no Tracer or trace ID is present in ctx.
+//
+// Engages the pause/resume gate (see PauseStream). Requires a real Tracer
+// (e.g. `framework/streaming/Accumulator`); inert under `DefaultTracer()`.
+func (bc *BifrostContext) ResumeStream() {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return
+	}
+	bc.setReservedValue(BifrostContextKeyStreamGated, true)
+	tr.ResumeStream(tid)
+}
+
+// EndStream terminates the active streaming response. Any buffered chunks are
+// flushed first; if err is non-nil it is then delivered as a final error chunk.
+// After EndStream returns, all further provider chunks for this stream are
+// dropped (PostLLMHook still fires, but no client delivery happens). Idempotent.
+// No-op if no Tracer or trace ID is present in ctx.
+//
+// Engages the pause/resume gate (see PauseStream). Requires a real Tracer
+// (e.g. `framework/streaming/Accumulator`); inert under `DefaultTracer()`.
+func (bc *BifrostContext) EndStream(err *BifrostError) {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return
+	}
+	bc.setReservedValue(BifrostContextKeyStreamGated, true)
+	tr.EndStream(tid, err)
+}
+
+// IsStreamEnded reports whether the streaming response associated with this
+// context has been ended via EndStream (or via a final/hard-error chunk
+// flowing through the gate while Active). Read-only: does not engage the
+// gate or create any tracer state. Returns false when no Tracer or trace ID
+// is present in ctx, or when no accumulator exists for this stream.
+func (bc *BifrostContext) IsStreamEnded() bool {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return false
+	}
+	return tr.IsStreamEnded(tid)
+}
+
+// IsStreamPaused reports whether the streaming response associated with this
+// context is currently paused. Read-only: does not engage the gate or create
+// any tracer state. Returns false when no Tracer or trace ID is present in
+// ctx, or when no accumulator exists for this stream.
+func (bc *BifrostContext) IsStreamPaused() bool {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return false
+	}
+	return tr.IsStreamPaused(tid)
+}
+
+// GetAccumulatedResponse returns a snapshot of the BifrostResponse assembled
+// from chunks received so far on the streaming response associated with this
+// context. Built on demand — useful from PostLLMHook (including while paused)
+// to inspect the assembled output before deciding next steps. Read-only: does
+// not engage the gate or mutate accumulator state. Returns nil if no Tracer
+// or trace ID is present, no accumulator exists, no chunks have been
+// accumulated yet, or the stream type is indeterminable.
+func (bc *BifrostContext) GetAccumulatedResponse() *BifrostResponse {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return nil
+	}
+	return tr.GetAccumulatedResponse(tid)
 }
 
 // AppendRoutingEngineLog appends a routing engine log entry to the context.

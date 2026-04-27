@@ -157,7 +157,11 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
 		StartTimestamp:             now, // Set default StartTimestamp for proper TTFT/latency calculation
+		gateState:                  StreamStateActive,
+		gatePausedAt:               -1,
+		parent:                     a,
 	}
+	sc.gateCond = sync.NewCond(&sc.mu)
 	a.streamAccumulators.Store(requestID, sc)
 	return sc
 }
@@ -192,7 +196,11 @@ func (a *Accumulator) getOrCreateStreamAccumulator(requestID string) *StreamAccu
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
 		StartTimestamp:             now,
+		gateState:                  StreamStateActive,
+		gatePausedAt:               -1,
+		parent:                     a,
 	}
+	newAcc.gateCond = sync.NewCond(&newAcc.mu)
 
 	// LoadOrStore atomically: if key exists, return existing; else store new
 	actual, _ := a.streamAccumulators.LoadOrStore(requestID, newAcc)
@@ -356,28 +364,61 @@ func (a *Accumulator) addImageStreamChunk(requestID string, chunk *ImageStreamCh
 // cleanupStreamAccumulator removes the stream accumulator for a request.
 // IMPORTANT: Caller must hold accumulator.mu lock before calling this function
 // to prevent races when returning chunks to pools.
-func (a *Accumulator) cleanupStreamAccumulator(requestID string) {
-	if accumulator, exists := a.streamAccumulators.Load(requestID); exists {
-		acc := accumulator.(*StreamAccumulator)
-
-		// Return all chunks to the pool before deleting
-		for _, chunk := range acc.ChatStreamChunks {
-			a.putChatStreamChunk(chunk)
-		}
-		for _, chunk := range acc.ResponsesStreamChunks {
-			a.putResponsesStreamChunk(chunk)
-		}
-		for _, chunk := range acc.AudioStreamChunks {
-			a.putAudioStreamChunk(chunk)
-		}
-		for _, chunk := range acc.TranscriptionStreamChunks {
-			a.putTranscriptionStreamChunk(chunk)
-		}
-		for _, chunk := range acc.ImageStreamChunks {
-			a.putImageStreamChunk(chunk)
-		}
-		a.streamAccumulators.Delete(requestID)
+//
+// forceEndGate=true is for orphan/TTL cleanup paths where the flusher may be
+// stuck in cond.Wait and must be woken by force-ending. forceEndGate=false is
+// for natural-completion cleanup (refcount-driven from plugins): if the gate
+// is still busy (flusher running OR Paused), teardown is deferred — the
+// gatePendingCleanup flag is set, and the flusher's exit defer re-runs this
+// cleanup once it's safe.
+func (a *Accumulator) cleanupStreamAccumulator(requestID string, forceEndGate bool) {
+	accumulator, exists := a.streamAccumulators.Load(requestID)
+	if !exists {
+		return
 	}
+	acc := accumulator.(*StreamAccumulator)
+
+	// Defer teardown if the gate is still working and the caller didn't ask
+	// for a forcible reap. The flusher's exit will pick this up.
+	if !forceEndGate && (acc.gateFlusherOn || acc.gateState == StreamStatePaused) {
+		acc.gatePendingCleanup = true
+		return
+	}
+
+	// Orphan path: force the gate to terminate so any blocked flusher wakes
+	// up and exits. Drops buffered chunks — acceptable because the consumer
+	// of an orphaned stream is gone by definition.
+	if forceEndGate && acc.gateState != StreamStateEnded {
+		acc.gateState = StreamStateEnded
+		// Force-end is drop-only: clear any staged terminal-error delivery so
+		// a flusher woken by the broadcast below cannot reach the
+		// sendOrCancel(errChunk) path on an abandoned consumer channel.
+		acc.gatePendingTerminal = false
+		acc.gateEndError = nil
+		if acc.gateCond != nil {
+			acc.gateCond.Broadcast()
+		}
+		acc.gateReplayBuf = nil
+		acc.gateReplayBufBytes = 0
+	}
+
+	// Return all chunks to the pool before deleting
+	for _, chunk := range acc.ChatStreamChunks {
+		a.putChatStreamChunk(chunk)
+	}
+	for _, chunk := range acc.ResponsesStreamChunks {
+		a.putResponsesStreamChunk(chunk)
+	}
+	for _, chunk := range acc.AudioStreamChunks {
+		a.putAudioStreamChunk(chunk)
+	}
+	for _, chunk := range acc.TranscriptionStreamChunks {
+		a.putTranscriptionStreamChunk(chunk)
+	}
+	for _, chunk := range acc.ImageStreamChunks {
+		a.putImageStreamChunk(chunk)
+	}
+	a.streamAccumulators.Delete(requestID)
 }
 
 // ProcessStreamingResponse processes a streaming response
@@ -428,30 +469,11 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 
 // Cleanup cleans up the accumulator
 func (a *Accumulator) Cleanup() {
-	// Clean up all stream accumulators
 	a.streamAccumulators.Range(func(key, value interface{}) bool {
 		accumulator := value.(*StreamAccumulator)
-
-		// Lock before accessing chunk slices
 		accumulator.mu.Lock()
-		for _, chunk := range accumulator.ChatStreamChunks {
-			a.putChatStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.ResponsesStreamChunks {
-			a.putResponsesStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.TranscriptionStreamChunks {
-			a.putTranscriptionStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.AudioStreamChunks {
-			a.putAudioStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.ImageStreamChunks {
-			a.putImageStreamChunk(chunk)
-		}
+		a.cleanupStreamAccumulator(key.(string), true)
 		accumulator.mu.Unlock()
-
-		a.streamAccumulators.Delete(key)
 		return true
 	})
 	a.cleanupOnce.Do(func() {
@@ -491,7 +513,7 @@ func (a *Accumulator) CleanupStreamAccumulator(requestID string) error {
 		if newCount <= 0 {
 			accumulator.mu.Lock()
 			defer accumulator.mu.Unlock()
-			a.cleanupStreamAccumulator(requestID)
+			a.cleanupStreamAccumulator(requestID, false) // natural completion — defer if gate is still busy
 		}
 	}
 	return nil
@@ -505,7 +527,7 @@ func (a *Accumulator) cleanupOldAccumulators() {
 		accumulator.mu.Lock()
 		defer accumulator.mu.Unlock()
 		if accumulator.Timestamp.Before(time.Now().Add(-a.ttl)) {
-			a.cleanupStreamAccumulator(key.(string))
+			a.cleanupStreamAccumulator(key.(string), true) // orphan TTL reap — force-end gate
 		}
 		count++
 		return true

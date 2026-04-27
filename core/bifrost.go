@@ -5004,7 +5004,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					pipeline.FinalizeStreamingPostHookSpans(ctx)
 					bifrost.releasePluginPipeline(pipeline)
 				}()
-				defer close(outputStream)
+				defer providerUtils.CloseStream(ctx, outputStream)
 
 				for streamMsg := range shortCircuit.Stream {
 					if streamMsg == nil {
@@ -5042,9 +5042,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// Guarded send: if the consumer abandons outputStream (client
 					// disconnect, ctx cancel), drain the upstream shortCircuit.Stream
 					// so its producer can exit cleanly instead of blocking on its send.
-					select {
-					case outputStream <- streamResponse:
-					case <-ctx.Done():
+					// GateSendChunk routes through the pause/resume gate when a plugin
+					// has engaged it; otherwise it's a bare ctx-guarded channel send.
+					if !providerUtils.GateSendChunk(ctx, streamResponse, outputStream) {
 						for range shortCircuit.Stream {
 						}
 						return

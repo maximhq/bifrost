@@ -121,7 +121,7 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 	defer func() {
 		if isFinalChunk {
 			// Cleanup BEFORE unlocking to prevent other goroutines from accessing chunks being returned to pool
-			a.cleanupStreamAccumulator(requestID)
+			a.cleanupStreamAccumulator(requestID, false) // natural completion — defer if gate is still busy
 		}
 		acc.mu.Unlock()
 	}()

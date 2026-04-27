@@ -150,7 +150,45 @@ type StreamAccumulator struct {
 	mu             sync.Mutex
 	Timestamp      time.Time
 	refCount       atomic.Int64
+
+	// Pause/Resume gate state. All guarded by mu.
+	// gateState transitions: Active -> Paused -> Active (replay) | Ended.
+	// pausedAt is the seqCounter value at the moment PauseStream was called
+	// (purely for diagnostics — the buffered chunks themselves drive replay).
+	gateState      StreamState
+	gatePausedAt   int                            // -1 if never paused
+	// gatePendingTerminal is set when an isFinal or isHardErr chunk arrived
+	// while Paused. The flusher consumes this flag after Resume drains the
+	// buffer and transitions the gate to Ended.
+	gatePendingTerminal bool
+	gateSeq        int                            // monotonic, bumped on every GateSend
+	gateReplayBuf      []*schemas.BifrostStreamChunk // wire-format chunks captured while paused
+	gateReplayBufBytes int64                         // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
+	gateCond       *sync.Cond                     // wakes flusher on Resume / End / append-while-active
+	gateEndError   *schemas.BifrostError          // delivered as terminal chunk if EndStream(err) was called with non-nil
+	gateFlusherCh   chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
+	gateFlusherCtx  *schemas.BifrostContext          // captured on first GateSend
+	gateFlusherOn   bool                             // flusher goroutine running
+	gateFlusherDone chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
+	// gatePendingCleanup is set by cleanupStreamAccumulator when the caller
+	// requested teardown but the gate is still busy (flusher running or
+	// Paused). The flusher's exit defer checks this flag and re-runs cleanup
+	// once the gate is idle, so teardown can't race ahead of the flusher.
+	gatePendingCleanup bool
+	parent             *Accumulator // back-reference for deferred cleanup re-entry
 }
+
+// StreamState represents the delivery state of a streaming response.
+type StreamState int8
+
+const (
+	// StreamStateActive: chunks are forwarded to the client as they arrive.
+	StreamStateActive StreamState = iota
+	// StreamStatePaused: chunks are buffered for later replay; not delivered.
+	StreamStatePaused
+	// StreamStateEnded: gate is closed; further chunks are dropped.
+	StreamStateEnded
+)
 
 // getLastChatChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastChatChunk() *ChatStreamChunk {
