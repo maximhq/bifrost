@@ -1,0 +1,1 @@
+- fix: fallback to network config's base url if no url is provided in keys for ollama and sgl
