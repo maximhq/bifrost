@@ -32,6 +32,15 @@ type TableVirtualKeyProviderConfig struct {
 	AllowAllKeys  bool              `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
 	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
+	// Per-virtual-key timeout overrides (take precedence over provider-level network_config timeouts).
+	// A nil value means "inherit from provider config".
+	// Precedence for unary requests:  virtual-key > provider NetworkConfig.DefaultRequestTimeoutInSeconds
+	// Precedence for stream idle:     virtual-key > provider NetworkConfig.StreamIdleTimeoutInSeconds
+	// Precedence for stream total:    virtual-key > provider NetworkConfig (none by default; provider has no global total cap)
+	RequestTimeoutInSeconds     *int `gorm:"default:null" json:"request_timeout_in_seconds,omitempty"`      // Unary request timeout in seconds
+	StreamIdleTimeoutInSeconds  *int `gorm:"default:null" json:"stream_idle_timeout_in_seconds,omitempty"`  // Per-chunk idle timeout for streaming
+	StreamTotalTimeoutInSeconds *int `gorm:"default:null" json:"stream_total_timeout_in_seconds,omitempty"` // Hard wall-clock cap for streaming
+
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
 	Budgets   []TableBudget   `gorm:"foreignKey:ProviderConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`              // Multiple budgets with different reset intervals

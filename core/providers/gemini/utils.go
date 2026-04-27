@@ -2454,6 +2454,7 @@ func encodeBytesToBase64String(bytes []byte) string {
 
 // downloadImageFromURL downloads an image from a URL and returns the base64-encoded string
 func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) {
+	var tc providerUtils.TimeoutConfig
 	client := fasthttp.Client{
 		ReadTimeout: time.Second * 30,
 	}
@@ -2465,7 +2466,7 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	req.SetRequestURI(imageURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, &client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return "", fmt.Errorf("failed to download image: %v", bifrostErr)

@@ -118,7 +118,8 @@ func (h *WebRTCRealtimeHandler) handleCallsRequest(ctx *fasthttp.RequestCtx) {
 	}
 
 	exchangeSDP := func(rCtx *schemas.BifrostContext, key schemas.Key, upstreamOffer string) (string, *schemas.BifrostError) {
-		return rtProvider.ExchangeRealtimeWebRTCSDP(rCtx, key, model, upstreamOffer, normalizedSession)
+		tc := h.client.ResolveTimeoutConfigForProvider(rCtx, providerKey, &key)
+		return rtProvider.ExchangeRealtimeWebRTCSDP(rCtx, key, model, upstreamOffer, normalizedSession, tc)
 	}
 
 	h.runWebRTCRelay(ctx, rtProvider, providerKey, model, sdpOffer, exchangeSDP)
@@ -198,7 +199,8 @@ func (h *WebRTCRealtimeHandler) handleLegacyRequest(ctx *fasthttp.RequestCtx, de
 	}
 
 	exchangeSDP := func(rCtx *schemas.BifrostContext, key schemas.Key, upstreamOffer string) (string, *schemas.BifrostError) {
-		return legacyProvider.ExchangeLegacyRealtimeWebRTCSDP(rCtx, key, upstreamOffer, sessionJSON, model)
+		tc := h.client.ResolveTimeoutConfigForProvider(rCtx, providerKey, &key)
+		return legacyProvider.ExchangeLegacyRealtimeWebRTCSDP(rCtx, key, upstreamOffer, sessionJSON, model, tc)
 	}
 
 	h.runWebRTCRelay(ctx, rtProvider, providerKey, model, sdpOffer, exchangeSDP)

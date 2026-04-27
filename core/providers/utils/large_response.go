@@ -310,7 +310,7 @@ func ParseOpenAIUsageFromBytes(data []byte) *schemas.BifrostLLMUsage {
 // in a LargeResponseReader and sets context keys for the transport layer.
 // Returns true if passthrough was set up. When true, the caller should return
 // a closed channel and must NOT release resp — it's owned by the reader in context.
-func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Response) bool {
+func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Response, tc schemas.TimeoutConfig) bool {
 	isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 	if !isLargePayload {
 		return false
@@ -318,14 +318,17 @@ func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 
 	reader, releaseGzip := DecompressStreamBody(resp)
 
-	// Wrap reader with idle timeout to detect stalled streams.
-	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx))
+	// Wrap reader with idle + total timeout to detect stalled / runaway streams.
+	// closeFn explicitly invokes resp.CloseBodyStream(): fasthttp's BodyStream()
+	// returns *closeReader which does NOT implement io.Closer, so a type-assert
+	// would silently fail and the timeout would be a no-op.
+	reader, stopTimeouts := ApplyStreamTimeouts(tc, reader, func() error { return resp.CloseBodyStream() })
 
 	closableReader := &LargeResponseReader{
 		Reader: reader,
 		Resp:   resp,
 		cleanup: func() {
-			stopIdleTimeout()
+			stopTimeouts()
 			releaseGzip()
 		},
 	}

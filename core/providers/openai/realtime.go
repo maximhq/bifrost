@@ -51,12 +51,13 @@ func (provider *OpenAIProvider) ExchangeRealtimeWebRTCSDP(
 	model string,
 	sdp string,
 	session json.RawMessage,
+	tc schemas.TimeoutConfig,
 ) (string, *schemas.BifrostError) {
 	path := "/v1/realtime/calls"
 	if session == nil && strings.TrimSpace(model) != "" {
 		path += "?model=" + url.QueryEscape(model)
 	}
-	return provider.exchangeWebRTCSDP(ctx, key, path, sdp, session)
+	return provider.exchangeWebRTCSDP(ctx, key, path, sdp, session, tc)
 }
 
 // ExchangeLegacyRealtimeWebRTCSDP performs the beta SDP exchange via multipart POST to /v1/realtime.
@@ -67,8 +68,9 @@ func (provider *OpenAIProvider) ExchangeLegacyRealtimeWebRTCSDP(
 	sdp string,
 	session json.RawMessage,
 	model string,
+	tc schemas.TimeoutConfig,
 ) (string, *schemas.BifrostError) {
-	return provider.exchangeWebRTCSDP(ctx, key, "/v1/realtime?model="+url.QueryEscape(model), sdp, session)
+	return provider.exchangeWebRTCSDP(ctx, key, "/v1/realtime?model="+url.QueryEscape(model), sdp, session, tc)
 }
 
 // exchangeWebRTCSDP is the shared multipart SDP exchange implementation.
@@ -79,6 +81,7 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 	path string,
 	sdp string,
 	session json.RawMessage,
+	tc schemas.TimeoutConfig,
 ) (string, *schemas.BifrostError) {
 	bodyBuf := &bytes.Buffer{}
 	writer := multipart.NewWriter(bodyBuf)
@@ -113,7 +116,7 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 	}
 	req.SetBody(bodyBuf.Bytes())
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return "", bifrostErr
@@ -211,6 +214,7 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	key schemas.Key,
 	endpointType schemas.RealtimeSessionEndpointType,
 	rawRequest json.RawMessage,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.RealtimeRequest); err != nil {
 		return nil, err
@@ -233,7 +237,7 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	}
 	req.SetBody(normalizedBody)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr

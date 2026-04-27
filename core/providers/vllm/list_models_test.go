@@ -82,7 +82,7 @@ func TestListModels_QueriesAllBackends(t *testing.T) {
 		Unfiltered: true,
 	}
 
-	resp, bifrostErr := provider.ListModels(ctx, keys, request)
+	resp, bifrostErr := provider.ListModels(ctx, keys, request, schemas.TimeoutConfig{})
 	if bifrostErr != nil {
 		t.Fatalf("ListModels returned error: %v", bifrostErr.Error)
 	}
@@ -160,7 +160,7 @@ func TestListModels_SingleBackendFailure(t *testing.T) {
 		Unfiltered: true,
 	}
 
-	resp, bifrostErr := provider.ListModels(ctx, keys, request)
+	resp, bifrostErr := provider.ListModels(ctx, keys, request, schemas.TimeoutConfig{})
 	if bifrostErr != nil {
 		t.Fatalf("ListModels should not return a top-level error when one backend succeeds, got: %v", bifrostErr.Error)
 	}
@@ -209,7 +209,7 @@ func TestListModels_ErrorsWithoutPerKeyURL(t *testing.T) {
 		Unfiltered: true,
 	}
 
-	_, bifrostErr := provider.ListModels(ctx, keys, request)
+	_, bifrostErr := provider.ListModels(ctx, keys, request, schemas.TimeoutConfig{})
 	if bifrostErr == nil {
 		t.Fatal("expected error for key without vllm_key_config.url, got nil")
 	}

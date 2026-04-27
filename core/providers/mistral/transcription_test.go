@@ -613,7 +613,7 @@ func TestTranscriptionWithMockServer(t *testing.T) {
 			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			resp, err := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, request)
+			resp, err := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, request, schemas.TimeoutConfig{})
 
 			if tt.expectError {
 				require.NotNil(t, err)
@@ -669,7 +669,7 @@ func TestTranscriptionNilInput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			resp, err := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, tt.request)
+			resp, err := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, tt.request, schemas.TimeoutConfig{})
 
 			require.NotNil(t, err)
 			assert.Nil(t, resp)
@@ -812,7 +812,7 @@ func TestTranscriptionStreamWithMockServer(t *testing.T) {
 			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, request)
+			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, request, schemas.TimeoutConfig{})
 
 			if tt.expectError {
 				require.NotNil(t, err)
@@ -879,7 +879,7 @@ func TestTranscriptionStreamNilInput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			stream, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, tt.request)
+			stream, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, tt.request, schemas.TimeoutConfig{})
 
 			require.NotNil(t, err)
 			assert.Nil(t, stream)
@@ -1292,7 +1292,7 @@ func TestTranscriptionStreamEdgeCases(t *testing.T) {
 			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, request)
+			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, request, schemas.TimeoutConfig{})
 
 			if tt.expectError {
 				tt.validateResult(t, nil, err)
@@ -1361,7 +1361,7 @@ func TestTranscriptionStreamContextCancellation(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, request)
+	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, request, schemas.TimeoutConfig{})
 	require.Nil(t, err)
 	require.NotNil(t, streamChan)
 
@@ -1555,7 +1555,7 @@ func TestMistralTranscriptionIntegration(t *testing.T) {
 	}
 
 	t.Log("🎤 Testing Mistral transcription with voxtral-mini-latest...")
-	resp, err := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request)
+	resp, err := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request, schemas.TimeoutConfig{})
 
 	if err != nil {
 		// Log the error but don't fail - the minimal audio may not be valid for Mistral
@@ -1618,7 +1618,7 @@ func TestMistralTranscriptionStreamIntegration(t *testing.T) {
 	}
 
 	t.Log("🎤 Testing Mistral streaming transcription with voxtral-mini-latest...")
-	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request)
+	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request, schemas.TimeoutConfig{})
 
 	if err != nil {
 		// Log the error but don't fail - the minimal audio may not be valid for Mistral

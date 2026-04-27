@@ -93,7 +93,7 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	return provider.networkConfig.BaseURL + path
 }
 
-func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest, tc schemas.TimeoutConfig) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
 	}
@@ -111,6 +111,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 				providerName,
 				providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 				providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+				tc,
 			)
 		})
 	}
@@ -124,6 +125,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		tc,
 	)
 }
 
@@ -139,6 +141,7 @@ func ListModelsByKey(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -158,7 +161,7 @@ func ListModelsByKey(
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -213,12 +216,13 @@ func HandleOpenAIListModelsRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
-		return ListModelsByKey(ctx, client, url, schemas.Key{}, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
+		return ListModelsByKey(ctx, client, url, schemas.Key{}, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse, tc)
 	}
 	listModelsByKeyWrapper := func(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-		return ListModelsByKey(ctx, client, url, key, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
+		return ListModelsByKey(ctx, client, url, key, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse, tc)
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
@@ -230,7 +234,7 @@ func HandleOpenAIListModelsRequest(
 
 // TextCompletion is not supported by the OpenAI provider.
 // Returns an error indicating that text completion is not available.
-func (provider *OpenAIProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest, tc schemas.TimeoutConfig) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
@@ -247,6 +251,7 @@ func (provider *OpenAIProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 		nil,
 		nil,
 		provider.logger,
+		tc,
 	)
 }
 
@@ -264,6 +269,7 @@ func HandleOpenAITextCompletionRequest(
 	customResponseHandler responseHandler[schemas.BifrostTextCompletionResponse],
 	customErrorConverter ErrorConverter,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -290,7 +296,7 @@ func HandleOpenAITextCompletionRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -322,7 +328,7 @@ func HandleOpenAITextCompletionRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -386,7 +392,7 @@ func HandleOpenAITextCompletionRequest(
 // TextCompletionStream performs a streaming text completion request to OpenAI's API.
 // It formats the request, sends it to OpenAI, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
-func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest, tc schemas.TimeoutConfig) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionStreamRequest); err != nil {
 		return nil, err
 	}
@@ -410,6 +416,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		tc,
 	)
 }
 
@@ -431,6 +438,7 @@ func HandleOpenAITextCompletionStreaming(
 	postResponseConverter func(*schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -518,7 +526,7 @@ func HandleOpenAITextCompletionStreaming(
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
-	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+	if providerUtils.SetupStreamingPassthrough(ctx, resp, tc) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
 		close(responseChan)
 		return responseChan, nil
@@ -544,12 +552,12 @@ func HandleOpenAITextCompletionStreaming(
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, reader, providerUtils.FastHTTPStreamController(resp))
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, logger)
 		defer stopCancellation()
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
@@ -728,7 +736,7 @@ func HandleOpenAITextCompletionStreaming(
 // ChatCompletion performs a chat completion request to the OpenAI API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest, tc schemas.TimeoutConfig) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
@@ -754,6 +762,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		nil,
 		nil,
 		provider.logger,
+		tc,
 	)
 }
 
@@ -771,6 +780,7 @@ func HandleOpenAIChatCompletionRequest(
 	customResponseHandler responseHandler[schemas.BifrostChatResponse],
 	customErrorConverter ErrorConverter,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -797,7 +807,7 @@ func HandleOpenAIChatCompletionRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -829,7 +839,7 @@ func HandleOpenAIChatCompletionRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -893,7 +903,7 @@ func HandleOpenAIChatCompletionRequest(
 // ChatCompletionStream handles streaming for OpenAI chat completions.
 // It formats messages, prepares request body, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
-func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest, tc schemas.TimeoutConfig) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
@@ -928,6 +938,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		tc,
 	)
 }
 
@@ -951,6 +962,7 @@ func HandleOpenAIChatCompletionStreaming(
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if the request is a redirect from ResponsesStream to ChatCompletionStream
 	isResponsesToChatCompletionsFallback := false
@@ -1056,7 +1068,7 @@ func HandleOpenAIChatCompletionStreaming(
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
-	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+	if providerUtils.SetupStreamingPassthrough(ctx, resp, tc) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
 		close(responseChan)
 		return responseChan, nil
@@ -1084,12 +1096,12 @@ func HandleOpenAIChatCompletionStreaming(
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, reader, providerUtils.FastHTTPStreamController(resp))
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, logger)
 		defer stopCancellation()
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
@@ -1338,7 +1350,7 @@ func HandleOpenAIChatCompletionStreaming(
 }
 
 // Responses performs a responses request to the OpenAI API.
-func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest, tc schemas.TimeoutConfig) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
@@ -1364,6 +1376,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		nil,
 		nil,
 		provider.logger,
+		tc,
 	)
 }
 
@@ -1381,6 +1394,7 @@ func HandleOpenAIResponsesRequest(
 	customResponseHandler responseHandler[schemas.BifrostResponsesResponse],
 	customErrorConverter ErrorConverter,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -1407,7 +1421,7 @@ func HandleOpenAIResponsesRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -1439,7 +1453,7 @@ func HandleOpenAIResponsesRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -1501,7 +1515,7 @@ func HandleOpenAIResponsesRequest(
 }
 
 // ResponsesStream performs a streaming responses request to the OpenAI API.
-func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest, tc schemas.TimeoutConfig) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
@@ -1535,6 +1549,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		tc,
 	)
 }
 
@@ -1557,6 +1572,7 @@ func HandleOpenAIResponsesStreaming(
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{
@@ -1645,7 +1661,7 @@ func HandleOpenAIResponsesStreaming(
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
-	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+	if providerUtils.SetupStreamingPassthrough(ctx, resp, tc) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
 		close(responseChan)
 		return responseChan, nil
@@ -1671,12 +1687,12 @@ func HandleOpenAIResponsesStreaming(
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, reader, providerUtils.FastHTTPStreamController(resp))
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, logger)
 		defer stopCancellation()
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
@@ -1818,7 +1834,7 @@ func HandleOpenAIResponsesStreaming(
 // Embedding generates embeddings for the given input text(s).
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest, tc schemas.TimeoutConfig) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Check if embedding is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
@@ -1837,6 +1853,7 @@ func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
 		provider.logger,
+		tc,
 	)
 }
 
@@ -1854,6 +1871,7 @@ func HandleOpenAIEmbeddingRequest(
 	sendBackRawResponse bool,
 	customResponseHandler responseHandler[schemas.BifrostEmbeddingResponse],
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -1880,7 +1898,7 @@ func HandleOpenAIEmbeddingRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -1913,7 +1931,7 @@ func HandleOpenAIEmbeddingRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -1975,7 +1993,7 @@ func HandleOpenAIEmbeddingRequest(
 // Speech handles non-streaming speech synthesis requests.
 // It formats the request body, makes the API call, and returns the response.
 // Returns the response and any error that occurred.
-func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest, tc schemas.TimeoutConfig) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
 		return nil, err
 	}
@@ -1992,6 +2010,7 @@ func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
 		provider.logger,
+		tc,
 	)
 }
 
@@ -2009,6 +2028,7 @@ func HandleOpenAISpeechRequest(
 	sendBackRawResponse bool,
 	customResponseHandler responseHandler[schemas.BifrostSpeechResponse],
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -2034,7 +2054,7 @@ func HandleOpenAISpeechRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -2056,7 +2076,7 @@ func HandleOpenAISpeechRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -2105,7 +2125,7 @@ func HandleOpenAISpeechRequest(
 // SpeechStream handles streaming for speech synthesis.
 // It formats the request body, creates HTTP request, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
-func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest, tc schemas.TimeoutConfig) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
 		return nil, err
 	}
@@ -2136,6 +2156,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		tc,
 	)
 }
 
@@ -2156,6 +2177,7 @@ func HandleOpenAISpeechStreamRequest(
 	postResponseConverter func(*schemas.BifrostSpeechStreamResponse) *schemas.BifrostSpeechStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -2241,7 +2263,7 @@ func HandleOpenAISpeechStreamRequest(
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
-	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+	if providerUtils.SetupStreamingPassthrough(ctx, resp, tc) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
 		close(responseChan)
 		return responseChan, nil
@@ -2267,12 +2289,12 @@ func HandleOpenAISpeechStreamRequest(
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, reader, providerUtils.FastHTTPStreamController(resp))
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, logger)
 		defer stopCancellation()
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
@@ -2370,7 +2392,7 @@ func HandleOpenAISpeechStreamRequest(
 // Transcription handles non-streaming transcription requests.
 // It creates a multipart form, adds fields, makes the API call, and returns the response.
 // Returns the response and any error that occurred.
-func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest, tc schemas.TimeoutConfig) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
 	}
@@ -2386,6 +2408,7 @@ func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
 		provider.logger,
+		tc,
 	)
 }
 
@@ -2400,9 +2423,10 @@ func HandleOpenAITranscriptionRequest(
 	sendBackRawResponse bool,
 	customResponseHandler responseHandler[schemas.BifrostTranscriptionResponse],
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -2459,7 +2483,7 @@ func HandleOpenAITranscriptionRequest(
 	req.SetBody(body.Bytes())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -2551,7 +2575,7 @@ func HandleOpenAITranscriptionRequest(
 }
 
 // TranscriptionStream performs a streaming transcription request to the OpenAI API.
-func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest, tc schemas.TimeoutConfig) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionStreamRequest); err != nil {
 		return nil, err
 	}
@@ -2577,6 +2601,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		tc,
 	)
 }
 
@@ -2598,6 +2623,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	postResponseConverter func(*schemas.BifrostTranscriptionStreamResponse) *schemas.BifrostTranscriptionStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Use centralized converter
 	reqBody := ToOpenAITranscriptionRequest(request)
@@ -2679,7 +2705,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
-	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+	if providerUtils.SetupStreamingPassthrough(ctx, resp, tc) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
 		close(responseChan)
 		return responseChan, nil
@@ -2705,12 +2731,12 @@ func HandleOpenAITranscriptionStreamRequest(
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, reader, providerUtils.FastHTTPStreamController(resp))
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, logger)
 		defer stopCancellation()
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
@@ -2826,6 +2852,7 @@ func HandleOpenAITranscriptionStreamRequest(
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
 	req *schemas.BifrostImageGenerationRequest,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
 		return nil, err
@@ -2842,6 +2869,7 @@ func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
+		tc,
 	)
 }
 
@@ -2858,6 +2886,7 @@ func HandleOpenAIImageGenerationRequest(
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -2884,7 +2913,7 @@ func HandleOpenAIImageGenerationRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -2915,7 +2944,7 @@ func HandleOpenAIImageGenerationRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -2975,6 +3004,7 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	postHookSpanFinalizer func(context.Context),
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
@@ -3006,6 +3036,7 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		tc,
 	)
 }
 
@@ -3025,6 +3056,7 @@ func HandleOpenAIImageGenerationStreaming(
 	postResponseConverter func(*schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Set headers
 	headers := map[string]string{
@@ -3114,7 +3146,7 @@ func HandleOpenAIImageGenerationStreaming(
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
-	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+	if providerUtils.SetupStreamingPassthrough(ctx, resp, tc) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
 		close(responseChan)
 		return responseChan, nil
@@ -3140,12 +3172,12 @@ func HandleOpenAIImageGenerationStreaming(
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, reader, providerUtils.FastHTTPStreamController(resp))
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, logger)
 		defer stopCancellation()
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
@@ -3380,17 +3412,17 @@ func HandleOpenAIImageGenerationStreaming(
 }
 
 // Rerank is not supported by the OpenAI provider.
-func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest, tc schemas.TimeoutConfig) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Openai provider.
-func (provider *OpenAIProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest, tc schemas.TimeoutConfig) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
 }
 
 // VideoGeneration performs a video generation request via the OpenAI API.
-func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest, tc schemas.TimeoutConfig) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoGenerationRequest); err != nil {
 		return nil, err
 	}
@@ -3406,11 +3438,12 @@ func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
+		tc,
 	)
 }
 
 // VideoRetrieve retrieves a video generation job from the OpenAI API.
-func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest, tc schemas.TimeoutConfig) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoRetrieveRequest); err != nil {
 		return nil, err
 	}
@@ -3434,11 +3467,12 @@ func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.VideoDownload,
 		provider.logger,
+		tc,
 	)
 }
 
 // VideoDownload downloads video content from OpenAI.
-func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest, tc schemas.TimeoutConfig) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoDownloadRequest); err != nil {
 		return nil, err
 	}
@@ -3475,7 +3509,7 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3517,7 +3551,7 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 }
 
 // VideoDelete deletes a video generation job from the OpenAI API.
-func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest, tc schemas.TimeoutConfig) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoDeleteRequest); err != nil {
 		return nil, err
 	}
@@ -3540,11 +3574,12 @@ func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
+		tc,
 	)
 }
 
 // VideoList lists videos from OpenAI.
-func (provider *OpenAIProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest, tc schemas.TimeoutConfig) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoListRequest); err != nil {
 		return nil, err
 	}
@@ -3560,6 +3595,7 @@ func (provider *OpenAIProvider) VideoList(ctx *schemas.BifrostContext, key schem
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
+		tc,
 	)
 }
 
@@ -3576,6 +3612,7 @@ func HandleOpenAIVideoGenerationRequest(
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -3612,7 +3649,7 @@ func HandleOpenAIVideoGenerationRequest(
 	req.SetBody(body.Bytes())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3671,7 +3708,7 @@ func HandleOpenAIVideoGenerationRequest(
 }
 
 // VideoDownloadFunc downloads video content. Used by HandleOpenAIVideoRetrieveRequest for enrichment.
-type VideoDownloadHandler func(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError)
+type VideoDownloadHandler func(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostVideoDownloadRequest, tc schemas.TimeoutConfig) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError)
 
 // HandleOpenAIVideoRetrieveRequest handles video retrieve requests for OpenAI-compatible APIs.
 // When authHeaders is non-nil, they are applied for authentication (e.g. Azure api-key); otherwise Bearer from key is used.
@@ -3689,6 +3726,7 @@ func HandleOpenAIVideoRetrieveRequest(
 	sendBackRawResponse bool,
 	videoDownloaddHandler VideoDownloadHandler,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -3708,7 +3746,7 @@ func HandleOpenAIVideoRetrieveRequest(
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3747,7 +3785,7 @@ func HandleOpenAIVideoRetrieveRequest(
 				Provider: providerName,
 				ID:       response.ID,
 			}
-			videoDownloadResponse, bifrostErr := videoDownloaddHandler(ctx, key, videoDownloadRequest)
+			videoDownloadResponse, bifrostErr := videoDownloaddHandler(ctx, key, videoDownloadRequest, tc)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -3787,6 +3825,7 @@ func HandleOpenAIVideoDeleteRequest(
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -3805,7 +3844,7 @@ func HandleOpenAIVideoDeleteRequest(
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3862,6 +3901,7 @@ func HandleOpenAIVideoListRequest(
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -3896,7 +3936,7 @@ func HandleOpenAIVideoListRequest(
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3952,7 +3992,7 @@ func HandleOpenAIVideoListRequest(
 }
 
 // CountTokens performs a count tokens request to the OpenAI API.
-func (provider *OpenAIProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest, tc schemas.TimeoutConfig) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
 		return nil, err
 	}
@@ -3968,6 +4008,7 @@ func (provider *OpenAIProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
+		tc,
 	)
 }
 
@@ -3983,6 +4024,7 @@ func HandleOpenAICountTokensRequest(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -4009,7 +4051,7 @@ func HandleOpenAICountTokensRequest(
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -4039,7 +4081,7 @@ func HandleOpenAICountTokensRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -4090,7 +4132,7 @@ func HandleOpenAICountTokensRequest(
 }
 
 // ImageEdit performs image editing via the OpenAI Images API.
-func (provider *OpenAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest, tc schemas.TimeoutConfig) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
 		return nil, err
 	}
@@ -4106,6 +4148,7 @@ func (provider *OpenAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
+		tc,
 	)
 }
 
@@ -4120,9 +4163,10 @@ func HandleOpenAIImageEditRequest(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -4177,7 +4221,7 @@ func HandleOpenAIImageEditRequest(
 	bodyData := body.Bytes()
 	req.SetBody(bodyData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, bodyData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -4223,7 +4267,7 @@ func HandleOpenAIImageEditRequest(
 }
 
 // ImageEditStream streams image edits via the OpenAI Images API.
-func (provider *OpenAIProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest, tc schemas.TimeoutConfig) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if image generation stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageEditStreamRequest); err != nil {
 		return nil, err
@@ -4250,6 +4294,7 @@ func (provider *OpenAIProvider) ImageEditStream(ctx *schemas.BifrostContext, pos
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		tc,
 	)
 }
 
@@ -4269,6 +4314,7 @@ func HandleOpenAIImageEditStreamRequest(
 	postResponseConverter func(*schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	reqBody := ToOpenAIImageEditRequest(request)
 	if reqBody == nil {
@@ -4347,7 +4393,7 @@ func HandleOpenAIImageEditStreamRequest(
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
-	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+	if providerUtils.SetupStreamingPassthrough(ctx, resp, tc) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
 		close(responseChan)
 		return responseChan, nil
@@ -4373,12 +4419,12 @@ func HandleOpenAIImageEditStreamRequest(
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, reader, providerUtils.FastHTTPStreamController(resp))
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, logger)
 		defer stopCancellation()
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
@@ -4609,7 +4655,7 @@ func HandleOpenAIImageEditStreamRequest(
 }
 
 // ImageVariation performs an image variation request to openai's images api.
-func (provider *OpenAIProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest, tc schemas.TimeoutConfig) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageVariationRequest); err != nil {
 		return nil, err
 	}
@@ -4625,6 +4671,7 @@ func (provider *OpenAIProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
+		tc,
 	)
 	return response, err
 }
@@ -4642,9 +4689,10 @@ func HandleOpenAIImageVariationRequest(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, logger, tc); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -4698,7 +4746,7 @@ func HandleOpenAIImageVariationRequest(
 	bodyData := body.Bytes()
 	req.SetBody(bodyData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, bodyData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -4739,7 +4787,7 @@ func HandleOpenAIImageVariationRequest(
 }
 
 // FileUpload uploads a file to OpenAI.
-func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest, tc schemas.TimeoutConfig) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
 		return nil, err
 	}
@@ -4807,7 +4855,7 @@ func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	req.SetBody(buf.Bytes())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4839,7 +4887,7 @@ func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 
 // FileList lists files using serial pagination across keys.
 // Exhausts all pages from one key before moving to the next.
-func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest, tc schemas.TimeoutConfig) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileListRequest); err != nil {
 		return nil, err
 	}
@@ -4902,7 +4950,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4964,7 +5012,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 }
 
 // FileRetrieve retrieves file metadata from OpenAI by trying each key until found.
-func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest, tc schemas.TimeoutConfig) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileRetrieveRequest); err != nil {
 		return nil, err
 	}
@@ -4995,7 +5043,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -5040,7 +5088,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 }
 
 // FileDelete deletes a file from OpenAI by trying each key until successful.
-func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest, tc schemas.TimeoutConfig) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileDeleteRequest); err != nil {
 		return nil, err
 	}
@@ -5071,7 +5119,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -5133,7 +5181,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 }
 
 // FileContent downloads file content from OpenAI by trying each key until found.
-func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest, tc schemas.TimeoutConfig) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileContentRequest); err != nil {
 		return nil, err
 	}
@@ -5160,7 +5208,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -5210,7 +5258,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 }
 
 // VideoRemix remixes an existing video from the OpenAI provider.
-func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRemixRequest, tc schemas.TimeoutConfig) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoRemixRequest); err != nil {
 		return nil, err
 	}
@@ -5258,7 +5306,7 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -5304,7 +5352,7 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 }
 
 // BatchCreate creates a new batch job.
-func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest, tc schemas.TimeoutConfig) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
 		return nil, err
 	}
@@ -5325,7 +5373,7 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			File:     jsonlData,
 			Filename: "batch_requests.jsonl",
 			Purpose:  "batch",
-		})
+		}, tc)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -5383,7 +5431,7 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -5410,7 +5458,7 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 // BatchList lists batch jobs using serial pagination across keys.
 // Exhausts all pages from one key before moving to the next.
-func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchListRequest, tc schemas.TimeoutConfig) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchListRequest); err != nil {
 		return nil, err
 	}
@@ -5467,7 +5515,7 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -5518,7 +5566,7 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 }
 
 // BatchRetrieve retrieves a specific batch job by trying each key until found.
-func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest, tc schemas.TimeoutConfig) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchRetrieveRequest); err != nil {
 		return nil, err
 	}
@@ -5547,7 +5595,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -5592,7 +5640,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 }
 
 // BatchCancel cancels a batch job by trying each key until successful.
-func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest, tc schemas.TimeoutConfig) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchCancelRequest); err != nil {
 		return nil, err
 	}
@@ -5621,7 +5669,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -5692,14 +5740,14 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 }
 
 // BatchDelete is not supported by the OpenAI provider.
-func (provider *OpenAIProvider) BatchDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) BatchDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchDeleteRequest, tc schemas.TimeoutConfig) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
 }
 
 // BatchResults retrieves batch results by trying each key until successful.
 // Note: For OpenAI, batch results are obtained by downloading the output_file_id.
 // This method returns the file content parsed as batch results.
-func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest, tc schemas.TimeoutConfig) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
 		return nil, err
 	}
@@ -5712,7 +5760,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	batchResp, bifrostErr := provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{
 		Provider: request.Provider,
 		BatchID:  request.BatchID,
-	})
+	}, tc)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -5737,7 +5785,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -5797,7 +5845,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 }
 
 // ContainerCreate creates a new container via OpenAI's API.
-func (provider *OpenAIProvider) ContainerCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerCreateRequest) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerCreateRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerCreateRequest); err != nil {
 		return nil, err
 	}
@@ -5864,7 +5912,7 @@ func (provider *OpenAIProvider) ContainerCreate(ctx *schemas.BifrostContext, key
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -5922,7 +5970,7 @@ func (provider *OpenAIProvider) ContainerCreate(ctx *schemas.BifrostContext, key
 
 // ContainerList lists containers via OpenAI's API.
 // Uses SerialListHelper for multi-key pagination - exhausts all pages from one key before moving to next.
-func (provider *OpenAIProvider) ContainerList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerListRequest) (*schemas.BifrostContainerListResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerListRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerListResponse, *schemas.BifrostError) {
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
 	}
@@ -5993,7 +6041,7 @@ func (provider *OpenAIProvider) ContainerList(ctx *schemas.BifrostContext, keys 
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -6056,7 +6104,7 @@ func (provider *OpenAIProvider) ContainerList(ctx *schemas.BifrostContext, keys 
 }
 
 // ContainerRetrieve retrieves a specific container via OpenAI's API.
-func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerRetrieveRequest) (*schemas.BifrostContainerRetrieveResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerRetrieveRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerRetrieveResponse, *schemas.BifrostError) {
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
 	}
@@ -6092,7 +6140,7 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -6163,7 +6211,7 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 }
 
 // ContainerDelete deletes a container via OpenAI's API.
-func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerDeleteRequest) (*schemas.BifrostContainerDeleteResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerDeleteRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerDeleteResponse, *schemas.BifrostError) {
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
 	}
@@ -6199,7 +6247,7 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -6262,7 +6310,7 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 // =============================================================================
 
 // ContainerFileCreate creates a file in a container via OpenAI's API.
-func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerFileCreateRequest) (*schemas.BifrostContainerFileCreateResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerFileCreateRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerFileCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerFileCreateRequest); err != nil {
 		return nil, err
 	}
@@ -6315,7 +6363,7 @@ func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext,
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -6375,7 +6423,7 @@ func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext,
 
 // ContainerFileList lists files in a container via OpenAI's API.
 // Uses SerialListHelper for multi-key pagination - exhausts all pages from one key before moving to next.
-func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileListRequest) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileListRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
 	}
@@ -6451,7 +6499,7 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -6516,7 +6564,7 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 }
 
 // ContainerFileRetrieve retrieves a file from a container via OpenAI's API.
-func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileRetrieveRequest) (*schemas.BifrostContainerFileRetrieveResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileRetrieveRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerFileRetrieveResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 			keys = []schemas.Key{{}}
@@ -6556,7 +6604,7 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			lastErr = bifrostErr
@@ -6630,7 +6678,7 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 }
 
 // ContainerFileContent retrieves the content of a file from a container via OpenAI's API.
-func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileContentRequest) (*schemas.BifrostContainerFileContentResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileContentRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerFileContentResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 			keys = []schemas.Key{{}}
@@ -6670,7 +6718,7 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			lastErr = bifrostErr
@@ -6729,7 +6777,7 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 }
 
 // ContainerFileDelete deletes a file from a container via OpenAI's API.
-func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileDeleteRequest, tc schemas.TimeoutConfig) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 			keys = []schemas.Key{{}}
@@ -6769,7 +6817,7 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp, tc)
 		wait()
 		if bifrostErr != nil {
 			lastErr = bifrostErr
@@ -6838,6 +6886,7 @@ func (provider *OpenAIProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
+	tc schemas.TimeoutConfig,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
@@ -6874,7 +6923,7 @@ func (provider *OpenAIProvider) Passthrough(
 
 	fasthttpReq.SetBody(req.Body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp, tc)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -6915,6 +6964,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	postHookSpanFinalizer func(context.Context),
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
+	tc schemas.TimeoutConfig,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.PassthroughStreamRequest); err != nil {
 		return nil, err
@@ -6988,10 +7038,10 @@ func (provider *OpenAIProvider) PassthroughStream(
 	}
 
 	// Wrap reader with idle timeout to detect stalled streams.
-	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(rawBodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx))
+	bodyStream, stopIdleTimeout := providerUtils.ApplyStreamTimeoutsCtl(tc, rawBodyStream, providerUtils.FastHTTPStreamController(resp))
 
 	// Cancellation must close the raw stream to unblock reads.
-	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, providerUtils.FastHTTPStreamController(resp).Close, provider.logger)
 
 	extraFields := schemas.BifrostResponseExtraFields{}
 	statusCode := resp.StatusCode()

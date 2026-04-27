@@ -51,7 +51,7 @@ func TestListModelsByKey_ParsesSingleModelPayload(t *testing.T) {
 	// Unfiltered=true bypasses the allowed/alias/blacklist filter pipeline so
 	// this test can focus on the single-model-payload parsing code path in
 	// listModelsByKey (gemini.go:215-220).
-	resp, err := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Gemini, Unfiltered: true})
+	resp, err := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Gemini, Unfiltered: true}, schemas.TimeoutConfig{})
 	require.Nil(t, err)
 	require.NotNil(t, resp)
 	require.Len(t, resp.Data, 1)

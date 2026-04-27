@@ -612,7 +612,7 @@ func TestOCRWithMockServer(t *testing.T) {
 			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, tt.request)
+			resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, tt.request, schemas.TimeoutConfig{})
 
 			if tt.expectError {
 				require.NotNil(t, err)
@@ -645,7 +645,7 @@ func TestOCRNilInput(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, nil)
+	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, nil, schemas.TimeoutConfig{})
 
 	require.NotNil(t, err)
 	assert.Nil(t, resp)
@@ -705,7 +705,7 @@ func TestOCRRequestValidation(t *testing.T) {
 		},
 	}
 
-	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, request)
+	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, request, schemas.TimeoutConfig{})
 
 	require.Nil(t, err)
 	require.NotNil(t, resp)
@@ -743,7 +743,7 @@ func TestMistralOCRIntegration(t *testing.T) {
 		},
 	}
 
-	resp, bifrostErr := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request)
+	resp, bifrostErr := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request, schemas.TimeoutConfig{})
 
 	require.Nil(t, bifrostErr, "OCR request failed: %v", bifrostErr)
 	require.NotNil(t, resp)

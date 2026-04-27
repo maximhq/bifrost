@@ -70,9 +70,12 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 		OllamaKeyConfig:    dbKey.OllamaKeyConfig,
 		SGLKeyConfig:       dbKey.SGLKeyConfig,
-		ConfigHash:         dbKey.ConfigHash,
-		Status:             schemas.KeyStatusType(dbKey.Status),
-		Description:        dbKey.Description,
+		ConfigHash:                  dbKey.ConfigHash,
+		Status:                      schemas.KeyStatusType(dbKey.Status),
+		Description:                 dbKey.Description,
+		RequestTimeoutInSeconds:     dbKey.RequestTimeoutInSeconds,
+		StreamIdleTimeoutInSeconds:  dbKey.StreamIdleTimeoutInSeconds,
+		StreamTotalTimeoutInSeconds: dbKey.StreamTotalTimeoutInSeconds,
 	}
 }
 
@@ -96,10 +99,13 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		VLLMKeyConfig:      key.VLLMKeyConfig,
 		ReplicateKeyConfig: key.ReplicateKeyConfig,
 		OllamaKeyConfig:    key.OllamaKeyConfig,
-		SGLKeyConfig:       key.SGLKeyConfig,
-		ConfigHash:         key.ConfigHash,
-		Status:             string(key.Status),
-		Description:        key.Description,
+		SGLKeyConfig:                key.SGLKeyConfig,
+		ConfigHash:                  key.ConfigHash,
+		Status:                      string(key.Status),
+		Description:                 key.Description,
+		RequestTimeoutInSeconds:     key.RequestTimeoutInSeconds,
+		StreamIdleTimeoutInSeconds:  key.StreamIdleTimeoutInSeconds,
+		StreamTotalTimeoutInSeconds: key.StreamTotalTimeoutInSeconds,
 	}
 
 	if key.AzureKeyConfig != nil {

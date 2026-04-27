@@ -78,7 +78,7 @@ func TestChatCompletion_ExtraParamsForwardedAutomatically(t *testing.T) {
 		},
 	}
 
-	_, bifrostErr := provider.ChatCompletion(ctx, key, req)
+	_, bifrostErr := provider.ChatCompletion(ctx, key, req, schemas.TimeoutConfig{})
 	if bifrostErr != nil {
 		t.Fatalf("ChatCompletion returned error: %v", bifrostErr.Error.Message)
 	}

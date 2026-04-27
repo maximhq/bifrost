@@ -3995,6 +3995,27 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
 }
 
+// ResolveTimeoutConfigForProvider builds the effective TimeoutConfig for an out-of-band
+// (non-inference) provider call — typically realtime / websocket / SDP exchange — that does
+// not flow through executeRequestWithRetries. It mirrors the precedence used inside the retry
+// loop: API key TimeoutConfig > VK TimeoutConfig (read from ctx) > provider NetworkConfig
+// defaults. Pass `nil` for `key` for keyless flows.
+func (bifrost *Bifrost) ResolveTimeoutConfigForProvider(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, key *schemas.Key) schemas.TimeoutConfig {
+	var defaultTC schemas.TimeoutConfig
+	if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil {
+		defaultTC = schemas.TimeoutConfig{
+			Request:    time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds) * time.Second,
+			StreamIdle: time.Duration(config.NetworkConfig.StreamIdleTimeoutInSeconds) * time.Second,
+		}
+	}
+	var vkTC schemas.TimeoutConfig
+	if ctx != nil {
+		vkTC, _ = ctx.Value(schemas.BifrostContextKeyVKTimeoutConfig).(schemas.TimeoutConfig)
+	}
+	hasKey := key != nil
+	return providerUtils.ResolveTimeoutConfig(key, hasKey, vkTC, defaultTC)
+}
+
 // WSStreamHooks holds the post-hook runner and cleanup function returned by RunStreamPreHooks.
 // Call PostHookRunner for each streaming chunk, setting StreamEndIndicator on the final chunk.
 // Call Cleanup when done to release the pipeline back to the pool.
@@ -5143,7 +5164,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
-	requestHandler func(key schemas.Key) (T, *schemas.BifrostError),
+	requestHandler func(key schemas.Key, tc schemas.TimeoutConfig) (T, *schemas.BifrostError),
 	keyProvider func(usedKeyIDs map[string]bool) (schemas.Key, error),
 	requestType schemas.RequestType,
 	providerKey schemas.ModelProvider,
@@ -5158,6 +5179,11 @@ func executeRequestWithRetries[T any](
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
 	lastWasRateLimit := false
+
+	// Capture the VK-level timeout baseline written by the governance plugin as a single
+	// immutable struct. The retry loop never writes back to this key — it only reads it
+	// once here and passes the values to ResolveTimeoutConfig on each attempt.
+	vkTC, _ := ctx.Value(schemas.BifrostContextKeyVKTimeoutConfig).(schemas.TimeoutConfig)
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -5214,6 +5240,22 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
 		}
+
+		// Resolve the effective TimeoutConfig for this attempt: merge the VK baseline
+		// (read once before the loop) with key-level overrides when a concrete key is
+		// in play, then normalize missing values against provider defaults. Keyless
+		// providers therefore use VK timeouts plus provider defaults, never a silent
+		// nil-key fallback.
+		defaultTC := schemas.TimeoutConfig{
+			Request:    time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds) * time.Second,
+			StreamIdle: time.Duration(config.NetworkConfig.StreamIdleTimeoutInSeconds) * time.Second,
+		}
+		var keyPtr *schemas.Key
+		hasKey := keyProvider != nil
+		if hasKey {
+			keyPtr = &currentKey
+		}
+		tc := providerUtils.ResolveTimeoutConfig(keyPtr, hasKey, vkTC, defaultTC)
 
 		// Append a trail record for every attempt (key rotation and same-key retries alike).
 		// Skipped when keyProvider is nil (keyless providers have no key to track).
@@ -5317,7 +5359,7 @@ func executeRequestWithRetries[T any](
 		}
 
 		// Attempt the request
-		result, bifrostError = requestHandler(currentKey)
+		result, bifrostError = requestHandler(currentKey, tc)
 
 		// For streaming requests that returned success, check if the first chunk
 		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
@@ -5689,7 +5731,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// pipeline the previous attempt's provider goroutine has already
 		// returned to the pool via its deferred finalizer.
 		if IsStreamRequestType(req.RequestType) {
-			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key, tc schemas.TimeoutConfig) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				resolvedModel = k.Aliases.Resolve(originalModelRequested)
 				req.SetModel(resolvedModel)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
@@ -5731,7 +5773,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					})
 				}
 				lastAttemptFinalizer = postHookSpanFinalizer
-				streamCh, streamErr := bifrost.handleProviderStreamRequest(provider, req, k, postHookRunner, postHookSpanFinalizer)
+				streamCh, streamErr := bifrost.handleProviderStreamRequest(provider, req, k, tc, postHookRunner, postHookSpanFinalizer)
 				// If stream setup failed before any provider goroutine started,
 				// no deferred finalizer will run — release the pipeline directly
 				// so a retry doesn't inherit a leaked pool entry.
@@ -5743,10 +5785,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				return streamCh, streamErr
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		} else {
-			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key, tc schemas.TimeoutConfig) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				resolvedModel = k.Aliases.Resolve(originalModelRequested)
 				req.SetModel(resolvedModel)
-				return bifrost.handleProviderRequest(provider, config, req, k, keys)
+				return bifrost.handleProviderRequest(provider, config, req, k, keys, tc)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}
 
@@ -5817,11 +5859,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
-func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key, tc schemas.TimeoutConfig) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
-		listModelsResponse, bifrostError := provider.ListModels(req.Context, keys, req.BifrostRequest.ListModelsRequest)
+		listModelsResponse, bifrostError := provider.ListModels(req.Context, keys, req.BifrostRequest.ListModelsRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
@@ -5830,7 +5872,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
+				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest, tc)
 				if bifrostError != nil {
 					return nil, bifrostError
 				}
@@ -5838,7 +5880,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 				break
 			}
 		}
-		textCompletionResponse, bifrostError := provider.TextCompletion(req.Context, key, req.BifrostRequest.TextCompletionRequest)
+		textCompletionResponse, bifrostError := provider.TextCompletion(req.Context, key, req.BifrostRequest.TextCompletionRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
@@ -5847,7 +5889,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				responsesResponse, bifrostError := provider.Responses(req.Context, key, responsesRequest)
+				responsesResponse, bifrostError := provider.Responses(req.Context, key, responsesRequest, tc)
 				if bifrostError != nil {
 					return nil, bifrostError
 				}
@@ -5855,33 +5897,33 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 				break
 			}
 		}
-		chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, req.BifrostRequest.ChatRequest)
+		chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, req.BifrostRequest.ChatRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
-		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
+		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
 		response.ResponsesResponse = responsesResponse
 	case schemas.CountTokensRequest:
-		countTokensResponse, bifrostError := provider.CountTokens(req.Context, key, req.BifrostRequest.CountTokensRequest)
+		countTokensResponse, bifrostError := provider.CountTokens(req.Context, key, req.BifrostRequest.CountTokensRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.CountTokensResponse = countTokensResponse
 	case schemas.EmbeddingRequest:
-		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
+		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.EmbeddingResponse = embeddingResponse
 	case schemas.RerankRequest:
-		rerankResponse, bifrostError := provider.Rerank(req.Context, key, req.BifrostRequest.RerankRequest)
+		rerankResponse, bifrostError := provider.Rerank(req.Context, key, req.BifrostRequest.RerankRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
@@ -5892,210 +5934,212 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			customProviderConfig = config.CustomProviderConfig
 		}
 		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.OCRRequest); bifrostError != nil {
+			bifrostError.ExtraFields.Provider = provider.GetProviderKey()
+			bifrostError.ExtraFields.RequestType = schemas.OCRRequest
 			if req.BifrostRequest.OCRRequest != nil {
 				bifrostError.ExtraFields.OriginalModelRequested = req.BifrostRequest.OCRRequest.Model
 			}
 			return nil, bifrostError
 		}
-		ocrResponse, bifrostError := provider.OCR(req.Context, key, req.BifrostRequest.OCRRequest)
+		ocrResponse, bifrostError := provider.OCR(req.Context, key, req.BifrostRequest.OCRRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.OCRResponse = ocrResponse
 	case schemas.SpeechRequest:
-		speechResponse, bifrostError := provider.Speech(req.Context, key, req.BifrostRequest.SpeechRequest)
+		speechResponse, bifrostError := provider.Speech(req.Context, key, req.BifrostRequest.SpeechRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		speechResponse.BackfillParams(req.BifrostRequest.SpeechRequest)
 		response.SpeechResponse = speechResponse
 	case schemas.TranscriptionRequest:
-		transcriptionResponse, bifrostError := provider.Transcription(req.Context, key, req.BifrostRequest.TranscriptionRequest)
+		transcriptionResponse, bifrostError := provider.Transcription(req.Context, key, req.BifrostRequest.TranscriptionRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		transcriptionResponse.BackfillParams(req.BifrostRequest.TranscriptionRequest)
 		response.TranscriptionResponse = transcriptionResponse
 	case schemas.ImageGenerationRequest:
-		imageResponse, bifrostError := provider.ImageGeneration(req.Context, key, req.BifrostRequest.ImageGenerationRequest)
+		imageResponse, bifrostError := provider.ImageGeneration(req.Context, key, req.BifrostRequest.ImageGenerationRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		imageResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageResponse
 	case schemas.ImageEditRequest:
-		imageEditResponse, bifrostError := provider.ImageEdit(req.Context, key, req.BifrostRequest.ImageEditRequest)
+		imageEditResponse, bifrostError := provider.ImageEdit(req.Context, key, req.BifrostRequest.ImageEditRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		imageEditResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageEditResponse
 	case schemas.ImageVariationRequest:
-		imageVariationResponse, bifrostError := provider.ImageVariation(req.Context, key, req.BifrostRequest.ImageVariationRequest)
+		imageVariationResponse, bifrostError := provider.ImageVariation(req.Context, key, req.BifrostRequest.ImageVariationRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		imageVariationResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageVariationResponse
 	case schemas.VideoGenerationRequest:
-		videoGenerationResponse, bifrostError := provider.VideoGeneration(req.Context, key, req.BifrostRequest.VideoGenerationRequest)
+		videoGenerationResponse, bifrostError := provider.VideoGeneration(req.Context, key, req.BifrostRequest.VideoGenerationRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		videoGenerationResponse.BackfillParams(&req.BifrostRequest)
 		response.VideoGenerationResponse = videoGenerationResponse
 	case schemas.VideoRetrieveRequest:
-		videoRetrieveResponse, bifrostError := provider.VideoRetrieve(req.Context, key, req.BifrostRequest.VideoRetrieveRequest)
+		videoRetrieveResponse, bifrostError := provider.VideoRetrieve(req.Context, key, req.BifrostRequest.VideoRetrieveRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.VideoGenerationResponse = videoRetrieveResponse
 	case schemas.VideoDownloadRequest:
-		videoDownloadResponse, bifrostError := provider.VideoDownload(req.Context, key, req.BifrostRequest.VideoDownloadRequest)
+		videoDownloadResponse, bifrostError := provider.VideoDownload(req.Context, key, req.BifrostRequest.VideoDownloadRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.VideoDownloadResponse = videoDownloadResponse
 	case schemas.VideoListRequest:
-		videoListResponse, bifrostError := provider.VideoList(req.Context, key, req.BifrostRequest.VideoListRequest)
+		videoListResponse, bifrostError := provider.VideoList(req.Context, key, req.BifrostRequest.VideoListRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.VideoListResponse = videoListResponse
 	case schemas.VideoDeleteRequest:
-		videoDeleteResponse, bifrostError := provider.VideoDelete(req.Context, key, req.BifrostRequest.VideoDeleteRequest)
+		videoDeleteResponse, bifrostError := provider.VideoDelete(req.Context, key, req.BifrostRequest.VideoDeleteRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.VideoDeleteResponse = videoDeleteResponse
 	case schemas.VideoRemixRequest:
-		videoRemixResponse, bifrostError := provider.VideoRemix(req.Context, key, req.BifrostRequest.VideoRemixRequest)
+		videoRemixResponse, bifrostError := provider.VideoRemix(req.Context, key, req.BifrostRequest.VideoRemixRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.VideoGenerationResponse = videoRemixResponse
 	case schemas.FileUploadRequest:
-		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest)
+		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.FileUploadResponse = fileUploadResponse
 	case schemas.FileListRequest:
-		fileListResponse, bifrostError := provider.FileList(req.Context, keys, req.BifrostRequest.FileListRequest)
+		fileListResponse, bifrostError := provider.FileList(req.Context, keys, req.BifrostRequest.FileListRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.FileListResponse = fileListResponse
 	case schemas.FileRetrieveRequest:
-		fileRetrieveResponse, bifrostError := provider.FileRetrieve(req.Context, keys, req.BifrostRequest.FileRetrieveRequest)
+		fileRetrieveResponse, bifrostError := provider.FileRetrieve(req.Context, keys, req.BifrostRequest.FileRetrieveRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.FileRetrieveResponse = fileRetrieveResponse
 	case schemas.FileDeleteRequest:
-		fileDeleteResponse, bifrostError := provider.FileDelete(req.Context, keys, req.BifrostRequest.FileDeleteRequest)
+		fileDeleteResponse, bifrostError := provider.FileDelete(req.Context, keys, req.BifrostRequest.FileDeleteRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.FileDeleteResponse = fileDeleteResponse
 	case schemas.FileContentRequest:
-		fileContentResponse, bifrostError := provider.FileContent(req.Context, keys, req.BifrostRequest.FileContentRequest)
+		fileContentResponse, bifrostError := provider.FileContent(req.Context, keys, req.BifrostRequest.FileContentRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.FileContentResponse = fileContentResponse
 	case schemas.BatchCreateRequest:
-		batchCreateResponse, bifrostError := provider.BatchCreate(req.Context, key, req.BifrostRequest.BatchCreateRequest)
+		batchCreateResponse, bifrostError := provider.BatchCreate(req.Context, key, req.BifrostRequest.BatchCreateRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.BatchCreateResponse = batchCreateResponse
 	case schemas.BatchListRequest:
-		batchListResponse, bifrostError := provider.BatchList(req.Context, keys, req.BifrostRequest.BatchListRequest)
+		batchListResponse, bifrostError := provider.BatchList(req.Context, keys, req.BifrostRequest.BatchListRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.BatchListResponse = batchListResponse
 	case schemas.BatchRetrieveRequest:
-		batchRetrieveResponse, bifrostError := provider.BatchRetrieve(req.Context, keys, req.BifrostRequest.BatchRetrieveRequest)
+		batchRetrieveResponse, bifrostError := provider.BatchRetrieve(req.Context, keys, req.BifrostRequest.BatchRetrieveRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.BatchRetrieveResponse = batchRetrieveResponse
 	case schemas.BatchCancelRequest:
-		batchCancelResponse, bifrostError := provider.BatchCancel(req.Context, keys, req.BifrostRequest.BatchCancelRequest)
+		batchCancelResponse, bifrostError := provider.BatchCancel(req.Context, keys, req.BifrostRequest.BatchCancelRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.BatchCancelResponse = batchCancelResponse
 	case schemas.BatchDeleteRequest:
-		batchDeleteResponse, bifrostError := provider.BatchDelete(req.Context, keys, req.BifrostRequest.BatchDeleteRequest)
+		batchDeleteResponse, bifrostError := provider.BatchDelete(req.Context, keys, req.BifrostRequest.BatchDeleteRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.BatchDeleteResponse = batchDeleteResponse
 	case schemas.BatchResultsRequest:
-		batchResultsResponse, bifrostError := provider.BatchResults(req.Context, keys, req.BifrostRequest.BatchResultsRequest)
+		batchResultsResponse, bifrostError := provider.BatchResults(req.Context, keys, req.BifrostRequest.BatchResultsRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.BatchResultsResponse = batchResultsResponse
 	case schemas.ContainerCreateRequest:
-		containerCreateResponse, bifrostError := provider.ContainerCreate(req.Context, key, req.BifrostRequest.ContainerCreateRequest)
+		containerCreateResponse, bifrostError := provider.ContainerCreate(req.Context, key, req.BifrostRequest.ContainerCreateRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerCreateResponse = containerCreateResponse
 	case schemas.ContainerListRequest:
-		containerListResponse, bifrostError := provider.ContainerList(req.Context, keys, req.BifrostRequest.ContainerListRequest)
+		containerListResponse, bifrostError := provider.ContainerList(req.Context, keys, req.BifrostRequest.ContainerListRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerListResponse = containerListResponse
 	case schemas.ContainerRetrieveRequest:
-		containerRetrieveResponse, bifrostError := provider.ContainerRetrieve(req.Context, keys, req.BifrostRequest.ContainerRetrieveRequest)
+		containerRetrieveResponse, bifrostError := provider.ContainerRetrieve(req.Context, keys, req.BifrostRequest.ContainerRetrieveRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerRetrieveResponse = containerRetrieveResponse
 	case schemas.ContainerDeleteRequest:
-		containerDeleteResponse, bifrostError := provider.ContainerDelete(req.Context, keys, req.BifrostRequest.ContainerDeleteRequest)
+		containerDeleteResponse, bifrostError := provider.ContainerDelete(req.Context, keys, req.BifrostRequest.ContainerDeleteRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerDeleteResponse = containerDeleteResponse
 	case schemas.ContainerFileCreateRequest:
-		containerFileCreateResponse, bifrostError := provider.ContainerFileCreate(req.Context, key, req.BifrostRequest.ContainerFileCreateRequest)
+		containerFileCreateResponse, bifrostError := provider.ContainerFileCreate(req.Context, key, req.BifrostRequest.ContainerFileCreateRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerFileCreateResponse = containerFileCreateResponse
 	case schemas.ContainerFileListRequest:
-		containerFileListResponse, bifrostError := provider.ContainerFileList(req.Context, keys, req.BifrostRequest.ContainerFileListRequest)
+		containerFileListResponse, bifrostError := provider.ContainerFileList(req.Context, keys, req.BifrostRequest.ContainerFileListRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerFileListResponse = containerFileListResponse
 	case schemas.ContainerFileRetrieveRequest:
-		containerFileRetrieveResponse, bifrostError := provider.ContainerFileRetrieve(req.Context, keys, req.BifrostRequest.ContainerFileRetrieveRequest)
+		containerFileRetrieveResponse, bifrostError := provider.ContainerFileRetrieve(req.Context, keys, req.BifrostRequest.ContainerFileRetrieveRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerFileRetrieveResponse = containerFileRetrieveResponse
 	case schemas.ContainerFileContentRequest:
-		containerFileContentResponse, bifrostError := provider.ContainerFileContent(req.Context, keys, req.BifrostRequest.ContainerFileContentRequest)
+		containerFileContentResponse, bifrostError := provider.ContainerFileContent(req.Context, keys, req.BifrostRequest.ContainerFileContentRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerFileContentResponse = containerFileContentResponse
 	case schemas.ContainerFileDeleteRequest:
-		containerFileDeleteResponse, bifrostError := provider.ContainerFileDelete(req.Context, keys, req.BifrostRequest.ContainerFileDeleteRequest)
+		containerFileDeleteResponse, bifrostError := provider.ContainerFileDelete(req.Context, keys, req.BifrostRequest.ContainerFileDeleteRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		response.ContainerFileDeleteResponse = containerFileDeleteResponse
 	case schemas.PassthroughRequest:
-		passthroughResponse, bifrostError := provider.Passthrough(req.Context, key, req.BifrostRequest.PassthroughRequest)
+		passthroughResponse, bifrostError := provider.Passthrough(req.Context, key, req.BifrostRequest.PassthroughRequest, tc)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
@@ -6119,36 +6163,36 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 }
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
-func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, tc schemas.TimeoutConfig, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, chatRequest)
+				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, chatRequest, tc)
 			}
 		}
-		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
+		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest, tc)
 	case schemas.ChatCompletionStreamRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, responsesRequest)
+				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, responsesRequest, tc)
 			}
 		}
-		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
+		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest, tc)
 	case schemas.ResponsesStreamRequest:
-		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
+		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest, tc)
 	case schemas.SpeechStreamRequest:
-		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
+		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest, tc)
 	case schemas.TranscriptionStreamRequest:
-		return provider.TranscriptionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TranscriptionRequest)
+		return provider.TranscriptionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TranscriptionRequest, tc)
 	case schemas.ImageGenerationStreamRequest:
-		return provider.ImageGenerationStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageGenerationRequest)
+		return provider.ImageGenerationStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageGenerationRequest, tc)
 	case schemas.ImageEditStreamRequest:
-		return provider.ImageEditStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageEditRequest)
+		return provider.ImageEditStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageEditRequest, tc)
 	case schemas.PassthroughStreamRequest:
-		return provider.PassthroughStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.PassthroughRequest)
+		return provider.PassthroughStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.PassthroughRequest, tc)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{

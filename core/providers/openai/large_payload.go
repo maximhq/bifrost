@@ -27,6 +27,13 @@ func setStreamingRequestBody(ctx *schemas.BifrostContext, req *fasthttp.Request,
 	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, providerName) {
 		req.SetBody(jsonBody)
 	}
+	// Force connection close on streaming requests. When our application-layer
+	// timeout fires (StreamTotal/StreamIdle), CloseBodyStream may leave the
+	// fasthttp connection mid-chunk; reusing it for a subsequent request causes
+	// the chunked-encoding parser to fail with "unexpected char ... at the end
+	// of chunk size". Marking Connection: close ensures the connection is not
+	// returned to the pool after the stream terminates.
+	req.Header.SetConnectionClose()
 }
 
 // handleOpenAILargePayloadPassthrough handles a complete large payload request-response cycle
@@ -43,6 +50,7 @@ func handleOpenAILargePayloadPassthrough(
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
+	tc schemas.TimeoutConfig,
 ) (*largePayloadResult, *schemas.BifrostError, bool) {
 	isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 	if !isLargePayload {
@@ -74,7 +82,7 @@ func handleOpenAILargePayloadPassthrough(
 	// Choose client: enable response body streaming when threshold is configured
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp, tc)
 	wait()
 	if bifrostErr != nil {
 		fasthttp.ReleaseResponse(resp)

@@ -106,27 +106,137 @@ func getLogger() schemas.Logger {
 
 var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 
+// TimeoutConfig is re-exported from core/schemas for callers that only import this package.
+// Use schemas.TimeoutConfig directly when possible.
+type TimeoutConfig = schemas.TimeoutConfig
+
+// ResolveTimeoutConfig builds the effective TimeoutConfig for a single provider attempt.
+// Precedence (highest → lowest): API key config > VK config > provider defaults.
+// vkTC is the virtual-key baseline captured before the retry loop.
+// defaultTC must contain validated provider defaults for request and stream-idle timeouts.
+//
+// Semantics:
+//   - tc.Request    == 0 → "no override, fall back to client.ReadTimeout"
+//   - tc.StreamIdle == 0 → "use DefaultStreamIdleTimeout" (60s)
+//   - tc.StreamTotal == 0 → "no hard wall-clock cap"
+//
+// Negative values from any source are treated as zero (defense in depth — config
+// validation should reject them upstream, but the JSON path doesn't strictly enforce it).
+//
+// This is a pure function: it reads only its arguments and has no side effects.
+func ResolveTimeoutConfig(key *schemas.Key, hasKey bool, vkTC schemas.TimeoutConfig, defaultTC schemas.TimeoutConfig) schemas.TimeoutConfig {
+	tc := vkTC
+	if hasKey && key != nil {
+		if key.RequestTimeoutInSeconds != nil && *key.RequestTimeoutInSeconds > 0 {
+			tc.Request = time.Duration(*key.RequestTimeoutInSeconds) * time.Second
+		}
+		if key.StreamIdleTimeoutInSeconds != nil && *key.StreamIdleTimeoutInSeconds > 0 {
+			tc.StreamIdle = time.Duration(*key.StreamIdleTimeoutInSeconds) * time.Second
+		}
+		if key.StreamTotalTimeoutInSeconds != nil && *key.StreamTotalTimeoutInSeconds > 0 {
+			tc.StreamTotal = time.Duration(*key.StreamTotalTimeoutInSeconds) * time.Second
+		}
+	}
+	// Floor any negative leaks (corrupt config, test fixtures) before applying defaults.
+	if tc.Request < 0 {
+		tc.Request = 0
+	}
+	if tc.StreamIdle < 0 {
+		tc.StreamIdle = 0
+	}
+	if tc.StreamTotal < 0 {
+		tc.StreamTotal = 0
+	}
+	if tc.Request == 0 {
+		tc.Request = defaultTC.Request
+	}
+	if tc.StreamIdle == 0 {
+		tc.StreamIdle = defaultTC.StreamIdle
+	}
+	// StreamTotal: zero stays zero (= no cap). defaultTC.StreamTotal is reserved for
+	// future provider-level total caps; today no provider sets it.
+	if tc.StreamTotal == 0 && defaultTC.StreamTotal > 0 {
+		tc.StreamTotal = defaultTC.StreamTotal
+	}
+	return tc
+}
+
+// GetTimeoutConfigFromContext reads a TimeoutConfig from context and merges in the
+// idle-timeout fallback written by SetStreamIdleTimeoutIfEmpty when present.
+//
+// Deprecated: prefer ResolveTimeoutConfig + an explicit `tc TimeoutConfig`
+// parameter on call signatures. This helper remains for transport / adapter paths
+// (websocket, webrtc) that still bridge a context-carried timeout into an
+// explicit parameter, and for the realtime client which uses
+// (*Bifrost).ResolveTimeoutConfigForProvider as the recommended replacement.
+func GetTimeoutConfigFromContext(ctx *schemas.BifrostContext) schemas.TimeoutConfig {
+	tc, _ := ctx.Value(schemas.BifrostContextKeyTimeoutConfig).(schemas.TimeoutConfig)
+	// Merge provider-level idle-timeout fallback written by SetStreamIdleTimeoutIfEmpty
+	// when neither VK nor key configured an explicit idle timeout.
+	if tc.StreamIdle <= 0 {
+		if d, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && d > 0 {
+			tc.StreamIdle = d
+		}
+	}
+	return tc
+}
+
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
 // MakeRequestWithContext makes a request with a context and returns the latency, error, and a
 // wait function. The wait function MUST be called (typically via defer) before releasing the
 // request or response objects. On the normal path it is a no-op. On the context-cancellation
-// path it blocks until the background client.Do goroutine finishes, preventing a data race
-// between the still-running goroutine and the caller's release of req/resp.
+// path it blocks until the background goroutine finishes, preventing a data race between the
+// still-running goroutine and the caller's release of req/resp.
 //
-// IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
-// context is done. The fasthttp client call will continue in its goroutine until it completes
-// or times out based on its own settings. This function merely stops *waiting* for the
-// fasthttp call and returns an error related to the context.
-func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+// Timeout enforcement:
+//
+//	When BifrostContextKeyRequestTimeout is set on ctx (by the governance plugin from VK/key
+//	config), the goroutine uses client.DoTimeout instead of client.Do. client.DoTimeout sets a
+//	connection-level deadline via conn.SetDeadline — closing the underlying TCP socket when the
+//	deadline fires and returning fasthttp.ErrTimeout promptly. This ensures no zombie sockets or
+//	goroutine leaks under load, unlike context.WithTimeout which only signals ctx.Done() but
+//	leaves the socket open until the provider's ReadTimeout fires.
+//
+//	The effective timeout is min(requestTimeout, client.ReadTimeout) when both are set:
+//	client.ReadTimeout acts as a hard ceiling because it is enforced independently at the
+//	connection level; setting a VK timeout above it would be silently ignored. Capping here
+//	makes the effective timeout predictable and avoids surprising behavior.
+//
+// Why the goroutine is still necessary even with DoTimeout:
+//
+//  1. External cancellation: ctx.Done() detects client disconnects (HTTP/2 RST_STREAM, caller
+//     timeout) independently of the socket deadline. Returning immediately on ctx.Done() avoids
+//     holding provider quota / connection slots for callers that no longer care.
+//
+//  2. Data-race prevention: wait() blocks until the goroutine exits before the caller releases
+//     req/resp back to their pools. Without this, a race exists between the goroutine's last
+//     write to resp and the caller's fasthttp.ReleaseResponse(resp). When DoTimeout fires, the
+//     socket closes, the goroutine returns ErrTimeout quickly, and wait() unblocks fast.
+func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, tc TimeoutConfig) (time.Duration, *schemas.BifrostError, func()) {
 	startTime := time.Now()
 	errChan := make(chan error, 1)
 
+	// Use the explicitly-passed TimeoutConfig. Cap to client.ReadTimeout when both are set:
+	// client.ReadTimeout acts as a hard ceiling enforced at the connection level independently
+	// of DoTimeout. Normalizing here ensures the timeout actually fires when intended.
+	requestTimeout := tc.Request
+	if requestTimeout > 0 && client.ReadTimeout > 0 && requestTimeout > client.ReadTimeout {
+		requestTimeout = client.ReadTimeout
+	}
+
 	go func() {
-		// client.Do is a blocking call.
-		// It will send an error (or nil for success) to errChan when it completes.
-		errChan <- client.Do(req, resp)
+		// When a per-request timeout override is active we call DoTimeout, which sets
+		// conn.SetDeadline at the TCP level — the socket is closed on expiry, the goroutine
+		// returns fasthttp.ErrTimeout (already handled below), and wait() unblocks quickly.
+		// Without DoTimeout the socket would stay open until client.ReadTimeout (up to 30s),
+		// leaking connection-pool slots under sustained load.
+		if requestTimeout > 0 {
+			errChan <- client.DoTimeout(req, resp, requestTimeout)
+		} else {
+			errChan <- client.Do(req, resp)
+		}
 	}()
 
 	select {
@@ -928,6 +1038,27 @@ func BuildStreamingHTTPClient(base *http.Client) *http.Client {
 		CheckRedirect: base.CheckRedirect,
 		Jar:           base.Jar,
 	}
+}
+
+// ApplyHTTPRequestTimeout returns a derived context that enforces tc.Request as a
+// per-call deadline for net/http providers (e.g. Bedrock). It is the analogue of
+// MakeRequestWithContext's DoTimeout path for the standard library client: callers
+// must defer the returned cancel func and use the returned ctx when building
+// http.NewRequestWithContext. When tc.Request <= 0 the original ctx is returned
+// unchanged with a no-op cancel — providers will then rely on client.Timeout.
+//
+// The effective deadline is min(tc.Request, client.Timeout) when both are set, so
+// a per-key/VK override above the client ceiling is silently capped (matching the
+// fasthttp path's documented behavior in MakeRequestWithContext).
+func ApplyHTTPRequestTimeout(ctx context.Context, client *http.Client, tc TimeoutConfig) (context.Context, context.CancelFunc) {
+	if tc.Request <= 0 {
+		return ctx, func() {}
+	}
+	timeout := tc.Request
+	if client != nil && client.Timeout > 0 && timeout > client.Timeout {
+		timeout = client.Timeout
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
@@ -1992,41 +2123,152 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 	finalizer(ctx)
 }
 
-// SetupStreamCancellation spawns a goroutine that closes the body stream when
-// the context is cancelled or deadline exceeded, unblocking any blocked Read/Scan operations.
-// Returns a cleanup function that MUST be called when streaming is done to
-// prevent the goroutine from closing the stream during normal operation.
-// Works with both fasthttp's BodyStream() (io.Reader) and net/http's resp.Body (io.ReadCloser).
-func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
+// =============================================================================
+// Stream-timeout concurrency model (READ BEFORE EDITING)
+// =============================================================================
+//
+// IMPORTANT: fasthttp does NOT unblock pending reads when the response body
+// stream is closed via *Response.CloseBodyStream(). The underlying
+// *fasthttp.closeReader holds a reference to a still-live keep-alive
+// connection; closing it merely flips a flag that the next Read will observe.
+// A Read that is already blocked in net.Conn.Read on the wire will remain
+// blocked until either the kernel TCP read returns (peer flush, FIN, RST,
+// SO_RCVTIMEO) or the goroutine is otherwise woken.
+//
+// The wrappers below therefore enforce idle / total / context-cancellation
+// timeouts via the only mechanism that actually works on fasthttp:
+//
+//  1. A dedicated goroutine wraps each blocking Read inside idleTimeoutReader
+//     so the parent reader can return ErrStreamIdleTimeout via select { ... }
+//     even while the inner Read is still parked in the kernel.
+//  2. Time-based AfterFunc(s) (idle / total) call the at-most-once close path
+//     to force the upstream connection closed at the OS level — that wakes
+//     the kernel read with EOF/ECONNRESET, which then unblocks the inner
+//     goroutine, which then unblocks the user's Read.
+//  3. SetupStreamCancellation runs an analogous goroutine watching ctx.Done()
+//     so that client disconnects propagate the same way.
+//
+// TERMINATION GUARANTEE — best-effort, NOT synchronous:
+// Calling closeFn signals termination. The user's Read returns the timeout
+// sentinel IMMEDIATELY (via the select), but the inner Read goroutine may
+// remain parked for milliseconds-to-RTT until the kernel TCP socket close
+// completes. Structured events emit `termination_guarantee:"best_effort"`
+// to reflect this honestly. Callers MUST NOT assume the upstream connection
+// is fully reaped the instant they observe ErrStreamIdleTimeout /
+// ErrStreamTotalTimeout.
+//
+// fasthttp keep-alive workaround (Connection: close):
+// Streaming requests in providers/openai/large_payload.go set
+// req.Header.SetConnectionClose() to defeat fasthttp's response pool reuse,
+// which otherwise causes `unexpected char '}' at end of chunk size` errors
+// when a partially-drained streaming connection is re-issued for a unary
+// request. TRADEOFF: this disables HTTP/1.1 keep-alive for streaming, costing
+// one TCP+TLS handshake per stream. For LLM streaming workloads (response
+// time dominated by token generation, ~hundreds of ms minimum) this overhead
+// is < 5% in practice and is the correct choice over silent corruption.
+// FUTURE: a draining-pool fix in fasthttp upstream, or migration to
+// net/http for the streaming path, would let us reinstate keep-alive.
+//
+// fasthttp internal data race (scope statement):
+// `go test -race` against the full transport pulls fasthttp's response-pool
+// internals into scope and trips a known data race in fasthttp's pooling
+// layer (see https://github.com/valyala/fasthttp issue tracker; the race
+// affects pool eviction, not request data). It is OUTSIDE this package.
+// Bifrost's stream-timeout code does NOT share mutable state across the
+// timeout goroutine and the inner Read goroutine — they communicate only
+// via channels, atomics, and sync.Once. Race testing for this package is
+// therefore scoped to providers/utils/... where it passes cleanly.
+//
+// Goroutine bookkeeping (counters in streamtimeout_observability.go):
+//   - activeStreamCancellationGoroutines: in-flight ctx watchers
+//   - activeStreamReadGoroutines:        in-flight inner Read goroutines
+//   - hard cap (BIFROST_MAX_STREAM_TIMEOUT_GOROUTINES, default 4096)
+//     enforced via TryAcquireStreamTimeoutSlot. New ctx-watcher goroutines
+//     are REFUSED past the cap; the stream proceeds without ctx-cancellation
+//     enforcement (idle/total timers still apply since they are timer-based,
+//     not goroutine-based at admission). Rejection emits a structured
+//     stream.timeout.admission_rejected event.
+// Every fire path emits a structured stream.timeout.fired event with
+// reason (idle|total|ctx_cancel), configured_ms, elapsed_ms, close_invoked,
+// close_result, and termination_guarantee. There are no silent-failure paths.
+//
+// =============================================================================
+
+// StreamCloseFunc closes the upstream response body. Stream-timeout helpers
+// invoke it AT MOST ONCE to force a blocked Read to return so that an idle /
+// total / context-cancellation timeout can take effect.
+//
+// Wiring:
+//   - fasthttp:  closeFn := func() error { return resp.CloseBodyStream() }
+//   - net/http:  closeFn := resp.Body.Close
+//
+// closeFn must be safe to call exactly once; the helpers below guarantee
+// at-most-once invocation via sync.Once. closeFn may be nil — in that case the
+// helper still functions as a passive timer (logs a warning when it fires) but
+// cannot force-terminate the upstream Read. A nil closeFn is a configuration
+// bug; provider authors should always supply one.
+//
+// Why this is a func() error and not an io.Closer interface assertion:
+// fasthttp's *Response.BodyStream() returns *fasthttp.closeReader which does
+// NOT implement io.Closer (despite the type name). A type assertion silently
+// fails, leaving idle/total timers as no-ops. Passing the close path
+// explicitly through this function type eliminates the failure mode entirely.
+type StreamCloseFunc func() error
+
+// SetupStreamCancellation spawns a goroutine that invokes closeFn when the
+// context is cancelled or its deadline is exceeded, unblocking any blocked
+// Read/Scan call on the wrapped reader. Returns a cleanup function that MUST
+// be called (via defer) when streaming completes — without it, the goroutine
+// would close the body during normal teardown and may corrupt fasthttp's
+// response pool.
+//
+// closeFn is invoked at most once: either by the ctx watcher here or by the
+// idle/total-timeout helpers in the same wrapper chain. Cleanup blocks until
+// the goroutine has fully exited so the caller can safely release the
+// underlying response object afterward.
+func SetupStreamCancellation(ctx context.Context, closeFn StreamCloseFunc, logger schemas.Logger) (cleanup func()) {
 	done := make(chan struct{})
 	closed := make(chan struct{})
+	var fired sync.Once
+	startedAt := time.Now()
 
+	// HARD CAP: refuse to spawn the watcher goroutine if we are at capacity.
+	// Caller proceeds without context-cancellation enforcement; the idle/total
+	// timers still apply (they are timer-based, not goroutine-based at admission
+	// time). This is graceful degradation, not silent: TryAcquireStreamTimeoutSlot
+	// emits a structured admission_rejected event.
+	if err := TryAcquireStreamTimeoutSlot(); err != nil {
+		close(closed)
+		return func() { close(done); <-closed }
+	}
 	go func() {
+		defer noteStreamCancellationStopped()
 		defer close(closed)
+		invoke := func() {
+			fired.Do(func() {
+				if closeFn == nil {
+					emitStreamTimeoutEvent(streamTimeoutReasonCtxCancel, 0, time.Since(startedAt), true, nil)
+					return
+				}
+				err := closeFn()
+				emitStreamTimeoutEvent(streamTimeoutReasonCtxCancel, 0, time.Since(startedAt), false, err)
+			})
+		}
 		select {
 		case <-ctx.Done():
-			// Context cancelled or deadline exceeded - close the body stream to unblock reads
-			if closer, ok := bodyStream.(io.Closer); ok {
-				if err := closer.Close(); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
-			}
+			invoke()
 		case <-done:
-			// If context was also cancelled (race between done and ctx.Done),
-			// still close the body stream to unblock the drain in ReleaseStreamingResponse.
+			// Cleanup path. If ctx was ALSO cancelled (race between ctx.Done and done),
+			// still close so ReleaseStreamingResponse's drain doesn't block.
 			if ctx.Err() != nil {
-				if closer, ok := bodyStream.(io.Closer); ok {
-					if err := closer.Close(); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
-				}
+				invoke()
 			}
 		}
 	}()
 
 	return func() {
 		close(done)
-		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
+		<-closed // Wait for goroutine to fully exit before caller releases resp.
 	}
 }
 
@@ -2038,8 +2280,11 @@ const DefaultStreamIdleTimeout = 60 * time.Second
 
 // SetStreamIdleTimeoutIfEmpty sets the stream idle timeout on the context from
 // the provider's network config, but only if no valid timeout is already present.
-// This allows upstream layers (transport, headers) to set the timeout first,
-// with the provider config acting as a fallback.
+//
+// Deprecated: prefer threading TimeoutConfig explicitly through call signatures
+// and using ApplyStreamTimeouts. This helper remains only for transport adapters
+// that still bridge a context-carried idle timeout. New code should not call it —
+// ResolveTimeoutConfig already merges provider-level idle defaults.
 func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int) {
 	if existing, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && existing > 0 {
 		return // already set from upstream (transport/header), respect it
@@ -2051,6 +2296,10 @@ func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int)
 
 // GetStreamIdleTimeout reads the per-chunk idle timeout from context,
 // falling back to DefaultStreamIdleTimeout if not set.
+//
+// Deprecated: prefer reading TimeoutConfig.StreamIdle from the explicit `tc`
+// parameter passed to provider methods. ApplyStreamTimeouts already substitutes
+// DefaultStreamIdleTimeout when tc.StreamIdle is zero.
 func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
 	if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && timeout > 0 {
 		return timeout
@@ -2058,48 +2307,403 @@ func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
 	return DefaultStreamIdleTimeout
 }
 
-// idleTimeoutReader wraps an io.Reader and closes the underlying body stream
-// if no data arrives within the configured timeout. This unblocks any pending
-// Read() call on the wrapped reader.
-type idleTimeoutReader struct {
-	reader     io.Reader
-	bodyStream io.Reader // closed via type assertion to io.Closer on timeout
-	timeout    time.Duration
-	timer      *time.Timer
-	once       sync.Once
+// ResolveRequestTimeout returns the effective per-request unary timeout for this context.
+//
+// Deprecated: prefer reading TimeoutConfig.Request from the explicit `tc` parameter
+// passed to provider methods. The retry loop now resolves the effective TimeoutConfig
+// once per attempt via ResolveTimeoutConfig and threads it explicitly to providers,
+// so context-bridged timeouts are no longer the source of truth.
+func ResolveRequestTimeout(ctx context.Context) time.Duration {
+	bifrostCtx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return 0
+	}
+	if d, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration); ok && d > 0 {
+		return d
+	}
+	return 0
 }
 
-// NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
-// no data for the given timeout duration, bodyStream is closed to unblock the read.
-// bodyStream must implement io.Closer for the timeout to take effect; if it does not,
-// the wrapper still functions but cannot force-close the stream.
-// Returns the wrapped reader and a cleanup function that MUST be called (via defer)
-// when streaming is complete, to stop the timer and prevent premature closure.
-func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration) (io.Reader, func()) {
+// GetStreamTotalTimeout reads the maximum total stream duration from context.
+//
+// Deprecated: prefer reading TimeoutConfig.StreamTotal from the explicit `tc`
+// parameter passed to provider methods. ApplyStreamTimeouts enforces this cap
+// when tc.StreamTotal > 0.
+func GetStreamTotalTimeout(ctx *schemas.BifrostContext) time.Duration {
+	if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamTotalTimeout).(time.Duration); ok && timeout > 0 {
+		return timeout
+	}
+	return 0
+}
+
+// ErrStreamIdleTimeout is returned by the wrapped reader once the per-chunk
+// idle timeout fires and the upstream Read could not be unblocked synchronously.
+// Providers' streaming goroutines should treat this as a fatal stream error.
+var ErrStreamIdleTimeout = errors.New("bifrost: stream idle timeout")
+
+// ErrStreamTotalTimeout is returned once the wall-clock total cap fires.
+var ErrStreamTotalTimeout = errors.New("bifrost: stream total timeout")
+
+// totalTimeoutReader closes the upstream body after a fixed total duration via
+// the explicit closeFn (NOT via type-asserting the body to io.Closer — that
+// silently fails for fasthttp's *closeReader). The timer fires regardless of
+// per-chunk activity (unlike idleTimeoutReader). Use this to enforce a maximum
+// wall-clock cap on a stream.
+//
+// totalTimeoutReader does NOT itself unblock the inner Read — it relies on the
+// idleTimeoutReader (which it always wraps) to surface the timeout via its
+// goroutine + select. The total reader's timer signals the inner reader's
+// fired channel through a shared cancellation hook installed by
+// ApplyStreamTimeouts.
+type totalTimeoutReader struct {
+	reader    io.Reader
+	closeFn   StreamCloseFunc
+	timer     *time.Timer
+	closeOnce sync.Once
+	// errOnce captures the err to return from Read once the cap has fired.
+	// Set by the timer's AfterFunc, read by Read.
+	capFired atomic.Bool
+}
+
+// NewTotalTimeoutReader wraps reader with a hard wall-clock cap. If totalTimeout
+// elapses before the stream ends naturally, closeFn is invoked exactly once to
+// force any in-progress Read to unblock and the stream to terminate. If
+// totalTimeout <= 0 the original reader is returned unchanged with a no-op
+// cleanup.
+//
+// closeFn semantics: see StreamCloseFunc. Pass resp.CloseBodyStream (fasthttp)
+// or resp.Body.Close (net/http).
+//
+// The returned cleanup function MUST be called (via defer) when streaming
+// completes. It stops the timer and synchronizes with any concurrent timer
+// firing so callers can safely release the upstream response afterward.
+func NewTotalTimeoutReader(reader io.Reader, closeFn StreamCloseFunc, totalTimeout time.Duration) (io.Reader, func()) {
+	if totalTimeout <= 0 {
+		return reader, func() {}
+	}
+	r := &totalTimeoutReader{
+		reader:  reader,
+		closeFn: closeFn,
+	}
+	startedAt := time.Now()
+	r.timer = time.AfterFunc(totalTimeout, func() {
+		r.closeOnce.Do(func() {
+			r.capFired.Store(true)
+			// If the inner reader is an idleTimeoutReader, propagate the
+			// cancellation to its goroutine-select so any blocked Read in this
+			// chain is unblocked immediately.
+			if cancellable, ok := r.reader.(streamCancellable); ok {
+				cancellable.cancelStream(ErrStreamTotalTimeout)
+			}
+			if r.closeFn == nil {
+				emitStreamTimeoutEvent(streamTimeoutReasonTotal, totalTimeout, time.Since(startedAt), true, nil)
+				return
+			}
+			err := r.closeFn()
+			emitStreamTimeoutEvent(streamTimeoutReasonTotal, totalTimeout, time.Since(startedAt), false, err)
+		})
+	})
+	cleanup := func() {
+		_ = r.timer.Stop()
+		r.closeOnce.Do(func() {})
+	}
+	return r, cleanup
+}
+
+func (r *totalTimeoutReader) Read(p []byte) (int, error) {
+	if r.capFired.Load() {
+		return 0, ErrStreamTotalTimeout
+	}
+	n, err := r.reader.Read(p)
+	if r.capFired.Load() {
+		// Cap fired during the Read; surface the cap error rather than the
+		// inner timeout (idle) sentinel, since cap takes precedence.
+		return n, ErrStreamTotalTimeout
+	}
+	return n, err
+}
+
+// streamCancellable is implemented by readers whose blocked Read can be
+// unblocked externally by signalling an internal "fired" channel. Used by
+// totalTimeoutReader to propagate cancellation into the underlying
+// idleTimeoutReader so a concurrently blocked Read returns immediately.
+type streamCancellable interface {
+	cancelStream(err error)
+}
+
+// ApplyStreamTimeouts wraps reader with both the per-chunk idle timeout (resets
+// on each chunk) and, if configured, the hard total wall-clock cap. It is the
+// canonical way for provider stream functions to apply all configured timeout
+// policies in one call.
+//
+// Usage (preferred — centralized controller construction):
+//
+//	ctl := providerUtils.FastHTTPStreamController(resp)        // fasthttp
+//	// or: ctl := providerUtils.NetHTTPStreamController(resp.Body)  // net/http
+//	wrappedBody, cleanup := providerUtils.ApplyStreamTimeoutsCtl(tc, scanner, ctl)
+//	defer cleanup()
+//
+// Legacy form (still accepted, but providers SHOULD migrate to *Ctl):
+//
+//	closeFn := func() error { return resp.CloseBodyStream() }
+//	wrappedBody, cleanup := providerUtils.ApplyStreamTimeouts(tc, scanner, closeFn)
+//
+// STRICT closeFn CONTRACT: if closeFn == nil this is a programming bug.
+// Rather than silently degrading to passive timers (which would let timeouts
+// appear to be configured while not actually enforced), the helper emits a
+// structured stream.timeout.disabled ERROR event and returns the reader
+// UNWRAPPED. The caller's stream proceeds without timeout enforcement and
+// the disabled event is loud enough to surface in production dashboards.
+//
+// closeFn is invoked AT MOST ONCE across the entire timeout chain (idle + total
+// + cleanup), guaranteed via a shared sync.Once. This avoids double-close on
+// the underlying response body when both timers race.
+func ApplyStreamTimeouts(tc TimeoutConfig, reader io.Reader, closeFn StreamCloseFunc) (io.Reader, func()) {
+	if closeFn == nil {
+		getLogger().Error(fmt.Sprintf(
+			`{"event":"stream.timeout.disabled","reason":"nil-closefn","stream_idle_ms":%d,"stream_total_ms":%d,"impact":"timeouts not enforced for this stream"}`,
+			tc.StreamIdle.Milliseconds(),
+			tc.StreamTotal.Milliseconds(),
+		))
+		return reader, func() {}
+	}
+
+	idleTimeout := tc.StreamIdle
+	if idleTimeout <= 0 {
+		idleTimeout = DefaultStreamIdleTimeout
+	}
+
+	// Shared single-shot close: idle timer, total timer, and cleanup all
+	// dispatch through this once. Guarantees closeFn fires at most once.
+	var sharedOnce sync.Once
+	sharedClose := StreamCloseFunc(func() error {
+		var firstErr error
+		sharedOnce.Do(func() {
+			if closeFn == nil {
+				return
+			}
+			firstErr = closeFn()
+		})
+		return firstErr
+	})
+
+	idleReader, idleCleanup := NewIdleTimeoutReader(reader, sharedClose, idleTimeout)
+
+	if tc.StreamTotal <= 0 {
+		return idleReader, idleCleanup
+	}
+
+	// Total reader wraps idleReader; its timer ALSO fires sharedClose (once
+	// total cap fires we want the upstream closed too) AND propagates
+	// cancellation into idleReader so any blocked inner Read unblocks.
+	totalReader, totalCleanup := NewTotalTimeoutReader(idleReader, sharedClose, tc.StreamTotal)
+	return totalReader, func() {
+		idleCleanup()
+		totalCleanup()
+	}
+}
+
+// ApplyStreamTimeoutsCtl is the controller-based equivalent of
+// ApplyStreamTimeouts. Prefer this over the raw closeFn variant because:
+//
+//  1. The transport label (fasthttp / net/http / test) is recorded centrally
+//     and surfaces in the structured nil-controller log if the controller
+//     was misconstructed.
+//  2. Future evolution (e.g. adding tracing or metrics inside Close) only
+//     requires touching the StreamController constructors, not 20 providers.
+//  3. Strict contract: a controller wrapping a nil fn is detected and the
+//     stream proceeds with a loud stream.timeout.disabled event rather than
+//     silently degrading to passive timers.
+func ApplyStreamTimeoutsCtl(tc TimeoutConfig, reader io.Reader, ctl StreamController) (io.Reader, func()) {
+	return ApplyStreamTimeouts(tc, reader, asCloseFn(ctl))
+}
+
+
+// idleTimeoutReader invokes closeFn if no data arrives within the configured
+// timeout, AND surfaces the timeout to the caller's Read by short-circuiting
+// via a goroutine + select. This is essential because some transports (notably
+// fasthttp) do not unblock pending Reads when their body-stream Close API is
+// called — the only way to surface the timeout is to abandon the inner Read.
+//
+// Each successful Read resets the timer. The inner Read is dispatched on a
+// helper goroutine that writes into a per-reader scratch buffer; on timeout
+// the goroutine is leaked until the upstream actually closes (TCP RST / OS
+// timeout). The leak is bounded (one per stream) and acceptable for the rare
+// failure mode it covers.
+type idleTimeoutReader struct {
+	reader    io.Reader
+	closeFn   StreamCloseFunc
+	timeout   time.Duration
+	timer     *time.Timer
+	closeOnce sync.Once
+	startedAt time.Time
+
+	// fired is closed exactly once when the timer fires OR cancelStream is
+	// invoked externally (e.g. by totalTimeoutReader). After fired is closed,
+	// Read returns firedErr immediately.
+	fired    chan struct{}
+	firedErr atomic.Value // error
+
+	// scratch buffer reused across Reads to avoid per-call allocation. Sized
+	// at first use to match the caller's buffer. Once a Read times out, the
+	// goroutine still holds scratch — subsequent Reads should not be issued
+	// (caller stops on error), so this scratch is effectively abandoned with
+	// the leaked goroutine.
+	scratchInUse atomic.Bool
+	scratch      []byte
+}
+
+// cancelStream lets external timers (totalTimeoutReader) push an error into
+// this reader and unblock any in-flight Read. It does NOT call closeFn — the
+// caller is responsible for that. This split lets ApplyStreamTimeouts share a
+// single closeFn invocation across the idle + total wrappers (otherwise both
+// timers would fire closeFn, violating the at-most-once contract).
+func (r *idleTimeoutReader) cancelStream(err error) {
+	r.closeOnce.Do(func() {
+		r.firedErr.Store(err)
+		close(r.fired)
+	})
+}
+
+// NewIdleTimeoutReader wraps reader with idle detection. If reader.Read()
+// returns no data for the given timeout duration, closeFn is invoked exactly
+// once and any pending Read returns ErrStreamIdleTimeout immediately. Returns
+// the wrapped reader and a cleanup function that MUST be called (via defer)
+// when streaming is complete, to stop the timer and synchronize with any
+// concurrent firing.
+//
+// closeFn semantics: see StreamCloseFunc. Pass resp.CloseBodyStream (fasthttp)
+// or resp.Body.Close (net/http). A nil closeFn turns the wrapper into a passive
+// timer (debug-logs when it fires) but cannot force-terminate the upstream
+// read; supply a real closeFn in production code paths.
+func NewIdleTimeoutReader(reader io.Reader, closeFn StreamCloseFunc, timeout time.Duration) (io.Reader, func()) {
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
 	}
 	r := &idleTimeoutReader{
-		reader:     reader,
-		bodyStream: bodyStream,
-		timeout:    timeout,
+		reader:  reader,
+		closeFn: closeFn,
+		timeout: timeout,
+		fired:   make(chan struct{}),
 	}
+	r.startedAt = time.Now()
 	r.timer = time.AfterFunc(timeout, func() {
-		r.once.Do(func() {
-			if closer, ok := r.bodyStream.(io.Closer); ok {
-				closer.Close()
+		r.closeOnce.Do(func() {
+			r.firedErr.Store(error(ErrStreamIdleTimeout))
+			close(r.fired)
+			if r.closeFn == nil {
+				emitStreamTimeoutEvent(streamTimeoutReasonIdle, timeout, time.Since(r.startedAt), true, nil)
+				return
 			}
+			err := r.closeFn()
+			emitStreamTimeoutEvent(streamTimeoutReasonIdle, timeout, time.Since(r.startedAt), false, err)
 		})
 	})
-	return r, func() { r.timer.Stop() }
+	return r, func() {
+		_ = r.timer.Stop()
+		// Sync with any in-flight AfterFunc closeFn call before returning so the
+		// caller can safely release the underlying response object.
+		r.closeOnce.Do(func() {})
+	}
+}
+
+// readResult is sent from the inner goroutine to Read. The buf field carries
+// a reference to the scratch buffer the goroutine wrote into so Read can copy
+// the n valid bytes into the caller's p without exposing scratch.
+type readResult struct {
+	n   int
+	err error
+	buf []byte
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
-	if n > 0 {
-		r.timer.Reset(r.timeout)
+	// Fast path: already fired.
+	select {
+	case <-r.fired:
+		return 0, r.firedError()
+	default:
 	}
-	return n, err
+
+	// Pick a buffer for the inner Read. If the previous Read's goroutine still
+	// owns the per-reader scratch (which only happens after cancellation), allocate
+	// a fresh one. After cancellation the caller should stop reading anyway — this
+	// is a defensive fallback.
+	var buf []byte
+	useScratch := r.scratchInUse.CompareAndSwap(false, true)
+	if useScratch {
+		// Reuse a single scratch buffer across reads to avoid per-call alloc.
+		// We size it to the caller's first buffer; growth handles larger Reads.
+		buf = getReaderScratch(r, len(p))
+	} else {
+		buf = make([]byte, len(p))
+	}
+
+	ch := make(chan readResult, 1)
+	noteStreamReadStarted()
+	go func(scratch []byte, releasedScratch bool) {
+		defer noteStreamReadStopped()
+		// Recover panics from the underlying reader. fasthttp's requestStream
+		// panics with a nil bufio.Reader if it is read AFTER CloseBodyStream
+		// has been called (use-after-release of pooled state). Treat any panic
+		// as an EOF-equivalent stream error.
+		defer func() {
+			if rec := recover(); rec != nil {
+				select {
+				case ch <- readResult{n: 0, err: io.ErrUnexpectedEOF, buf: scratch}:
+				default:
+				}
+				if releasedScratch {
+					r.scratchInUse.Store(false)
+				}
+			}
+		}()
+		n, err := r.reader.Read(scratch)
+		select {
+		case ch <- readResult{n: n, err: err, buf: scratch}:
+		default:
+			// Read returned but the consumer already gave up via fired;
+			// drop the result and release scratch for next consumer.
+		}
+		if releasedScratch {
+			r.scratchInUse.Store(false)
+		}
+	}(buf, useScratch)
+
+	select {
+	case res := <-ch:
+		if res.n > 0 {
+			copy(p, res.buf[:res.n])
+			r.timer.Reset(r.timeout)
+		}
+		return res.n, res.err
+	case <-r.fired:
+		// The goroutine + scratch leak until the upstream Read returns. closeFn
+		// has been called, which will eventually unblock the underlying I/O
+		// (TCP close at the OS level for fasthttp; immediate for net/http).
+		return 0, r.firedError()
+	}
+}
+
+func (r *idleTimeoutReader) firedError() error {
+	if v := r.firedErr.Load(); v != nil {
+		if e, ok := v.(error); ok && e != nil {
+			return e
+		}
+	}
+	return ErrStreamIdleTimeout
+}
+
+// scratchHolder lets us cache one scratch slice per reader without an extra
+// field that has to be initialized eagerly. Stored via a package-level map?
+// No — keep it inline on the struct via embedding the slice directly.
+//
+// (Implementation note: we add a scratch field to the struct rather than a
+// global map.)
+func getReaderScratch(r *idleTimeoutReader, size int) []byte {
+	if cap(r.scratch) < size {
+		r.scratch = make([]byte, size)
+	}
+	return r.scratch[:size]
 }
 
 // HandleStreamCancellation should be called when a streaming goroutine exits

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 const (
@@ -285,6 +286,21 @@ const (
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
+	BifrostContextKeyRequestTimeout                      BifrostContextKey = "bifrost-request-timeout"                    // time.Duration (per-request unary timeout override; set by governance plugin from VK/key config — takes precedence over provider-level ReadTimeout; API key overrides VK)
+	BifrostContextKeyStreamTotalTimeout                  BifrostContextKey = "bifrost-stream-total-timeout"               // time.Duration (hard wall-clock cap for streaming responses; stream is forcibly closed after this duration regardless of per-chunk activity)
+
+	// BifrostContextKeyVKTimeoutConfig holds the virtual-key-level timeout baseline written by
+	// the governance plugin as a single immutable struct. The retry loop reads this once before
+	// the loop and merges it with key-level overrides via ResolveTimeoutConfig — it never writes
+	// back to this key.
+	BifrostContextKeyVKTimeoutConfig BifrostContextKey = "bifrost-vk-timeout-config" // TimeoutConfig (set by governance plugin — DO NOT SET THIS MANUALLY)
+
+	// BifrostContextKeyTimeoutConfig holds the fully-resolved per-attempt TimeoutConfig written
+	// by handleProviderRequest / handleProviderStreamRequest exactly once before any provider
+	// call. The retry loop computes this value via ResolveTimeoutConfig and passes it as an
+	// explicit parameter — it never writes to context directly. Providers read this single
+	// struct via GetTimeoutConfigFromContext instead of the individual timeout keys.
+	BifrostContextKeyTimeoutConfig BifrostContextKey = "bifrost-timeout-config" // TimeoutConfig (set by handleProviderRequest/handleProviderStreamRequest — DO NOT SET THIS MANUALLY)
 )
 
 const (
@@ -299,6 +315,19 @@ const (
 	RoutingEngineRoutingRule   = "routing-rule"
 	RoutingEngineLoadbalancing = "loadbalancing"
 )
+
+// TimeoutConfig is an immutable snapshot of the effective timeouts for a single provider
+// request attempt, resolved once per attempt by executeRequestWithRetries via ResolveTimeoutConfig
+// (governance VK baseline merged with key-level overrides). Zero values mean "use provider default".
+//
+//   - Request:     per-request unary timeout (0 → client.ReadTimeout applies)
+//   - StreamIdle:  per-chunk idle timeout for streaming (0 → DefaultStreamIdleTimeout)
+//   - StreamTotal: hard wall-clock cap for streaming (0 → no cap)
+type TimeoutConfig struct {
+	Request     time.Duration
+	StreamIdle  time.Duration
+	StreamTotal time.Duration
+}
 
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.

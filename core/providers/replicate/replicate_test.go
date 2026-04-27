@@ -86,7 +86,7 @@ func TestFileUpload_OrdersMetadataBeforeFile(t *testing.T) {
 		ExtraParams: map[string]interface{}{
 			"metadata": map[string]interface{}{"owner": "oss", "purpose": "test"},
 		},
-	})
+	}, schemas.TimeoutConfig{})
 	require.NotNil(t, bifrostErr)
 	require.NoError(t, handlerErr)
 	assert.Equal(t, []string{"filename", "type", "metadata", "content"}, order)

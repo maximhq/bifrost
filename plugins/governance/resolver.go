@@ -4,6 +4,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -309,6 +310,25 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 					includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
 				}
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
+			}
+			// Inject the VK-level timeout baseline as a single immutable struct so the
+			// retry loop can read it atomically and merge key-level overrides via
+			// ResolveTimeoutConfig without any per-key context mutations.
+			// A nil field means "inherit from provider-level NetworkConfig" (backward-compatible).
+			var vkTC schemas.TimeoutConfig
+			if pc.RequestTimeoutInSeconds != nil && *pc.RequestTimeoutInSeconds > 0 {
+				vkTC.Request = time.Duration(*pc.RequestTimeoutInSeconds) * time.Second
+			}
+			if pc.StreamIdleTimeoutInSeconds != nil && *pc.StreamIdleTimeoutInSeconds > 0 {
+				vkTC.StreamIdle = time.Duration(*pc.StreamIdleTimeoutInSeconds) * time.Second
+			}
+			if pc.StreamTotalTimeoutInSeconds != nil && *pc.StreamTotalTimeoutInSeconds > 0 {
+				vkTC.StreamTotal = time.Duration(*pc.StreamTotalTimeoutInSeconds) * time.Second
+			}
+			if vkTC.Request > 0 || vkTC.StreamIdle > 0 || vkTC.StreamTotal > 0 {
+				ctx.SetValue(schemas.BifrostContextKeyVKTimeoutConfig, vkTC)
+				r.logger.Debug("governance: VK %s timeout baseline — request=%v idle=%v total=%v (provider: %s)",
+					vk.Value, vkTC.Request, vkTC.StreamIdle, vkTC.StreamTotal, pc.Provider)
 			}
 			break
 		}

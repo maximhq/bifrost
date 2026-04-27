@@ -291,7 +291,7 @@ func TestFireworksProviderUsesNativeEndpoints(t *testing.T) {
 					Input: &schemas.TextCompletionInput{
 						PromptStr: &prompt,
 					},
-				})
+				}, schemas.TimeoutConfig{})
 				if err != nil {
 					t.Fatalf("TextCompletion returned error: %v", llmtests.GetErrorMessage(err))
 				}
@@ -315,7 +315,7 @@ func TestFireworksProviderUsesNativeEndpoints(t *testing.T) {
 						MaxToolCalls:       schemas.Ptr(2),
 						Store:              schemas.Ptr(true),
 					},
-				})
+				}, schemas.TimeoutConfig{})
 				if err != nil {
 					t.Fatalf("Responses returned error: %v", llmtests.GetErrorMessage(err))
 				}
@@ -334,7 +334,7 @@ func TestFireworksProviderUsesNativeEndpoints(t *testing.T) {
 					Input: &schemas.EmbeddingInput{
 						Text: schemas.Ptr("embedding test"),
 					},
-				})
+				}, schemas.TimeoutConfig{})
 				if err != nil {
 					t.Fatalf("Embedding returned error: %v", llmtests.GetErrorMessage(err))
 				}
@@ -405,7 +405,7 @@ func TestFireworksResponsesStreamUsesNativeResponsesEndpoint(t *testing.T) {
 		Input: []schemas.ResponsesMessage{
 			llmtests.CreateBasicResponsesMessage("hello"),
 		},
-	})
+	}, schemas.TimeoutConfig{})
 	if err != nil {
 		t.Fatalf("ResponsesStream returned error: %v", llmtests.GetErrorMessage(err))
 	}

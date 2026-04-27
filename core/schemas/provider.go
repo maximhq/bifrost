@@ -507,107 +507,106 @@ type Provider interface {
 	// GetProviderKey returns the provider's identifier
 	GetProviderKey() ModelProvider
 	// ListModels performs a list models request
-	ListModels(ctx *BifrostContext, keys []Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
+	ListModels(ctx *BifrostContext, keys []Key, request *BifrostListModelsRequest, tc TimeoutConfig) (*BifrostListModelsResponse, *BifrostError)
 	// TextCompletion performs a text completion request
-	TextCompletion(ctx *BifrostContext, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
+	TextCompletion(ctx *BifrostContext, key Key, request *BifrostTextCompletionRequest, tc TimeoutConfig) (*BifrostTextCompletionResponse, *BifrostError)
 	// TextCompletionStream performs a text completion stream request.
 	// postHookSpanFinalizer is invoked by the provider's stream goroutine on stream completion
 	// (or on its panic-recovery defer) to finalize aggregated post-hook spans and release the
 	// per-attempt plugin pipeline. Pass nil if the caller does not need finalization.
-	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTextCompletionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTextCompletionRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 	// ChatCompletion performs a chat completion request
-	ChatCompletion(ctx *BifrostContext, key Key, request *BifrostChatRequest) (*BifrostChatResponse, *BifrostError)
+	ChatCompletion(ctx *BifrostContext, key Key, request *BifrostChatRequest, tc TimeoutConfig) (*BifrostChatResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
-	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostChatRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostChatRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 	// Responses performs a completion request using the Responses API (uses chat completion request internally for non-openai providers)
-	Responses(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostResponsesResponse, *BifrostError)
+	Responses(ctx *BifrostContext, key Key, request *BifrostResponsesRequest, tc TimeoutConfig) (*BifrostResponsesResponse, *BifrostError)
 	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
-	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 	// CountTokens performs a count tokens request
-	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
+	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest, tc TimeoutConfig) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
-	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
+	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest, tc TimeoutConfig) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query
-	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
+	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest, tc TimeoutConfig) (*BifrostRerankResponse, *BifrostError)
 	// OCR performs an optical character recognition request on a document
-	OCR(ctx *BifrostContext, key Key, request *BifrostOCRRequest) (*BifrostOCRResponse, *BifrostError)
+	OCR(ctx *BifrostContext, key Key, request *BifrostOCRRequest, tc TimeoutConfig) (*BifrostOCRResponse, *BifrostError)
 	// Speech performs a text to speech request
-	Speech(ctx *BifrostContext, key Key, request *BifrostSpeechRequest) (*BifrostSpeechResponse, *BifrostError)
+	Speech(ctx *BifrostContext, key Key, request *BifrostSpeechRequest, tc TimeoutConfig) (*BifrostSpeechResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
-	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostSpeechRequest) (chan *BifrostStreamChunk, *BifrostError)
+	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostSpeechRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 	// Transcription performs a transcription request
-	Transcription(ctx *BifrostContext, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
+	Transcription(ctx *BifrostContext, key Key, request *BifrostTranscriptionRequest, tc TimeoutConfig) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
-	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTranscriptionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTranscriptionRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageGeneration performs an image generation request
-	ImageGeneration(ctx *BifrostContext, key Key, request *BifrostImageGenerationRequest) (
-		*BifrostImageGenerationResponse, *BifrostError)
+	ImageGeneration(ctx *BifrostContext, key Key, request *BifrostImageGenerationRequest, tc TimeoutConfig) (*BifrostImageGenerationResponse, *BifrostError)
 	// ImageGenerationStream performs an image generation stream request
 	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
-		request *BifrostImageGenerationRequest) (chan *BifrostStreamChunk, *BifrostError)
+		request *BifrostImageGenerationRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageEdit performs an image edit request
-	ImageEdit(ctx *BifrostContext, key Key, request *BifrostImageEditRequest) (*BifrostImageGenerationResponse, *BifrostError)
+	ImageEdit(ctx *BifrostContext, key Key, request *BifrostImageEditRequest, tc TimeoutConfig) (*BifrostImageGenerationResponse, *BifrostError)
 	// ImageEditStream performs an image edit stream request
 	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
-		request *BifrostImageEditRequest) (chan *BifrostStreamChunk, *BifrostError)
+		request *BifrostImageEditRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageVariation performs an image variation request
-	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
+	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest, tc TimeoutConfig) (*BifrostImageGenerationResponse, *BifrostError)
 	// VideoGeneration performs a video generation request
-	VideoGeneration(ctx *BifrostContext, key Key, request *BifrostVideoGenerationRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	VideoGeneration(ctx *BifrostContext, key Key, request *BifrostVideoGenerationRequest, tc TimeoutConfig) (*BifrostVideoGenerationResponse, *BifrostError)
 	// VideoRetrieve retrieves a video from the provider
-	VideoRetrieve(ctx *BifrostContext, key Key, request *BifrostVideoRetrieveRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	VideoRetrieve(ctx *BifrostContext, key Key, request *BifrostVideoRetrieveRequest, tc TimeoutConfig) (*BifrostVideoGenerationResponse, *BifrostError)
 	// VideoDownload downloads a video from the provider
-	VideoDownload(ctx *BifrostContext, key Key, request *BifrostVideoDownloadRequest) (*BifrostVideoDownloadResponse, *BifrostError)
+	VideoDownload(ctx *BifrostContext, key Key, request *BifrostVideoDownloadRequest, tc TimeoutConfig) (*BifrostVideoDownloadResponse, *BifrostError)
 	// VideoDelete deletes a video from the provider
-	VideoDelete(ctx *BifrostContext, key Key, request *BifrostVideoDeleteRequest) (*BifrostVideoDeleteResponse, *BifrostError)
+	VideoDelete(ctx *BifrostContext, key Key, request *BifrostVideoDeleteRequest, tc TimeoutConfig) (*BifrostVideoDeleteResponse, *BifrostError)
 	// VideoList lists videos from the provider
-	VideoList(ctx *BifrostContext, key Key, request *BifrostVideoListRequest) (*BifrostVideoListResponse, *BifrostError)
+	VideoList(ctx *BifrostContext, key Key, request *BifrostVideoListRequest, tc TimeoutConfig) (*BifrostVideoListResponse, *BifrostError)
 	// VideoRemix remixes a video from the provider
-	VideoRemix(ctx *BifrostContext, key Key, request *BifrostVideoRemixRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	VideoRemix(ctx *BifrostContext, key Key, request *BifrostVideoRemixRequest, tc TimeoutConfig) (*BifrostVideoGenerationResponse, *BifrostError)
 	// BatchCreate creates a new batch job for asynchronous processing
-	BatchCreate(ctx *BifrostContext, key Key, request *BifrostBatchCreateRequest) (*BifrostBatchCreateResponse, *BifrostError)
+	BatchCreate(ctx *BifrostContext, key Key, request *BifrostBatchCreateRequest, tc TimeoutConfig) (*BifrostBatchCreateResponse, *BifrostError)
 	// BatchList lists batch jobs
-	BatchList(ctx *BifrostContext, keys []Key, request *BifrostBatchListRequest) (*BifrostBatchListResponse, *BifrostError)
+	BatchList(ctx *BifrostContext, keys []Key, request *BifrostBatchListRequest, tc TimeoutConfig) (*BifrostBatchListResponse, *BifrostError)
 	// BatchRetrieve retrieves a specific batch job
-	BatchRetrieve(ctx *BifrostContext, keys []Key, request *BifrostBatchRetrieveRequest) (*BifrostBatchRetrieveResponse, *BifrostError)
+	BatchRetrieve(ctx *BifrostContext, keys []Key, request *BifrostBatchRetrieveRequest, tc TimeoutConfig) (*BifrostBatchRetrieveResponse, *BifrostError)
 	// BatchCancel cancels a batch job
-	BatchCancel(ctx *BifrostContext, keys []Key, request *BifrostBatchCancelRequest) (*BifrostBatchCancelResponse, *BifrostError)
+	BatchCancel(ctx *BifrostContext, keys []Key, request *BifrostBatchCancelRequest, tc TimeoutConfig) (*BifrostBatchCancelResponse, *BifrostError)
 	// BatchDelete deletes a batch job
-	BatchDelete(ctx *BifrostContext, keys []Key, request *BifrostBatchDeleteRequest) (*BifrostBatchDeleteResponse, *BifrostError)
+	BatchDelete(ctx *BifrostContext, keys []Key, request *BifrostBatchDeleteRequest, tc TimeoutConfig) (*BifrostBatchDeleteResponse, *BifrostError)
 	// BatchResults retrieves results from a completed batch job
-	BatchResults(ctx *BifrostContext, keys []Key, request *BifrostBatchResultsRequest) (*BifrostBatchResultsResponse, *BifrostError)
+	BatchResults(ctx *BifrostContext, keys []Key, request *BifrostBatchResultsRequest, tc TimeoutConfig) (*BifrostBatchResultsResponse, *BifrostError)
 	// FileUpload uploads a file to the provider
-	FileUpload(ctx *BifrostContext, key Key, request *BifrostFileUploadRequest) (*BifrostFileUploadResponse, *BifrostError)
+	FileUpload(ctx *BifrostContext, key Key, request *BifrostFileUploadRequest, tc TimeoutConfig) (*BifrostFileUploadResponse, *BifrostError)
 	// FileList lists files from the provider
-	FileList(ctx *BifrostContext, keys []Key, request *BifrostFileListRequest) (*BifrostFileListResponse, *BifrostError)
+	FileList(ctx *BifrostContext, keys []Key, request *BifrostFileListRequest, tc TimeoutConfig) (*BifrostFileListResponse, *BifrostError)
 	// FileRetrieve retrieves file metadata from the provider
-	FileRetrieve(ctx *BifrostContext, keys []Key, request *BifrostFileRetrieveRequest) (*BifrostFileRetrieveResponse, *BifrostError)
+	FileRetrieve(ctx *BifrostContext, keys []Key, request *BifrostFileRetrieveRequest, tc TimeoutConfig) (*BifrostFileRetrieveResponse, *BifrostError)
 	// FileDelete deletes a file from the provider
-	FileDelete(ctx *BifrostContext, keys []Key, request *BifrostFileDeleteRequest) (*BifrostFileDeleteResponse, *BifrostError)
+	FileDelete(ctx *BifrostContext, keys []Key, request *BifrostFileDeleteRequest, tc TimeoutConfig) (*BifrostFileDeleteResponse, *BifrostError)
 	// FileContent downloads file content from the provider
-	FileContent(ctx *BifrostContext, keys []Key, request *BifrostFileContentRequest) (*BifrostFileContentResponse, *BifrostError)
+	FileContent(ctx *BifrostContext, keys []Key, request *BifrostFileContentRequest, tc TimeoutConfig) (*BifrostFileContentResponse, *BifrostError)
 	// ContainerCreate creates a new container
-	ContainerCreate(ctx *BifrostContext, key Key, request *BifrostContainerCreateRequest) (*BifrostContainerCreateResponse, *BifrostError)
+	ContainerCreate(ctx *BifrostContext, key Key, request *BifrostContainerCreateRequest, tc TimeoutConfig) (*BifrostContainerCreateResponse, *BifrostError)
 	// ContainerList lists containers
-	ContainerList(ctx *BifrostContext, keys []Key, request *BifrostContainerListRequest) (*BifrostContainerListResponse, *BifrostError)
+	ContainerList(ctx *BifrostContext, keys []Key, request *BifrostContainerListRequest, tc TimeoutConfig) (*BifrostContainerListResponse, *BifrostError)
 	// ContainerRetrieve retrieves a specific container
-	ContainerRetrieve(ctx *BifrostContext, keys []Key, request *BifrostContainerRetrieveRequest) (*BifrostContainerRetrieveResponse, *BifrostError)
+	ContainerRetrieve(ctx *BifrostContext, keys []Key, request *BifrostContainerRetrieveRequest, tc TimeoutConfig) (*BifrostContainerRetrieveResponse, *BifrostError)
 	// ContainerDelete deletes a container
-	ContainerDelete(ctx *BifrostContext, keys []Key, request *BifrostContainerDeleteRequest) (*BifrostContainerDeleteResponse, *BifrostError)
+	ContainerDelete(ctx *BifrostContext, keys []Key, request *BifrostContainerDeleteRequest, tc TimeoutConfig) (*BifrostContainerDeleteResponse, *BifrostError)
 	// ContainerFileCreate creates a file in a container
-	ContainerFileCreate(ctx *BifrostContext, key Key, request *BifrostContainerFileCreateRequest) (*BifrostContainerFileCreateResponse, *BifrostError)
+	ContainerFileCreate(ctx *BifrostContext, key Key, request *BifrostContainerFileCreateRequest, tc TimeoutConfig) (*BifrostContainerFileCreateResponse, *BifrostError)
 	// ContainerFileList lists files in a container
-	ContainerFileList(ctx *BifrostContext, keys []Key, request *BifrostContainerFileListRequest) (*BifrostContainerFileListResponse, *BifrostError)
+	ContainerFileList(ctx *BifrostContext, keys []Key, request *BifrostContainerFileListRequest, tc TimeoutConfig) (*BifrostContainerFileListResponse, *BifrostError)
 	// ContainerFileRetrieve retrieves a file from a container
-	ContainerFileRetrieve(ctx *BifrostContext, keys []Key, request *BifrostContainerFileRetrieveRequest) (*BifrostContainerFileRetrieveResponse, *BifrostError)
+	ContainerFileRetrieve(ctx *BifrostContext, keys []Key, request *BifrostContainerFileRetrieveRequest, tc TimeoutConfig) (*BifrostContainerFileRetrieveResponse, *BifrostError)
 	// ContainerFileContent retrieves the content of a file from a container
-	ContainerFileContent(ctx *BifrostContext, keys []Key, request *BifrostContainerFileContentRequest) (*BifrostContainerFileContentResponse, *BifrostError)
+	ContainerFileContent(ctx *BifrostContext, keys []Key, request *BifrostContainerFileContentRequest, tc TimeoutConfig) (*BifrostContainerFileContentResponse, *BifrostError)
 	// ContainerFileDelete deletes a file from a container
-	ContainerFileDelete(ctx *BifrostContext, keys []Key, request *BifrostContainerFileDeleteRequest) (*BifrostContainerFileDeleteResponse, *BifrostError)
+	ContainerFileDelete(ctx *BifrostContext, keys []Key, request *BifrostContainerFileDeleteRequest, tc TimeoutConfig) (*BifrostContainerFileDeleteResponse, *BifrostError)
 	// Passthrough executes a non-streaming passthrough; body is fully buffered.
-	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
+	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest, tc TimeoutConfig) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
-	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest, tc TimeoutConfig) (chan *BifrostStreamChunk, *BifrostError)
 }
 
 // WebSocketCapableProvider is an optional interface that providers can implement

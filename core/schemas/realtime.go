@@ -187,7 +187,7 @@ type RealtimeProvider interface {
 	// ExchangeRealtimeWebRTCSDP performs the provider-specific SDP signaling exchange.
 	// The provider owns the HTTP specifics (URL, headers, body format).
 	// session may be nil if the signaling format doesn't include session config.
-	ExchangeRealtimeWebRTCSDP(ctx *BifrostContext, key Key, model string, sdp string, session json.RawMessage) (string, *BifrostError)
+	ExchangeRealtimeWebRTCSDP(ctx *BifrostContext, key Key, model string, sdp string, session json.RawMessage, tc TimeoutConfig) (string, *BifrostError)
 	ToBifrostRealtimeEvent(providerEvent json.RawMessage) (*BifrostRealtimeEvent, error)
 	ToProviderRealtimeEvent(bifrostEvent *BifrostRealtimeEvent) (json.RawMessage, error)
 	// ShouldStartRealtimeTurn reports whether the canonical client-side event
@@ -209,7 +209,7 @@ type RealtimeProvider interface {
 // Takes SDP offer + optional session JSON, same as ExchangeRealtimeWebRTCSDP
 // but targets the provider's legacy/beta endpoint.
 type RealtimeLegacyWebRTCProvider interface {
-	ExchangeLegacyRealtimeWebRTCSDP(ctx *BifrostContext, key Key, sdp string, session json.RawMessage, model string) (string, *BifrostError)
+	ExchangeLegacyRealtimeWebRTCSDP(ctx *BifrostContext, key Key, sdp string, session json.RawMessage, model string, tc TimeoutConfig) (string, *BifrostError)
 }
 
 // RealtimeUsageExtractor lets providers parse terminal-turn usage/output from
@@ -223,7 +223,7 @@ type RealtimeUsageExtractor interface {
 // short-lived client secrets for browser/client-side Realtime connections.
 // Checked via type assertion: provider.(RealtimeSessionProvider).
 type RealtimeSessionProvider interface {
-	CreateRealtimeClientSecret(ctx *BifrostContext, key Key, endpointType RealtimeSessionEndpointType, rawRequest json.RawMessage) (*BifrostPassthroughResponse, *BifrostError)
+	CreateRealtimeClientSecret(ctx *BifrostContext, key Key, endpointType RealtimeSessionEndpointType, rawRequest json.RawMessage, tc TimeoutConfig) (*BifrostPassthroughResponse, *BifrostError)
 }
 
 // ParseRealtimeEvent decodes a client/provider realtime event while preserving

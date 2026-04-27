@@ -221,7 +221,7 @@ func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 		Documents: []schemas.RerankDocument{
 			{Text: "Paris is the capital of France."},
 		},
-	})
+	}, schemas.TimeoutConfig{})
 
 	require.Nil(t, response)
 	require.NotNil(t, bifrostErr)

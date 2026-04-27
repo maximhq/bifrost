@@ -78,6 +78,13 @@ type TableKey struct {
 
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
+	// Per-key timeout overrides. Take precedence over virtual-key and provider-level timeouts.
+	// Null means "inherit from virtual-key or provider config".
+	// Precedence: API key > virtual key > provider NetworkConfig defaults.
+	RequestTimeoutInSeconds     *int `gorm:"default:null" json:"request_timeout_in_seconds,omitempty"`
+	StreamIdleTimeoutInSeconds  *int `gorm:"default:null" json:"stream_idle_timeout_in_seconds,omitempty"`
+	StreamTotalTimeoutInSeconds *int `gorm:"default:null" json:"stream_total_timeout_in_seconds,omitempty"`
+
 	// Virtual fields for runtime use (not stored in DB)
 	Models             schemas.WhiteList           `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
 	BlacklistedModels  schemas.BlackList           `gorm:"-" json:"blacklisted_models"`
