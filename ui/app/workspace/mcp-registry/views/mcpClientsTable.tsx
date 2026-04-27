@@ -209,6 +209,7 @@ export default function MCPClientsTable({
 							</TableRow>
 						) : (
 							mcpClients.map((c: MCPClient) => {
+								const isPerUserOAuth = c.config.auth_type === "per_user_oauth";
 								const enabledToolsCount =
 									c.state == "connected"
 										? c.config.tools_to_execute?.includes("*")
@@ -261,19 +262,21 @@ export default function MCPClientsTable({
 											<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 										</TableCell>
 										<TableCell className="space-x-2 text-right" onClick={(e) => e.stopPropagation()}>
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() => handleReconnect(c)}
-												disabled={reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
-												title="Reconnect"
-											>
-												{reconnectingClients.includes(c.config.client_id) ? (
-													<Loader2 className="h-4 w-4 animate-spin" />
-												) : (
-													<RefreshCcw className="h-4 w-4" />
-												)}
-											</Button>
+											<span title={isPerUserOAuth ? "Reconnect not supported for per-user OAuth clients" : "Reconnect"}>
+												<Button
+													variant="ghost"
+													size="icon"
+													aria-label={isPerUserOAuth ? "Reconnect not supported for per-user OAuth clients" : "Reconnect"}
+													onClick={() => handleReconnect(c)}
+													disabled={isPerUserOAuth || reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
+												>
+													{reconnectingClients.includes(c.config.client_id) ? (
+														<Loader2 className="h-4 w-4 animate-spin" />
+													) : (
+														<RefreshCcw className="h-4 w-4" />
+													)}
+												</Button>
+											</span>
 
 											<AlertDialog>
 												<AlertDialogTrigger asChild>

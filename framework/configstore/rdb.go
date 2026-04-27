@@ -4164,7 +4164,7 @@ func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error 
 func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
 	var tokens []*tables.TableOauthToken
 	result := s.DB().WithContext(ctx).
-		Where("expires_at < ?", before).
+		Where("expires_at IS NOT NULL AND expires_at < ?", before).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
