@@ -229,6 +229,46 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 	}
 }
 
+func TestResolveListModelsProviders(t *testing.T) {
+	t.Run("filters to allowed providers while preserving configured order", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{
+			schemas.ModelProvider("packyapi"),
+			schemas.ModelProvider("azure"),
+		})
+
+		got := resolveListModelsProviders(ctx, []schemas.ModelProvider{
+			schemas.ModelProvider("openai"),
+			schemas.ModelProvider("azure"),
+			schemas.ModelProvider("packyapi"),
+			schemas.ModelProvider("anthropic"),
+		})
+
+		if len(got) != 2 {
+			t.Fatalf("expected 2 providers after filtering, got %d (%v)", len(got), got)
+		}
+		if got[0] != schemas.ModelProvider("azure") || got[1] != schemas.ModelProvider("packyapi") {
+			t.Fatalf("expected filtering to preserve configured provider order, got %v", got)
+		}
+	})
+
+	t.Run("noops when available providers are unset", func(t *testing.T) {
+		providers := []schemas.ModelProvider{
+			schemas.ModelProvider("openai"),
+			schemas.ModelProvider("azure"),
+		}
+		got := resolveListModelsProviders(nil, providers)
+		if len(got) != len(providers) {
+			t.Fatalf("expected providers to be unchanged, got %v", got)
+		}
+		for i := range providers {
+			if got[i] != providers[i] {
+				t.Fatalf("expected providers to be unchanged, got %v", got)
+			}
+		}
+	})
+}
+
 // Test executeRequestWithRetries - retryable conditions
 func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 	config := createTestConfig(1, 100*time.Millisecond, 1*time.Second)

@@ -759,6 +759,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 	// If provider is empty, list all models from all providers
 	if provider == "" {
+		if err := lib.ApplyVirtualKeyProviderFilter(bifrostCtx, h.config.ConfigStore); err != nil {
+			logger.Warn("failed to apply virtual key provider filter for list models: %v", err)
+		}
 		resp, bifrostErr = h.client.ListAllModels(bifrostCtx, bifrostListModelsReq)
 	} else {
 		resp, bifrostErr = h.client.ListModelsRequest(bifrostCtx, bifrostListModelsReq)

@@ -621,9 +621,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Set integration type to context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
-		// Set available providers to context
-		availableProviders := g.handlerStore.GetAvailableProviders()
-		bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+		// Preserve default provider scoping for inference routes, but let list-models
+		// requests inject a virtual-key-specific provider filter later.
+		if config.ListModelsResponseConverter == nil {
+			availableProviders := g.handlerStore.GetAvailableProviders()
+			bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+		}
 
 		// Async retrieve: check x-bf-async-id header early (before body parsing)
 		if asyncID := string(ctx.Request.Header.Peek(schemas.AsyncHeaderGetID)); asyncID != "" {
@@ -867,6 +870,11 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		if bifrostReq.ListModelsRequest.Provider != "" {
 			listModelsResponse, bifrostErr = g.client.ListModelsRequest(bifrostCtx, bifrostReq.ListModelsRequest)
 		} else {
+			if cfg, ok := g.handlerStore.(*lib.Config); ok {
+				if err := lib.ApplyVirtualKeyProviderFilter(bifrostCtx, cfg.ConfigStore); err != nil {
+					g.logger.Warn("failed to apply virtual key provider filter for list models: %v", err)
+				}
+			}
 			listModelsResponse, bifrostErr = g.client.ListAllModels(bifrostCtx, bifrostReq.ListModelsRequest)
 		}
 

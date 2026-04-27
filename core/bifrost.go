@@ -458,6 +458,8 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		}
 	}
 
+	providerKeys = resolveListModelsProviders(ctx, providerKeys)
+
 	startTime := time.Now()
 
 	// Result structure for collecting provider responses
@@ -600,6 +602,38 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
+}
+
+func resolveListModelsProviders(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {
+	if ctx == nil {
+		return providerKeys
+	}
+
+	raw := ctx.Value(schemas.BifrostContextKeyAvailableProviders)
+	availableProviders, ok := raw.([]schemas.ModelProvider)
+	if !ok || len(availableProviders) == 0 {
+		return providerKeys
+	}
+
+	allowed := make(map[schemas.ModelProvider]struct{}, len(availableProviders))
+	for _, provider := range availableProviders {
+		if strings.TrimSpace(string(provider)) == "" {
+			continue
+		}
+		allowed[provider] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return providerKeys
+	}
+
+	filtered := make([]schemas.ModelProvider, 0, len(providerKeys))
+	for _, provider := range providerKeys {
+		if _, ok := allowed[provider]; ok {
+			filtered = append(filtered, provider)
+		}
+	}
+
+	return filtered
 }
 
 // TextCompletionRequest sends a text completion request to the specified provider.
