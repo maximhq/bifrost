@@ -4,6 +4,7 @@
  */
 
 import { Button } from "@/components/ui/button";
+import { ComboboxSelect } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
@@ -367,46 +368,31 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : "Virtual Key"} <span className="text-red-500">*</span>
 								</Label>
 								{scope === "team" && teamsData.teams.length > 0 && (
-									<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
-										<SelectTrigger className="w-full">
-											<SelectValue placeholder="Select a team..." />
-										</SelectTrigger>
-										<SelectContent>
-											{teamsData.teams.map((team) => (
-												<SelectItem key={team.id} value={team.id}>
-													{team.name}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
+									<ComboboxSelect
+										options={teamsData.teams.map((team) => ({ label: team.name, value: team.id }))}
+										value={scopeId || null}
+										onValueChange={(value) => setValue("scope_id", value ?? "")}
+										placeholder="Select a team..."
+										noPortal
+									/>
 								)}
 								{scope === "customer" && customersData.customers.length > 0 && (
-									<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
-										<SelectTrigger className="w-full">
-											<SelectValue placeholder="Select a customer..." />
-										</SelectTrigger>
-										<SelectContent>
-											{customersData.customers.map((customer) => (
-												<SelectItem key={customer.id} value={customer.id}>
-													{customer.name}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
+									<ComboboxSelect
+										options={customersData.customers.map((customer) => ({ label: customer.name, value: customer.id }))}
+										value={scopeId || null}
+										onValueChange={(value) => setValue("scope_id", value ?? "")}
+										placeholder="Select a customer..."
+										noPortal
+									/>
 								)}
 								{scope === "virtual_key" && vksData.virtual_keys.length > 0 && (
-									<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
-										<SelectTrigger className="w-full">
-											<SelectValue placeholder="Select a virtual key..." />
-										</SelectTrigger>
-										<SelectContent>
-											{vksData.virtual_keys.map((vk) => (
-												<SelectItem key={vk.id} value={vk.id}>
-													{vk.name}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
+									<ComboboxSelect
+										options={vksData.virtual_keys.map((vk) => ({ label: vk.name, value: vk.id }))}
+										value={scopeId || null}
+										onValueChange={(value) => setValue("scope_id", value ?? "")}
+										placeholder="Select a virtual key..."
+										noPortal
+									/>
 								)}
 								{((scope === "team" && teamsData.teams.length === 0) ||
 									(scope === "customer" && customersData.customers.length === 0) ||
