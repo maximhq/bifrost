@@ -390,6 +390,7 @@ type modelParametersParseResult struct {
 	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
 	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
 	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
+	VertexMultiRegionOnly       *bool `json:"vertex_multi_region_only,omitempty"`
 }
 
 // extractSupportedParams builds a list of supported OpenAI-compatible parameter
