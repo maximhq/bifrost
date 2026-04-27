@@ -94,6 +94,23 @@ ClientConfig:
       items:
         type: string
       description: Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required.
+    mcp_external_base_url:
+      oneOf:
+        - type: string
+          description: Plain URL or env var reference (e.g. "env.MY_VAR")
+        - type: object
+          properties:
+            value:
+              type: string
+            env_var:
+              type: string
+            from_env:
+              type: boolean
+          additionalProperties: false
+      description: >
+        Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a
+        reverse proxy. Overrides the host derived from the incoming request. Supports env var
+        syntax ("env.MY_VAR"). Configurable via UI, API, or config.json.
 
 FrameworkConfig:
   type: object

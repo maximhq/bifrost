@@ -6,8 +6,6 @@
 package handlers
 
 import (
-	"fmt"
-
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -47,12 +45,7 @@ func (h *OAuthMetadataHandler) handleProtectedResourceMetadata(ctx *fasthttp.Req
 		sendStringError(ctx, fasthttp.StatusNotFound, "Not Found")
 		return
 	}
-	scheme := "http"
-	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		scheme = "https"
-	}
-	host := string(ctx.Host())
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL())
 
 	SendJSON(ctx, map[string]interface{}{
 		"resource":                 baseURL + "/mcp",
@@ -72,12 +65,7 @@ func (h *OAuthMetadataHandler) handleAuthorizationServerMetadata(ctx *fasthttp.R
 		sendStringError(ctx, fasthttp.StatusNotFound, "Not Found")
 		return
 	}
-	scheme := "http"
-	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		scheme = "https"
-	}
-	host := string(ctx.Host())
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL())
 
 	SendJSON(ctx, map[string]interface{}{
 		"issuer":                                baseURL,

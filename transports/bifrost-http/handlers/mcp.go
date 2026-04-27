@@ -439,12 +439,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		scheme := "http"
-		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-			scheme = "https"
-		}
-		host := string(ctx.Host())
-		redirectURI := fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
+		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL()) + "/api/oauth/callback"
 
 		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
 			ClientID:        req.OauthConfig.ClientID,
@@ -532,13 +527,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Build redirect URI - use Bifrost's own callback endpoint
-		// Extract the base URL from the current request
-		scheme := "http"
-		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-			scheme = "https"
-		}
-		host := string(ctx.Host())
-		redirectURI := fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
+		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL()) + "/api/oauth/callback"
 
 		// Initiate OAuth flow
 		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)

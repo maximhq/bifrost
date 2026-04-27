@@ -35,6 +35,7 @@ type TableClientConfig struct {
 	LoggingHeadersJSON              string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 	HideDeletedVirtualKeysInFilters bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys in logs filter dropdowns
 	RoutingChainMaxDepth            int    `gorm:"default:10" json:"routing_chain_max_depth"`                 // Maximum depth for routing rule chain evaluation (default: 10)
+	MCPExternalBaseURL                 string `gorm:"type:varchar(512)" json:"mcp_external_base_url,omitempty"` // Public base URL for OAuth callbacks/discovery when behind a reverse proxy
 	WhitelistedRoutesJSON           string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 
 	// Compat plugin feature flags

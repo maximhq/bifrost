@@ -617,6 +617,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPExternalBaseURLColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationMakeOAuthTokenExpiryNullable(ctx, db); err != nil {
 		return err
 	}
@@ -7068,6 +7071,36 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_ocr_pricing_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_external_base_url_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPExternalBaseURL"); err != nil {
+					return fmt.Errorf("failed to add mcp_external_base_url column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_base_url"); err != nil {
+					return fmt.Errorf("failed to drop mcp_external_base_url column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_external_base_url_column migration: %s", err.Error())
 	}
 	return nil
 }

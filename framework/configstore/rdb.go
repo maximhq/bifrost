@@ -136,6 +136,20 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 	return dbKey, nil
 }
 
+// mcpExternalBaseURLToString converts an *schemas.EnvVar to its storage string form.
+// Stores "env.MY_VAR" when sourced from an env var, or the raw URL otherwise.
+func mcpExternalBaseURLToString(e *schemas.EnvVar) string {
+	if e == nil {
+		return ""
+	}
+	if v, err := e.Value(); err == nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
@@ -168,6 +182,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		WhitelistedRoutes:               config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters: config.HideDeletedVirtualKeysInFilters,
 		RoutingChainMaxDepth:            config.RoutingChainMaxDepth,
+		MCPExternalBaseURL:                 mcpExternalBaseURLToString(config.MCPExternalBaseURL),
 		HeaderFilterConfig:              config.HeaderFilterConfig,
 		ConfigHash:                      config.ConfigHash,
 	}
@@ -378,6 +393,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		WhitelistedRoutes:               dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters: dbConfig.HideDeletedVirtualKeysInFilters,
 		RoutingChainMaxDepth:            dbConfig.RoutingChainMaxDepth,
+		MCPExternalBaseURL:                 schemas.NewEnvVar(dbConfig.MCPExternalBaseURL),
 		HeaderFilterConfig:              dbConfig.HeaderFilterConfig,
 		ConfigHash:                      dbConfig.ConfigHash,
 	}, nil

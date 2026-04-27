@@ -51,7 +51,8 @@ func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 }
 
 func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
-func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool    { return false }
+func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
+func (s testWSHandlerStore) GetMCPExternalBaseURL() string                 { return "" }
 
 type timeoutNetError struct{}
 

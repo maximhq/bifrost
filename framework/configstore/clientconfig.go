@@ -75,6 +75,7 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
+	MCPExternalBaseURL                    *schemas.EnvVar                  `json:"mcp_external_base_url,omitempty"`      // Public base URL for OAuth callbacks/discovery when behind a reverse proxy; supports env var syntax ("env.MY_VAR")
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
@@ -310,6 +311,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			}
 			hash.Write([]byte("headerFilterConfig.denylist:"))
 			hash.Write(data)
+		}
+	}
+
+	if c.MCPExternalBaseURL.IsSet() {
+		if c.MCPExternalBaseURL.IsFromEnv() {
+			hash.Write([]byte("externalBaseURL:env:" + c.MCPExternalBaseURL.EnvVar))
+		} else {
+			hash.Write([]byte("externalBaseURL:val:" + c.MCPExternalBaseURL.GetValue()))
 		}
 	}
 

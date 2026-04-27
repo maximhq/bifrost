@@ -62,6 +62,10 @@ func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
 	return false
 }
 
+func (m *mockHandlerStore) GetMCPExternalBaseURL() string {
+	return ""
+}
+
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 

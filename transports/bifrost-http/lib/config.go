@@ -83,6 +83,9 @@ type HandlerStore interface {
 	ShouldAllowPerRequestStorageOverride() bool
 	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
 	ShouldAllowPerRequestRawOverride() bool
+	// GetMCPExternalBaseURL returns the configured external base URL for OAuth callbacks/metadata,
+	// or empty string if not configured (falls back to dynamic Host-header-based URL).
+	GetMCPExternalBaseURL() string
 }
 
 // Retry backoff constants for validation
@@ -3252,6 +3255,12 @@ func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
 // ShouldAllowPerRequestRawOverride returns whether per-request raw request/response overrides are permitted.
 func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
+}
+
+// GetMCPExternalBaseURL returns the configured external base URL for OAuth callbacks and metadata,
+// or empty string if not configured. Resolves env var references automatically.
+func (c *Config) GetMCPExternalBaseURL() string {
+	return c.ClientConfig.MCPExternalBaseURL.GetValue()
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.

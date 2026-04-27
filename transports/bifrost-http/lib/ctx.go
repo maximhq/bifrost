@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -607,13 +608,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	}
 
 	// Build and set OAuth redirect URI for per-user OAuth flows
-	scheme := "http"
-	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		scheme = "https"
+	var externalBaseURL string
+	if store != nil {
+		externalBaseURL = store.GetMCPExternalBaseURL()
 	}
-	host := string(ctx.Host())
-	if host != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host))
+	baseURL := BuildBaseURL(ctx, externalBaseURL)
+	if baseURL != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, baseURL+"/api/oauth/callback")
 	}
 
 	if allowDirectKeys {
@@ -663,6 +664,31 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
 	return bifrostCtx, cancel
+}
+
+// BuildBaseURL returns the effective base URL for OAuth callbacks and metadata discovery.
+// When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
+// deployments behind a reverse proxy advertise the proxy's public URL rather than the
+// internal Host header seen by Bifrost.
+func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
+	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
+		if parsed, err := url.Parse(override); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			return override
+		}
+	}
+	scheme := "http"
+	xfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-Proto"))))
+	if comma := strings.IndexByte(xfProto, ','); comma >= 0 {
+		xfProto = strings.TrimSpace(xfProto[:comma])
+	}
+	if ctx.IsTLS() || xfProto == "https" {
+		scheme = "https"
+	}
+	host := string(ctx.Host())
+	if host == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
 // BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.
