@@ -131,7 +131,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 
 	// Execute all test scenarios WITH raw request/response enabled
 	t.Run("WithRawRequestResponse", func(t *testing.T) {
-		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawRequest, true)
 		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawResponse, true)
 		rawConfig := testConfig
 		rawConfig.ExpectRawRequestResponse = true
