@@ -60,6 +60,22 @@
         }
       }
     },
+    "rbac": {
+      "type": "object",
+      "properties": {
+        "podDiscovery": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Create namespaced Role/RoleBinding for Kubernetes pod discovery when cluster discovery type is kubernetes"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "deploymentAnnotations": {
       "type": "object"
     },
