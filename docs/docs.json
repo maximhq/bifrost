@@ -198,7 +198,7 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
-              "features/litellm-compat",
+              "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
               {
