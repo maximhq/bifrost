@@ -175,7 +175,7 @@
       "get": {
         "operationId": "listModels",
         "summary": "List available models",
-        "description": "Lists available models. If provider is not specified, lists all models from all configured providers.\n",
+        "description": "Lists available models. If provider is not specified, lists all models from all configured providers.\n\nIf a virtual key is provided, Bifrost only lists (and only queries) providers allowed by that virtual key.\n",
         "tags": [
           "Models"
         ],

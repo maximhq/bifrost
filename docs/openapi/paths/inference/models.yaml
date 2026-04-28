@@ -4,6 +4,8 @@ models:
     summary: List available models
     description: |
       Lists available models. If provider is not specified, lists all models from all configured providers.
+
+      If a virtual key is provided, Bifrost only lists (and only queries) providers allowed by that virtual key.
     tags:
     - Models
     parameters:

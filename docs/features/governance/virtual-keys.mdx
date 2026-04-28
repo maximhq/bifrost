@@ -565,6 +565,24 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "gpt-4o-mini", "messages": [...]}'
 ```
 
+### Listing models with a virtual key
+
+When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful.
+
+```bash
+# Lists models across providers allowed by the virtual key
+curl -sS "http://localhost:8080/v1/models" \
+  -H "x-bf-vk: <VIRTUAL_KEY>"
+```
+
+If you specify a provider explicitly via `?provider=...`, that provider must still be allowed by the virtual key or the request will be rejected:
+
+```bash
+# If "anthropic" is not configured/allowed on this virtual key, this returns 403
+curl -sS "http://localhost:8080/v1/models?provider=anthropic" \
+  -H "x-bf-vk: <VIRTUAL_KEY>"
+```
+
 **When `disable_auth_on_inference: false` (auth enabled):**
 
 You must provide both authentication credentials AND the virtual key. Use `x-bf-vk` for the virtual key since the `Authorization` header is used for authentication:
