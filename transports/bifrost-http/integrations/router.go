@@ -745,7 +745,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 			extractedProvider, extractedModel := schemas.ParseModelString(model, "")
 			if extractedProvider == "" {
-				availableProviders := g.handlerStore.GetAvailableProviders(extractedModel)
+				availableProviders := g.handlerStore.GetProvidersForModel(extractedModel)
 				availableProvidersStrs := make([]string, len(availableProviders))
 				for i, p := range availableProviders {
 					availableProvidersStrs[i] = string(p)

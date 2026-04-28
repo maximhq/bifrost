@@ -18,13 +18,13 @@ type testHandlerStore struct {
 	matcher         *HeaderMatcher
 }
 
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                            { return s.allowDirectKeys }
-func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                       { return s.matcher }
-func (s testHandlerStore) GetAvailableProviders(_ string) []schemas.ModelProvider { return nil }
-func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor      { return nil }
-func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor        { return nil }
-func (s testHandlerStore) GetAsyncJobResultTTL() int                              { return 0 }
-func (s testHandlerStore) GetKVStore() *kvstore.Store                             { return nil }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                           { return s.allowDirectKeys }
+func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
+func (s testHandlerStore) GetProvidersForModel(_ string) []schemas.ModelProvider { return nil }
+func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor     { return nil }
+func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor       { return nil }
+func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
+func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return schemas.WhiteList{}
 }

@@ -18,9 +18,9 @@ type testHandlerStore struct {
 	kv *kvstore.Store
 }
 
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                                { return true }
-func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher                       { return nil }
-func (s testHandlerStore) GetAvailableProviders(model string) []schemas.ModelProvider { return nil }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                               { return true }
+func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher                      { return nil }
+func (s testHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider { return nil }
 func (s testHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
 	return nil
 }
@@ -30,7 +30,7 @@ func (s testHandlerStore) GetKVStore() *kvstore.Store                       { re
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList { return nil }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { return false }
-func (s testHandlerStore) GetMCPExternalBaseURL() string                       { return "" }
+func (s testHandlerStore) GetMCPExternalBaseURL() string                    { return "" }
 
 func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) {
 	_, _, _, err := resolveRealtimeSDPTarget("/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))

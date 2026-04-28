@@ -64,8 +64,8 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// GetHeaderMatcher returns the precompiled header matcher for header filtering
 	GetHeaderMatcher() *HeaderMatcher
-	// GetAvailableProviders returns the list of available providers for the given model
-	GetAvailableProviders(model string) []schemas.ModelProvider
+	// GetProvidersForModel returns the list of providers that can serve a given model.
+	GetProvidersForModel(model string) []schemas.ModelProvider
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
 	// Returns nil if no plugins are loaded or streaming interception is not needed.
 	GetStreamChunkInterceptor() StreamChunkInterceptor
@@ -3389,11 +3389,20 @@ func (c *Config) GetProvidersForModel(model string) []schemas.ModelProvider {
 	if c.ModelCatalog == nil {
 		return []schemas.ModelProvider{}
 	}
-	providers := c.ModelCatalog.GetProvidersForModel(model)
-	slices.SortFunc(providers, func(a, b schemas.ModelProvider) int {
+	providersInCatalog := c.ModelCatalog.GetProvidersForModel(model)
+	// Filter out the providers which are not present in the configured provider list for the client
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	allowedProviders := make([]schemas.ModelProvider, 0, len(providersInCatalog))
+	for configuredProvider := range c.Providers {
+		if slices.Contains(providersInCatalog, configuredProvider) {
+			allowedProviders = append(allowedProviders, configuredProvider)
+		}
+	}
+	slices.SortFunc(allowedProviders, func(a, b schemas.ModelProvider) int {
 		return strings.Compare(string(a), string(b))
 	})
-	return providers
+	return allowedProviders
 }
 
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
@@ -4900,30 +4909,6 @@ func semanticCacheConfigDimension(configMap map[string]interface{}) (int, bool, 
 	default:
 		return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be numeric, got %T", dimensionVal)
 	}
-}
-func (c *Config) GetAvailableProviders(model string) []schemas.ModelProvider {
-	c.Mu.RLock()
-	defer c.Mu.RUnlock()
-	availableProviders := []schemas.ModelProvider{}
-	if c.ModelCatalog != nil {
-		availableProviders = c.ModelCatalog.GetProvidersForModel(model)
-	} else {
-		// Return all providers that have at least one key with a non-empty value.
-		for provider, config := range c.Providers {
-			// Check if the provider has at least one key with a non-empty value. If so, add the provider to the list.
-			// If the provider allows empty keys, add the provider to the list.
-			for _, key := range config.Keys {
-				if key.Value.GetValue() != "" || bifrost.CanProviderKeyValueBeEmpty(provider) {
-					if key.Enabled != nil && !*key.Enabled {
-						continue
-					}
-					availableProviders = append(availableProviders, provider)
-					break
-				}
-			}
-		}
-	}
-	return availableProviders
 }
 
 func DeepCopy[T any](in T) (T, error) {
