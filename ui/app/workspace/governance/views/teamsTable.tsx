@@ -22,7 +22,7 @@ import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Input } from "@/components/ui/input";
 import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect } from "react";
 import { toast } from "sonner";
 import TeamDialog from "./teamDialog";
 import { TeamsEmptyState } from "./teamsEmptyState";
@@ -43,6 +43,10 @@ interface TeamsTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
+	selectedTeamId: string | null;
+	onTeamAdd: () => void;
+	onTeamSelect: (team: Team | null) => void;
+	onDialogClose: () => void;
 }
 
 export default function TeamsTable({
@@ -56,9 +60,23 @@ export default function TeamsTable({
 	offset,
 	limit,
 	onOffsetChange,
+	selectedTeamId,
+	onTeamAdd,
+	onTeamSelect,
+	onDialogClose,
 }: TeamsTableProps) {
-	const [showTeamDialog, setShowTeamDialog] = useState(false);
-	const [editingTeam, setEditingTeam] = useState<Team | null>(null);
+	const showTeamDialog = selectedTeamId !== null && selectedTeamId !== "";
+	const editingTeam = selectedTeamId && selectedTeamId !== "new"
+		? teams.find((t) => t.id === selectedTeamId) ?? null
+		: null;
+
+	// If a team ID is in the URL but can't be resolved (deleted or filtered out),
+	// clear it so we don't silently open the dialog in "create" mode.
+	useEffect(() => {
+		if (selectedTeamId && selectedTeamId !== "new" && !editingTeam) {
+			onDialogClose();
+		}
+	}, [selectedTeamId, editingTeam, onDialogClose]);
 
 	const hasCreateAccess = useRbac(RbacResource.Teams, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Teams, RbacOperation.Update);
@@ -76,18 +94,15 @@ export default function TeamsTable({
 	};
 
 	const handleAddTeam = () => {
-		setEditingTeam(null);
-		setShowTeamDialog(true);
+		onTeamAdd();
 	};
 
 	const handleEditTeam = (team: Team) => {
-		setEditingTeam(team);
-		setShowTeamDialog(true);
+		onTeamSelect(team);
 	};
 
 	const handleTeamSaved = () => {
-		setShowTeamDialog(false);
-		setEditingTeam(null);
+		onDialogClose();
 	};
 
 	const getVirtualKeysForTeam = (teamId: string) => {
@@ -108,7 +123,7 @@ export default function TeamsTable({
 			<>
 				<TooltipProvider>
 					{showTeamDialog && (
-						<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={() => setShowTeamDialog(false)} />
+						<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
 					)}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
 				</TooltipProvider>
@@ -120,7 +135,7 @@ export default function TeamsTable({
 		<>
 			<TooltipProvider>
 				{showTeamDialog && (
-					<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={() => setShowTeamDialog(false)} />
+					<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
 				)}
 
 				<div className="space-y-4">
