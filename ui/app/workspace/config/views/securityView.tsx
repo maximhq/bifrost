@@ -82,9 +82,9 @@ export default function SecurityView() {
 			authConfig.admin_password?.from_env !== bifrostConfig?.auth_config?.admin_password?.from_env;
 		const authChanged = showPasswordSection
 			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
-			  usernameChanged ||
-			  passwordChanged ||
-			  authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference
+			usernameChanged ||
+			passwordChanged ||
+			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference
 			: false;
 
 		const localRequired = localConfig.required_headers?.slice().sort().join(",");
@@ -178,9 +178,9 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-							auth_config:
-								authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
-						}
+						auth_config:
+							authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+					}
 					: {}),
 			}).unwrap();
 			toast.success("Security settings updated successfully.");
@@ -217,13 +217,13 @@ export default function SecurityView() {
 					</Alert>
 				)}
 				{/* Password Protect the Dashboard */}
-				{IS_ENTERPRISE && authTypeLoading && (
+				{IS_ENTERPRISE && authTypeLoading ? (
 					<div className="flex items-center justify-center rounded-lg border p-8" data-testid="security-auth-type-loading">
 						<Loader2 className="text-muted-foreground h-5 w-5 animate-spin" aria-hidden />
 						<span className="sr-only">Loading authentication settings</span>
 					</div>
-				)}
-				{IS_ENTERPRISE && !authTypeLoading && authTypeError && (
+				) : null}
+				{IS_ENTERPRISE && !authTypeLoading && authTypeError ? (
 					<Alert variant="destructive" data-testid="security-auth-type-error">
 						<AlertTriangle className="h-4 w-4" />
 						<AlertDescription>
@@ -231,65 +231,65 @@ export default function SecurityView() {
 							{getErrorMessage(authTypeError)}
 						</AlertDescription>
 					</Alert>
-				)}
+				) : null}
 				{showPasswordSection && <div>
-						<div className="space-y-4 rounded-lg border p-4">
+					<div className="space-y-4 rounded-lg border p-4">
+						<div className="flex items-center justify-between">
+							<div className="space-y-0.5">
+								<Label htmlFor="auth-enabled" className="text-sm font-medium">
+									Password protect the dashboard <Badge variant="secondary">BETA</Badge>
+								</Label>
+								<p className="text-muted-foreground text-sm">
+									Set up authentication credentials to protect your Bifrost dashboard. Once configured, use the generated token for all
+									admin API calls.
+								</p>
+							</div>
+							<Switch id="auth-enabled" checked={authConfig.is_enabled} onCheckedChange={handleAuthToggle} />
+						</div>
+						<div className="space-y-4">
+							<div className="space-y-2">
+								<Label htmlFor="admin-username">Username</Label>
+								<EnvVarInput
+									id="admin-username"
+									type="text"
+									placeholder="Enter admin username or env.VAR_NAME"
+									value={authConfig.admin_username}
+									disabled={!authConfig.is_enabled}
+									onChange={(value) => handleAuthFieldChange("admin_username", value)}
+								/>
+							</div>
+							<div className="space-y-2">
+								<Label htmlFor="admin-password">Password</Label>
+								<EnvVarInput
+									id="admin-password"
+									type="password"
+									placeholder="Enter admin password or env.VAR_NAME"
+									value={authConfig.admin_password}
+									disabled={!authConfig.is_enabled}
+									onChange={(value) => handleAuthFieldChange("admin_password", value)}
+								/>
+							</div>
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
-									<Label htmlFor="auth-enabled" className="text-sm font-medium">
-										Password protect the dashboard <Badge variant="secondary">BETA</Badge>
+									<Label htmlFor="disable-auth-inference" className="text-sm font-medium">
+										Disable authentication on inference calls
 									</Label>
 									<p className="text-muted-foreground text-sm">
-										Set up authentication credentials to protect your Bifrost dashboard. Once configured, use the generated token for all
-										admin API calls.
+										When enabled, inference API calls (chat completions, embeddings, etc.) will not require authentication. Dashboard and
+										admin API calls will still require authentication.
 									</p>
 								</div>
-								<Switch id="auth-enabled" checked={authConfig.is_enabled} onCheckedChange={handleAuthToggle} />
-							</div>
-							<div className="space-y-4">
-								<div className="space-y-2">
-									<Label htmlFor="admin-username">Username</Label>
-									<EnvVarInput
-										id="admin-username"
-										type="text"
-										placeholder="Enter admin username or env.VAR_NAME"
-										value={authConfig.admin_username}
-										disabled={!authConfig.is_enabled}
-										onChange={(value) => handleAuthFieldChange("admin_username", value)}
-									/>
-								</div>
-								<div className="space-y-2">
-									<Label htmlFor="admin-password">Password</Label>
-									<EnvVarInput
-										id="admin-password"
-										type="password"
-										placeholder="Enter admin password or env.VAR_NAME"
-										value={authConfig.admin_password}
-										disabled={!authConfig.is_enabled}
-										onChange={(value) => handleAuthFieldChange("admin_password", value)}
-									/>
-								</div>
-								<div className="flex items-center justify-between">
-									<div className="space-y-0.5">
-										<Label htmlFor="disable-auth-inference" className="text-sm font-medium">
-											Disable authentication on inference calls
-										</Label>
-										<p className="text-muted-foreground text-sm">
-											When enabled, inference API calls (chat completions, embeddings, etc.) will not require authentication. Dashboard and
-											admin API calls will still require authentication.
-										</p>
-									</div>
-									<Switch
-										id="disable-auth-inference"
-										className="ml-5"
-										checked={authConfig.disable_auth_on_inference ?? false}
-										disabled={!authConfig.is_enabled}
-										onCheckedChange={handleDisableAuthOnInferenceToggle}
-									/>
-								</div>
+								<Switch
+									id="disable-auth-inference"
+									className="ml-5"
+									checked={authConfig.disable_auth_on_inference ?? false}
+									disabled={!authConfig.is_enabled}
+									onCheckedChange={handleDisableAuthOnInferenceToggle}
+								/>
 							</div>
 						</div>
-					</div>}
+					</div>
+				</div>}
 				{/* Enable Auth on Inference */}
 				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
 					<div className="space-y-0.5">
