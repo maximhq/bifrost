@@ -532,8 +532,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 				providerKeyID: scopeLock.providerKeyID ?? "",
 				scopeRoot:
 					scopeLock.scopeKind === "virtual_key" ||
-					scopeLock.scopeKind === "virtual_key_provider" ||
-					scopeLock.scopeKind === "virtual_key_provider_key"
+						scopeLock.scopeKind === "virtual_key_provider" ||
+						scopeLock.scopeKind === "virtual_key_provider_key"
 						? "virtual_key"
 						: "global",
 			});
@@ -743,7 +743,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 
 				<Form {...methods}>
 					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-						<div className="flex-1 space-y-6 overflow-y-auto px-8 pb-4">
+						<div className="flex-1 space-y-6 px-8 pb-4">
 							<div className="space-y-4">
 								<FormField
 									control={control}

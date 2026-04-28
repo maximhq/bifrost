@@ -105,14 +105,14 @@ function SheetContent({
 					className={cn(
 						"bg-card data-[state=open]:animate-in data-[state=closed]:animate-out custom-scrollbar fixed z-50 flex flex-col shadow-lg transition-all ease-in-out overscroll-none data-[state=closed]:duration-100 data-[state=open]:duration-100",
 						side === "right" &&
-							"data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right top-2 right-0 bottom-2 h-auto w-3/4 rounded-l-lg border-l",
+						"data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right top-2 right-0 bottom-2 h-auto w-3/4 rounded-l-lg border-l",
 						side === "right" && (!expandable || !expanded) && "sm:max-w-2xl",
 						side === "right" && expandable && expanded && "sm:max-w-5xl",
 						side === "left" &&
-							"data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left top-2 bottom-2 left-0 h-auto w-3/4 rounded-r-lg border-r sm:max-w-sm",
+						"data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left top-2 bottom-2 left-0 h-auto w-3/4 rounded-r-lg border-r sm:max-w-sm",
 						side === "top" && "data-[state=closed]:slide-out-to-top data-[state=open]:slide-in-from-top inset-x-0 top-0 h-auto border-b",
 						side === "bottom" &&
-							"data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom inset-x-0 bottom-0 h-auto border-t",
+						"data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom inset-x-0 bottom-0 h-auto border-t",
 						className,
 					)}
 					{...props}
@@ -136,7 +136,7 @@ function SheetHeader({
 	return (
 		<div
 			data-slot="sheet-header"
-			className={cn("flex items-center", sheetContext?.expandable ? "p-0" : "mb-6", headerClassName)}
+			className={cn("flex items-center gap-1 w-full pr-2", sheetContext?.expandable ? "p-0" : "mb-6", headerClassName)}
 			{...props}
 		>
 			{sheetContext?.expandable && sheetContext?.side === "right" && (
@@ -154,7 +154,7 @@ function SheetHeader({
 				{children}
 			</div>
 			{showCloseButton && (
-				<SheetPrimitive.Close className="hover:bg-accent ml-1 shrink-0 cursor-pointer rounded-md p-2 opacity-70 transition-opacity hover:scale-105 hover:opacity-100">
+				<SheetPrimitive.Close className="hover:bg-accent shrink-0 cursor-pointer rounded-md p-2 opacity-70 transition-opacity hover:opacity-100">
 					<XIcon className="size-4" />
 					<span className="sr-only">Close</span>
 				</SheetPrimitive.Close>
