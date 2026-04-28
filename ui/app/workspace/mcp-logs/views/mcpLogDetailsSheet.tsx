@@ -15,11 +15,11 @@ import { CodeEditor } from "@/components/ui/codeEditor";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { downloadAsJson } from "@/lib/utils/browser-download";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { ChevronDown, ChevronUp, Download, MoreVertical, Trash2 } from "lucide-react";
+import { downloadAsJson } from "@/lib/utils/browser-download";
 import { addMilliseconds, format, isValid } from "date-fns";
+import { ChevronDown, ChevronUp, Download, MoreVertical, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
@@ -28,7 +28,7 @@ interface MCPLogDetailSheetProps {
 	log: MCPToolLogEntry | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	handleDelete: (log: MCPToolLogEntry) => Promise<void>;
+	handleDelete?: (log: MCPToolLogEntry) => Promise<void>;
 	onNavigate?: (direction: "prev" | "next") => void;
 	hasPrev?: boolean;
 	hasNext?: boolean;
@@ -128,13 +128,15 @@ export function MCPLogDetailSheet({
 									<Download className="h-4 w-4" />
 									Export as JSON
 								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<AlertDialogTrigger asChild>
-									<DropdownMenuItem variant="destructive">
-										<Trash2 className="h-4 w-4" />
-										Delete log
-									</DropdownMenuItem>
-								</AlertDialogTrigger>
+								{handleDelete ? <>
+									<DropdownMenuSeparator />
+									<AlertDialogTrigger asChild>
+										<DropdownMenuItem variant="destructive">
+											<Trash2 className="h-4 w-4" />
+											Delete log
+										</DropdownMenuItem>
+									</AlertDialogTrigger>
+								</> : null}
 							</DropdownMenuContent>
 						</DropdownMenu>
 						<AlertDialogContent>
@@ -147,6 +149,7 @@ export function MCPLogDetailSheet({
 								<AlertDialogAction
 									onClick={async (e) => {
 										e.preventDefault();
+										if (!handleDelete) return;
 										try {
 											await handleDelete(log);
 											setDeleteDialogOpen(false);

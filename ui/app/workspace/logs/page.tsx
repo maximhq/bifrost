@@ -695,7 +695,7 @@ export default function LogsPage() {
 						log={selectedLog}
 						open={selectedLog !== null}
 						onOpenChange={(open) => !open && setUrlState({ selected_log: "" })}
-						handleDelete={handleDelete}
+						handleDelete={hasDeleteAccess ? handleDelete : undefined}
 						onNavigate={handleLogNavigate}
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}

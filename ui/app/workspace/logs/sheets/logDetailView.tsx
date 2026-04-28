@@ -296,7 +296,7 @@ const messageRoleLabel: Record<MessageRole, string> = {
   user: "User",
   assistant: "Assistant",
   reasoning: "Reasoning",
-  tool: "Tool",
+  tool: "Tool Result",
 };
 
 function RoutingDecisionLogs({ logs }: { logs: string }) {
@@ -337,7 +337,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
                     className={cn(
                       "inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
                       RoutingEngineUsedColors[
-                        scope as keyof typeof RoutingEngineUsedColors
+                      scope as keyof typeof RoutingEngineUsedColors
                       ] ?? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
                     )}
                   >
@@ -464,9 +464,6 @@ export function LogDetailView({
   headerAction,
   onFilterByParentRequestId,
 }: LogDetailViewProps) {
-  const { copy: copyRequestId } = useCopyToClipboard({
-    successMessage: "Request ID copied",
-  });
   const { copy: copyBody } = useCopyToClipboard({
     successMessage: "Request body copied to clipboard",
     errorMessage: "Failed to copy request body",
@@ -533,7 +530,7 @@ export function LogDetailView({
           {headerAction}
           <span className="text-foreground font-medium">Request details</span>
         </div>
-        {handleDelete && onClose ? (
+        {onClose ? (
           <AlertDialog>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -563,8 +560,8 @@ export function LogDetailView({
                   <Download className="h-4 w-4" />
                   Export as JSON
                 </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <AlertDialogTrigger asChild>
+
+                {handleDelete ? <><DropdownMenuSeparator /><AlertDialogTrigger asChild>
                   <DropdownMenuItem
                     variant="destructive"
                     data-testid="logdetails-delete-item"
@@ -572,7 +569,8 @@ export function LogDetailView({
                     <Trash2 className="h-4 w-4" />
                     Delete log
                   </DropdownMenuItem>
-                </AlertDialogTrigger>
+                </AlertDialogTrigger> </> : null
+                }
               </DropdownMenuContent>
             </DropdownMenu>
             <AlertDialogContent>
@@ -592,7 +590,7 @@ export function LogDetailView({
                 <AlertDialogAction
                   data-testid="logdetails-delete-confirm-button"
                   onClick={() => {
-                    handleDelete(log);
+                    if (handleDelete) handleDelete(log);
                     onClose();
                   }}
                 >
@@ -2297,6 +2295,7 @@ const copyRequestBody = async (
   try {
     const isChat =
       log.object === "chat.completion" ||
+      log.object === "chat_completion" ||
       log.object === "chat.completion.chunk";
     const isResponses =
       log.object === "response" || log.object === "response.completion.chunk";
