@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
+import { ComboboxSelect } from "@/components/ui/combobox";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -211,11 +212,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					})),
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: config.rate_limit.request_reset_duration,
-							}
+							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+							token_reset_duration: config.rate_limit.token_reset_duration,
+							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+							request_reset_duration: config.rate_limit.request_reset_duration,
+						}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -816,7 +817,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																								? "No models (deny all)"
 																								: config.provider
 																									? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] ||
-																										ModelPlaceholders.default
+																									ModelPlaceholders.default
 																									: ModelPlaceholders.default
 																					}
 																					className="min-h-10 max-w-[500px] min-w-[200px]"
@@ -854,16 +855,16 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																	const selectedProviderKeys = hasWildcard
 																		? [allKeyOptions[0]]
 																		: providerKeys
-																				.filter((key) => configKeyIds.includes(key.key_id))
-																				.map((key) => ({
-																					label: key.name,
-																					value: key.key_id,
-																					description:
-																						key.models == null || key.models.includes("*")
-																							? "All models"
-																							: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																					provider: key.provider,
-																				}));
+																			.filter((key) => configKeyIds.includes(key.key_id))
+																			.map((key) => ({
+																				label: key.name,
+																				value: key.key_id,
+																				description:
+																					key.models == null || key.models.includes("*")
+																						? "All models"
+																						: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+																				provider: key.provider,
+																			}));
 
 																	return (
 																		<div className="mx-0.5 space-y-2">
@@ -963,9 +964,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																	lines={
 																		config.budgets && config.budgets.length > 0
 																			? config.budgets.map((b) => ({
-																					max_limit: b.max_limit,
-																					reset_duration: b.reset_duration || "1M",
-																				}))
+																				max_limit: b.max_limit,
+																				reset_duration: b.reset_duration || "1M",
+																			}))
 																			: []
 																	}
 																	onChange={(lines) => {
@@ -1379,41 +1380,35 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 													render={({ field }) => (
 														<FormItem>
 															<FormLabel className="font-normal">Assignment Type</FormLabel>
-															<Select
+															<ComboboxSelect
+																options={[
+																	{ value: "none", label: "No Assignment" },
+																	...(teams?.length > 0 ? [{ value: "team", label: "Assign to Team" }] : []),
+																	...(customers?.length > 0 ? [{ value: "customer", label: "Assign to Customer" }] : []),
+																]}
+																value={field.value}
 																onValueChange={async (value) => {
-																	field.onChange(value);
-																	// Auto-select first entry when switching to team or customer
-																	if (value === "team" && teams && teams.length > 0) {
+																	const val = value ?? "none";
+																	field.onChange(val);
+																	if (val === "team" && teams?.length > 0) {
 																		form.setValue("teamId", teams[0].id, { shouldDirty: true, shouldValidate: true });
 																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-																		// Trigger validation after state updates
 																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	} else if (value === "customer" && customers && customers.length > 0) {
+																	} else if (val === "customer" && customers?.length > 0) {
 																		form.setValue("customerId", customers[0].id, { shouldDirty: true, shouldValidate: true });
 																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
-																		// Trigger validation after state updates
 																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	} else if (value === "none") {
+																	} else {
 																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
 																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-																		// Trigger validation after state updates
 																		await form.trigger(["teamId", "customerId", "entityType"]);
 																	}
 																}}
-																defaultValue={field.value}
 																disabled={isTeamLocked}
-															>
-																<FormControl className="w-full">
-																	<SelectTrigger data-testid="vk-entity-type-select">
-																		<SelectValue />
-																	</SelectTrigger>
-																</FormControl>
-																<SelectContent>
-																	<SelectItem value="none">No Assignment</SelectItem>
-																	{teams?.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
-																	{customers?.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}
-																</SelectContent>
-															</Select>
+																disableSearch
+																hideClear
+																className="h-9"
+															/>
 															<FormMessage />
 														</FormItem>
 													)}
@@ -1425,29 +1420,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 														render={({ field }) => (
 															<FormItem>
 																<FormLabel className="font-normal">Select Team</FormLabel>
-																<Select onValueChange={field.onChange} defaultValue={field.value} disabled={isTeamLocked}>
-																	<FormControl className="w-full">
-																		<SelectTrigger data-testid="vk-team-select">
-																			<SelectValue placeholder="Select a team" />
-																		</SelectTrigger>
-																	</FormControl>
-																	<SelectContent>
-																		{teams.map((team) => (
-																			<SelectItem key={team.id} value={team.id}>
-																				<div className="flex items-center gap-2">
-																					<Users className="h-4 w-4" />
-																					{team.name}
-																					{team.customer && (
-																						<span className="text-muted-foreground flex items-center gap-1">
-																							<Building className="h-2 w-2" />
-																							{team.customer.name}
-																						</span>
-																					)}
-																				</div>
-																			</SelectItem>
-																		))}
-																	</SelectContent>
-																</Select>
+																<ComboboxSelect
+																	options={teams.map((team) => ({
+																		value: team.id,
+																		label: team.customer ? `${team.name} — ${team.customer.name}` : team.name,
+																	}))}
+																	value={field.value || null}
+																	onValueChange={(val) => field.onChange(val ?? "")}
+																	placeholder="Select a team"
+																	disabled={isTeamLocked}
+																	emptyMessage="No teams found."
+																	className="h-9"
+																/>
 																<FormMessage />
 															</FormItem>
 														)}
@@ -1461,23 +1445,17 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 														render={({ field }) => (
 															<FormItem>
 																<FormLabel className="font-normal">Select Customer</FormLabel>
-																<Select onValueChange={field.onChange} defaultValue={field.value}>
-																	<FormControl className="w-full">
-																		<SelectTrigger data-testid="vk-customer-select">
-																			<SelectValue placeholder="Select a customer" />
-																		</SelectTrigger>
-																	</FormControl>
-																	<SelectContent>
-																		{customers.map((customer) => (
-																			<SelectItem key={customer.id} value={customer.id}>
-																				<div className="flex items-center gap-2">
-																					<Building className="h-4 w-4" />
-																					{customer.name}
-																				</div>
-																			</SelectItem>
-																		))}
-																	</SelectContent>
-																</Select>
+																<ComboboxSelect
+																	options={customers.map((customer) => ({
+																		value: customer.id,
+																		label: customer.name,
+																	}))}
+																	value={field.value || null}
+																	onValueChange={(val) => field.onChange(val ?? "")}
+																	placeholder="Select a customer"
+																	emptyMessage="No customers found."
+																	className="h-9"
+																/>
 																<FormMessage />
 															</FormItem>
 														)}
