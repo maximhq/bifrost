@@ -37,7 +37,8 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `maxim.TraceIDKey`                         | `x-bf-maxim-trace-id`                                | `string`              | Maxim trace ID                                                                                                                        |
 | `maxim.GenerationIDKey`                    | `x-bf-maxim-generation-id`                           | `string`              | Maxim generation ID                                                                                                                   |
 | `maxim.TagsKey`                            | `x-bf-maxim-*`                                       | `map[string]string`   | Maxim tags (custom tag names)                                                                                                         |
-| `BifrostContextKey(labelName)`             | `x-bf-prom-*`                                        | `string`              | Prometheus metric labels                                                                                                              |
+| `BifrostContextKeyDimensions` | `x-bf-dim-*` | `map[string]string` | Unified per-request dimensions forwarded to logs, spans, Prometheus custom labels, and Maxim tags |
+| `BifrostContextKey(labelName)` | `x-bf-prom-*` | `string` | Deprecated Prometheus-only label headers for backward compatibility |
 
 ## Request Configuration Options
 
@@ -1061,6 +1062,57 @@ Input: messages,
 </Tab>
 </Tabs>
 
+### Unified dimensions (x-bf-dim-*)
+
+**Context Key:** `BifrostContextKeyDimensions`  
+**Header Pattern:** `x-bf-dim-{name}`  
+**Type:** `map[string]string`  
+**Required:** No
+
+Add per-request dimensions once and have Bifrost forward them to all observability backends:
+- internal logs as request metadata
+- OpenTelemetry span attributes
+- Prometheus custom labels when the dimension name matches a configured label
+- Maxim generation and trace tags
+
+`x-bf-dim-*` is now the canonical header prefix for runtime observability metadata.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-dim-environment: production' \
+--header 'x-bf-dim-team: engineering' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+dims := map[string]string{
+    "environment": "production",
+    "team":        "engineering",
+}
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyDimensions, dims)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+<Note>
+`x-bf-dim-*` values cannot override reserved Bifrost context keys such as request IDs or virtual keys. Also avoid sending secrets or PII in dimensions because they are propagated to observability backends.
+For `x-bf-dim-*`, reserved metric labels `path` and `method` are ignored at runtime.
+</Note>
+
 ### Maxim Tags (x-bf-maxim-*)
 
 **Context Key:** `maxim.TagsKey`
@@ -1068,7 +1120,9 @@ Input: messages,
 **Type:** `map[string]string`
 **Required:** No
 
-Add custom tags to Maxim traces. Any header starting with `x-bf-maxim-` that isn't a reserved header becomes a tag.
+Add Maxim-specific tags to traces. Any header starting with `x-bf-maxim-` that isn't a reserved header becomes a tag.
+
+Use `x-bf-dim-*` for tags that should also appear in logs, OpenTelemetry, and Prometheus. Use `x-bf-maxim-*` only for Maxim-specific tagging or when you need to override a same-named dimension for Maxim.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -1111,6 +1165,8 @@ Input: messages,
 **Required:** No
 
 Add custom labels to Prometheus metrics. The `x-bf-prom-` prefix is stripped and the remainder becomes the label name.
+
+This header family is deprecated. Prefer `x-bf-dim-*`, which feeds Prometheus and the other observability backends together. If both `x-bf-dim-foo` and `x-bf-prom-foo` are present, the `x-bf-dim-*` value takes precedence for Prometheus.
 
 <Tabs>
 <Tab title="Gateway (cURL)">

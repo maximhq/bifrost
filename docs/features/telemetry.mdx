@@ -13,7 +13,7 @@ Bifrost provides built-in telemetry and monitoring capabilities through Promethe
 - **Prometheus Integration** - Native metrics collection at `/metrics` endpoint
 - **Comprehensive Tracking** - Success/error rates, token usage, costs, and cache performance
 - **Custom Labels** - Configurable dimensions for detailed analysis
-- **Dynamic Headers** - Runtime label injection via `x-bf-prom-*` headers
+- **Dynamic Headers** - Runtime label injection via `x-bf-dim-*` headers
 - **Cost Monitoring** - Real-time tracking of AI provider costs in USD
 - **Cache Analytics** - Direct and semantic cache hit tracking
 - **Async Collection** - Zero-latency impact on request processing
@@ -207,16 +207,16 @@ curl -X PATCH http://localhost:8080/config \
 
 ### Dynamic Label Injection
 
-Add custom label values at runtime using `x-bf-prom-*` headers:
+Add custom label values at runtime using `x-bf-dim-*` headers:
 
 ```bash
 # Add custom labels to specific requests
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "x-bf-prom-team: engineering" \
-  -H "x-bf-prom-environment: production" \
-  -H "x-bf-prom-organization: my-org" \
-  -H "x-bf-prom-project: my-project" \
+  -H "x-bf-dim-team: engineering" \
+  -H "x-bf-dim-environment: production" \
+  -H "x-bf-dim-organization: my-org" \
+  -H "x-bf-dim-project: my-project" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -224,10 +224,15 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 **Header Format:**
-
-- Prefix: `x-bf-prom-`
-- Label name: Any string after the prefix
+- Prefix: `x-bf-dim-`
+- Label name: Any string after the prefix, except reserved metric labels like `path` and `method`
 - Value: String value for the label
+
+These runtime dimensions are also forwarded to the other observability backends. The same `x-bf-dim-*` values appear in internal logs, OpenTelemetry span attributes, and Maxim tags.
+
+<Note>
+Legacy `x-bf-prom-*` headers still work for Prometheus-only behavior, but they are deprecated. When both prefixes provide the same label, `x-bf-dim-*` wins.
+</Note>
 
 ---
 
