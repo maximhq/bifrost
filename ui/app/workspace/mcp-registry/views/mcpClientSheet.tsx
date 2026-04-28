@@ -520,9 +520,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													onBlur={() => {
 														const parsed = allowedExtraHeadersRaw.trim()
 															? allowedExtraHeadersRaw
-																	.split(",")
-																	.map((h) => h.trim())
-																	.filter(Boolean)
+																.split(",")
+																.map((h) => h.trim())
+																.filter(Boolean)
 															: [];
 														field.onChange(parsed);
 														field.onBlur();
@@ -858,11 +858,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 															Add Virtual Key
 														</Button>
 													</PopoverTrigger>
-													<PopoverContent side="top" align="end" className="w-56 p-0">
+													<PopoverContent side="top" align="end" className="w-56 p-0" noPortal>
 														<div className="pb-1">
 															<Input
 																data-testid="mcpclient-virtualkey-search-input"
-																placeholder="Search virtual keys..."
+																placeholder="Start typing to search…"
 																value={vkSearch}
 																onChange={(e) => setVKSearch(e.target.value)}
 																onKeyDown={(e) => {

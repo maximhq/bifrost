@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CodeEditor } from "@/components/ui/codeEditor";
+import { ComboboxSelect } from "@/components/ui/combobox";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -814,33 +815,23 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 														<FormLabel>
 															Virtual key <span className="text-red-500">*</span>
 														</FormLabel>
-														<Select
-															value={field.value || "__none__"}
-															onValueChange={(value) => {
-																field.onChange(value === "__none__" ? "" : value);
-																setValue("providerID", "");
-																setValue("providerKeyID", "");
-																clearErrors("virtualKeyID");
-															}}
-														>
-															<FormControl>
-																<SelectTrigger
-																	data-testid="pricing-override-virtual-key-select"
-																	className="w-full"
-																	disabled={isVirtualKeysLoading || !!virtualKeysError}
-																>
-																	<SelectValue placeholder={isVirtualKeysLoading ? "Loading..." : "Select virtual key"} />
-																</SelectTrigger>
-															</FormControl>
-															<SelectContent>
-																<SelectItem value="__none__">Select virtual key</SelectItem>
-																{virtualKeys.map((vk) => (
-																	<SelectItem key={vk.id} value={vk.id}>
-																		{vk.name}
-																	</SelectItem>
-																))}
-															</SelectContent>
-														</Select>
+														<FormControl>
+															<ComboboxSelect
+																data-testid="pricing-override-virtual-key-select"
+																options={virtualKeys.map((vk) => ({ label: vk.name, value: vk.id }))}
+																value={field.value || null}
+																onValueChange={(value) => {
+																	field.onChange(value ?? "");
+																	setValue("providerID", "");
+																	setValue("providerKeyID", "");
+																	clearErrors("virtualKeyID");
+																}}
+																placeholder={isVirtualKeysLoading ? "Loading..." : "Select virtual key"}
+																disabled={isVirtualKeysLoading || !!virtualKeysError}
+																noPortal
+																className="h-9"
+															/>
+														</FormControl>
 														{virtualKeysError ? (
 															<p className="text-destructive mt-1 text-xs">
 																Failed to load virtual keys: {getErrorMessage(virtualKeysError)}
@@ -911,27 +902,17 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 													render={({ field }) => (
 														<FormItem>
 															<FormLabel>Provider key</FormLabel>
-															<Select
-																value={field.value || "__none__"}
-																onValueChange={(value) => field.onChange(value === "__none__" ? "" : value)}
-															>
-																<FormControl>
-																	<SelectTrigger
-																		data-testid="pricing-override-provider-key-select"
-																		className="w-full"
-																	>
-																		<SelectValue placeholder="All provider keys" />
-																	</SelectTrigger>
-																</FormControl>
-																<SelectContent>
-																	<SelectItem value="__none__">All provider keys</SelectItem>
-																	{providerScopedKeyOptions.map((option) => (
-																		<SelectItem key={option.id} value={option.id}>
-																			{option.label}
-																		</SelectItem>
-																	))}
-																</SelectContent>
-															</Select>
+															<FormControl>
+																<ComboboxSelect
+																	data-testid="pricing-override-provider-key-select"
+																	options={providerScopedKeyOptions.map((option) => ({ label: option.label, value: option.id }))}
+																	value={field.value || null}
+																	onValueChange={(value) => field.onChange(value ?? "")}
+																	placeholder="All provider keys"
+																	noPortal
+																	className="h-9"
+																/>
+															</FormControl>
 														</FormItem>
 													)}
 												/>

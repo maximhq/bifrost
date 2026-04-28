@@ -12,10 +12,10 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ComboboxSelect } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
@@ -543,33 +543,23 @@ export default function VirtualKeysTable({
 							data-testid="vk-search-input"
 						/>
 					</div>
-					<Select value={customerFilter} onValueChange={(val) => onCustomerFilterChange(val === "all" ? "" : val)}>
-						<SelectTrigger className="w-[180px]" data-testid="vk-customer-filter">
-							<SelectValue placeholder="All Customers" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="all">All Customers</SelectItem>
-							{customers.map((c) => (
-								<SelectItem key={c.id} value={c.id}>
-									{c.name}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<ComboboxSelect
+						data-testid="vk-customer-filter"
+						options={customers.map((c) => ({ label: c.name, value: c.id }))}
+						value={customerFilter || null}
+						onValueChange={(val) => onCustomerFilterChange(val ?? "")}
+						placeholder="All Customers"
+						className="w-[180px] h-9"
+					/>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<Select value={teamFilter} onValueChange={(val) => onTeamFilterChange(val === "all" ? "" : val)}>
-						<SelectTrigger className="w-[180px]" data-testid="vk-team-filter">
-							<SelectValue placeholder="All Teams" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="all">All Teams</SelectItem>
-							{teams.map((t) => (
-								<SelectItem key={t.id} value={t.id}>
-									{t.name}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<ComboboxSelect
+						data-testid="vk-team-filter"
+						options={teams.map((t) => ({ label: t.name, value: t.id }))}
+						value={teamFilter || null}
+						onValueChange={(val) => onTeamFilterChange(val ?? "")}
+						placeholder="All Teams"
+						className="w-[180px] h-9"
+					/>
 				</div>
 
 				<div className="rounded-sm border">
