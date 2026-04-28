@@ -280,7 +280,7 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 <Frame>
   <img
     src="/media/user-provisioning/entra-form.png"
-    alt="Create token dialog in Okta"
+    alt="Create token dialog in Entra"
   />
 </Frame>
 
@@ -321,13 +321,13 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 
 ### Attribute Mappings
 
-Attribute mappings let you translate Okta claim values into Bifrost roles, teams, or business units without restructuring your Okta claims. Bifrost supports three mapping types:
+Attribute mappings let you translate Entra claim values into Bifrost roles, teams, or business units without restructuring your Okta claims. Bifrost supports three mapping types:
 
 - **`attributeRoleMappings`**: map a claim value to a Bifrost role (Admin, Developer, Viewer, or a custom role)
 - **`attributeTeamMappings`**: map a claim value to a Bifrost team
 - **`attributeBusinessUnitMappings`**: map a claim value to a Bifrost business unit
 
-These mappings work with any Okta claim — the `groups` claim from Step 5, the custom `role` claim from Step 4, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
+These mappings work with any Entra claim — the `groups` claim from Step 5, the custom `role` claim from Step 4, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
 
 To configure attribute mappings:
 
