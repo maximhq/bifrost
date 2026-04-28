@@ -117,11 +117,11 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 			let rateLimitPayload:
 				| {
-						token_max_limit?: number | null;
-						token_reset_duration?: string | null;
-						request_max_limit?: number | null;
-						request_reset_duration?: string | null;
-				  }
+					token_max_limit?: number | null;
+					token_reset_duration?: string | null;
+					request_max_limit?: number | null;
+					request_reset_duration?: string | null;
+				}
 				| undefined;
 			if (hasRateLimit) {
 				rateLimitPayload = {
@@ -276,7 +276,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				)}
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 pb-6">
+				<div className="flex justify-end space-x-2">
 					<Button
 						type="button"
 						variant="outline"
@@ -287,7 +287,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					</Button>
 					<Button
 						type="submit"
-						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdating}
+						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdating}
 						isLoading={isUpdating}
 					>
 						Save Governance Configuration

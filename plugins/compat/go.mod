@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/compat
 go 1.26.2
 
 require (
-	github.com/maximhq/bifrost/core v1.5.4
-	github.com/maximhq/bifrost/framework v1.3.4
+	github.com/maximhq/bifrost/core v1.5.5
+	github.com/maximhq/bifrost/framework v1.3.5
 )
 
 require (

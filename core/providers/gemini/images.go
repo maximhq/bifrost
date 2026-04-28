@@ -394,6 +394,8 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		return nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
@@ -492,6 +494,8 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
+
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
 
 	// Create instances array with prompt
 	prompt := bifrostReq.Input.Prompt
@@ -639,7 +643,6 @@ func convertOutputFormatToMimeType(outputFormat string) string {
 	}
 }
 
-
 // ToBifrostImageGenerationResponse converts an Imagen response to Bifrost format
 func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schemas.BifrostImageGenerationResponse {
 	if response == nil {
@@ -733,6 +736,8 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	if bifrostReq == nil || bifrostReq.Input == nil || len(bifrostReq.Input.Images) == 0 {
 		return nil
 	}
+
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
 
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
@@ -926,6 +931,8 @@ func ToImagenImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	if bifrostReq == nil || bifrostReq.Input == nil || len(bifrostReq.Input.Images) == 0 {
 		return nil
 	}
+
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
 
 	req := &GeminiImagenRequest{
 		Parameters: GeminiImagenParameters{},

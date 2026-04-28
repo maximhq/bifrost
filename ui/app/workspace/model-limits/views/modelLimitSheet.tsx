@@ -6,7 +6,6 @@ import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationOptions } from "@/lib/constants/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
@@ -110,6 +109,10 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		(form.watch("requestMaxLimit") !== undefined && form.watch("requestMaxLimit") !== null);
 
 	useEffect(() => {
+		if (hasAnyLimit) form.clearErrors("root");
+	}, [hasAnyLimit, form]);
+
+	useEffect(() => {
 		if (modelConfig) {
 			// Never reset form if user is editing - skip reset entirely
 			if (form.formState.isDirty) {
@@ -131,6 +134,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	const onSubmit = async (data: FormData) => {
 		if (!canSubmit) {
 			toast.error("You don't have permission to perform this action");
+			return;
+		}
+
+		if (!hasAnyLimit) {
+			form.setError("root", { message: "At least one budget or rate limit is required" });
 			return;
 		}
 
@@ -221,7 +229,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
-				className="flex w-full flex-col overflow-x-hidden p-8"
+				className="flex w-full flex-col overflow-x-hidden pt-4"
 				onInteractOutside={(e) => {
 					if (isEditing ? form.formState.isDirty : !!form.watch("modelName") || hasAnyLimit) e.preventDefault();
 				}}
@@ -230,7 +238,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				}}
 				data-testid="model-limit-sheet"
 			>
-				<SheetHeader className="flex flex-col items-start p-0">
+				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a model."}
@@ -239,7 +247,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="space-y-4">
+						<div className="grow space-y-4 px-8">
 							{/* Provider */}
 							<FormField
 								control={form.control}
@@ -378,6 +386,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										</FormItem>
 									)}
 								/>
+								{form.formState.errors.root && (
+									<p className="text-destructive text-sm">{form.formState.errors.root.message}</p>
+								)}
 							</div>
 
 							{/* Current Usage Display (for editing) */}
@@ -420,55 +431,19 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						</div>
 
 						{/* Footer */}
-						<div className="py-4">
-							<div className="flex justify-end gap-3">
+						<div className="bg-card sticky bottom-0 shrink-0 border-t px-8 py-4">
+							<div className="flex items-center justify-end gap-3">
+								{!canSubmit && <p className="text-destructive text-sm">You don't have permission to perform this action</p>}
 								<Button type="button" variant="outline" onClick={handleClose}>
 									Cancel
 								</Button>
-								<TooltipProvider>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span className="inline-block">
-												<Button
-													type="submit"
-													data-testid="model-limit-button-submit"
-													disabled={
-														isLoading ||
-														!form.formState.isDirty ||
-														!form.formState.isValid ||
-														!canSubmit ||
-														!form.watch("modelName") ||
-														!hasAnyLimit
-													}
-												>
-													{isLoading ? "Saving..." : isEditing ? "Save Changes" : "Create Limit"}
-												</Button>
-											</span>
-										</TooltipTrigger>
-										{(isLoading ||
-											!form.formState.isDirty ||
-											!form.formState.isValid ||
-											!canSubmit ||
-											!form.watch("modelName") ||
-											!hasAnyLimit) && (
-											<TooltipContent>
-												<p>
-													{!canSubmit
-														? "You don't have permission"
-														: isLoading
-															? "Saving..."
-															: !form.formState.isDirty
-																? "No changes made"
-																: !form.watch("modelName")
-																	? "Model name is required"
-																	: !hasAnyLimit
-																		? "At least one budget or rate limit is required"
-																		: "Please fix validation errors"}
-												</p>
-											</TooltipContent>
-										)}
-									</Tooltip>
-								</TooltipProvider>
+								<Button
+									type="submit"
+									data-testid="model-limit-button-submit"
+									disabled={isLoading || !form.formState.isDirty || !canSubmit}
+								>
+									{isLoading ? "Saving..." : isEditing ? "Save Changes" : "Create Limit"}
+								</Button>
 							</div>
 						</div>
 					</form>

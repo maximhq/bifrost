@@ -34,7 +34,9 @@ import type {
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import UserRankingsTab from "@enterprise/components/user-rankings/userRankingsTab";
+import { useLocation } from "@tanstack/react-router";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ChartType } from "./components/charts/chartTypeToggle";
@@ -47,41 +49,6 @@ import { ProviderUsageTab } from "./components/providerUsageTab";
 
 // Type-safe parser for chart type URL state
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
-
-// Predefined time periods
-const TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
-];
-
-function getTimeRangeFromPeriod(period: string): { start: number; end: number } {
-	const now = Math.floor(Date.now() / 1000);
-	switch (period) {
-		case "1h":
-			return { start: now - 3600, end: now };
-		case "6h":
-			return { start: now - 6 * 3600, end: now };
-		case "24h":
-			return { start: now - 24 * 3600, end: now };
-		case "7d":
-			return { start: now - 7 * 24 * 3600, end: now };
-		case "30d":
-			return { start: now - 30 * 24 * 3600, end: now };
-		default:
-			return { start: now - 24 * 3600, end: now };
-	}
-}
-
-// Calculate default timestamps once at module level
-const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
-const DEFAULT_START_TIME = (() => {
-	const date = new Date();
-	date.setHours(date.getHours() - 24);
-	return Math.floor(date.getTime() / 1000);
-})();
 
 const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
 const sanitizeSeriesLabels = (values?: string[]): string[] => {
@@ -149,15 +116,18 @@ export default function DashboardPage() {
 	// MCP filter data
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
-	// Period is local state only — clicking a period sets start/end in URL, but period itself
-	// is not persisted so refresh shows the actual date range rather than a stale period label
-	const [activePeriod, setActivePeriod] = useState<string | undefined>(undefined);
+	// Memoize default time range to prevent recalculation on every render
+	// This is crucial to avoid triggering refetches when the sheet opens/closes
+	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
 
+	const { search } = useLocation();
+	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
 	// URL state management
 	const [urlState, setUrlState] = useQueryStates(
 		{
-			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
-			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
+			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
+			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
+			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			tab: parseAsString.withDefault("overview"),
 			virtual_key_ids: parseAsString.withDefault(""),
 			providers: parseAsString.withDefault(""),
@@ -167,6 +137,7 @@ export default function DashboardPage() {
 			status: parseAsString.withDefault(""),
 			routing_rule_ids: parseAsString.withDefault(""),
 			routing_engine_used: parseAsString.withDefault(""),
+			stop_reasons: parseAsString.withDefault(""),
 			missing_cost_only: parseAsString.withDefault("false"),
 			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
@@ -202,6 +173,7 @@ export default function DashboardPage() {
 	const selectedStatuses = useMemo(() => parseCsvParam(urlState.status), [urlState.status]);
 	const selectedRoutingRuleIds = useMemo(() => parseCsvParam(urlState.routing_rule_ids), [urlState.routing_rule_ids]);
 	const selectedRoutingEngines = useMemo(() => parseCsvParam(urlState.routing_engine_used), [urlState.routing_engine_used]);
+	const selectedStopReasons = useMemo(() => parseCsvParam(urlState.stop_reasons), [urlState.stop_reasons]);
 	const missingCostOnly = useMemo(() => urlState.missing_cost_only === "true", [urlState.missing_cost_only]);
 	const metadataFilters = useMemo(() => {
 		if (!urlState.metadata_filters) return undefined;
@@ -216,23 +188,40 @@ export default function DashboardPage() {
 	const selectedMcpToolNames = useMemo(() => parseCsvParam(urlState.mcp_tool_names), [urlState.mcp_tool_names]);
 	const selectedMcpServerLabels = useMemo(() => parseCsvParam(urlState.mcp_server_labels), [urlState.mcp_server_labels]);
 
-	// Derived filter for API calls
+	// Derived filter for API calls.
+	// When period is set, send it so the backend computes the window fresh on every request.
+	// For custom absolute ranges (period === "") use the stored URL timestamps.
 	const filters: LogFilters = useMemo(
 		() => ({
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
 			...(selectedProviders.length > 0 && { providers: selectedProviders }),
 			...(selectedModels.length > 0 && { models: selectedModels }),
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
-			...(selectedVirtualKeyIds.length > 0 && { virtual_key_ids: selectedVirtualKeyIds }),
+			...(selectedVirtualKeyIds.length > 0 && {
+				virtual_key_ids: selectedVirtualKeyIds,
+			}),
 			...(selectedTypes.length > 0 && { objects: selectedTypes }),
 			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
-			...(selectedRoutingRuleIds.length > 0 && { routing_rule_ids: selectedRoutingRuleIds }),
-			...(selectedRoutingEngines.length > 0 && { routing_engine_used: selectedRoutingEngines }),
+			...(selectedRoutingRuleIds.length > 0 && {
+				routing_rule_ids: selectedRoutingRuleIds,
+			}),
+			...(selectedRoutingEngines.length > 0 && {
+				routing_engine_used: selectedRoutingEngines,
+			}),
+			...(selectedStopReasons.length > 0 && { stop_reasons: selectedStopReasons }),
 			...(missingCostOnly && { missing_cost_only: true }),
-			...(metadataFilters && Object.keys(metadataFilters).length > 0 && { metadata_filters: metadataFilters }),
+			...(metadataFilters &&
+				Object.keys(metadataFilters).length > 0 && {
+				metadata_filters: metadataFilters,
+			}),
 		}),
 		[
+			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
 			selectedProviders,
@@ -243,20 +232,29 @@ export default function DashboardPage() {
 			selectedStatuses,
 			selectedRoutingRuleIds,
 			selectedRoutingEngines,
+			selectedStopReasons,
 			missingCostOnly,
 			metadataFilters,
 		],
 	);
 
-	// MCP filters
+	// MCP filters — same period-first logic as filters above.
 	const mcpFilters: MCPToolLogFilters = useMemo(
 		() => ({
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
-			...(selectedMcpToolNames.length > 0 && { tool_names: selectedMcpToolNames }),
-			...(selectedMcpServerLabels.length > 0 && { server_labels: selectedMcpServerLabels }),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
+			...(selectedMcpToolNames.length > 0 && {
+				tool_names: selectedMcpToolNames,
+			}),
+			...(selectedMcpServerLabels.length > 0 && {
+				server_labels: selectedMcpServerLabels,
+			}),
 		}),
-		[urlState.start_time, urlState.end_time, selectedMcpToolNames, selectedMcpServerLabels],
+		[urlState.period, urlState.start_time, urlState.end_time, selectedMcpToolNames, selectedMcpServerLabels],
 	);
 
 	// Model lists for each chart's legend (must match what the chart component actually renders)
@@ -520,12 +518,14 @@ export default function DashboardPage() {
 	// Adapter: converts a full LogFilters object to dashboard's CSV-based URL state
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
-			if (newFilters.start_time !== undefined || newFilters.end_time !== undefined) {
-				setActivePeriod(undefined);
-			}
+			const newStartTime = newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined;
+			const newEndTime = newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined;
+			const timeChanged = newStartTime !== urlState.start_time || newEndTime !== urlState.end_time;
 			setUrlState({
-				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
-				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
+				...(timeChanged && { period: "" }),
+				start_time: newStartTime,
+				end_time: newEndTime,
+				period: urlState.period,
 				providers: (newFilters.providers || []).join(","),
 				models: (newFilters.models || []).join(","),
 				selected_key_ids: (newFilters.selected_key_ids || []).join(","),
@@ -534,6 +534,7 @@ export default function DashboardPage() {
 				status: (newFilters.status || []).join(","),
 				routing_rule_ids: (newFilters.routing_rule_ids || []).join(","),
 				routing_engine_used: (newFilters.routing_engine_used || []).join(","),
+				stop_reasons: (newFilters.stop_reasons || []).join(","),
 				missing_cost_only: String(newFilters.missing_cost_only ?? false),
 				metadata_filters:
 					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0
@@ -541,7 +542,7 @@ export default function DashboardPage() {
 						: "",
 			});
 		},
-		[setUrlState],
+		[setUrlState, urlState.start_time, urlState.end_time, urlState.period],
 	);
 
 	// Date range for picker
@@ -556,9 +557,12 @@ export default function DashboardPage() {
 	const handlePeriodChange = useCallback(
 		(period: string | undefined) => {
 			if (!period) return;
-			const { start, end } = getTimeRangeFromPeriod(period);
-			setActivePeriod(period);
-			setUrlState({ start_time: start, end_time: end });
+			const { from, to } = getRangeForPeriod(period);
+			setUrlState({
+				period,
+				start_time: Math.floor(from.getTime() / 1000),
+				end_time: Math.floor(to.getTime() / 1000),
+			});
 		},
 		[setUrlState],
 	);
@@ -566,8 +570,8 @@ export default function DashboardPage() {
 	const handleDateRangeChange = useCallback(
 		(range: { from?: Date; to?: Date }) => {
 			if (!range.from || !range.to) return;
-			setActivePeriod(undefined);
 			setUrlState({
+				period: "",
 				start_time: dateUtils.toUnixTimestamp(range.from),
 				end_time: dateUtils.toUnixTimestamp(range.to),
 			});
@@ -770,7 +774,7 @@ export default function DashboardPage() {
 							dateTime={dateRange}
 							onDateTimeUpdate={handleDateRangeChange}
 							preDefinedPeriods={TIME_PERIODS}
-							predefinedPeriod={activePeriod}
+							predefinedPeriod={urlState.period || undefined}
 							onPredefinedPeriodChange={handlePeriodChange}
 							triggerTestId="dashboard-filter-daterange"
 							popupAlignment="end"

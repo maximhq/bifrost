@@ -168,6 +168,7 @@ Two modes:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.semanticCache.enabled` | Enable semantic caching | `false` |
+| `bifrost.plugins.semanticCache.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.semanticCache.config.provider` | Embedding provider | `"openai"` |
 | `bifrost.plugins.semanticCache.config.embedding_model` | Embedding model name | `"text-embedding-3-small"` |
 | `bifrost.plugins.semanticCache.config.dimension` | Embedding dimension (`1` = direct/hash mode) | `1536` |
@@ -256,6 +257,7 @@ Sends distributed traces and push-based metrics to any OTLP-compatible collector
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.otel.enabled` | Enable OTel tracing | `false` |
+| `bifrost.plugins.otel.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.otel.config.service_name` | Service name in traces | `"bifrost"` |
 | `bifrost.plugins.otel.config.collector_url` | OTLP collector endpoint | `""` |
 | `bifrost.plugins.otel.config.trace_type` | Trace type (`genai_extension`, `vercel`, or `open_inference`) | `"genai_extension"` |
@@ -329,6 +331,7 @@ Sends traces to a Datadog Agent running in the cluster.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.datadog.enabled` | Enable Datadog tracing | `false` |
+| `bifrost.plugins.datadog.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.datadog.config.service_name` | Service name | `"bifrost"` |
 | `bifrost.plugins.datadog.config.agent_addr` | Datadog Agent address | `"localhost:8126"` |
 | `bifrost.plugins.datadog.config.env` | Deployment environment tag | `""` |
@@ -380,6 +383,7 @@ Sends LLM request/response data to [Maxim](https://getmaxim.ai) for tracing, eva
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.maxim.enabled` | Enable Maxim plugin | `false` |
+| `bifrost.plugins.maxim.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.maxim.config.api_key` | Maxim API key (plain text, prefer secret) | `""` |
 | `bifrost.plugins.maxim.config.log_repo_id` | Maxim log repository ID | `""` |
 | `bifrost.plugins.maxim.secretRef.name` | Kubernetes Secret name for API key | `""` |
@@ -417,6 +421,14 @@ helm upgrade bifrost bifrost/bifrost --reuse-values -f maxim-values.yaml
 ### Custom / Dynamic Plugins
 
 Load a custom Go plugin (compiled `.so` file) at runtime.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.custom[].name` | Unique plugin name | `""` |
+| `bifrost.plugins.custom[].enabled` | Enable custom plugin | `false` |
+| `bifrost.plugins.custom[].path` | Path to compiled `.so` file in the container | `""` |
+| `bifrost.plugins.custom[].version` | Plugin config version (`1` to `32767`) | `1` |
+| `bifrost.plugins.custom[].config` | Arbitrary plugin-specific configuration | `{}` |
 
 ```yaml
 bifrost:

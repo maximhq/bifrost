@@ -72,7 +72,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 	// Set default values
 	if config.ToolManagerConfig == nil {
 		config.ToolManagerConfig = &schemas.MCPToolManagerConfig{
-			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
+			ToolExecutionTimeout: schemas.Duration(schemas.DefaultToolExecutionTimeout),
 			MaxAgentDepth:        schemas.DefaultMaxAgentDepth,
 		}
 	}

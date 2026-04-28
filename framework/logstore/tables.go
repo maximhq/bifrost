@@ -33,7 +33,8 @@ type SearchFilters struct {
 	Models            []string          `json:"models,omitempty"`
 	Aliases           []string          `json:"aliases,omitempty"`
 	Status            []string          `json:"status,omitempty"`
-	Objects           []string          `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID   string            `json:"parent_request_id,omitempty"`
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
@@ -164,6 +165,7 @@ type Log struct {
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
 	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
 	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
 	ContentSummary          string    `gorm:"type:text" json:"-"`

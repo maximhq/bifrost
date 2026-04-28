@@ -106,6 +106,37 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// sanitizeErrorForLogging returns a shallow copy of err with ExtraFields.RawRequest and
+// RawResponse cleared when raw-byte persistence is disabled, preventing raw bytes from
+// leaking into entry.ErrorDetails via JSON serialization.
+func sanitizeErrorForLogging(err *schemas.BifrostError, contentLoggingEnabled, shouldStoreRaw bool) *schemas.BifrostError {
+	if err == nil {
+		return nil
+	}
+	if contentLoggingEnabled && shouldStoreRaw {
+		return err
+	}
+	cloned := *err
+	cloned.ExtraFields.RawRequest = nil
+	cloned.ExtraFields.RawResponse = nil
+	return &cloned
+}
+
+// contentLoggingEnabled returns true if content (messages, params, tool results) should be
+// recorded for this request. The BifrostContextKeyDisableContentLogging per-request override is
+// only honored when BifrostContextKeyAllowPerRequestStorageOverride is true in context (set by
+// ConvertToBifrostContext from allow_per_request_content_storage_override config).
+func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
+	if ctx != nil {
+		if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
+			if override, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+				return !override
+			}
+		}
+	}
+	return p.disableContentLogging == nil || !*p.disableContentLogging
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
@@ -412,6 +443,18 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 		}
 	}
 
+	// Include x-bf-dim-* dimensions in metadata.
+	if dims, ok := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string); ok {
+		for k, v := range dims {
+			if metadata == nil {
+				metadata = make(map[string]interface{})
+			}
+			if _, exists := metadata[k]; !exists {
+				metadata[k] = v
+			}
+		}
+	}
+
 	return metadata
 }
 
@@ -441,6 +484,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	createdTimestamp := time.Now().UTC()
 
+	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
+
 	// If request type is streaming we create a stream accumulator via the tracer
 	// Skip for passthrough streams — they carry raw bytes, not LLM response chunks
 	if bifrost.IsStreamRequestType(req.RequestType) && req.RequestType != schemas.PassthroughStreamRequest {
@@ -461,7 +506,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		initialData.Object = "realtime.turn"
 	}
 
-	if p.disableContentLogging == nil || !*p.disableContentLogging {
+	if p.contentLoggingEnabled(ctx) {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
 		initialData.InputHistory = inputHistory
 		initialData.ResponsesInputHistory = responsesInputHistory
@@ -699,9 +744,64 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
-	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
+	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
+	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", requestID, requestType, isFinalChunk, bifrostErr != nil)
+
+	// Retrieve pending input data from PreLLMHook
+	var pendingVal any
+	var hasPending bool
+	if !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil {
+		pendingVal, hasPending = p.pendingLogsEntries.LoadAndDelete(requestID)
+	} else {
+		pendingVal, hasPending = p.pendingLogsEntries.Load(requestID)
+	}
+
+	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
+
+	if !hasPending {
+		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
+		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
+		// here means the error is completely lost.
+		if bifrostErr != nil {
+			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
+			entry := &logstore.Log{
+				ID:        requestID,
+				Provider:  string(bifrostErr.ExtraFields.Provider),
+				Status:    "error",
+				Object:    string(requestType),
+				Stream:    bifrost.IsStreamRequestType(requestType),
+				Timestamp: time.Now().UTC(),
+				CreatedAt: time.Now().UTC(),
+			}
+			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
+			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
+				entry.ErrorDetails = string(data)
+			}
+			entry.ErrorDetailsParsed = bifrostErr
+			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
+			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		} else {
+			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
+		}
+		return result, bifrostErr, nil
+	}
+
+	pending := pendingVal.(*PendingLogData)
+	if requestType == schemas.RealtimeRequest {
+		if resolvedRealtimeSessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID); resolvedRealtimeSessionID != "" {
+			pending.ParentRequestID = resolvedRealtimeSessionID
+		}
+	}
+
+	// Should never happen, but just in case
+	// Fallback to request type from pending data if request type is not set
+	if requestType == "" {
+		requestType = schemas.RequestType(pending.InitialData.Object)
+		p.logger.Warn("PostLLMHook: request type missing from response extra fields for request %s, falling back to pre-hook value %q", requestID, requestType)
+	}
 
 	var tracer schemas.Tracer
 	var traceID string
@@ -728,42 +828,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 
-	// Retrieve pending input data from PreLLMHook
-	pendingVal, hasPending := p.pendingLogsEntries.LoadAndDelete(requestID)
-	if !hasPending {
-		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
-		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
-		// here means the error is completely lost.
-		if bifrostErr != nil {
-			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
-			entry := &logstore.Log{
-				ID:        requestID,
-				Provider:  string(bifrostErr.ExtraFields.Provider),
-				Status:    "error",
-				Stream:    bifrost.IsStreamRequestType(requestType),
-				Timestamp: time.Now().UTC(),
-				CreatedAt: time.Now().UTC(),
-			}
-			applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
-			if data, err := sonic.Marshal(bifrostErr); err == nil {
-				entry.ErrorDetails = string(data)
-			}
-			entry.ErrorDetailsParsed = bifrostErr
-			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
-		} else {
-			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
-		}
-		return result, bifrostErr, nil
-	}
-
-	pending := pendingVal.(*PendingLogData)
-	if requestType == schemas.RealtimeRequest {
-		if resolvedRealtimeSessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID); resolvedRealtimeSessionID != "" {
-			pending.ParentRequestID = resolvedRealtimeSessionID
-		}
-	}
-
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
 	// Apply common output fields
@@ -781,7 +845,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path A: Error with nil result
 	if result == nil && bifrostErr != nil {
 		entry.Status = "error"
-		applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
+		applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 		if bifrost.IsStreamRequestType(requestType) {
 			entry.Stream = true
 		}
@@ -794,7 +858,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			traceID != "" {
 			if accResult := tracer.ProcessStreamingChunk(traceID, true, result, bifrostErr); accResult != nil {
 				if streamResponse := convertToProcessedStreamResponse(accResult, requestType); streamResponse != nil {
-					p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw)
+					p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
 				}
 			}
 			tracer.CleanupStreamAccumulator(traceID)
@@ -803,7 +867,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// Serialize error details immediately since bifrostErr may be released
 		// back to the pool before the async batch writer processes this entry.
 		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
-		if data, err := sonic.Marshal(bifrostErr); err == nil {
+		if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
 			entry.ErrorDetails = string(data)
 		}
 		entry.ErrorDetailsParsed = bifrostErr
@@ -842,7 +906,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Status = "error"
 			entry.Stream = true
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
-			if data, err := sonic.Marshal(bifrostErr); err == nil {
+			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
 				entry.ErrorDetails = string(data)
 			}
 			entry.ErrorDetailsParsed = bifrostErr
@@ -854,7 +918,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true
-			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw)
+			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
+		}
+		if entry.ErrorDetails != "" || entry.ErrorDetailsParsed != nil {
+			entry.Status = "error"
 		}
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
@@ -886,11 +953,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path C: Non-streaming response
 	if bifrostErr != nil {
 		entry.Status = "error"
-		applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
+		applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 		// Serialize error details immediately since bifrostErr may be released
 		// back to the pool before the async batch writer processes this entry.
 		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
-		if data, err := sonic.Marshal(bifrostErr); err == nil {
+		if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
 			entry.ErrorDetails = string(data)
 		}
 		entry.ErrorDetailsParsed = bifrostErr
@@ -904,9 +971,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		extraFields := result.GetExtraFields()
 		applyModelAlias(entry, extraFields.OriginalModelRequested, extraFields.ResolvedModelUsed)
 		if requestType == schemas.RealtimeRequest {
-			p.applyRealtimeOutputToEntry(entry, result, shouldStoreRaw)
+			p.applyRealtimeOutputToEntry(entry, result, shouldStoreRaw, contentLoggingEnabled)
 		} else {
-			p.applyNonStreamingOutputToEntry(entry, result, shouldStoreRaw)
+			p.applyNonStreamingOutputToEntry(entry, result, shouldStoreRaw, contentLoggingEnabled)
 		}
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
@@ -1125,7 +1192,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 
 		// Set arguments if content logging is enabled
-		if p.disableContentLogging == nil || !*p.disableContentLogging {
+		if p.contentLoggingEnabled(ctx) {
 			entry.ArgumentsParsed = arguments
 		}
 
@@ -1226,7 +1293,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		} else if resp != nil {
 			updates["status"] = "success"
 			// Store result if content logging is enabled
-			if p.disableContentLogging == nil || !*p.disableContentLogging {
+			if p.contentLoggingEnabled(ctx) {
 				var result interface{}
 				if resp.ChatMessage != nil {
 					// For ChatMessage, try to parse the content as JSON if it's a string

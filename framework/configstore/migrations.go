@@ -614,6 +614,21 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOCRPricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPExternalBaseURLColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMakeOAuthTokenExpiryNullable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowPerRequestContentStorageOverrideColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowPerRequestRawOverrideColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3662,6 +3677,39 @@ func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error
 	return nil
 }
 
+// migrationConvertMCPClientToolSyncIntervalMinutesToSeconds converts legacy
+// config_mcp_clients.tool_sync_interval values from minutes to seconds.
+// Legacy storage used minutes; runtime now persists seconds to preserve
+// sub-minute precision. We only convert positive values; 0 means "use global"
+// and negative values mean "disabled".
+func migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "convert_mcp_client_tool_sync_interval_minutes_to_seconds",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`
+				UPDATE config_mcp_clients
+				SET tool_sync_interval = tool_sync_interval * 60
+				WHERE tool_sync_interval > 0
+			`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Best-effort rollback for migrated rows.
+			return tx.Exec(`
+				UPDATE config_mcp_clients
+				SET tool_sync_interval = tool_sync_interval / 60
+				WHERE tool_sync_interval > 0
+				AND tool_sync_interval % 60 = 0
+			`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client tool sync interval unit conversion migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPClientConfigToOAuthConfig adds the mcp_client_config_json column to oauth_configs table
 // This enables multi-instance support by storing pending MCP client config in the database
 // instead of in-memory, so OAuth callbacks can be handled by any server instance
@@ -6492,6 +6540,106 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationMakeOAuthTokenExpiryNullable makes expires_at nullable for OAuth token tables.
+func migrationMakeOAuthTokenExpiryNullable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "make_oauth_token_expiry_nullable",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableOauthToken{}) && mg.HasColumn(&tables.TableOauthToken{}, "expires_at") {
+				if err := mg.AlterColumn(&tables.TableOauthToken{}, "ExpiresAt"); err != nil {
+					return fmt.Errorf("failed to alter oauth_tokens.expires_at to nullable: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableOauthUserToken{}) && mg.HasColumn(&tables.TableOauthUserToken{}, "expires_at") {
+				if err := mg.AlterColumn(&tables.TableOauthUserToken{}, "ExpiresAt"); err != nil {
+					return fmt.Errorf("failed to alter oauth_user_tokens.expires_at to nullable: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Forward-only migration: making expiry nullable is intentionally non-destructive.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running make_oauth_token_expiry_nullable migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowPerRequestContentStorageOverrideColumn adds the allow_per_request_content_storage_override column to config_client.
+func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_per_request_content_storage_override_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AllowPerRequestContentStorageOverride"); err != nil {
+					return fmt.Errorf("failed to add allow_per_request_content_storage_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override"); err != nil {
+					return fmt.Errorf("failed to drop allow_per_request_content_storage_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running allow_per_request_content_storage_override migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowPerRequestRawOverrideColumn adds the allow_per_request_raw_override column to config_client.
+func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_per_request_raw_override_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AllowPerRequestRawOverride"); err != nil {
+					return fmt.Errorf("failed to add allow_per_request_raw_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override"); err != nil {
+					return fmt.Errorf("failed to drop allow_per_request_raw_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running allow_per_request_raw_override migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPClientDiscoveredToolsColumns adds discovered_tools_json and tool_name_mapping_json columns to the mcp_client table
 func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -6999,6 +7147,36 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_ocr_pricing_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_external_base_url_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPExternalBaseURL"); err != nil {
+					return fmt.Errorf("failed to add mcp_external_base_url column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_base_url"); err != nil {
+					return fmt.Errorf("failed to drop mcp_external_base_url column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_external_base_url_column migration: %s", err.Error())
 	}
 	return nil
 }

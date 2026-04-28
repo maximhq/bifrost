@@ -174,7 +174,7 @@ export interface NetworkConfig {
 	retry_backoff_initial: number; // Duration in milliseconds
 	retry_backoff_max: number; // Duration in milliseconds
 	insecure_skip_verify?: boolean;
-	ca_cert_pem?: string;
+	ca_cert_pem?: EnvVar;
 	stream_idle_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
@@ -193,10 +193,10 @@ export type ProxyType = "none" | "http" | "socks5" | "environment";
 // ProxyConfig matching Go's schemas.ProxyConfig
 export interface ProxyConfig {
 	type: ProxyType;
-	url?: string;
-	username?: string;
-	password?: string;
-	ca_cert_pem?: string;
+	url?: EnvVar;
+	username?: EnvVar;
+	password?: EnvVar;
+	ca_cert_pem?: EnvVar;
 }
 
 // Request types matching Go's schemas.RequestType
@@ -269,8 +269,8 @@ export interface AllowedRequests {
 	image_edit: boolean;
 	image_edit_stream: boolean;
 	image_variation: boolean;
-	ocr: boolean;
-	ocr_stream: boolean;
+	ocr?: boolean;
+	ocr_stream?: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
 	rerank: boolean;
@@ -472,6 +472,8 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	disable_content_logging: boolean;
+	allow_per_request_content_storage_override: boolean;
+	allow_per_request_raw_override: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
@@ -492,6 +494,7 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
+	mcp_external_base_url?: EnvVar;
 }
 
 export const DefaultCoreConfig: CoreConfig = {
@@ -500,6 +503,8 @@ export const DefaultCoreConfig: CoreConfig = {
 	prometheus_labels: [],
 	enable_logging: true,
 	disable_content_logging: false,
+	allow_per_request_content_storage_override: false,
+	allow_per_request_raw_override: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
@@ -536,13 +541,11 @@ interface BaseCacheConfig {
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
 	provider?: undefined;
-	keys?: ModelProviderKey[];
 	embedding_model?: undefined;
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {
 	provider: ModelProviderName;
-	keys?: ModelProviderKey[];
 	embedding_model: string;
 	dimension: number;
 }
@@ -551,7 +554,6 @@ export type CacheConfig = DirectCacheConfig | ProviderBackedCacheConfig;
 
 export interface EditorCacheConfig extends BaseCacheConfig {
 	provider?: ModelProviderName;
-	keys?: ModelProviderKey[];
 	embedding_model?: string;
 	dimension?: number;
 }

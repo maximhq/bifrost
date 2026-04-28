@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"hash"
 	"maps"
 	"sort"
 	"strconv"
@@ -45,34 +46,37 @@ type CompatConfig struct {
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
-	DropExcessRequests              bool                             `json:"drop_excess_requests"`    // Drop excess requests if the provider queue is full
-	InitialPoolSize                 int                              `json:"initial_pool_size"`       // The initial pool size for the bifrost client
-	PrometheusLabels                []string                         `json:"prometheus_labels"`       // The labels to be used for prometheus metrics
-	EnableLogging                   *bool                            `json:"enable_logging"`          // Enable logging of requests and responses
-	DisableContentLogging           bool                             `json:"disable_content_logging"` // Disable logging of content
-	DisableDBPingsInHealth          bool                             `json:"disable_db_pings_in_health"`
-	LogRetentionDays                int                              `json:"log_retention_days" validate:"min=1"`  // Number of days to retain logs (minimum 1 day)
-	EnforceAuthOnInference          bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
-	EnforceGovernanceHeader         bool                             `json:"enforce_governance_header,omitempty"`  // Deprecated: use EnforceAuthOnInference
-	EnforceSCIMAuth                 bool                             `json:"enforce_scim_auth,omitempty"`          // Deprecated: use EnforceAuthOnInference
-	AllowDirectKeys                 bool                             `json:"allow_direct_keys"`                    // Allow direct keys to be used for requests
-	AllowedOrigins                  []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
-	AllowedHeaders                  []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
-	MaxRequestBodySizeMB            int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
-	Compat                          CompatConfig                     `json:"compat"`                               // Compat plugin configuration
-	MCPAgentDepth                   int                              `json:"mcp_agent_depth"`                      // The maximum depth for MCP agent mode tool execution
-	MCPToolExecutionTimeout         int                              `json:"mcp_tool_execution_timeout"`           // The timeout for individual tool execution in seconds
-	MCPCodeModeBindingLevel         string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
-	MCPToolSyncInterval             int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
-	MCPDisableAutoToolInject        bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
-	HeaderFilterConfig              *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
-	AsyncJobResultTTL               int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
-	LoggingHeaders                  []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
-	WhitelistedRoutes               []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
-	HideDeletedVirtualKeysInFilters bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
-	RoutingChainMaxDepth            int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
-	ConfigHash                      string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
+	DropExcessRequests                    bool                             `json:"drop_excess_requests"`                       // Drop excess requests if the provider queue is full
+	InitialPoolSize                       int                              `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
+	PrometheusLabels                      []string                         `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
+	EnableLogging                         *bool                            `json:"enable_logging"`                             // Enable logging of requests and responses
+	DisableContentLogging                 bool                             `json:"disable_content_logging"`                    // Disable logging of content
+	AllowPerRequestContentStorageOverride bool                             `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
+	AllowPerRequestRawOverride            bool                             `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
+	DisableDBPingsInHealth                bool                             `json:"disable_db_pings_in_health"`
+	LogRetentionDays                      int                              `json:"log_retention_days" validate:"min=1"`  // Number of days to retain logs (minimum 1 day)
+	EnforceAuthOnInference                bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
+	EnforceGovernanceHeader               bool                             `json:"enforce_governance_header,omitempty"`  // Deprecated: use EnforceAuthOnInference
+	EnforceSCIMAuth                       bool                             `json:"enforce_scim_auth,omitempty"`          // Deprecated: use EnforceAuthOnInference
+	AllowDirectKeys                       bool                             `json:"allow_direct_keys"`                    // Allow direct keys to be used for requests
+	AllowedOrigins                        []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
+	AllowedHeaders                        []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
+	MaxRequestBodySizeMB                  int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
+	Compat                                CompatConfig                     `json:"compat"`                               // Compat plugin configuration
+	MCPAgentDepth                         int                              `json:"mcp_agent_depth"`                      // The maximum depth for MCP agent mode tool execution
+	MCPToolExecutionTimeout               int                              `json:"mcp_tool_execution_timeout"`           // The timeout for individual tool execution in seconds
+	MCPCodeModeBindingLevel               string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
+	MCPToolSyncInterval                   int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
+	MCPDisableAutoToolInject              bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
+	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
+	AsyncJobResultTTL                     int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeaders                       []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders                        []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
+	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
+	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
+	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
+	MCPExternalBaseURL                    *schemas.EnvVar                  `json:"mcp_external_base_url,omitempty"`      // Public base URL for OAuth callbacks/discovery when behind a reverse proxy; supports env var syntax ("env.MY_VAR")
+	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
@@ -171,6 +175,15 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPDisableAutoToolInject {
 		hash.Write([]byte("mcpDisableAutoToolInject:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.AllowPerRequestContentStorageOverride {
+		hash.Write([]byte("allowPerRequestContentStorageOverride:true"))
+	}
+
+	if c.AllowPerRequestRawOverride {
+		hash.Write([]byte("allowPerRequestRawOverride:true"))
 	}
 
 	if c.AsyncJobResultTTL > 0 {
@@ -298,6 +311,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			}
 			hash.Write([]byte("headerFilterConfig.denylist:"))
 			hash.Write(data)
+		}
+	}
+
+	if c.MCPExternalBaseURL.IsSet() {
+		if c.MCPExternalBaseURL.IsFromEnv() {
+			hash.Write([]byte("externalBaseURL:env:" + c.MCPExternalBaseURL.EnvVar))
+		} else {
+			hash.Write([]byte("externalBaseURL:val:" + c.MCPExternalBaseURL.GetValue()))
 		}
 	}
 
@@ -967,6 +988,41 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateModelConfigHash generates a SHA256 hash for a model config.
+// This is used to detect changes to model configs between config.json and database.
+// Skips: CreatedAt, UpdatedAt, and relationship objects (dynamic fields)
+func GenerateModelConfigHash(m tables.TableModelConfig) (string, error) {
+	hash := sha256.New()
+	writeHashField(hash, "id", m.ID)
+	writeHashField(hash, "model_name", m.ModelName)
+	writeHashField(hash, "provider", derefStr(m.Provider))
+	writeHashField(hash, "budget_id", derefStr(m.BudgetID))
+	writeHashField(hash, "rate_limit_id", derefStr(m.RateLimitID))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateProviderGovernanceHash generates a SHA256 hash for provider-governance
+// bindings only (provider name + budget/rate-limit references).
+// It intentionally excludes provider runtime/config fields and keys.
+func GenerateProviderGovernanceHash(p tables.TableProvider) (string, error) {
+	hash := sha256.New()
+	writeHashField(hash, "name", p.Name)
+	writeHashField(hash, "budget_id", derefStr(p.BudgetID))
+	writeHashField(hash, "rate_limit_id", derefStr(p.RateLimitID))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// writeHashField writes a field identifier and a length-prefixed value so the
+// resulting byte stream is unambiguous and cannot collide via concatenation.
+func writeHashField(hash hash.Hash, fieldID, value string) {
+	hash.Write([]byte(fieldID))
+	hash.Write([]byte(":"))
+	hash.Write([]byte(strconv.Itoa(len(value))))
+	hash.Write([]byte(":"))
+	hash.Write([]byte(value))
+	hash.Write([]byte(";"))
+}
+
 // GenerateRoutingRuleHash generates a SHA256 hash for a routing rule.
 // This is used to detect changes to routing rules between config.json and database.
 // routingTargetHashPayload is a canonical struct for hashing a routing target.
@@ -1102,12 +1158,9 @@ func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) 
 
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
-// Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
+// Skips: ID (autoIncrement), ClientID (system-assigned), CreatedAt, UpdatedAt (dynamic fields)
 func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	hash := sha256.New()
-
-	// Hash ClientID
-	hash.Write([]byte(m.ClientID))
 
 	// Hash Name
 	hash.Write([]byte(m.Name))

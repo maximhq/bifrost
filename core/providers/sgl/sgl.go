@@ -68,13 +68,41 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.SGL
 }
 
+// getBaseURL resolves the base URL for a request from the per-key sgl_key_config.
+// Each SGL key must have its own URL configured and falls back to provider-level base_url if not configured.
+func (provider *SGLProvider) getBaseURL(key schemas.Key) string {
+	if key.SGLKeyConfig != nil && key.SGLKeyConfig.URL.GetValue() != "" {
+		return strings.TrimRight(key.SGLKeyConfig.URL.GetValue(), "/")
+	}
+	if provider.networkConfig.BaseURL != "" {
+		return strings.TrimRight(provider.networkConfig.BaseURL, "/")
+	}
+	return ""
+}
+
+// baseURLOrError returns the resolved base URL or a BifrostError when none is configured.
+func (provider *SGLProvider) baseURLOrError(key schemas.Key) (string, *schemas.BifrostError) {
+	u := provider.getBaseURL(key)
+	if u == "" {
+		return "", providerUtils.NewBifrostOperationError(
+			"no base URL configured: either set sgl_key_config.url on the key or set network_config.base_url",
+			nil)
+	}
+	return u, nil
+}
+
 // listModelsByKey performs a list models request for a single SGL key,
 // resolving the per-key URL so each backend is queried individually.
 func (provider *SGLProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	url := baseURL + providerUtils.GetPathFromContext(ctx, "/v1/models")
 	return openai.ListModelsByKey(
 		ctx,
 		provider.client,
-		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		url,
 		key,
 		request.Unfiltered,
 		provider.networkConfig.ExtraHeaders,
@@ -98,10 +126,14 @@ func (provider *SGLProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 
 // TextCompletion performs a text completion request to the SGL API.
 func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -118,10 +150,14 @@ func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 // It formats the request, sends it to SGL, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -139,10 +175,14 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 
 // ChatCompletion performs a chat completion request to the SGL API.
 func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -160,11 +200,15 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 // Uses SGL's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -208,10 +252,14 @@ func (provider *SGLProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 
 // Embedding performs an embedding request to the SGL API.
 func (provider *SGLProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		key.SGLKeyConfig.URL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,

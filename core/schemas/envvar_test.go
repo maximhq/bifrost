@@ -408,6 +408,11 @@ func TestEnvVar_IsRedacted(t *testing.T) {
 			input:    EnvVar{Val: "sk-test-key"},
 			expected: false,
 		},
+		{
+			name:     "uppercase redacted sentinel",
+			input:    EnvVar{Val: "<REDACTED>"},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {

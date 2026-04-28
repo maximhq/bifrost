@@ -70,7 +70,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6" data-testid="provider-config-debugging-content">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 p-6" data-testid="provider-config-debugging-content">
 				<div className="space-y-4">
 					{/* Send Back Raw Request */}
 					<FormField
@@ -199,10 +199,10 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 					/>
 				</div>
 
-				<div className="flex justify-end space-x-2 pb-6">
+				<div className="flex justify-end space-x-2">
 					<Button
 						type="submit"
-						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
+						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
 						Save Debugging Configuration

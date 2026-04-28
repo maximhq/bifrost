@@ -1,3 +1,4 @@
+import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -11,8 +12,10 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ComboboxSelect } from "@/components/ui/combobox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
@@ -20,11 +23,11 @@ import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteVirtualKeyMutation, useLazyGetVirtualKeysQuery } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import {
+	ArrowDown,
+	ArrowUp,
 	ArrowUpDown,
 	ChevronLeft,
 	ChevronRight,
@@ -41,11 +44,10 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
 
 const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration;
 
@@ -374,12 +376,17 @@ export default function VirtualKeysTable({
 		setShowExportDialog(true);
 	};
 
-	const SortableHeader = ({ column, label }: { column: string; label: string }) => (
-		<Button variant="ghost" onClick={() => toggleSort(column)} data-testid={`vk-sort-${column}`}>
-			{label}
-			<ArrowUpDown className={cn("ml-2 h-4 w-4", sortBy === column && "text-foreground")} />
-		</Button>
-	);
+	const SortableHeader = ({ column, label }: { column: string; label: string }) => {
+		const isActive = sortBy === column;
+		const Icon = isActive ? (order === "desc" ? ArrowDown : ArrowUp) : ArrowUpDown;
+		return (
+			<Button variant="ghost" onClick={() => toggleSort(column)} data-testid={`vk-sort-${column}`} className="!px-0">
+				{label}
+				<Icon className={cn("ml-2 h-4 w-4", isActive && "text-foreground")} />
+			</Button>
+		);
+	};
+
 
 	// True empty state: no VKs at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -536,52 +543,42 @@ export default function VirtualKeysTable({
 							data-testid="vk-search-input"
 						/>
 					</div>
-					<Select value={customerFilter} onValueChange={(val) => onCustomerFilterChange(val === "all" ? "" : val)}>
-						<SelectTrigger className="w-[180px]" data-testid="vk-customer-filter">
-							<SelectValue placeholder="All Customers" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="all">All Customers</SelectItem>
-							{customers.map((c) => (
-								<SelectItem key={c.id} value={c.id}>
-									{c.name}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<ComboboxSelect
+						data-testid="vk-customer-filter"
+						options={customers.map((c) => ({ label: c.name, value: c.id }))}
+						value={customerFilter || null}
+						onValueChange={(val) => onCustomerFilterChange(val ?? "")}
+						placeholder="All Customers"
+						className="w-[180px] h-9"
+					/>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<Select value={teamFilter} onValueChange={(val) => onTeamFilterChange(val === "all" ? "" : val)}>
-						<SelectTrigger className="w-[180px]" data-testid="vk-team-filter">
-							<SelectValue placeholder="All Teams" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="all">All Teams</SelectItem>
-							{teams.map((t) => (
-								<SelectItem key={t.id} value={t.id}>
-									{t.name}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+					<ComboboxSelect
+						data-testid="vk-team-filter"
+						options={teams.map((t) => ({ label: t.name, value: t.id }))}
+						value={teamFilter || null}
+						onValueChange={(val) => onTeamFilterChange(val ?? "")}
+						placeholder="All Teams"
+						className="w-[180px] h-9"
+					/>
 				</div>
 
 				<div className="rounded-sm border">
-					<Table data-testid="vk-table">
+					<Table className="table-fixed w-full" data-testid="vk-table">
 						<TableHeader>
 							<TableRow>
-								<TableHead>
+								<TableHead className="w-[250px]">
 									<SortableHeader column="name" label="Name" />
 								</TableHead>
-								<TableHead>Assigned To</TableHead>
-								<TableHead>Key</TableHead>
-								<TableHead>
+								<TableHead className="w-[160px]">Assigned To</TableHead>
+								<TableHead className="w-[440px]">Key</TableHead>
+								<TableHead className="w-[200px]">
 									<SortableHeader column="budget_spent" label="Budget" />
 								</TableHead>
-								<TableHead>Rate Limits</TableHead>
-								<TableHead>
+								<TableHead className="w-[200px]">Rate Limits</TableHead>
+								<TableHead className="w-[120px]">
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
-								<TableHead className="text-right"></TableHead>
+								<TableHead className="w-[110px] text-right"></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -607,34 +604,36 @@ export default function VirtualKeysTable({
 											</TableCell>
 											<TableCell>
 												{vk.team ? (
-													<Badge variant="outline">Team: {vk.team.name}</Badge>
+													<Badge variant="outline" className="max-w-full truncate text-left block">Team: {vk.team.name}</Badge>
 												) : vk.customer ? (
-													<Badge variant="outline">Customer: {vk.customer.name}</Badge>
+													<Badge variant="outline" className="max-w-full truncate text-left block">Customer: {vk.customer.name}</Badge>
 												) : (
-													<span className="text-muted-foreground text-sm">-</span>
+													<span className="text-muted-foreground text-sm truncate max-w-full text-left">-</span>
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center gap-2">
-													<code className="cursor-default px-2 py-1 font-mono text-sm" data-testid="vk-key-value">
+													<code className="cursor-default py-1 font-mono text-sm" data-testid="vk-key-value">
 														{maskKey(vk.value, isRevealed)}
 													</code>
-													<Button
-														variant="ghost"
-														size="sm"
-														onClick={() => toggleKeyVisibility(vk.id)}
-														data-testid={`vk-visibility-btn-${vk.name}`}
-													>
-														{isRevealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-													</Button>
-													<Button
-														variant="ghost"
-														size="sm"
-														onClick={() => copyToClipboard(vk.value)}
-														data-testid={`vk-copy-btn-${vk.name}`}
-													>
-														<Copy className="h-4 w-4" />
-													</Button>
+													<div className="flex items-center">
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={() => toggleKeyVisibility(vk.id)}
+															data-testid={`vk-visibility-btn-${vk.name}`}
+														>
+															{isRevealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+														</Button>
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={() => copyToClipboard(vk.value)}
+															data-testid={`vk-copy-btn-${vk.name}`}
+														>
+															<Copy className="h-4 w-4" />
+														</Button>
+													</div>
 												</div>
 											</TableCell>
 											<TableCell>

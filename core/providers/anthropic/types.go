@@ -80,24 +80,27 @@ const (
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
 	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
-	AnthropicTaskBudgetsBetaHeaderPrefix         = "task-budgets-"
-	AnthropicEagerInputStreamingBetaHeaderPrefix = "fine-grained-tool-streaming-"
+	AnthropicTaskBudgetsBetaHeaderPrefix            = "task-budgets-"
+	AnthropicEagerInputStreamingBetaHeaderPrefix    = "fine-grained-tool-streaming-"
+	AnthropicContextManagementBetaHeaderPrefix      = "context-management-"
+	AnthropicCompactionBetaHeaderPrefix             = "compact-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
 //
 // Authoritative sources (verified 2026-04-17):
-//   A  = Anthropic feature-availability table:
-//        https://platform.claude.com/docs/en/build-with-claude/overview
-//   B-header = AWS Bedrock user guide beta-header list:
-//        https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
-//   B-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock
-//   V-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai
-//   Az-platform = https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
-//   MCP-excl = MCP connector explicit Bedrock/Vertex exclusion:
-//        https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
-//   Advisor-excl = Advisor tool Claude-API-only:
-//        https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
+//
+//	A  = Anthropic feature-availability table:
+//	     https://platform.claude.com/docs/en/build-with-claude/overview
+//	B-header = AWS Bedrock user guide beta-header list:
+//	     https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
+//	B-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock
+//	V-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai
+//	Az-platform = https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
+//	MCP-excl = MCP connector explicit Bedrock/Vertex exclusion:
+//	     https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
+//	Advisor-excl = Advisor tool Claude-API-only:
+//	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 type ProviderFeatureSupport struct {
 	WebSearch           bool // web_search server tool (cite: A)
 	WebSearchDynamic    bool // web_search_20260209 dynamic filtering (cite: A)
@@ -113,8 +116,9 @@ type ProviderFeatureSupport struct {
 	InputExamples       bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
 	StructuredOutputs   bool // strict tool validation / output_format (cite: A)
 	PromptCachingScope  bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
-	Compaction          bool // compact_20260112 (cite: A, B-header)
-	ContextEditing      bool // clear_tool_uses / clear_thinking (cite: A, B-header)
+	Compaction             bool // compact_20260112 (cite: A, B-header)
+	ContextEditing         bool // clear_tool_uses / clear_thinking (cite: A, B-header)
+	ContextManagementField bool // provider accepts the context_management JSON body field at all; false → entire field dropped regardless of edit types
 	FilesAPI            bool // files-api-2025-04-14, file_id source (cite: A)
 	InterleavedThinking bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
 	Skills              bool // Agent Skills — container.skills object (cite: A)
@@ -141,7 +145,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, InputExamples: true, StructuredOutputs: true, PromptCachingScope: true,
-		Compaction: true, ContextEditing: true, FilesAPI: true,
+		Compaction: true, ContextEditing: true, ContextManagementField: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
@@ -150,13 +154,22 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
 	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool, StructuredOutputs,
 	// PromptCachingScope (400 "unexpected beta header" per LiteLLM #19984),
+	// ContextEditing (400 "unexpected beta header" per live API error),
+	// ContextManagementField (400 "Extra inputs are not permitted" per live API error
+	//     when the request body carries a context_management object).
+	// Compaction IS supported on Vertex via the compact-2026-01-12 beta header even
+	//     though Anthropic's compaction docs don't list Vertex (verified by live
+	//     testing). The header passes through FilterBetaHeadersForProvider because
+	//     Compaction: true; the body-field stripper at utils.go:460 removes any
+	//     client-side context_management payload (gated by ContextManagementField:
+	//     false) so the request still succeeds. The two flags are intentionally
+	//     independent: one controls header forwarding, the other controls body shape.
 	// FilesAPI, WebFetch, CodeExecution, AdvancedToolUse, RedactThinking.
 	schemas.Vertex: {
 		WebSearch:   true, // web search GA on Vertex per A; earlier code restricted to web_search_20250305 — A doesn't qualify
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic:      true,
 		Compaction:          true,
-		ContextEditing:      true,
 		InterleavedThinking: true, // V-platform confirms; fails on non-allowlisted 4-series
 		Context1M:           true,
 		EagerInputStreaming: true, // fine-grained-tool-streaming GA per A
@@ -177,6 +190,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		StructuredOutputs:   true,
 		Compaction:          true, // compact-2026-01-12 per B-header
 		ContextEditing:      true, // context-management-2025-06-27 per B-header (bundles memory)
+		ContextManagementField: true, // Bedrock accepts context_management body field
 		InterleavedThinking: true, // per B-header; model-allowlisted
 		Context1M:           true, // Opus 4.6 / Sonnet 4.6 per A
 		EagerInputStreaming: true, // fine-grained-tool-streaming-2025-05-14 per B-header
@@ -192,7 +206,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, InputExamples: true, StructuredOutputs: true, PromptCachingScope: true,
-		Compaction: true, ContextEditing: true, FilesAPI: true,
+		Compaction: true, ContextEditing: true, ContextManagementField: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		RedactThinking: true, TaskBudgets: true,
 		EagerInputStreaming: true,
@@ -837,29 +851,29 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText                               AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage                              AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeDocument                           AnthropicContentBlockType = "document"
-	AnthropicContentBlockTypeSearchResult                       AnthropicContentBlockType = "search_result"
-	AnthropicContentBlockTypeToolUse                            AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse                      AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult                         AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchToolResult                AnthropicContentBlockType = "web_search_tool_result"
-	AnthropicContentBlockTypeWebSearchToolResultError           AnthropicContentBlockType = "web_search_tool_result_error"
-	AnthropicContentBlockTypeWebSearchResult                    AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeWebFetchToolResult                 AnthropicContentBlockType = "web_fetch_tool_result"
-	AnthropicContentBlockTypeCodeExecutionToolResult            AnthropicContentBlockType = "code_execution_tool_result"
-	AnthropicContentBlockTypeBashCodeExecutionToolResult        AnthropicContentBlockType = "bash_code_execution_tool_result"
-	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult  AnthropicContentBlockType = "text_editor_code_execution_tool_result"
-	AnthropicContentBlockTypeToolSearchToolResult               AnthropicContentBlockType = "tool_search_tool_result"
-	AnthropicContentBlockTypeToolReference                      AnthropicContentBlockType = "tool_reference"
-	AnthropicContentBlockTypeContainerUpload                    AnthropicContentBlockType = "container_upload"
-	AnthropicContentBlockTypeAdvisorToolResult                  AnthropicContentBlockType = "advisor_tool_result"
-	AnthropicContentBlockTypeMCPToolUse                         AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult                      AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking                           AnthropicContentBlockType = "thinking"
-	AnthropicContentBlockTypeRedactedThinking                   AnthropicContentBlockType = "redacted_thinking"
-	AnthropicContentBlockTypeCompaction                         AnthropicContentBlockType = "compaction"
+	AnthropicContentBlockTypeText                              AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage                             AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeDocument                          AnthropicContentBlockType = "document"
+	AnthropicContentBlockTypeSearchResult                      AnthropicContentBlockType = "search_result"
+	AnthropicContentBlockTypeToolUse                           AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse                     AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult                        AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchToolResult               AnthropicContentBlockType = "web_search_tool_result"
+	AnthropicContentBlockTypeWebSearchToolResultError          AnthropicContentBlockType = "web_search_tool_result_error"
+	AnthropicContentBlockTypeWebSearchResult                   AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeWebFetchToolResult                AnthropicContentBlockType = "web_fetch_tool_result"
+	AnthropicContentBlockTypeCodeExecutionToolResult           AnthropicContentBlockType = "code_execution_tool_result"
+	AnthropicContentBlockTypeBashCodeExecutionToolResult       AnthropicContentBlockType = "bash_code_execution_tool_result"
+	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult AnthropicContentBlockType = "text_editor_code_execution_tool_result"
+	AnthropicContentBlockTypeToolSearchToolResult              AnthropicContentBlockType = "tool_search_tool_result"
+	AnthropicContentBlockTypeToolReference                     AnthropicContentBlockType = "tool_reference"
+	AnthropicContentBlockTypeContainerUpload                   AnthropicContentBlockType = "container_upload"
+	AnthropicContentBlockTypeAdvisorToolResult                 AnthropicContentBlockType = "advisor_tool_result"
+	AnthropicContentBlockTypeMCPToolUse                        AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult                     AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
+	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
 )
 
 // AnthropicToolCallerType identifies which agentic caller produced a tool
@@ -869,9 +883,9 @@ const (
 type AnthropicToolCallerType string
 
 const (
-	AnthropicToolCallerTypeDirect                 AnthropicToolCallerType = "direct"
-	AnthropicToolCallerTypeCodeExecution20250825  AnthropicToolCallerType = "code_execution_20250825"
-	AnthropicToolCallerTypeCodeExecution20260120  AnthropicToolCallerType = "code_execution_20260120"
+	AnthropicToolCallerTypeDirect                AnthropicToolCallerType = "direct"
+	AnthropicToolCallerTypeCodeExecution20250825 AnthropicToolCallerType = "code_execution_20250825"
+	AnthropicToolCallerTypeCodeExecution20260120 AnthropicToolCallerType = "code_execution_20260120"
 )
 
 // AnthropicToolCaller represents the "caller" union on tool-use and
@@ -926,17 +940,17 @@ type AnthropicContentBlock struct {
 	EncryptedStdout *string `json:"encrypted_stdout,omitempty"`
 
 	// text_editor_code_execution_tool_result variants
-	FileType     *string  `json:"file_type,omitempty"`    // view_result: "text"|"image"|"pdf"
-	StartLine    *int     `json:"start_line,omitempty"`   // view_result
-	NumLines     *int     `json:"num_lines,omitempty"`    // view_result
-	TotalLines   *int     `json:"total_lines,omitempty"`  // view_result
+	FileType     *string  `json:"file_type,omitempty"`      // view_result: "text"|"image"|"pdf"
+	StartLine    *int     `json:"start_line,omitempty"`     // view_result
+	NumLines     *int     `json:"num_lines,omitempty"`      // view_result
+	TotalLines   *int     `json:"total_lines,omitempty"`    // view_result
 	IsFileUpdate *bool    `json:"is_file_update,omitempty"` // create_result
-	OldStart     *int     `json:"old_start,omitempty"`    // str_replace_result
-	OldLines     *int     `json:"old_lines,omitempty"`    // str_replace_result
-	NewStart     *int     `json:"new_start,omitempty"`    // str_replace_result
-	NewLines     *int     `json:"new_lines,omitempty"`    // str_replace_result
-	Lines        []string `json:"lines,omitempty"`        // str_replace_result
-	ErrorMessage *string  `json:"error_message,omitempty"` // text_editor error variant
+	OldStart     *int     `json:"old_start,omitempty"`      // str_replace_result
+	OldLines     *int     `json:"old_lines,omitempty"`      // str_replace_result
+	NewStart     *int     `json:"new_start,omitempty"`      // str_replace_result
+	NewLines     *int     `json:"new_lines,omitempty"`      // str_replace_result
+	Lines        []string `json:"lines,omitempty"`          // str_replace_result
+	ErrorMessage *string  `json:"error_message,omitempty"`  // text_editor error variant
 
 	// tool_search_tool_result success variant
 	ToolReferences []AnthropicContentBlock `json:"tool_references,omitempty"` // tool_search_tool_search_result (array of tool_reference blocks)
@@ -959,7 +973,7 @@ type AnthropicContentBlock struct {
 //   - "url"            → URL
 //   - "text"           → MediaType ("text/plain") + Data
 //   - "content_block"  → Content (nested string OR array of inner blocks);
-//                        recursive ContentBlockSource used inside DocumentBlockParam
+//     recursive ContentBlockSource used inside DocumentBlockParam
 //   - "file"           → FileID (requires files-api-2025-04-14 beta)
 //
 // The struct is a superset — only the fields relevant to Type should be set
@@ -1159,7 +1173,7 @@ const (
 
 	// Web search
 	AnthropicToolTypeWebSearch20250305 AnthropicToolType = "web_search_20250305"
-	AnthropicToolTypeWebSearch20260209 AnthropicToolType = "web_search_20260209" // Dynamic filtering (Opus 4.6 / Sonnet 4.6)
+	AnthropicToolTypeWebSearch20260209 AnthropicToolType = "web_search_20260209" // Dynamic filtering (Opus 4.6 / Sonnet 4.6) - auto injects code_execution
 
 	// Web fetch
 	AnthropicToolTypeWebFetch20250910 AnthropicToolType = "web_fetch_20250910"

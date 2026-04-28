@@ -5,10 +5,32 @@ import (
 	"testing"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/logstore"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+// testHandlerStore is a minimal HandlerStore for ctx tests.
+type testHandlerStore struct {
+	allowDirectKeys bool
+	matcher         *HeaderMatcher
+}
+
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                           { return s.allowDirectKeys }
+func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
+func (s testHandlerStore) GetProvidersForModel(_ string) []schemas.ModelProvider { return nil }
+func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor     { return nil }
+func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor       { return nil }
+func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
+func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
+func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
+	return schemas.WhiteList{}
+}
+func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
+func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
+func (s testHandlerStore) GetMCPExternalBaseURL() string              { return "" }
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
@@ -39,7 +61,7 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	base.SetValue(schemas.BifrostContextKeyRequestID, "req-shared")
 	ctx.SetUserValue(FastHTTPUserValueBifrostContext, base)
 
-	converted, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
 	if converted == nil {
@@ -59,13 +81,13 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
-	first, cancelFirst := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	first, cancelFirst := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancelFirst()
 	if first == nil {
 		t.Fatal("expected first context to be non-nil")
 	}
 
-	second, cancelSecond := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	second, cancelSecond := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancelSecond()
 	if second == nil {
 		t.Fatal("expected second context to be non-nil")
@@ -92,7 +114,7 @@ func TestConvertToBifrostContext_StarAllowlistSecurityHeadersBlocked(t *testing.
 	ctx.Request.Header.Set("x-bf-eh-connection", "should-be-blocked")
 	ctx.Request.Header.Set("x-bf-eh-proxy-authorization", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -126,7 +148,7 @@ func TestConvertToBifrostContext_StarAllowlistDirectForwardingSecurityBlocked(t 
 	// Security headers sent directly — should be blocked
 	ctx.Request.Header.Set("proxy-authorization", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -163,7 +185,7 @@ func TestConvertToBifrostContext_PrefixWildcardDirectForwarding(t *testing.T) {
 	// Header not matching the pattern
 	ctx.Request.Header.Set("openai-version", "should-not-forward")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -191,7 +213,7 @@ func TestConvertToBifrostContext_WildcardAllowlistFiltering(t *testing.T) {
 	ctx.Request.Header.Set("x-bf-eh-anthropic-version", "2024-01-01")
 	ctx.Request.Header.Set("x-bf-eh-openai-version", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -219,7 +241,7 @@ func TestConvertToBifrostContext_WildcardDenylistBlocking(t *testing.T) {
 	ctx.Request.Header.Set("x-bf-eh-x-internal-secret", "blocked-value")
 	ctx.Request.Header.Set("x-bf-eh-custom-header", "allowed-value")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -240,7 +262,7 @@ func TestConvertToBifrostContext_NilMatcher(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("x-bf-eh-custom-header", "allowed-value")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -254,7 +276,7 @@ func TestConvertToBifrostContext_BaggageSessionIDSetsGrouping(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("baggage", "foo=bar, session-id=rt-123, baz=qux")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
 	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "rt-123" {
@@ -266,10 +288,94 @@ func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("baggage", "session-id=   ")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID); got != nil {
 		t.Fatalf("parent request id should be unset, got %#v", got)
+	}
+}
+
+func TestConvertToBifrostContext_DimHeadersDoNotOverrideReservedContextKeys(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-request-id", "trusted-request-id")
+	ctx.Request.Header.Set("x-bf-dim-request-id", "attacker-request-id")
+	ctx.Request.Header.Set("x-bf-dim-x-bf-vk", "attacker-vk")
+	ctx.Request.Header.Set("x-bf-prom-x-bf-vk", "attacker-vk")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	// request-id must remain from trusted source, not from x-bf-dim-request-id.
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); got != "trusted-request-id" {
+		t.Fatalf("request-id = %q, want %q", got, "trusted-request-id")
+	}
+	// Virtual key must not be set through x-bf-dim-x-bf-vk.
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
+		t.Fatalf("virtual key should not be set via x-bf-dim-*, got %#v", got)
+	}
+
+	// Dimension values are still captured in the dedicated dimensions map.
+	dimensions, ok := bifrostCtx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	if !ok {
+		t.Fatal("expected dimensions map in context")
+	}
+	if dimensions["request-id"] != "attacker-request-id" {
+		t.Fatalf("dimensions[request-id] = %q, want %q", dimensions["request-id"], "attacker-request-id")
+	}
+	if dimensions["x-bf-vk"] != "attacker-vk" {
+		t.Fatalf("dimensions[x-bf-vk] = %q, want %q", dimensions["x-bf-vk"], "attacker-vk")
+	}
+}
+
+func TestConvertToBifrostContext_PromHeadersDoNotOverrideReservedContextKeys(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-request-id", "trusted-request-id")
+	ctx.Request.Header.Set("x-bf-prom-request-id", "attacker-request-id")
+	ctx.Request.Header.Set("x-bf-prom-x-bf-vk", "attacker-vk")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	// request-id must remain from trusted source, not from x-bf-prom-request-id.
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); got != "trusted-request-id" {
+		t.Fatalf("request-id = %q, want %q", got, "trusted-request-id")
+	}
+	// Virtual key must not be set through x-bf-prom-x-bf-vk.
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
+		t.Fatalf("virtual key should not be set via x-bf-prom-*, got %#v", got)
+	}
+	// Legacy x-bf-prom-* headers are not mirrored into global context keyspace.
+	if got := bifrostCtx.Value(schemas.BifrostContextKey("request-id")); got != "trusted-request-id" {
+		t.Fatalf("global request-id key should remain trusted value, got %#v", got)
+	}
+
+	// Legacy x-bf-prom-* must not be included in unified dimensions.
+	if dimensions, ok := bifrostCtx.Value(schemas.BifrostContextKeyDimensions).(map[string]string); ok && len(dimensions) > 0 {
+		t.Fatalf("expected no unified dimensions from x-bf-prom-*, got %#v", dimensions)
+	}
+}
+
+func TestConvertToBifrostContext_DimAndPromCanCoexistWithoutCrossing(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-prom-team", "legacy-team")
+	ctx.Request.Header.Set("x-bf-dim-team", "platform")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	dimensions, ok := bifrostCtx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	if !ok {
+		t.Fatal("expected dimensions map in context")
+	}
+	if dimensions["team"] != "platform" {
+		t.Fatalf("dimensions[team] = %q, want %q", dimensions["team"], "platform")
+	}
+	if dimensions["environment"] != "prod" {
+		t.Fatalf("dimensions[environment] = %q, want %q", dimensions["environment"], "prod")
+	}
+	if len(dimensions) != 2 {
+		t.Fatalf("expected only dim headers in unified dimensions, got %#v", dimensions)
 	}
 }

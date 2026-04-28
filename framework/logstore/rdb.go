@@ -88,6 +88,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.Status) > 0 {
 		baseQuery = baseQuery.Where("status IN ?", filters.Status)
 	}
+	if len(filters.StopReasons) > 0 {
+		baseQuery = baseQuery.Where("stop_reason IN ?", filters.StopReasons)
+	}
 	if len(filters.Objects) > 0 {
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
 	}
@@ -2768,6 +2771,20 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 		engines = append(engines, engine)
 	}
 	return engines, nil
+}
+
+// GetDistinctStopReasons returns all unique non-empty stop_reason values using SELECT DISTINCT.
+// Scoped to recent data to avoid full table scans.
+func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var stopReasons []string
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("stop_reason IS NOT NULL AND stop_reason != '' AND timestamp >= ?", cutoff).
+		Distinct("stop_reason").Limit(defaultFilterDataLimit).Pluck("stop_reason", &stopReasons).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct stop reasons: %w", err)
+	}
+	return stopReasons, nil
 }
 
 // metadataSystemKeys are metadata keys added by the system that should be excluded from filter data.

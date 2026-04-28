@@ -64,7 +64,7 @@ func NewRedisTestSetup(t *testing.T) *RedisTestSetup {
 		UseTLS:             useTLS,
 		InsecureSkipVerify: insecureSkipVerify,
 		ClusterMode:        clusterMode,
-		ContextTimeout:     timeout,
+		ContextTimeout:     schemas.Duration(timeout),
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
@@ -524,7 +524,7 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 		client: client,
 		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 		config: RedisConfig{
-			ContextTimeout: time.Second,
+			ContextTimeout: schemas.Duration(time.Second),
 		},
 		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
 	}

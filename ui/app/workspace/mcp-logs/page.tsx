@@ -3,13 +3,14 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
-import { useWebSocket } from "@/hooks/useWebSocket";
-import { getErrorMessage, useDeleteMCPLogsMutation, useLazyGetMCPLogsQuery, useLazyGetMCPLogsStatsQuery } from "@/lib/store";
-import type { MCPToolLogEntry, MCPToolLogFilters, MCPToolLogStats, Pagination } from "@/lib/types/logs";
+import { getErrorMessage, useDeleteMCPLogsMutation, useGetMCPLogsQuery, useGetMCPLogsStatsQuery } from "@/lib/store";
+import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
+import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
+import { useLocation } from "@tanstack/react-router";
 import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,32 +21,22 @@ import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
 import { MCPLogsDataTable } from "./views/mcpLogsTable";
 
 export default function MCPLogsPage() {
-	const [logs, setLogs] = useState<MCPToolLogEntry[]>([]);
-	const [totalItems, setTotalItems] = useState(0);
-	const [stats, setStats] = useState<MCPToolLogStats | null>(null);
-	const [initialLoading, setInitialLoading] = useState(true);
-	const [fetchingLogs, setFetchingLogs] = useState(false);
-	const [fetchingStats, setFetchingStats] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
+	const hasCheckedEmptyState = useRef(false);
 	const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete);
 
-	const [triggerGetLogs] = useLazyGetMCPLogsQuery();
-	const [triggerGetStats] = useLazyGetMCPLogsStatsQuery();
 	const [deleteLogs] = useDeleteMCPLogsMutation();
+	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
+	const [triggerGetLogs] = useLazyGetMCPLogsQuery();
 
 	// Track if user has manually modified the time range
 	const userModifiedTimeRange = useRef<boolean>(false);
 
-	// Capture initial defaults on mount to detect shared URLs with custom time ranges
-	const initialDefaults = useRef(dateUtils.getDefaultTimeRange());
-
-	// Memoize default time range to prevent recalculation on every render
-	// This is crucial to avoid triggering re-fetches when the sheet opens/closes
 	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
 
-	// Get fresh default time range for refresh logic
-	const getDefaultTimeRange = () => dateUtils.getDefaultTimeRange();
+	const { search } = useLocation();
+	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
 
 	// URL state management
 	const [urlState, setUrlState] = useQueryStates(
@@ -61,7 +52,8 @@ export default function MCPLogsPage() {
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault("timestamp"),
 			order: parseAsString.withDefault("desc"),
-			live_enabled: parseAsBoolean.withDefault(true),
+			polling: parseAsBoolean.withDefault(true).withOptions({ clearOnDefault: false }),
+			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
 			selected_log: parseAsString.withDefault(""),
 		},
 		{
@@ -70,60 +62,13 @@ export default function MCPLogsPage() {
 		},
 	);
 
-	// Derive selectedLog from URL param
 	const selectedLogId = urlState.selected_log || null;
-	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
+	const polling = urlState.polling;
 
-	// Refresh time range defaults on page focus/visibility
-	useEffect(() => {
-		const refreshDefaultsIfStale = () => {
-			// Skip refresh if user has manually modified the time range
-			if (userModifiedTimeRange.current) {
-				return;
-			}
 
-			// Check if current time range matches the initial defaults (within tolerance)
-			const startTimeDiff = Math.abs(urlState.start_time - initialDefaults.current.startTime);
-			const endTimeDiff = Math.abs(urlState.end_time - initialDefaults.current.endTime);
-			const tolerance = 5; // 5 seconds tolerance for slight timing differences
-
-			// Only refresh if current values match the initial defaults
-			// This preserves shared URLs with custom time ranges
-			if (startTimeDiff <= tolerance && endTimeDiff <= tolerance) {
-				const defaults = getDefaultTimeRange();
-				const currentEndDiff = Math.abs(urlState.end_time - defaults.endTime);
-				// If end time is more than 5 minutes old, refresh both
-				if (currentEndDiff > 300) {
-					setUrlState({
-						start_time: defaults.startTime,
-						end_time: defaults.endTime,
-					});
-					// Update baseline so subsequent focus events compare against refreshed defaults
-					initialDefaults.current.startTime = defaults.startTime;
-					initialDefaults.current.endTime = defaults.endTime;
-				}
-			}
-		};
-
-		const handleVisibilityChange = () => {
-			if (!document.hidden) {
-				refreshDefaultsIfStale();
-			}
-		};
-
-		const handleFocus = () => {
-			refreshDefaultsIfStale();
-		};
-
-		document.addEventListener("visibilitychange", handleVisibilityChange);
-		window.addEventListener("focus", handleFocus);
-		return () => {
-			document.removeEventListener("visibilitychange", handleVisibilityChange);
-			window.removeEventListener("focus", handleFocus);
-		};
-	}, [urlState.start_time, urlState.end_time, setUrlState]);
-
-	// Convert URL state to filters and pagination
+	// Convert URL state to filters and pagination for API calls.
+	// When period is set, send it to the backend so the server computes the time window fresh
+	// on every request. For custom absolute ranges (period === "") use the stored timestamps.
 	const filters: MCPToolLogFilters = useMemo(
 		() => ({
 			tool_names: urlState.tool_names,
@@ -131,17 +76,20 @@ export default function MCPLogsPage() {
 			status: urlState.status,
 			virtual_key_ids: urlState.virtual_key_ids,
 			content_search: urlState.content_search,
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
 		}),
-		// Only re-derive filters when filter-related URL params change (not pagination)
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[
 			urlState.tool_names,
 			urlState.server_labels,
 			urlState.status,
 			urlState.virtual_key_ids,
 			urlState.content_search,
+			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
 		],
@@ -157,17 +105,62 @@ export default function MCPLogsPage() {
 		[urlState.limit, urlState.offset, urlState.sort_by, urlState.order],
 	);
 
-	const liveEnabled = urlState.live_enabled;
+	const {
+		data: logsData,
+		isLoading: logsIsLoading,
+		isFetching: logsIsFetching,
+		error: logsError,
+		refetch: refetchLogs,
+	} = useGetMCPLogsQuery(
+		{ filters, pagination },
+		{
+			pollingInterval: showEmptyState || polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
+
+	const {
+		data: statsData,
+		isFetching: statsIsFetching,
+		refetch: refetchStats,
+	} = useGetMCPLogsStatsQuery(
+		{ filters },
+		{
+			pollingInterval: polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
+
+	const refreshAllData = useCallback(() => {
+		refetchLogs();
+		refetchStats();
+	}, [refetchLogs, refetchStats]);
+
+	// Derive data directly from RTK
+	const logs = logsData?.logs ?? [];
+	const totalItems = logsData?.stats?.total_executions ?? 0;
+
+	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
+
+	// Set showEmptyState on first response; clear it as soon as logs appear.
+	useEffect(() => {
+		if (!logsData) return;
+		if (!hasCheckedEmptyState.current) {
+			setShowEmptyState(!logsData.has_logs);
+			hasCheckedEmptyState.current = true;
+		} else if (showEmptyState && logsData.has_logs) {
+			setShowEmptyState(false);
+		}
+	}, [logsData, showEmptyState]);
 
 	// Helper to update filters in URL
 	const setFilters = useCallback(
 		(newFilters: MCPToolLogFilters) => {
-			// Mark time range as user-modified if start_time or end_time is being set
-			if (newFilters.start_time !== undefined || newFilters.end_time !== undefined) {
-				userModifiedTimeRange.current = true;
-			}
+			const timeChanged = newFilters.start_time !== undefined || newFilters.end_time !== undefined;
+			if (timeChanged) userModifiedTimeRange.current = true;
 
 			setUrlState({
+				...(timeChanged && { period: "" }),
 				tool_names: newFilters.tool_names || [],
 				server_labels: newFilters.server_labels || [],
 				status: newFilters.status || [],
@@ -196,258 +189,88 @@ export default function MCPLogsPage() {
 
 	const handleDelete = useCallback(
 		async (log: MCPToolLogEntry) => {
-			// Guard against unauthorized delete attempts
-			if (!hasDeleteAccess) {
-				throw new Error("No delete access");
-			}
-
+			if (!hasDeleteAccess) throw new Error("No delete access");
 			try {
 				await deleteLogs({ ids: [log.id] }).unwrap();
-				setLogs((prevLogs) => prevLogs.filter((l) => l.id !== log.id));
-				setTotalItems((prev) => prev - 1);
 				if (urlState.selected_log === log.id) {
 					setUrlState({ selected_log: "" });
 				}
+				refreshAllData();
 			} catch (err) {
 				const errorMessage = getErrorMessage(err);
 				setError(errorMessage);
 				throw new Error(errorMessage);
 			}
 		},
-		[deleteLogs, hasDeleteAccess, urlState.selected_log, setUrlState],
+		[deleteLogs, hasDeleteAccess, urlState.selected_log, setUrlState, refreshAllData],
 	);
 
-	// Ref to track latest state for WebSocket callbacks
-	const latest = useRef({ logs, filters, pagination, showEmptyState, liveEnabled });
-	useEffect(() => {
-		latest.current = { logs, filters, pagination, showEmptyState, liveEnabled };
-	}, [logs, filters, pagination, showEmptyState, liveEnabled]);
-
-	// Helper to check if a log matches current filters
-	const matchesFilters = (log: MCPToolLogEntry, filters: MCPToolLogFilters, applyTimeFilters = true): boolean => {
-		if (filters.tool_names?.length && !filters.tool_names.includes(log.tool_name)) {
-			return false;
-		}
-		if (filters.server_labels?.length && (!log.server_label || !filters.server_labels.includes(log.server_label))) {
-			return false;
-		}
-		if (filters.status?.length && !filters.status.includes(log.status)) {
-			return false;
-		}
-		if (filters.virtual_key_ids?.length && (!log.virtual_key_id || !filters.virtual_key_ids.includes(log.virtual_key_id))) {
-			return false;
-		}
-		if (filters.start_time && new Date(log.timestamp) < new Date(filters.start_time)) {
-			return false;
-		}
-		if (applyTimeFilters && filters.end_time && new Date(log.timestamp) > new Date(filters.end_time)) {
-			return false;
-		}
-		return true;
-	};
-
-	// Handle WebSocket log messages
-	const handleMCPLogMessage = useCallback((log: MCPToolLogEntry, operation: "create" | "update") => {
-		const { logs, filters, pagination, showEmptyState, liveEnabled } = latest.current;
-
-		// Exit empty state if we now have logs
-		if (showEmptyState) {
-			setShowEmptyState(false);
-		}
-
-		if (operation === "create") {
-			// Only prepend new log if on first page and sorted by timestamp desc
-			if (pagination.offset === 0 && pagination.sort_by === "timestamp" && pagination.order === "desc") {
-				if (!matchesFilters(log, filters, !liveEnabled)) {
-					return;
-				}
-
-				setLogs((prevLogs: MCPToolLogEntry[]) => {
-					// Prevent duplicates
-					if (prevLogs.some((existingLog) => existingLog.id === log.id)) {
-						return prevLogs;
-					}
-
-					const updatedLogs = [log, ...prevLogs];
-					if (updatedLogs.length > pagination.limit) {
-						updatedLogs.pop();
-					}
-					return updatedLogs;
+	const handlePeriodChange = useCallback(
+		(p?: string, from?: Date, to?: Date) => {
+			if (p) {
+				setUrlState({
+					period: p,
+					offset: 0,
+					polling: true
 				});
-
-				setTotalItems((prev: number) => prev + 1);
-			}
-		} else if (operation === "update") {
-			const logExists = logs.some((existingLog) => existingLog.id === log.id);
-
-			if (!logExists) {
-				// Fallback: if log doesn't exist, treat as create
-				if (pagination.offset === 0 && pagination.sort_by === "timestamp" && pagination.order === "desc") {
-					if (matchesFilters(log, filters, !liveEnabled)) {
-						setLogs((prevLogs: MCPToolLogEntry[]) => {
-							if (prevLogs.some((existingLog) => existingLog.id === log.id)) {
-								return prevLogs.map((existingLog) => (existingLog.id === log.id ? log : existingLog));
-							}
-
-							const updatedLogs = [log, ...prevLogs];
-							if (updatedLogs.length > pagination.limit) {
-								updatedLogs.pop();
-							}
-							return updatedLogs;
-						});
-					}
-				}
-			} else {
-				// Update existing log
-				setLogs((prevLogs: MCPToolLogEntry[]) => {
-					return prevLogs.map((existingLog) => (existingLog.id === log.id ? log : existingLog));
+			} else if (from && to) {
+				setUrlState({
+					start_time: Math.floor(from.getTime() / 1000),
+					end_time: Math.floor(to.getTime() / 1000),
+					offset: 0,
+					polling: false,
+					period: ""
 				});
-
-				// Update stats for completed requests
-				if (log.status === "success" || log.status === "error") {
-					setStats((prevStats) => {
-						if (!prevStats) return prevStats;
-
-						const newStats = { ...prevStats };
-						const completed_executions = prevStats.total_executions + 1;
-						newStats.total_executions = completed_executions;
-
-						// Update success rate
-						const successCount = (prevStats.success_rate / 100) * prevStats.total_executions;
-						const newSuccessCount = log.status === "success" ? successCount + 1 : successCount;
-						newStats.success_rate = (newSuccessCount / completed_executions) * 100;
-
-						// Update average latency
-						if (log.latency) {
-							const totalLatency = prevStats.average_latency * prevStats.total_executions;
-							newStats.average_latency = (totalLatency + log.latency) / completed_executions;
-						}
-
-						// Update total cost
-						newStats.total_cost = (Number(newStats.total_cost) || 0) + Number(log.cost ?? 0);
-
-						return newStats;
-					});
-				}
-			}
-		}
-	}, []);
-
-	const { isConnected: isSocketConnected, subscribe } = useWebSocket();
-
-	// Subscribe to MCP log messages - only when live updates are enabled
-	useEffect(() => {
-		if (!liveEnabled) {
-			return;
-		}
-
-		const unsubscribe = subscribe("mcp_log", (data) => {
-			const { payload, operation } = data;
-			handleMCPLogMessage(payload, operation);
-		});
-
-		return unsubscribe;
-	}, [handleMCPLogMessage, subscribe, liveEnabled]);
-
-	// Fetch logs
-	const fetchLogs = useCallback(async () => {
-		setFetchingLogs(true);
-		setError(null);
-		try {
-			const result = await triggerGetLogs({ filters, pagination }).unwrap();
-			setLogs(result.logs || []);
-			setTotalItems(result.stats?.total_executions || 0);
-
-			if (initialLoading) {
-				setShowEmptyState(result.has_logs === false);
-			}
-		} catch (err) {
-			setError(getErrorMessage(err));
-			setLogs([]);
-			setTotalItems(0);
-			setShowEmptyState(true);
-		} finally {
-			setFetchingLogs(false);
-		}
-	}, [filters, pagination, triggerGetLogs, initialLoading]);
-
-	const fetchStats = useCallback(async () => {
-		setFetchingStats(true);
-		try {
-			const result = await triggerGetStats({ filters }).unwrap();
-			setStats(result);
-		} catch (err) {
-			console.error("Failed to fetch stats:", err);
-		} finally {
-			setFetchingStats(false);
-		}
-	}, [filters, triggerGetStats]);
-
-	// Helper to toggle live updates
-	const handleLiveToggle = useCallback(
-		(enabled: boolean) => {
-			setUrlState({ live_enabled: enabled });
-			// When re-enabling, refetch logs to get latest data
-			if (enabled) {
-				fetchLogs();
 			}
 		},
-		[setUrlState, fetchLogs],
+		[setUrlState],
 	);
 
-	// Initial load
-	useEffect(() => {
-		const initialLoad = async () => {
-			await fetchLogs();
-			fetchStats();
-			setInitialLoading(false);
-		};
-		initialLoad();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
-
-	// Fetch logs when filters or pagination change
-	useEffect(() => {
-		if (!initialLoading) {
-			fetchLogs();
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [filters, pagination, initialLoading]);
-
-	// Fetch stats when filters change
-	useEffect(() => {
-		if (!initialLoading) {
-			fetchStats();
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [filters, initialLoading]);
+	const handlePollToggle = useCallback(
+		(enabled: boolean) => {
+			setUrlState({ polling: enabled });
+			if (enabled) refreshAllData();
+		},
+		[setUrlState, refreshAllData],
+	);
 
 	const statCards = useMemo(
 		() => [
 			{
 				title: "Total Executions",
-				value: <NumberFlow value={stats?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
+				value: <NumberFlow value={statsData?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
 			{
 				title: "Success Rate",
-				value: <NumberFlow value={stats?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />,
+				value: (
+					<NumberFlow value={statsData?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
+				),
 				icon: <CheckCircle className="size-4" />,
 			},
 			{
 				title: "Avg Latency",
 				value: (
-					<NumberFlow value={stats?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
+					<NumberFlow value={statsData?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 				),
 				icon: <Clock className="size-4" />,
 			},
 			{
 				title: "Total Cost",
-				value: <NumberFlow value={stats?.total_cost ?? 0} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />,
+				value: (
+					<NumberFlow
+						value={statsData?.total_cost ?? 0}
+						format={{
+							...COMPACT_NUMBER_FORMAT,
+							style: "currency",
+							currency: "USD",
+						}}
+					/>
+				),
 				icon: <DollarSign className="size-4" />,
 			},
 		],
-		[stats],
+		[statsData],
 	);
 
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
@@ -477,9 +300,12 @@ export default function MCPLogsPage() {
 		togglePin: toggleColumnPin,
 		reorder: reorderColumns,
 		reset: resetColumns,
-	} = useColumnConfig({ columnIds, paramName: "mcp_cols", fixedColumns: { left: [], right: [] } });
+	} = useColumnConfig({
+		columnIds,
+		paramName: "mcp_cols",
+		fixedColumns: { left: [], right: [] },
+	});
 
-	// Navigation for log detail sheet
 	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
 	const handleLogNavigate = useCallback(
@@ -529,25 +355,14 @@ export default function MCPLogsPage() {
 		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, setUrlState, triggerGetLogs],
 	);
 
+	const displayError = error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null);
+
 	return (
 		<div className="dark:bg-card bg-white">
-			{initialLoading ? (
+			{logsIsLoading ? (
 				<FullPageLoader />
 			) : showEmptyState ? (
-				<MCPEmptyState
-					error={error}
-					statusIndicator={
-						isSocketConnected && (
-							<div className="inline-flex items-center rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs font-medium text-green-700 sm:px-4 sm:text-sm">
-								<span className="relative mr-2 flex h-2 w-2 sm:mr-3">
-									<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-500 opacity-75"></span>
-									<span className="relative inline-flex h-2 w-2 rounded-full bg-green-600"></span>
-								</span>
-								<span>Listening for tool executions...</span>
-							</div>
-						)
-					}
-				/>
+				<MCPEmptyState error={displayError} />
 			) : (
 				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
 					{/* Sidebar Filters */}
@@ -559,8 +374,12 @@ export default function MCPLogsPage() {
 							<McpHeaderView
 								filters={filters}
 								onFiltersChange={setFilters}
-								liveEnabled={liveEnabled}
-								onLiveToggle={handleLiveToggle}
+								period={urlState.period}
+								onPeriodChange={handlePeriodChange}
+								polling={polling}
+								onPollToggle={handlePollToggle}
+								onRefresh={refreshAllData}
+								loading={logsIsFetching}
 								columnEntries={columnEntries}
 								columnLabels={MCP_COLUMN_LABELS}
 								onToggleColumnVisibility={toggleColumnVisibility}
@@ -573,7 +392,7 @@ export default function MCPLogsPage() {
 								{statCards.map((card) => (
 									<Card key={card.title} className="py-4 shadow-none">
 										<CardContent
-											className={`flex items-center justify-between px-4 transition-opacity duration-200 ${fetchingStats ? "opacity-50" : "opacity-100"}`}
+											className={`flex items-center justify-between px-4 transition-opacity duration-200 ${statsIsFetching ? "opacity-50" : "opacity-100"}`}
 										>
 											<div className="w-full min-w-0">
 												<div className="text-muted-foreground text-xs">{card.title}</div>
@@ -584,11 +403,10 @@ export default function MCPLogsPage() {
 								))}
 							</div>
 
-							{/* Error Alert */}
-							{error && (
+							{displayError && (
 								<Alert variant="destructive" className="shrink-0">
 									<AlertCircle className="h-4 w-4" />
-									<AlertDescription>{error}</AlertDescription>
+									<AlertDescription>{displayError}</AlertDescription>
 								</Alert>
 							)}
 						</div>
@@ -597,15 +415,15 @@ export default function MCPLogsPage() {
 							columns={columns}
 							data={logs}
 							totalItems={totalItems}
-							loading={fetchingLogs}
+							loading={logsIsFetching}
 							pagination={pagination}
 							onPaginationChange={setPagination}
 							onRowClick={(row, columnId) => {
 								if (columnId === "actions") return;
 								setUrlState({ selected_log: row.id }, { history: "replace" });
 							}}
-							isSocketConnected={isSocketConnected}
-							liveEnabled={liveEnabled}
+							onRefresh={refreshAllData}
+							polling={polling}
 							columnEntries={columnEntries}
 							columnOrder={columnOrder}
 							columnVisibility={columnVisibility}
@@ -621,7 +439,7 @@ export default function MCPLogsPage() {
 						log={selectedLog}
 						open={selectedLogId !== null}
 						onOpenChange={(open) => !open && setUrlState({ selected_log: "" }, { history: "replace" })}
-						handleDelete={handleDelete}
+						handleDelete={hasDeleteAccess ? handleDelete : undefined}
 						onNavigate={handleLogNavigate}
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}

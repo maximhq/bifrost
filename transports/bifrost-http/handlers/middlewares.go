@@ -968,6 +968,22 @@ type TracingMiddleware struct {
 	tracer atomic.Pointer[tracing.Tracer]
 }
 
+func attachDimensionAttributesToHTTPSpan(ctx *fasthttp.RequestCtx, setAttribute func(key string, value any)) {
+	if ctx == nil || setAttribute == nil {
+		return
+	}
+	// Root HTTP span starts before ConvertToBifrostContext, so read x-bf-dim-* directly.
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		keyStr := strings.ToLower(string(key))
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
+			if labelName != "path" && labelName != "method" {
+				setAttribute(labelName, string(value))
+			}
+		}
+		return true
+	})
+}
+
 // NewTracingMiddleware creates a new tracing middleware
 func NewTracingMiddleware(tracer *tracing.Tracer) *TracingMiddleware {
 	tm := &TracingMiddleware{
@@ -1033,6 +1049,9 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
+				attachDimensionAttributesToHTTPSpan(ctx, func(key string, value any) {
+					tracer.SetAttribute(rootSpan, key, value)
+				})
 				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
 				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
 				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))

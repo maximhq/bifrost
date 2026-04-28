@@ -36,12 +36,12 @@ Every entry in the `plugins` array supports these common fields:
 | `enabled` | boolean | Yes | Enable or disable this plugin |
 | `config` | object | Varies | Plugin-specific configuration |
 | `path` | string | No | Path to a custom plugin binary or WASM file |
-| `version` | integer | No | 🛑 **DB-Backed Only.** Plugin metadata persisted on `TablePlugin` rather than `PluginConfig`. Ignored in `config.json`. Used in UI/DB workflows to force refresh/reload. |
-| `placement` | string | No | 🛑 **DB-Backed Only.** Execution metadata (`"pre_builtin"`, `"builtin"`, `"post_builtin"`) persisted on `TablePlugin`. Ignored in `config.json`. Relevant for dynamic plugin ordering in UI/DB mode. |
-| `order` | integer | No | 🛑 **DB-Backed Only.** Execution metadata persisted on `TablePlugin`. Ignored in `config.json`. Within a placement group, lower values run earlier. |
+| `version` | integer | No | 🛑 **DB-Backed Only.** Plugin metadata persisted on `TablePlugin`. In DB-backed sync, higher values trigger replacement/reload. Valid range: `1` to `32767`. |
+| `placement` | string | No | 🛑 **DB-Backed Only.** Execution metadata (`"pre_builtin"`, `"builtin"`, `"post_builtin"`) persisted on `TablePlugin` and used for ordering behavior. |
+| `order` | integer | No | 🛑 **DB-Backed Only.** Execution metadata persisted on `TablePlugin`; within a placement group, lower values run earlier. |
 
 <Note>
-`name`, `enabled`, `path`, and `config` are the core plugin config fields parsed from `config.json`. `version`, `placement`, and `order` are **not valid `config.json` keys**; they are DB-backed metadata persisted on `TablePlugin` and are only applicable when managing plugins dynamically via the UI or Database.
+`name`, `enabled`, `path`, and `config` are the core plugin config fields. In DB-backed mode, `version`, `placement`, and `order` are persisted on `TablePlugin` and used during sync/runtime ordering.
 </Note>
 
 ---
@@ -307,7 +307,7 @@ See [Writing Go Plugins](/plugins/writing-go-plugin) and [Writing WASM Plugins](
 
 **Placement and ordering (DB-backed only):**
 
-When creating plugins dynamically via the DB/UI (rather than `config.json`), you can specify their execution order:
+In DB-backed mode, plugin metadata such as `version` (`1` to `32767`), `placement`, and `order` can be managed via config sync and DB/UI workflows:
 
 | `placement` | When it runs |
 |-------------|-------------|

@@ -1,0 +1,121 @@
+---
+title: "v1.5.0-prerelease6"
+description: "v1.5.0-prerelease6 changelog - 2026-04-24"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.0-prerelease6
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.0-prerelease6
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.0-prerelease6
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.0-prerelease6">
+## ✨ Features
+
+- **MCP Tool Groups** — Added `tool_groups` config with governance scoping (virtual key, team, customer, user, provider, API key) and camelCase Helm aliases for MCP client fields
+- **Enterprise Helm Overlays** — Suite of composable overlays for guardrails, org governance, access profiles, customer budgets, teams, multi-customer governance, and SCIM/SSO
+- **Semantic Cache Helm Layers** — Added `values-semantic-search-redis.yaml` and `values-semantic-search-weaviate.yaml` for Redis and Weaviate-backed semantic caches, plus a client-config overlay
+- **Period Parameter in Dashboard/Logs APIs** — Added `period` param for relative time range queries on dashboard and logs endpoints
+- **`provider_key_name` Alias** — Human-readable alias for routing targets and pricing overrides, resolved to `key_id` at config load time
+- **`env.*` References for Proxy and TLS** — Proxy and TLS config fields (`url`, `username`, `password`, `ca_cert_pem`) now accept `env.VAR_NAME` for secret injection
+- **MCP Duration Strings and Hash Reconciliation** — `tool_sync_interval` accepts Go duration strings; hash-based reconciliation prevents unnecessary MCP client restarts on config reload
+- **Auto-fill Incoming Model for Fallbacks** — Routing rule fallback entries can omit the model; the incoming request model is substituted automatically at runtime
+- **Namespace Tool Type** — Namespace tool container type in Responses API; non-OpenAI providers receive automatically flattened tool lists
+- **Cache Creation Pricing** — Cache creation details for Claude models with 5-minute and 1-hour TTL pricing tiers
+- **Governance Config Sync** — Model configs and provider governance bindings now sync from `config.json` to DB at startup
+- **`business_units` and Team Fields** — Added `business_units`, `team_id`, `calendar_aligned`, and `virtual_key_count` to governance schema and Helm
+
+## 🐞 Fixed
+
+- **WebSocket /responses Reliability** — Fixed upstream handshake diagnostics, proper error capture, and WebSocket connection lifecycle in the native `/responses` path
+- **Raw Request Passthrough Removed** — Removed `SendBackRawRequest` from all provider passthrough flows; passthrough streaming now sets proper SSE headers
+- **WebSocket Nil Checks** — Improved `sendMessageSafely` nil guards, panic recovery, and client cleanup
+- **Routing Rule Query Normalization** — Normalized `query` field to valid `RuleGroupType` and tightened schema validation
+- **PydanticAI Null Text Fields** — Normalized null text content in PydanticAI stream response chunks
+- **Budget and Team Co-creation** — Fixed creation of budgets and teams in the same request
+- **Provider Reload** — Fixed keyless provider status updates during config reload; provider runtime now reloads correctly after key creation
+- **OTel Metrics** — Fixed OpenTelemetry metrics pipeline not working (thanks [@tcx4c70](https://github.com/tcx4c70)!)
+- **OTel Export** — Fixed OTEL exporting to correctly show input and output messages
+- **Logging Request Type** — Resolved request type from pending data before streaming to prevent missing `Object` field in error logs
+- **Multipart File Uploads** — Write multipart metadata before file content to fix upload ordering
+- **Env Var Redacted Check** — Added missing redacted check for env var values
+
+</Update>
+<Update label="Core" description="1.5.5">
+- feat: Standardizes tool stripping and anthropic integration handling against anthropic, vertex and azure
+- fix: drops empty thinking block for anthropic provider for claude code
+- feat: add support for cache creation details for claude models
+- feat: adds missing anthropic params / handling in Vertex
+- feat: add namespace tool type support in Responses API
+- feat: support `env.*` references for proxy and TLS config fields
+- feat: add Go duration string support for `tool_sync_interval` and hash-based MCP client config reconciliation
+- fix: add redacted check for env var values
+- fix: write multipart metadata before file uploads
+- fix: removes redundant IsDefined func
+- fix: native WebSocket /responses stream reliability improvements
+
+</Update>
+<Update label="Framework" description="1.3.5">
+- fix: Fixes OTEL exporting in `framework/tracing/llmspan.go` to show input and output messages correctly
+- feat: add support for cache creation cost above 1 hour
+- feat: add `provider_key_name` alias for routing targets and pricing overrides, resolved to `key_id` at config load
+- feat: add Go duration string support for MCP `tool_sync_interval` and hash-based client config reconciliation
+- feat: support `env.*` references for proxy and TLS config fields
+- feat: sync model config and provider governance bindings from config file to DB
+- chore: extend migration tests, fix column ignores, add routing rule search
+
+</Update>
+<Update label="compat" description="0.1.4">
+- feat: drops tools web_search and web_search_preview if model does not support it
+- feat: flattens tool type namespace if provider does not support it
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="governance" description="1.5.5">
+- feat: automatically add incoming model to empty fallbacks in routing rules
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="jsonparser" description="1.5.5">
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="logging" description="1.5.5">
+- fix: resolve request type from pending data before streaming chunk processing
+- chore: adds debug logging in logging plugin lifecycle
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="maxim" description="1.6.5">
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="mocker" description="1.5.5">
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="otel" description="1.2.5">
+- fix: OTel metrics not working (thanks [@tcx4c70](https://github.com/tcx4c70)!)
+- fix: OTel conversion from built-in trace
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="prompts" description="1.0.5">
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="semanticcache" description="1.5.5">
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>
+<Update label="telemetry" description="1.5.5">
+- chore: upgraded core to v1.5.5 and framework to v1.3.5
+
+</Update>

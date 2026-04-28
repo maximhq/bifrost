@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -201,7 +202,7 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
-	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Anthropic, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Anthropic, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 	} else {
 		req.Header.Del(AnthropicBetaHeader)
@@ -446,7 +447,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
 		// so custom Anthropic aliases get the same feature lookup as the typed
 		// path above (line 445), keeping raw and typed behavior in lockstep.
-		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
+		sanitized, rawErr := StripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
 		if rawErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}
@@ -539,7 +540,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
 		// to keep raw and typed paths in lockstep on custom aliases — mirrors
 		// the typed path's hardcoded schemas.Anthropic at line 548.
-		sanitized, rawErr := stripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
+		sanitized, rawErr := StripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
 		if rawErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
 		}
@@ -614,7 +615,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
 
-	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(extraHeaders, ctx), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 	} else {
 		req.Header.Del(AnthropicBetaHeader)
@@ -798,6 +799,17 @@ func HandleAnthropicChatCompletionStreaming(
 					if usageToProcess.CacheCreationInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
 						usage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
 					}
+					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
+						if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+							usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+						}
+						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
+							usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+						}
+						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
+							usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+						}
+					}
 				}
 			}
 			if event.Message != nil {
@@ -937,7 +949,7 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
-	jsonBody, err := getRequestBodyForResponses(ctx, request, false, nil)
+	jsonBody, err := getRequestBodyForResponses(ctx, request, false, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	if err != nil {
 		return nil, err
 	}
@@ -1002,7 +1014,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	}
 
 	// Convert to Anthropic format using the centralized converter
-	jsonBody, err := getRequestBodyForResponses(ctx, request, true, nil)
+	jsonBody, err := getRequestBodyForResponses(ctx, request, true, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	if err != nil {
 		return nil, err
 	}
@@ -1068,7 +1080,7 @@ func HandleAnthropicResponsesStream(
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
 
-	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(extraHeaders, ctx), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 	} else {
 		req.Header.Del(AnthropicBetaHeader)
@@ -1255,6 +1267,17 @@ func HandleAnthropicResponsesStream(
 					}
 					if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CachedWriteTokens {
 						usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+					}
+					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
+						if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+							usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+						}
+						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
+							usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+						}
+						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
+							usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+						}
 					}
 				}
 			}
@@ -2402,7 +2425,7 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
 		return nil, err
 	}
-	jsonBody, err := getRequestBodyForResponses(ctx, request, false, []string{"max_tokens", "temperature"})
+	jsonBody, err := getRequestBodyForResponses(ctx, request, false, []string{"max_tokens", "temperature"}, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	if err != nil {
 		return nil, err
 	}
@@ -2568,6 +2591,8 @@ func (provider *AnthropicProvider) Passthrough(
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
 
+	originalHeaders := make(map[string]string, len(headers))
+	maps.Copy(originalHeaders, headers)
 	for k := range headers {
 		if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
 			delete(headers, k)
@@ -2578,12 +2603,10 @@ func (provider *AnthropicProvider) Passthrough(
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
 		Body:       body,
-	}
-
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &bifrostResponse.ExtraFields)
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: originalHeaders,
+		},
 	}
 
 	return bifrostResponse, nil
@@ -2670,10 +2693,6 @@ func (provider *AnthropicProvider) PassthroughStream(
 
 	extraFields := schemas.BifrostResponseExtraFields{}
 	statusCode := resp.StatusCode()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &extraFields)
-	}
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {

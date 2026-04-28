@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -138,144 +138,53 @@ func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 }
 
 // sendMessageSafely sends a message to a client with proper locking and error handling
-func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageType int, data []byte) error {
+func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageType int, data []byte) (writeErr error) {
+	if client == nil {
+		return fmt.Errorf("websocket client is nil")
+	}
+
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
+	conn := client.conn
+	if conn == nil {
+		return fmt.Errorf("websocket connection is nil")
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			writeErr = fmt.Errorf("panic while writing websocket message: %v", r)
+			h.removeClient(conn)
+			_ = conn.Close()
+		}
+	}()
+
 	// Set a write deadline to prevent hanging connections
-	client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	defer client.conn.SetWriteDeadline(time.Time{}) // Clear the deadline
-
-	err := client.conn.WriteMessage(messageType, data)
-	if err != nil {
-		// Remove the client from the map if write fails
-		go func() {
-			h.mu.Lock()
-			delete(h.clients, client.conn)
-			h.mu.Unlock()
-			client.conn.Close()
-		}()
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		h.removeClient(conn)
+		_ = conn.Close()
+		return err
 	}
 
-	return err
+	err := conn.WriteMessage(messageType, data)
+	if err != nil {
+		h.removeClient(conn)
+		_ = conn.Close()
+		return err
+	}
+
+	// Clear write deadline on successful write.
+	_ = conn.SetWriteDeadline(time.Time{})
+	return writeErr
 }
 
-// BroadcastLogUpdate sends a log update to all connected WebSocket clients
-func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
-	// Nil guard to prevent panics
-	if logEntry == nil {
+func (h *WebSocketHandler) removeClient(conn *websocket.Conn) {
+	if conn == nil {
 		return
 	}
-
-	// Add panic recovery to prevent server crashes
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("panic in BroadcastLogUpdate: %v", r)
-		}
-	}()
-
-	// Determine operation type based on log status and timestamp
-	operationType := "update"
-	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
-		operationType = "create"
-	}
-
-	// Trim payload for table view to keep websocket updates lightweight, but keep
-	// full realtime turns so the live table/detail sheet can still render the
-	// combined tool/user/assistant turn shape without waiting for a refresh.
-	if logEntry.Object != "realtime.turn" {
-		if len(logEntry.InputHistoryParsed) > 1 {
-			logEntry.InputHistoryParsed = logEntry.InputHistoryParsed[len(logEntry.InputHistoryParsed)-1:]
-		}
-		if len(logEntry.ResponsesInputHistoryParsed) > 1 {
-			logEntry.ResponsesInputHistoryParsed = logEntry.ResponsesInputHistoryParsed[len(logEntry.ResponsesInputHistoryParsed)-1:]
-		}
-		logEntry.OutputMessageParsed = nil
-		logEntry.ResponsesOutputParsed = nil
-		logEntry.EmbeddingOutputParsed = nil
-		logEntry.RerankOutputParsed = nil
-		logEntry.ParamsParsed = nil
-		logEntry.ToolsParsed = nil
-		logEntry.ToolCallsParsed = nil
-		logEntry.SpeechOutputParsed = nil
-		logEntry.TranscriptionOutputParsed = nil
-		logEntry.ImageGenerationOutputParsed = nil
-		logEntry.ListModelsOutputParsed = nil
-		logEntry.CacheDebugParsed = nil
-	}
-	if len(logEntry.ResponsesInputHistoryParsed) > 1 {
-		logEntry.ResponsesInputHistoryParsed = logEntry.ResponsesInputHistoryParsed[len(logEntry.ResponsesInputHistoryParsed)-1:]
-	}
-	logEntry.OutputMessageParsed = nil
-	logEntry.ResponsesOutputParsed = nil
-	logEntry.EmbeddingOutputParsed = nil
-	logEntry.RerankOutputParsed = nil
-	logEntry.OCROutputParsed = nil
-	logEntry.ParamsParsed = nil
-	logEntry.ToolsParsed = nil
-	logEntry.ToolCallsParsed = nil
-	logEntry.SpeechOutputParsed = nil
-	logEntry.TranscriptionOutputParsed = nil
-	logEntry.ImageGenerationOutputParsed = nil
-	logEntry.ListModelsOutputParsed = nil
-	logEntry.CacheDebugParsed = nil
-
-	message := struct {
-		Type      string        `json:"type"`
-		Operation string        `json:"operation"` // "create" or "update"
-		Payload   *logstore.Log `json:"payload"`
-	}{
-		Type:      "log",
-		Operation: operationType,
-		Payload:   logEntry,
-	}
-
-	data, err := sonic.Marshal(message)
-	if err != nil {
-		logger.Error("failed to marshal log entry: %v", err)
-		return
-	}
-
-	h.BroadcastMarshaledMessage(data)
-}
-
-// BroadcastMCPLogUpdate sends an MCP tool log update to all connected WebSocket clients
-func (h *WebSocketHandler) BroadcastMCPLogUpdate(logEntry *logstore.MCPToolLog) {
-	// Nil guard to prevent panics
-	if logEntry == nil {
-		return
-	}
-
-	// Add panic recovery to prevent server crashes
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("panic in BroadcastMCPLogUpdate: %v", r)
-		}
-	}()
-
-	// Determine operation type based on log status and timestamp
-	operationType := "update"
-	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
-		operationType = "create"
-	}
-
-	message := struct {
-		Type      string               `json:"type"`
-		Operation string               `json:"operation"` // "create" or "update"
-		Payload   *logstore.MCPToolLog `json:"payload"`
-	}{
-		Type:      "mcp_log",
-		Operation: operationType,
-		Payload:   logEntry,
-	}
-
-	data, err := sonic.Marshal(message)
-	if err != nil {
-		logger.Error("failed to marshal MCP log entry: %v", err)
-		return
-	}
-
-	h.BroadcastMarshaledMessage(data)
+	h.mu.Lock()
+	delete(h.clients, conn)
+	h.mu.Unlock()
 }
 
 // BroadcastUpdatesToClients sends a store update notification to all connected WebSocket clients

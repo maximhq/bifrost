@@ -77,6 +77,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
+| `mcp_external_base_url` | string \| EnvVar | — | Public base URL for OAuth callbacks/discovery when behind a reverse proxy; supports `"env.MY_VAR"` |
 
 Full documentation: [Client Configuration](/deployment-guides/config-json/client).
 

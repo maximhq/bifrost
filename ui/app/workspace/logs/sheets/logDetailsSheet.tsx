@@ -12,7 +12,7 @@ interface LogDetailSheetProps {
 	log: LogEntry | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	handleDelete: (log: LogEntry) => void;
+	handleDelete?: (log: LogEntry) => void;
 	onNavigate?: (direction: "prev" | "next") => void;
 	hasPrev?: boolean;
 	hasNext?: boolean;

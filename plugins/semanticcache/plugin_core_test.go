@@ -2,7 +2,6 @@ package semanticcache
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -389,9 +388,6 @@ func TestCacheConfiguration(t *testing.T) {
 				EmbeddingModel: "text-embedding-3-small",
 				Dimension:      1536,
 				Threshold:      0.95, // Very high threshold
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: schemas.WhiteList{"*"}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "strict_matching",
 		},
@@ -402,9 +398,6 @@ func TestCacheConfiguration(t *testing.T) {
 				EmbeddingModel: "text-embedding-3-small",
 				Dimension:      1536,
 				Threshold:      0.1, // Very low threshold
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: schemas.WhiteList{"*"}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "loose_matching",
 		},
@@ -416,9 +409,6 @@ func TestCacheConfiguration(t *testing.T) {
 				Dimension:      1536,
 				Threshold:      0.8,
 				TTL:            1 * time.Hour, // Custom TTL
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: schemas.WhiteList{"*"}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "custom_ttl",
 		},
@@ -463,7 +453,7 @@ func (m *MockUnsupportedStore) Ping(ctx context.Context) error {
 }
 
 func (m *MockUnsupportedStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
-	return vectorstore.ErrNotSupported
+	return nil
 }
 
 func (m *MockUnsupportedStore) DeleteNamespace(ctx context.Context, namespace string) error {
@@ -547,23 +537,13 @@ func TestInvalidProviderRejection(t *testing.T) {
 				Dimension:         1536,
 				Threshold:         0.8,
 				CleanUpOnShutdown: false,
-				Keys: []schemas.Key{
-					{
-						Value:  *schemas.NewEnvVar("env.TEST_API_KEY"),
-						Models: schemas.WhiteList{"*"},
-						Weight: 1.0,
-					},
-				},
 			}
 
+			// Provider validation was moved to request time (global client handles it).
+			// Init itself should succeed regardless of the provider set in config.
 			_, err := Init(ctx, config, logger, mockStore)
-			if err == nil {
-				t.Errorf("Expected error for provider '%s' but got none", provider)
-			}
-
-			expectedErrSubstring := "does not support embedding operations"
-			if err != nil && !strings.Contains(err.Error(), expectedErrSubstring) {
-				t.Errorf("Expected error message to contain '%s', but got: %v", expectedErrSubstring, err)
+			if err != nil {
+				t.Errorf("Init should succeed for provider '%s' (validation happens at request time), but got: %v", provider, err)
 			}
 		})
 	}
@@ -584,18 +564,11 @@ func TestValidProviderAccepted(t *testing.T) {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: false,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
-	// Should fail due to namespace creation, not provider validation
+	// Init should succeed; provider validation happens at request time via the global client.
 	_, err := Init(ctx, config, logger, mockStore)
-	if err != nil && strings.Contains(err.Error(), "does not support embedding operations") {
-		t.Errorf("Valid provider OpenAI should not be rejected for embedding support, but got: %v", err)
+	if err != nil {
+		t.Errorf("Valid provider OpenAI should be accepted at Init, but got: %v", err)
 	}
 }

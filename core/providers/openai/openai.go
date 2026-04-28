@@ -983,9 +983,9 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
 			if reqBody != nil {
-				reqBody.Stream = schemas.Ptr(true)
+				reqBody.Stream = new(true)
 				reqBody.StreamOptions = &schemas.ChatStreamOptions{
-					IncludeUsage: schemas.Ptr(true),
+					IncludeUsage: new(true),
 				}
 				if postRequestConverter != nil {
 					reqBody = postRequestConverter(reqBody)
@@ -1149,7 +1149,6 @@ func HandleOpenAIChatCompletionStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostChatResponse
-			// TODO fix this
 			if customResponseHandler != nil {
 				rawRequest, rawResponse, handlerErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
 				if handlerErr != nil {
@@ -6888,6 +6887,8 @@ func (provider *OpenAIProvider) Passthrough(
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
 
+	originalHeaders := make(map[string]string, len(headers))
+	maps.Copy(originalHeaders, headers)
 	// Remove wire-level encoding headers after decoding; downstream should recalculate them for the buffered body.
 	for k := range headers {
 		if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
@@ -6899,12 +6900,10 @@ func (provider *OpenAIProvider) Passthrough(
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
 		Body:       body,
-	}
-
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &bifrostResponse.ExtraFields)
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: originalHeaders,
+		},
 	}
 
 	return bifrostResponse, nil
@@ -6995,9 +6994,6 @@ func (provider *OpenAIProvider) PassthroughStream(
 	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
 
 	extraFields := schemas.BifrostResponseExtraFields{}
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &extraFields)
-	}
 	statusCode := resp.StatusCode()
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)

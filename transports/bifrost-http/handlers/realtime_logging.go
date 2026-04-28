@@ -121,7 +121,7 @@ func finalizedRealtimeInputSummary(event *schemas.BifrostRealtimeEvent) string {
 		}
 		return realtimeMissingTranscriptText
 	default:
-		if event != nil && event.Type == schemas.RTEventConversationItemDone && schemas.IsRealtimeUserInputEvent(event) {
+		if event.Type == schemas.RTEventConversationItemDone && schemas.IsRealtimeUserInputEvent(event) {
 			if summary := extractRealtimeItemSummary(event.Item); summary != "" {
 				return summary
 			}

@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/storage v1.61.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.5.4
+	github.com/maximhq/bifrost/core v1.5.5
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0
 	github.com/qdrant/go-client v1.16.2
 	github.com/redis/go-redis/v9 v9.17.2

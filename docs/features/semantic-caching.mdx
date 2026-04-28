@@ -118,7 +118,6 @@ import (
 cacheConfig := &semanticcache.Config{
     // Embedding model configuration (Required)
     Provider:       schemas.OpenAI,
-    Keys:          []schemas.Key{{Value: "sk-..."}},
     EmbeddingModel: "text-embedding-3-small",
     Dimension:     1536,
     
@@ -155,22 +154,32 @@ bifrostConfig := schemas.BifrostConfig{
 
 ![Semantic Cache Plugin Configuration](../media/ui-semantic-cache-config.png)
 
-**Note**: Make sure you have a vector store setup (using `config.json`) before configuring the semantic cache plugin.
+**Prerequisites**: A vector store must be configured and enabled in `config.json`, and at least one provider must be configured, before the toggle becomes available.
 
-1. **Navigate to Settings**
-   - Open Bifrost UI at `http://localhost:8080`
-   - Go to Settings.
+1. **Navigate to the Config page** in the Bifrost UI and find the **Plugins** section.
 
-2. **Configure Semantic Cache Plugin**
+2. **Toggle** the **Enable Semantic Caching** switch to enable it. The configuration form expands below.
 
-- Toggle the plugin switch to enable it, and fill in the required fields.
+3. **Fill in the fields** across the four sections:
 
-**Required Fields:**
-- **Provider**: The provider to use for caching.
-- **Embedding Model**: The embedding model to use for caching.
-- **Dimension**: The embedding dimension for the configured embedding model.
+**Provider and Model Settings** (required for semantic mode):
+- **Configured Providers**: Dropdown of providers already set up in Bifrost. The selected provider's API keys are inherited automatically.
+- **Embedding Model**: The embedding model to use (e.g. `text-embedding-3-small`).
 
-**Note**: Changes will need a restart of the Bifrost server to take effect, because the plugin is loaded on startup only.
+**Cache Settings**:
+- **TTL (seconds)**: How long cached responses are kept (default: 300 s).
+- **Similarity Threshold**: Cosine similarity cutoff for a cache hit (0–1, default: 0.8).
+- **Dimension**: Vector dimension matching your embedding model (e.g. 1536 for `text-embedding-3-small`).
+
+**Conversation Settings**:
+- **Conversation History Threshold**: Skip caching when the conversation has more than this many messages (default: 3).
+- **Exclude System Prompt** (toggle): Exclude system messages from cache-key generation.
+
+**Cache Behavior**:
+- **Cache by Model** (toggle): Include the model name in the cache key (default: on).
+- **Cache by Provider** (toggle): Include the provider name in the cache key (default: on).
+
+4. Click **Save**. Changes are persisted and applied immediately for enabled plugins via the API reload path; other plugin changes (e.g. via `config.json`) may still require a restart.
 
 </Tab>
 
@@ -202,7 +211,7 @@ bifrostConfig := schemas.BifrostConfig{
 }
 ```
 
-> **Note**: In `config.json` setups, provider keys are taken from the provider config on initialization, so you do not need to duplicate `keys` inside the plugin config. Any updates to the provider keys will not be reflected until next restart.
+> **Note**: Provider API keys are inherited automatically from the global provider configuration. You do not need to (and cannot) specify keys inside the plugin config.
 
 **TTL Format Options:**
 - Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
@@ -228,7 +237,7 @@ Exact-match direct entries are stored and retrieved using a deterministic cache 
 
 ### Setup
 
-To enable direct-only mode globally, set `dimension: 1` and omit the `provider` and `keys` fields from the plugin config. The plugin will automatically fall back to direct search only.
+To enable direct-only mode globally, set `dimension: 1` and omit the `provider` and `embedding_model` fields from the plugin config. The plugin will automatically fall back to direct search only.
 
 > **Important**: If you specify `dimension: 1` and also provide a `provider`, Bifrost treats the config as provider-backed semantic mode, not direct-only mode. To use direct-only mode, omit the `provider` field entirely.
 
@@ -246,7 +255,7 @@ import (
 )
 
 cacheConfig := &semanticcache.Config{
-    // No Provider, Keys, or EmbeddingModel -- direct hash mode only
+    // No Provider or EmbeddingModel -- direct hash mode only
     Dimension: 1, // Placeholder; entries are stored as metadata-only (no embedding vectors). Change dimension before switching to dual-layer mode to avoid mixed-dimension issues.
 
     TTL:               5 * time.Minute,

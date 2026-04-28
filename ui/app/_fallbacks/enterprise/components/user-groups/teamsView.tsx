@@ -3,7 +3,8 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useEffect, useRef, useState } from "react";
+import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 const POLLING_INTERVAL = 5000;
@@ -15,13 +16,16 @@ export function TeamsView() {
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
 
-	const [search, setSearch] = useState("");
-	const [offset, setOffset] = useState(0);
-	const debouncedSearch = useDebouncedValue(search, 300);
+	const [urlState, setUrlState] = useQueryStates(
+		{
+			search: parseAsString.withDefault(""),
+			offset: parseAsInteger.withDefault(0),
+			selected_team: parseAsString.withDefault(""),
+		},
+		{ history: "push" },
+	);
 
-	useEffect(() => {
-		setOffset(0);
-	}, [debouncedSearch]);
+	const debouncedSearch = useDebouncedValue(urlState.search, 300);
 
 	const {
 		data: virtualKeysData,
@@ -46,7 +50,7 @@ export function TeamsView() {
 	} = useGetTeamsQuery(
 		{
 			limit: PAGE_SIZE,
-			offset,
+			offset: urlState.offset,
 			search: debouncedSearch || undefined,
 		},
 		{
@@ -59,9 +63,9 @@ export function TeamsView() {
 
 	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
 	useEffect(() => {
-		if (!teamsData || offset < teamsTotal) return;
-		setOffset(teamsTotal === 0 ? 0 : Math.floor((teamsTotal - 1) / PAGE_SIZE) * PAGE_SIZE);
-	}, [teamsTotal, offset]);
+		if (!teamsData || urlState.offset < teamsTotal) return;
+		setUrlState({ offset: teamsTotal === 0 ? 0 : Math.floor((teamsTotal - 1) / PAGE_SIZE) * PAGE_SIZE });
+	}, [teamsTotal, urlState.offset]);
 
 	const isLoading = vkLoading || customersLoading || teamsLoading;
 
@@ -93,12 +97,16 @@ export function TeamsView() {
 				totalCount={teamsData?.total_count || 0}
 				customers={customersData?.customers || []}
 				virtualKeys={virtualKeysData?.virtual_keys || []}
-				search={search}
+				search={urlState.search}
 				debouncedSearch={debouncedSearch}
-				onSearchChange={setSearch}
-				offset={offset}
+				onSearchChange={(val) => setUrlState({ search: val || null, offset: 0 }, { history: "replace" })}
+				offset={urlState.offset}
 				limit={PAGE_SIZE}
-				onOffsetChange={setOffset}
+				onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
+				selectedTeamId={urlState.selected_team || null}
+				onTeamAdd={() => setUrlState({ selected_team: "new" })}
+				onTeamSelect={(team) => { setUrlState({ selected_team: team?.id ?? null }) }}
+				onDialogClose={() => setUrlState({ selected_team: null })}
 			/>
 		</div>
 	);

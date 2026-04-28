@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -692,6 +693,10 @@ func (provider *OpenAIProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.Bi
 		if bifrostEvent.Delta.ResponseID != "" && !hasRealtimeExtraParam(bifrostEvent.ExtraParams, "response_id") {
 			out["response_id"] = bifrostEvent.Delta.ResponseID
 		}
+	}
+
+	if len(bifrostEvent.Audio) > 0 && (bifrostEvent.Delta == nil || bifrostEvent.Delta.Audio == "") {
+		out["audio"] = base64.StdEncoding.EncodeToString(bifrostEvent.Audio)
 	}
 
 	return providerUtils.MarshalSorted(out)

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -10,16 +11,17 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // mockModelsManager returns stable filtered and unfiltered model lists for handler tests.
 type mockModelsManager struct {
-	filtered     map[schemas.ModelProvider][]string
-	unfiltered   map[schemas.ModelProvider][]string
-	reloadCalls  []schemas.ModelProvider
-	reloadErr    error
+	filtered    map[schemas.ModelProvider][]string
+	unfiltered  map[schemas.ModelProvider][]string
+	reloadCalls []schemas.ModelProvider
+	reloadErr   error
 }
 
 func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
@@ -514,6 +516,353 @@ func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 	}
 }
 
+// --- VK-based filtering tests ---
+
+// TestParseVKValueFromRequest verifies that the VK value is extracted from each
+// supported header, in priority order, and that non-VK values are ignored.
+func TestParseVKValueFromRequest(t *testing.T) {
+	const vk = "sk-bf-test-virtual-key"
+
+	cases := []struct {
+		name   string
+		setup  func(*fasthttp.RequestCtx)
+		wantVK string
+	}{
+		{
+			name: "x-bf-vk header",
+			setup: func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set("x-bf-vk", vk)
+			},
+			wantVK: vk,
+		},
+		{
+			name: "Authorization Bearer header",
+			setup: func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set("Authorization", "Bearer "+vk)
+			},
+			wantVK: vk,
+		},
+		{
+			name: "x-api-key header",
+			setup: func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set("x-api-key", vk)
+			},
+			wantVK: vk,
+		},
+		{
+			name: "x-goog-api-key header",
+			setup: func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set("x-goog-api-key", vk)
+			},
+			wantVK: vk,
+		},
+		{
+			name:   "no header returns empty string",
+			setup:  func(*fasthttp.RequestCtx) {},
+			wantVK: "",
+		},
+		{
+			name: "non-VK Bearer token returns empty string",
+			setup: func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set("Authorization", "Bearer regular-api-key-123")
+			},
+			wantVK: "",
+		},
+		{
+			name: "x-bf-vk takes priority over Authorization",
+			setup: func(ctx *fasthttp.RequestCtx) {
+				ctx.Request.Header.Set("x-bf-vk", vk)
+				ctx.Request.Header.Set("Authorization", "Bearer sk-bf-other")
+			},
+			wantVK: vk,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			tc.setup(ctx)
+			got := governanceplugin.ParseVirtualKeyFromFastHTTPRequest(ctx)
+			gotValue := ""
+			if got != nil {
+				gotValue = *got
+			}
+			if gotValue != tc.wantVK {
+				t.Fatalf("expected %q, got %q", tc.wantVK, gotValue)
+			}
+		})
+	}
+}
+
+// TestListModels_VKFilterRestrictsToAllowedProviderAndModels verifies that when a
+// VK filter is active, only providers listed in VKProviderConfigs are returned and
+// only models passing AllowedModels are included.
+func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	// Two providers configured; VK only allows openai with specific models.
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
+				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI:    {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+				schemas.Anthropic: {"claude-3-5-sonnet", "claude-3-haiku"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{
+				Provider:      "openai",
+				AllowedModels: schemas.WhiteList{"gpt-4o", "gpt-4o-mini"},
+			},
+		},
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected total=2, got %d", total)
+	}
+	for _, m := range models {
+		if m.Provider != schemas.OpenAI {
+			t.Fatalf("expected only openai models, got provider %s", m.Provider)
+		}
+	}
+	names := map[string]bool{}
+	for _, m := range models {
+		names[m.Name] = true
+	}
+	if !names["gpt-4o"] || !names["gpt-4o-mini"] {
+		t.Fatalf("expected gpt-4o and gpt-4o-mini, got %v", models)
+	}
+	if names["gpt-3.5-turbo"] {
+		t.Fatalf("gpt-3.5-turbo should be denied by AllowedModels")
+	}
+	if names["claude-3-5-sonnet"] || names["claude-3-haiku"] {
+		t.Fatalf("anthropic models should be excluded by VK provider filter")
+	}
+}
+
+// TestListModels_VKFilterAllowsAllModelsWithWildcard verifies that AllowedModels=["*"]
+// passes all provider models through.
+func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+		},
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("expected all 3 models with wildcard, got total=%d", total)
+	}
+	_ = models
+}
+
+// TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty verifies deny-by-default:
+// a VK that lists a provider but with an empty AllowedModels returns 0 models.
+func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "openai", AllowedModels: schemas.WhiteList{}},
+		},
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 || len(models) != 0 {
+		t.Fatalf("expected 0 models with empty AllowedModels (deny-by-default), got total=%d %v", total, models)
+	}
+}
+
+// TestListModels_VKFilterNoProviderConfigsDeniesAll verifies that a VK with no
+// ProviderConfigs returns 0 models (deny-by-default at provider level).
+func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI:    {},
+				schemas.Anthropic: {},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI:    {"gpt-4o"},
+				schemas.Anthropic: {"claude-3-5-sonnet"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:             100,
+		HasVKFilter:       true,
+		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{}, // empty
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 || len(models) != 0 {
+		t.Fatalf("expected 0 models when VK has no provider configs, got total=%d", total)
+	}
+}
+
+func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI:    {},
+				schemas.Anthropic: {},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI:    {"gpt-4o"},
+				schemas.Anthropic: {"claude-3-5-sonnet"},
+			},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=anthropic")
+	query, ok := h.parseModelListQuery(ctx, 5)
+	if !ok {
+		t.Fatalf("expected parseModelListQuery to succeed")
+	}
+	query.HasVKFilter = true
+	query.VKProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 || len(models) != 0 {
+		t.Fatalf("expected blocked explicit provider to return no models, got total=%d models=%#v", total, models)
+	}
+}
+
+func TestParseModelListQuery_VKWithoutDBStoreReturnsServiceUnavailable(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
+			},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-test-virtual-key")
+
+	query, ok := h.parseModelListQuery(ctx, 5)
+	if ok {
+		t.Fatalf("expected parseModelListQuery to fail without dbStore, got query=%#v", query)
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when dbStore is unavailable, got %d", ctx.Response.StatusCode())
+	}
+}
+
+// TestListModels_NoVKFilterReturnsAll verifies that without a VK filter the endpoint
+// returns all providers and models as normal.
+func TestListModels_NoVKFilterReturnsAll(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI:    {},
+				schemas.Anthropic: {},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI:    {"gpt-4o"},
+				schemas.Anthropic: {"claude-3-5-sonnet"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: false, // no filter
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 2 || len(models) != 2 {
+		t.Fatalf("expected 2 models (one per provider), got total=%d", total)
+	}
+}
+
 func TestListModels_UsesCatalogAwareAliasMatchingForKeyAllowlist(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -546,5 +895,88 @@ func TestListModels_UsesCatalogAwareAliasMatchingForKeyAllowlist(t *testing.T) {
 
 	if resp.Total != 1 || len(resp.Models) != 1 || resp.Models[0].Name != "gpt-4o" {
 		t.Fatalf("expected gpt-4o to be matched through alias allowlist, got %#v", resp.Models)
+	}
+}
+
+// TestListModels_KeyModelAllowlistIsCaseInsensitive verifies that key.Models matching
+// uses case-insensitive comparison so "GPT-4O" in the allowlist matches "gpt-4o" in the pool.
+func TestListModels_KeyModelAllowlistIsCaseInsensitive(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{
+			{ID: "key-a", Models: []string{"GPT-4O", "GPT-4O-MINI"}},
+		},
+		[]string{"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+		[]string{"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+	)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-a&limit=10")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 (gpt-4o and gpt-4o-mini matched case-insensitively), got total=%d %v", resp.Total, resp.Models)
+	}
+	names := map[string]bool{}
+	for _, m := range resp.Models {
+		names[m.Name] = true
+	}
+	if !names["gpt-4o"] || !names["gpt-4o-mini"] {
+		t.Fatalf("expected gpt-4o and gpt-4o-mini, got %v", resp.Models)
+	}
+	if names["gpt-3.5-turbo"] {
+		t.Fatalf("gpt-3.5-turbo should not be returned (not in key allowlist)")
+	}
+}
+
+// TestListModels_KeyBlacklistIsCaseInsensitive verifies that key.BlacklistedModels uses
+// case-insensitive matching so "GPT-3.5-TURBO" blocks "gpt-3.5-turbo" in the pool.
+func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{
+			{ID: "key-a", BlacklistedModels: []string{"GPT-3.5-TURBO"}},
+		},
+		[]string{"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+		[]string{"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+	)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-a&limit=10")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 (gpt-3.5-turbo blocked case-insensitively), got total=%d %v", resp.Total, resp.Models)
+	}
+	for _, m := range resp.Models {
+		if strings.EqualFold(m.Name, "gpt-3.5-turbo") {
+			t.Fatalf("gpt-3.5-turbo should be blocked by blacklist, got %v", resp.Models)
+		}
 	}
 }

@@ -48,9 +48,6 @@ const normalizeCacheConfigForSave = (config: EditorCacheConfig) => {
 	if (config.updated_at !== undefined) {
 		normalized.updated_at = config.updated_at;
 	}
-	if (config.keys !== undefined) {
-		normalized.keys = config.keys;
-	}
 
 	const provider = config.provider?.trim();
 	const embeddingModel = config.embedding_model?.trim();
@@ -375,7 +372,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 								</div>
 								<p className="text-muted-foreground text-xs">
 									API keys for the embedding provider will be inherited from the main provider configuration. The semantic cache will use
-									the configured provider&apos;s keys automatically. <b>Updates in keys will be reflected on Bifrost restart.</b>
+									the configured provider&apos;s keys automatically.
 								</p>
 							</div>
 

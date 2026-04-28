@@ -79,7 +79,6 @@ func TestToCohereEmbeddingRequestBodyIncludesModelForDirectCohere(t *testing.T) 
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToCohereEmbeddingRequest(bifrostReq), nil
 		},
-		schemas.Cohere,
 	)
 	require.Nil(t, bifrostErr)
 	assert.JSONEq(t, `{

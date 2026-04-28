@@ -1,0 +1,28 @@
+# Semantic search/cache layer using Weaviate vector store (chart-managed).
+# Merge with values.yaml + storage + providers layers.
+bifrost:
+  plugins:
+    semanticCache:
+      enabled: true
+      version: 1
+      config:
+        provider: "openai"
+        # Embedding provider keys for semantic cache.
+        keys:
+          - "env.OPENAI_API_KEY"
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.8
+        ttl: "5m"
+        conversation_history_threshold: 3
+        cache_by_model: true
+        cache_by_provider: true
+        exclude_system_prompt: false
+        cleanup_on_shutdown: false
+        vector_store_namespace: "bifrost-semantic-cache"
+
+vectorStore:
+  enabled: true
+  type: weaviate
+  weaviate:
+    enabled: true

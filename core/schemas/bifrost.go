@@ -248,6 +248,9 @@ const (
 	BifrostContextKeyRealtimeEventType                   BifrostContextKey = "bifrost-realtime-event-type"                      // string
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
+	BifrostContextKeyAllowPerRequestStorageOverride       BifrostContextKey = "bifrost-allow-per-request-storage-override"        // bool (set by transport from config — gates whether x-bf-disable-content-logging and x-bf-store-raw-request-response per-request overrides are honored)
+	BifrostContextKeyAllowPerRequestRawOverride           BifrostContextKey = "bifrost-allow-per-request-raw-override"            // bool (set by transport from config — gates whether x-bf-send-back-raw-request and x-bf-send-back-raw-response per-request overrides are honored)
+	BifrostContextKeyDisableContentLogging               BifrostContextKey = "x-bf-disable-content-logging"                     // bool (per-request override for content logging; only honored when BifrostContextKeyAllowPerRequestStorageOverride is true)
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
 	BifrostContextKeyUserID                              BifrostContextKey = "bifrost-user-id"   // string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
@@ -288,7 +291,8 @@ const (
 	// BifrostContextKeyProviderOverride is used internally by Bifrost to pass per-request
 	// credential and URL overrides from BifrostRequest to the provider layer.
 	// Plugin developers should use req.UpdateAPIKey / req.UpdateProviderBaseURL instead.
-	BifrostContextKeyProviderOverride BifrostContextKey = "bifrost-provider-override"
+	BifrostContextKeyProviderOverride                    BifrostContextKey = "bifrost-provider-override"
+	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions" // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 )
 
 const (
@@ -326,6 +330,7 @@ const (
 	RoutingEngineGovernance    = "governance"
 	RoutingEngineRoutingRule   = "routing-rule"
 	RoutingEngineLoadbalancing = "loadbalancing"
+	RoutingEngineModelCatalog  = "model-catalog"
 )
 
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
@@ -343,9 +348,10 @@ type KeyAttemptRecord struct {
 // RoutingEngineLogEntry represents a log entry from a routing engine
 // format: [timestamp] [engine] - message
 type RoutingEngineLogEntry struct {
-	Engine    string // e.g., "governance", "routing-rule", "openrouter"
-	Message   string // Human-readable decision/action message
-	Timestamp int64  // Unix milliseconds
+	Engine    string   `json:"engine"`    // e.g., "governance", "routing-rule", "openrouter"
+	Level     LogLevel `json:"level"`
+	Message   string   `json:"message"`   // Human-readable decision/action message
+	Timestamp int64    `json:"timestamp"` // Unix milliseconds
 }
 
 // PluginLogEntry represents a structured log entry emitted by a plugin via ctx.Log().
@@ -1195,6 +1201,9 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+// PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the
+// active sub-response. Core always calls this both before and after RunPostLLMHooks, so any plugin
+// modifications to these 4 fields are no-ops — tampering with them inside plugins is discouraged.
 func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider ModelProvider, originalModelRequested string, resolvedModelUsed string) {
 	if r == nil {
 		return
@@ -1519,6 +1528,9 @@ type BifrostError struct {
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
 }
 
+// PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the
+// error's ExtraFields. Core always calls this both before and after RunPostLLMHooks, so any plugin
+// modifications to these 4 fields are no-ops — tampering with them inside plugins is discouraged.
 func (e *BifrostError) PopulateExtraFields(requestType RequestType, provider ModelProvider, originalModelRequested string, resolvedModelUsed string) {
 	if e == nil {
 		return

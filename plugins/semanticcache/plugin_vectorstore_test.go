@@ -55,13 +55,6 @@ func getDefaultTestConfig() *Config {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: true,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 }
 

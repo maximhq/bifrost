@@ -43,7 +43,7 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		const excludedKeys = ["start_time", "end_time", "content_search"];
+		const excludedKeys = ["start_time", "end_time", "content_search", "period", "polling"];
 		let count = Object.entries(filters).reduce((c, [key, value]) => {
 			if (excludedKeys.includes(key)) return c;
 			if (Array.isArray(value)) return c + value.length;
@@ -65,7 +65,7 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 			<button
 				type="button"
 				onClick={toggleCollapsed}
-				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-3 text-sm font-medium"
+				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
 				title="Show filters"
 				aria-label="Show filters"
 			>

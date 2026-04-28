@@ -7,26 +7,35 @@ icon: "book-open"
 The Model Catalog is a foundational component of Bifrost that provides a unified interface for managing AI models, including their pricing, capabilities, and availability. It serves as a centralized repository for all model-related information, enabling dynamic cost calculation, intelligent model routing, and efficient resource management.
 
 <Info>
-**Related Documentation**: The Model Catalog powers Bifrost's intelligent routing system. See [Provider Routing](/providers/provider-routing) for detailed examples of how governance and load balancing use the catalog to make routing decisions, including cross-provider scenarios and weighted routing via proxy providers.
+  **Related Documentation**: The Model Catalog powers Bifrost's intelligent
+  routing system. See [Provider Routing](/providers/provider-routing) for
+  detailed examples of how governance and load balancing use the catalog to make
+  routing decisions, including cross-provider scenarios and weighted routing via
+  proxy providers.
 </Info>
 
 ## Core Features
 
 ### **1. Automatic Pricing Synchronization**
+
 The Model Catalog manages pricing data through a two-phase approach:
 
 **Startup Behavior:**
+
 - **With ConfigStore**: Downloads a pricing sheet from Maxim's datasheet, persists it to the config store, and then loads it into memory for fast lookups.
 - **Without ConfigStore**: Downloads the pricing sheet directly into memory on every startup.
 
 **Ongoing Synchronization:**
+
 - When ConfigStore is available, an automatic sync occurs every 24 hours to keep pricing data current.
 - All pricing data is cached in memory for O(1) lookup performance during cost calculations.
 
 This ensures that cost calculations always use the latest pricing information from AI providers while maintaining optimal performance.
 
 ### **2. Multi-Modal Cost Calculation**
+
 It supports diverse pricing models across different AI operation types:
+
 - **Text Operations**: Token-based pricing for chat completions, text completions, responses, and embeddings. Cache-read/cache-write pricing applies to chat/text/responses when providers surface prompt cache token details.
 - **Audio Processing**: Character-based, token-based, and duration-based pricing for speech synthesis and transcription, with audio token detail breakdown. Speech responses populate `usage.input_chars` so speech can be billed by input characters in addition to tokens/duration.
 - **Image Processing**: Per-image (`input_cost_per_image`/`output_cost_per_image`), per-pixel (`input_cost_per_pixel`/`output_cost_per_pixel`), or token-based pricing with text/image token breakdown.
@@ -35,17 +44,22 @@ It supports diverse pricing models across different AI operation types:
 - **Prompt Caching**: Separate rates for cache-read tokens (`cached_read_tokens`) and cache-creation tokens (`cached_write_tokens`), both surfaced under `prompt_tokens_details` (see [Prompt Cache Cost Calculation](#prompt-cache-cost-calculation)).
 
 ### **3. Model Information Management**
+
 The Model Catalog maintains a pool of available models for each provider, populated from both pricing data and provider list models APIs. This enables:
+
 - **Model Discovery**: Listing all available models for a given provider
 - **Provider Discovery**: Finding all providers that support a specific model with intelligent cross-provider resolution (OpenRouter, Vertex, Groq, Bedrock)
 - **Model Validation**: Checking if a model is allowed for a provider based on allowed models lists (supports provider-prefixed entries)
 
 ### **4. Intelligent Cache Cost Handling**
+
 It integrates with semantic caching to provide accurate cost calculations:
+
 - **Cache Hits**: Zero cost for direct cache hits, and embedding cost only for semantic matches.
 - **Cache Misses**: Combined cost of the base model usage plus the embedding generation cost for cache storage.
 
 ### **5. Tiered Pricing Support**
+
 The system automatically applies different pricing rates for high-token contexts, reflecting real provider pricing models. Two tiers are supported: above 128k tokens and above 200k tokens, with the higher tier taking precedence when both are configured.
 
 ## Configuration
@@ -74,6 +88,7 @@ modelCatalog, err := modelcatalog.Init(context.Background(), config, configStore
 ## Architecture
 
 ### ModelCatalog
+
 The `ModelCatalog` is the central component that handles all model and pricing operations:
 
 ```go
@@ -100,6 +115,7 @@ type ModelCatalog struct {
 ```
 
 ### Pricing Data Structure
+
 Each model's pricing information includes comprehensive cost metrics, supporting various modalities and tiered pricing:
 
 ```go
@@ -166,10 +182,14 @@ type PricingEntry struct {
 The Model Catalog is designed to be shared across all Bifrost plugins, providing consistent model information and validation logic for governance, load balancing, and other routing mechanisms.
 
 <Note>
-**Governance & Load Balancing**: Both plugins delegate model validation to the Model Catalog's `IsModelAllowedForProvider` method, ensuring consistent handling of cross-provider scenarios and provider-prefixed allowed models. See [Provider Routing](/providers/provider-routing) for configuration examples.
+  **Governance & Load Balancing**: Both plugins delegate model validation to the
+  Model Catalog's `IsModelAllowedForProvider` method, ensuring consistent
+  handling of cross-provider scenarios and provider-prefixed allowed models. See
+  [Provider Routing](/providers/provider-routing) for configuration examples.
 </Note>
 
 ### Initialization
+
 In Bifrost's gateway, the `ModelCatalog` is initialized once at the start and shared across all plugins:
 
 ```go
@@ -183,6 +203,7 @@ if err != nil {
 ```
 
 ### Basic Cost Calculation
+
 Calculate costs from a Bifrost response:
 
 ```go
@@ -196,6 +217,7 @@ logger.Info("Request cost: $%.6f", cost)
 ```
 
 ### Unified Cost Calculation
+
 `CalculateCost` is the single entry point for all cost calculations. It handles all request types, semantic cache billing, and tiered pricing automatically:
 
 ```go
@@ -208,10 +230,13 @@ cost := modelCatalog.CalculateCost(result, nil) // *schemas.BifrostResponse, *Pr
 ```
 
 ### Model Discovery
+
 The `ModelCatalog` provides several methods to query for model and provider information.
 
 #### Get Models for a Provider
+
 Retrieve a list of all models supported by a specific provider.
+
 ```go
 openaiModels := modelCatalog.GetModelsForProvider(schemas.OpenAI)
 for _, model := range openaiModels {
@@ -222,6 +247,7 @@ for _, model := range openaiModels {
 **Thread-safe**: Uses read lock for concurrent access.
 
 #### Get Providers for a Model
+
 Find all providers that offer a specific model, including cross-provider resolution.
 
 ```go
@@ -244,6 +270,7 @@ This method implements intelligent cross-provider routing logic to discover all 
 5. **Bedrock Claude Models**: For Claude models, flexible matching against Bedrock's full ARN format
 
 **Example**:
+
 ```go
 providers := modelCatalog.GetProvidersForModel("claude-3-5-sonnet")
 // Returns: [anthropic, vertex, bedrock, openrouter]
@@ -251,10 +278,14 @@ providers := modelCatalog.GetProvidersForModel("claude-3-5-sonnet")
 ```
 
 <Note>
-This cross-provider logic powers Bifrost's intelligent routing capabilities. See [Provider Routing](/providers/provider-routing#the-model-catalog) for detailed examples of how this enables features like weighted routing via proxy providers.
+  This cross-provider logic powers Bifrost's intelligent routing capabilities.
+  See [Provider Routing](/providers/provider-routing#the-model-catalog) for
+  detailed examples of how this enables features like weighted routing via proxy
+  providers.
 </Note>
 
 #### Check Model Allowance for Provider
+
 Validate if a model is allowed for a specific provider based on an allowed models list. This method is used internally by governance and load balancing plugins.
 
 ```go
@@ -284,39 +315,55 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 ```
 
 **Behavior**:
+
 - **`["*"]` wildcard**: Delegates to `GetProvidersForModel` (includes cross-provider logic) — this is the "allow all via catalog" mode
 - **Non-empty explicit list**: Checks for both direct matches and provider-prefixed entries
 - **Empty slice (`[]string{}` / empty `schemas.WhiteList`)**: Returns `false` (deny-all) — mirrors the config deny-by-default semantics
 
 <Note>
-In `config.json` and the governance API, `allowed_models: []` (empty array) means **deny all models** (deny-by-default, v1.5.0+). The Go helper `IsModelAllowedForProvider` behaves the same way: an empty `allowedModels` slice also returns `false`. Use `["*"]` to allow all models validated through the catalog.
+  In `config.json` and the governance API, `allowed_models: []` (empty array)
+  means **deny all models** (deny-by-default, v1.5.0+). The Go helper
+  `IsModelAllowedForProvider` behaves the same way: an empty `allowedModels`
+  slice also returns `false`. Use `["*"]` to allow all models validated through
+  the catalog.
 </Note>
-  - Direct: `"gpt-4o"` matches `"gpt-4o"`
-  - Prefixed: `"openai/gpt-4o"` matches request for `"gpt-4o"` (prefix stripped)
+- Direct: `"gpt-4o"` matches `"gpt-4o"`
+- Prefixed: `"openai/gpt-4o"` matches request for `"gpt-4o"` (prefix stripped)
 
 **Use Cases**:
+
 - **Governance Routing**: Validate if a model request is allowed for a provider configuration
 - **Load Balancing**: Filter providers based on allowed models before performance scoring
 - **Virtual Key Validation**: Check if a model can be used with a specific virtual key's provider configs
 
 <Tip>
-This method is the central validation point for both governance and load balancing plugins, ensuring consistent model allowance logic across all routing mechanisms. It handles all edge cases including proxy providers (OpenRouter, Vertex) and provider-prefixed model entries.
+  This method is the central validation point for both governance and load
+  balancing plugins, ensuring consistent model allowance logic across all
+  routing mechanisms. It handles all edge cases including proxy providers
+  (OpenRouter, Vertex) and provider-prefixed model entries.
 </Tip>
 
 #### Dynamically Add Models
+
 You can dynamically add models to the catalog's pool from a `v1/models` compatible response structure. This is useful for providers that expose a model list endpoint.
+
 ```go
 // response is *schemas.BifrostListModelsResponse
 modelCatalog.AddModelDataToPool(response)
 ```
+
 This is automatically done in Bifrost gateway initialization for all providers that are supported by Bifrost.
 
 **When to use**:
+
 - After fetching models from a provider's `/v1/models` endpoint
 - When a new provider is dynamically added at runtime
 - For testing with custom model lists
+
 ### Reloading Configuration
+
 You can reload the pricing configuration at runtime if you need to change the pricing URL or sync interval.
+
 ```go
 newConfig := &modelcatalog.Config{
     PricingSyncInterval: 12 * time.Hour,
@@ -382,7 +429,6 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 // When pricing is not found, CalculateCost returns 0.0 and logs a debug message.
 // This ensures operations continue smoothly without billing failures.
 ```
-
 
 ## Cleanup and Lifecycle Management
 

@@ -16,11 +16,12 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
-import { useDeleteRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
+import { useDeleteRoutingRuleMutation, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule, RoutingTarget } from "@/lib/types/routingRules";
 import { getPriorityBadgeClass, getScopeLabel, truncateCELExpression } from "@/lib/utils/routingRules";
 import { ChevronLeft, ChevronRight, Edit, Search, Trash2 } from "lucide-react";
@@ -35,6 +36,8 @@ interface RoutingRulesTableProps {
 	onRowClick: (rule: RoutingRule) => void;
 	/** When false, delete button is hidden and deletion is disabled (e.g. for read-only users). */
 	canDelete?: boolean;
+	/** When false, enabled toggle is disabled (e.g. for read-only users). */
+	canUpdate?: boolean;
 	search: string;
 	onSearchChange: (value: string) => void;
 	offset: number;
@@ -49,6 +52,7 @@ export function RoutingRulesTable({
 	onEdit,
 	onRowClick,
 	canDelete = false,
+	canUpdate = false,
 	search,
 	onSearchChange,
 	offset,
@@ -57,6 +61,7 @@ export function RoutingRulesTable({
 }: RoutingRulesTableProps) {
 	const [deleteRuleId, setDeleteRuleId] = useState<string | null>(null);
 	const [deleteRoutingRule, { isLoading: isDeleting }] = useDeleteRoutingRuleMutation();
+	const [updateRoutingRule] = useUpdateRoutingRuleMutation();
 
 	const handleDelete = async () => {
 		if (!canDelete || !deleteRuleId) return;
@@ -81,7 +86,7 @@ export function RoutingRulesTable({
 							<TableHead>Scope</TableHead>
 							<TableHead className="text-right">Priority</TableHead>
 							<TableHead>Expression</TableHead>
-							<TableHead>Status</TableHead>
+							<TableHead>Enabled</TableHead>
 							<TableHead className="text-right">Actions</TableHead>
 						</TableRow>
 					</TableHeader>
@@ -166,8 +171,23 @@ export function RoutingRulesTable({
 											{truncateCELExpression(rule.cel_expression)}
 										</span>
 									</TableCell>
-									<TableCell>
-										<Badge variant={rule.enabled ? "default" : "secondary"}>{rule.enabled ? "Enabled" : "Disabled"}</Badge>
+									<TableCell onClick={(e) => e.stopPropagation()}>
+										<Switch
+											data-testid={`routing-rule-enabled-${rule.id}-switch`}
+											checked={rule.enabled ?? true}
+											size="md"
+											disabled={!canUpdate}
+											onAsyncCheckedChange={async (checked) => {
+												await updateRoutingRule({ id: rule.id, data: { enabled: checked } })
+													.unwrap()
+													.then(() => {
+														toast.success(`Rule ${checked ? "enabled" : "disabled"} successfully`);
+													})
+													.catch((err) => {
+														toast.error("Failed to update rule", { description: getErrorMessage(err) });
+													});
+											}}
+										/>
 									</TableCell>
 									<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
 										<div className="flex items-center justify-end gap-2">

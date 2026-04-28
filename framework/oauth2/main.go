@@ -76,8 +76,8 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 		return "", fmt.Errorf("oauth token not found")
 	}
 
-	// Check if token is expired
-	if time.Now().After(token.ExpiresAt) {
+	// Refresh only when the token has known expiry and a refresh token is available.
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && strings.TrimSpace(token.RefreshToken) != "" {
 		// Attempt automatic refresh
 		if err := p.RefreshAccessToken(ctx, oauthConfigID); err != nil {
 			p.markExpiredIfPermanent(ctx, oauthConfig, err)
@@ -88,6 +88,9 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 		if err != nil || token == nil {
 			return "", fmt.Errorf("failed to reload token after refresh: %w", err)
 		}
+	}
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+		return "", fmt.Errorf("token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
 	// Sanitize and return access token (trim whitespace/newlines that may cause header formatting issues)
@@ -119,6 +122,10 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 		return fmt.Errorf("oauth token not found: %w", err)
 	}
 
+	if strings.TrimSpace(token.RefreshToken) == "" {
+		return fmt.Errorf("no refresh token available")
+	}
+
 	// Call OAuth provider's token endpoint with refresh_token
 	newTokenResponse, err := p.exchangeRefreshToken(
 		ctx,
@@ -130,15 +137,18 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 	if err != nil {
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
-
 	// Update token in database (sanitize tokens to prevent header formatting issues)
 	now := time.Now()
+	token.ExpiresAt = nil
+	if newTokenResponse.ExpiresIn > 0 {
+		exp := now.Add(time.Duration(newTokenResponse.ExpiresIn) * time.Second)
+		token.ExpiresAt = bifrost.Ptr(exp)
+	}
 	token.AccessToken = strings.TrimSpace(newTokenResponse.AccessToken)
 	if newTokenResponse.RefreshToken != "" {
 		token.RefreshToken = strings.TrimSpace(newTokenResponse.RefreshToken)
 	}
-	token.ExpiresAt = now.Add(time.Duration(newTokenResponse.ExpiresIn) * time.Second)
-	token.LastRefreshedAt = &now
+	token.LastRefreshedAt = bifrost.Ptr(now)
 
 	if err := p.configStore.UpdateOauthToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to update token: %w", err)
@@ -165,8 +175,11 @@ func (p *OAuth2Provider) ValidateToken(ctx context.Context, oauthConfigID string
 		return false, nil
 	}
 
-	// Simple expiry check
-	return time.Now().Before(token.ExpiresAt), nil
+	// Tokens with unknown/non-expiring semantics are considered valid until upstream rejection.
+	if token.ExpiresAt == nil {
+		return true, nil
+	}
+	return time.Now().Before(*token.ExpiresAt), nil
 }
 
 // RevokeToken revokes the OAuth token
@@ -544,12 +557,17 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 
 	// Create oauth_token record (sanitize tokens to prevent header formatting issues)
 	tokenID := uuid.New().String()
+	var expiresAt *time.Time
+	if tokenResponse.ExpiresIn > 0 {
+		exp := time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
+		expiresAt = bifrost.Ptr(exp)
+	}
 	tokenRecord := &tables.TableOauthToken{
 		ID:           tokenID,
 		AccessToken:  strings.TrimSpace(tokenResponse.AccessToken),
 		RefreshToken: strings.TrimSpace(tokenResponse.RefreshToken),
 		TokenType:    tokenResponse.TokenType,
-		ExpiresAt:    time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second),
+		ExpiresAt:    expiresAt,
 		Scopes:       string(scopesJSON),
 	}
 
@@ -939,6 +957,11 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	scopesJSON, _ := json.Marshal(scopes)
 
 	// Create per-user OAuth token record, propagating identity from session
+	var expiresAt *time.Time
+	if tokenResponse.ExpiresIn > 0 {
+		exp := time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
+		expiresAt = bifrost.Ptr(exp)
+	}
 	tokenRecord := &tables.TableOauthUserToken{
 		ID:            uuid.New().String(),
 		SessionToken:  sessionToken,
@@ -949,7 +972,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		AccessToken:   strings.TrimSpace(tokenResponse.AccessToken),
 		RefreshToken:  strings.TrimSpace(tokenResponse.RefreshToken),
 		TokenType:     tokenResponse.TokenType,
-		ExpiresAt:     time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second),
+		ExpiresAt:     expiresAt,
 		Scopes:        string(scopesJSON),
 	}
 	if err := p.configStore.CreateOauthUserToken(ctx, tokenRecord); err != nil {
@@ -979,8 +1002,8 @@ func (p *OAuth2Provider) GetUserAccessToken(ctx context.Context, sessionToken st
 		return "", fmt.Errorf("per-user oauth token not found for session")
 	}
 
-	// Check if token is expired
-	if time.Now().After(token.ExpiresAt) {
+	// Refresh only when known-expired and refresh token exists.
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && strings.TrimSpace(token.RefreshToken) != "" {
 		if err := p.RefreshUserAccessToken(ctx, sessionToken); err != nil {
 			return "", fmt.Errorf("per-user token expired and refresh failed: %w", err)
 		}
@@ -989,6 +1012,9 @@ func (p *OAuth2Provider) GetUserAccessToken(ctx context.Context, sessionToken st
 		if err != nil || token == nil {
 			return "", fmt.Errorf("failed to reload per-user token after refresh")
 		}
+	}
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+		return "", fmt.Errorf("per-user token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
 	accessToken := strings.TrimSpace(token.AccessToken)
@@ -1011,8 +1037,8 @@ func (p *OAuth2Provider) GetUserAccessTokenByIdentity(ctx context.Context, virtu
 		return "", schemas.ErrOAuth2TokenNotFound
 	}
 
-	// Check if token is expired — attempt refresh
-	if time.Now().After(token.ExpiresAt) {
+	// Refresh only when known-expired and refresh token exists.
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && strings.TrimSpace(token.RefreshToken) != "" {
 		if token.SessionToken != "" {
 			if err := p.RefreshUserAccessToken(ctx, token.SessionToken); err != nil {
 				return "", fmt.Errorf("per-user token expired and refresh failed: %w", err)
@@ -1025,6 +1051,9 @@ func (p *OAuth2Provider) GetUserAccessTokenByIdentity(ctx context.Context, virtu
 		} else {
 			return "", fmt.Errorf("per-user token expired and no session token available for refresh")
 		}
+	}
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+		return "", fmt.Errorf("per-user token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
 	accessToken := strings.TrimSpace(token.AccessToken)
@@ -1068,12 +1097,16 @@ func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToke
 
 	// Update token
 	now := time.Now()
+	token.ExpiresAt = nil
+	if newTokenResponse.ExpiresIn > 0 {
+		exp := now.Add(time.Duration(newTokenResponse.ExpiresIn) * time.Second)
+		token.ExpiresAt = bifrost.Ptr(exp)
+	}
 	token.AccessToken = strings.TrimSpace(newTokenResponse.AccessToken)
 	if newTokenResponse.RefreshToken != "" {
 		token.RefreshToken = strings.TrimSpace(newTokenResponse.RefreshToken)
 	}
-	token.ExpiresAt = now.Add(time.Duration(newTokenResponse.ExpiresIn) * time.Second)
-	token.LastRefreshedAt = &now
+	token.LastRefreshedAt = bifrost.Ptr(now)
 
 	if err := p.configStore.UpdateOauthUserToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to update per-user token after refresh: %w", err)

@@ -510,8 +510,10 @@ func TestEncryptPlaintextProviderProxies_EncryptsAndDecryptsCorrectly(t *testing
 	var found tables.TableProvider
 	require.NoError(t, db.Where("name = ?", "proxy-provider").First(&found).Error)
 	require.NotNil(t, found.ProxyConfig)
-	assert.Equal(t, "https://proxy.example.com", found.ProxyConfig.URL)
-	assert.Equal(t, "secret-proxy-pass", found.ProxyConfig.Password)
+	require.NotNil(t, found.ProxyConfig.URL)
+	assert.Equal(t, "https://proxy.example.com", found.ProxyConfig.URL.Val)
+	require.NotNil(t, found.ProxyConfig.Password)
+	assert.Equal(t, "secret-proxy-pass", found.ProxyConfig.Password.Val)
 }
 
 func TestEncryptPlaintextVectorStoreConfigs_EncryptsAndDecryptsCorrectly(t *testing.T) {

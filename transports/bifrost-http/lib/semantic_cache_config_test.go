@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyMode(t *testing.T) {
+func TestValidateSemanticCacheConfig_DirectOnlyMode(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -19,7 +19,7 @@ func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyMode(t *testing.T) {
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.NoError(t, err)
 
 	configMap, ok := pluginConfig.Config.(map[string]interface{})
@@ -28,7 +28,7 @@ func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyMode(t *testing.T) {
 	require.False(t, hasKeys, "direct-only mode should not inject provider keys")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyModeRemovesStaleProviderBackedFields(t *testing.T) {
+func TestValidateSemanticCacheConfig_DirectOnlyModeRemovesStaleProviderBackedFields(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -39,18 +39,16 @@ func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyModeRemovesStaleProvider
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.NoError(t, err)
 
 	configMap, ok := pluginConfig.Config.(map[string]interface{})
 	require.True(t, ok)
-	_, hasKeys := configMap["keys"]
-	require.False(t, hasKeys, "direct-only mode should remove stale provider keys")
 	_, hasEmbeddingModel := configMap["embedding_model"]
 	require.False(t, hasEmbeddingModel, "direct-only mode should remove stale embedding_model")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_InjectsProviderKeys(t *testing.T) {
+func TestValidateSemanticCacheConfig_ProviderBackedModeValidationPasses(t *testing.T) {
 	config := &Config{
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI: {
@@ -73,19 +71,17 @@ func TestAddProviderKeysToSemanticCacheConfig_InjectsProviderKeys(t *testing.T) 
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.NoError(t, err)
 
 	configMap, ok := pluginConfig.Config.(map[string]interface{})
 	require.True(t, ok)
-	keys, ok := configMap["keys"].([]schemas.Key)
-	require.True(t, ok, "provider-backed mode should inject provider keys")
-	require.Len(t, keys, 1)
-	require.Equal(t, "openai-key", keys[0].Name)
+	_, hasKeys := configMap["keys"]
+	require.False(t, hasKeys, "keys are inherited from global client; they must not be injected into the plugin config")
 	require.Equal(t, "openai", configMap["provider"])
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_SemanticModeMissingProvider(t *testing.T) {
+func TestValidateSemanticCacheConfig_SemanticModeMissingProvider(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -94,12 +90,12 @@ func TestAddProviderKeysToSemanticCacheConfig_SemanticModeMissingProvider(t *tes
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires 'provider' for semantic mode")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeMissingDimension(t *testing.T) {
+func TestValidateSemanticCacheConfig_ProviderBackedModeMissingDimension(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -109,12 +105,12 @@ func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeMissingDimension
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires 'dimension' for provider-backed semantic mode")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeDimensionOne(t *testing.T) {
+func TestValidateSemanticCacheConfig_ProviderBackedModeDimensionOne(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -125,12 +121,12 @@ func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeDimensionOne(t *
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires 'dimension' > 1")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeMissingEmbeddingModel(t *testing.T) {
+func TestValidateSemanticCacheConfig_ProviderBackedModeMissingEmbeddingModel(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -140,12 +136,12 @@ func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeMissingEmbedding
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires 'embedding_model'")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_InvalidDimensionZero(t *testing.T) {
+func TestValidateSemanticCacheConfig_InvalidDimensionZero(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -154,12 +150,12 @@ func TestAddProviderKeysToSemanticCacheConfig_InvalidDimensionZero(t *testing.T)
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "'dimension' must be >= 1")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_InvalidDimensionNegative(t *testing.T) {
+func TestValidateSemanticCacheConfig_InvalidDimensionNegative(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
@@ -168,7 +164,7 @@ func TestAddProviderKeysToSemanticCacheConfig_InvalidDimensionNegative(t *testin
 		},
 	}
 
-	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	err := config.ValidateSemanticCacheConfig(pluginConfig)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "'dimension' must be >= 1")
 }

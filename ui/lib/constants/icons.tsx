@@ -1,5 +1,6 @@
-import { Landmark, Network, Shuffle } from "lucide-react";
+import { Database, Landmark, Network, Shuffle } from "lucide-react";
 import { useTheme } from "next-themes";
+import { cn } from "../utils";
 
 type IconSize = "xs" | "sm" | "md" | "lg" | "xl" | number;
 type IconProps = {
@@ -763,6 +764,9 @@ export const RoutingEngineUsedIcons = {
   loadbalancing: ({
     className = "h-5 w-5 text-red-800",
   }: { className?: string } = {}) => <Shuffle className={className} />,
+  "model-catalog": ({
+    className = "h-5 w-5 text-purple-800",
+  }: { className?: string } = {}) => <Database className={className} />,
 } as const;
 
 export type RoutingEngineType = keyof typeof RoutingEngineUsedIcons;
@@ -775,7 +779,7 @@ export const RenderProviderIcon = ({
   const { resolvedTheme } = useTheme();
   const IconComponent = ProviderIcons[provider];
   return IconComponent
-    ? IconComponent({ ...props, theme: resolvedTheme })
+    ? IconComponent({ ...props, theme: resolvedTheme, className: cn("w-5 h-5 shrink-0", props.className) })
     : null;
 };
 
