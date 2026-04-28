@@ -232,6 +232,7 @@ const (
 	AttrResponseID       = "gen_ai.response.id"
 	AttrResponseModel    = "gen_ai.response.model"
 	AttrFinishReason     = "gen_ai.response.finish_reason"
+	AttrFinishReasons    = "gen_ai.response.finish_reasons"
 	AttrSystemFprint     = "gen_ai.response.system_fingerprint"
 	AttrServiceTier      = "gen_ai.response.service_tier"
 	AttrCreated          = "gen_ai.response.created"

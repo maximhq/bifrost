@@ -179,11 +179,32 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 		span.SetAttribute(k, v)
 	}
 
-	// Propagate input messages to root span so observability backends (e.g. Langfuse)
-	// can display Input at the top-level trace without requiring users to drill into llm.call.
+	// Propagate input messages and request model to root span so observability backends (e.g. Langfuse)
+	// can display Input and model name at the top-level trace without requiring users to drill into llm.call.
 	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
-		if v, ok := attrs[schemas.AttrInputMessages]; ok {
+		var inputText string
+		switch req.RequestType {
+		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+			if req.ChatRequest != nil && len(req.ChatRequest.Input) > 0 {
+				last := req.ChatRequest.Input[len(req.ChatRequest.Input)-1]
+				inputText = extractMessageContent(last.Content)
+			}
+		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+			if req.ResponsesRequest != nil && len(req.ResponsesRequest.Input) > 0 {
+				last := req.ResponsesRequest.Input[len(req.ResponsesRequest.Input)-1]
+				inputText = extractResponsesMessageTextContent(&last)
+			}
+		}
+		if inputText != "" {
+			rootSpan.SetAttribute(schemas.AttrInputMessages, inputText)
+		} else if v, ok := attrs[schemas.AttrInputMessages]; ok {
 			rootSpan.SetAttribute(schemas.AttrInputMessages, v)
+		}
+		if v, ok := attrs[schemas.AttrRequestModel]; ok {
+			rootSpan.SetAttribute(schemas.AttrRequestModel, v)
+		}
+		if v, ok := attrs[schemas.AttrProviderName]; ok {
+			rootSpan.SetAttribute(schemas.AttrProviderName, v)
 		}
 	}
 }
@@ -204,6 +225,13 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	}
 	respAttrs := PopulateResponseAttributes(resp)
 	for k, v := range respAttrs {
+		if k == schemas.AttrFinishReasons {
+			// llm.call span gets the singular finish_reason (first element only)
+			if reasons, ok := v.([]string); ok && len(reasons) > 0 {
+				span.SetAttribute(schemas.AttrFinishReason, reasons[0])
+			}
+			continue
+		}
 		span.SetAttribute(k, v)
 	}
 	for k, v := range PopulateErrorAttributes(err) {
@@ -215,11 +243,35 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		span.SetAttribute(schemas.AttrUsageCost, cost)
 	}
 
-	// Propagate output messages to root span so observability backends (e.g. Langfuse)
-	// can display Output at the top-level trace without requiring users to drill into llm.call.
+	// Propagate output messages, response model, and finish reasons to root span so observability backends (e.g. Langfuse)
+	// can display Output and model name at the top-level trace without requiring users to drill into llm.call.
 	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
-		if v, ok := respAttrs[schemas.AttrOutputMessages]; ok {
+		var outputText string
+		if resp != nil {
+			if resp.ChatResponse != nil && len(resp.ChatResponse.Choices) > 0 {
+				choice := resp.ChatResponse.Choices[0]
+				if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+					outputText = extractMessageContent(choice.ChatNonStreamResponseChoice.Message.Content)
+				}
+			} else if resp.ResponsesResponse != nil {
+				for _, msg := range extractResponsesOutputMessages(resp.ResponsesResponse) {
+					if msg.Content != "" {
+						outputText = msg.Content
+						break
+					}
+				}
+			}
+		}
+		if outputText != "" {
+			rootSpan.SetAttribute(schemas.AttrOutputMessages, outputText)
+		} else if v, ok := respAttrs[schemas.AttrOutputMessages]; ok {
 			rootSpan.SetAttribute(schemas.AttrOutputMessages, v)
+		}
+		if v, ok := respAttrs[schemas.AttrResponseModel]; ok {
+			rootSpan.SetAttribute(schemas.AttrResponseModel, v)
+		}
+		if v, ok := respAttrs[schemas.AttrFinishReasons]; ok {
+			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
 		}
 	}
 }
