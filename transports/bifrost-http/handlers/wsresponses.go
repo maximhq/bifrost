@@ -69,6 +69,17 @@ func (h *WSResponsesHandler) Close() {
 	h.sessions.CloseAll()
 }
 
+// defaultProvider returns a default ModelProvider when only a single provider is
+// configured. When multiple providers are active, it returns an empty string so
+// callers continue to require the explicit "provider/model" format.
+func (h *WSResponsesHandler) defaultProvider() schemas.ModelProvider {
+	providers, err := h.client.GetConfiguredProviders()
+	if err != nil || len(providers) != 1 {
+		return ""
+	}
+	return providers[0]
+}
+
 // RegisterRoutes registers the WebSocket Responses endpoint at the base path
 // and all OpenAI integration paths.
 func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
@@ -177,7 +188,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
+	provider, modelName := schemas.ParseModelString(event.Model, h.defaultProvider())
 	if provider == "" || modelName == "" {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
 		return
@@ -495,7 +506,7 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
 func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
-	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
+	provider, modelName := schemas.ParseModelString(event.Model, h.defaultProvider())
 	if provider == "" || modelName == "" {
 		return nil, errModelFormat
 	}
