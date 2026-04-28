@@ -835,8 +835,8 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 		if original.Function.Parameters != nil {
 			copyParams := &ToolFunctionParameters{
-				Type:     original.Function.Parameters.Type,
-				keyOrder: original.Function.Parameters.keyOrder,
+				Type:                original.Function.Parameters.Type,
+				keyOrder:            original.Function.Parameters.keyOrder,
 				explicitEmptyObject: original.Function.Parameters.explicitEmptyObject,
 			}
 
@@ -1279,6 +1279,10 @@ func IsGeminiModel(model string) bool {
 
 func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
+}
+
+func IsGemmaModel(model string) bool {
+	return strings.Contains(model, "gemma")
 }
 
 // IsImagenModel checks if the model is an Imagen model.
