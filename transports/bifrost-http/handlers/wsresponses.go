@@ -599,7 +599,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		if strings.HasPrefix(auth.authorization, "Bearer ") {
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
-				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(token, "sk-bf-"))
+				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
 			} else if handlerStore.ShouldAllowDirectKeys() {
 				key := schemas.Key{
 					ID:     "header-provided",
@@ -613,7 +613,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	}
 	if auth.apiKey != "" {
 		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.apiKey, "sk-bf-"))
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.apiKey)
 		} else if handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
@@ -626,7 +626,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	}
 	if auth.googAPIKey != "" {
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.googAPIKey, "sk-bf-"))
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		} else if handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
