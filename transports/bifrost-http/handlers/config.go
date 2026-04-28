@@ -338,9 +338,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 	}
 
-	if payload.ClientConfig.DisableContentLogging != currentConfig.DisableContentLogging {
-		restartReasons = append(restartReasons, "Content logging")
-	}
+	// No restart needed - logging plugin holds a live pointer to ClientConfig.DisableContentLogging,
+	// and ReloadClientConfigFromConfigStore mutates the struct in place so the next request picks up the new value.
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
@@ -417,6 +416,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Toggle whether deleted virtual keys should appear in logs filter data.
 	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
+
+	// Toggle allowing per-request override for content storage and raw request/response storage
+	updatedConfig.AllowPerRequestContentStorageOverride = payload.ClientConfig.AllowPerRequestContentStorageOverride
+
+	// Toggle allowing per-request override for raw request/response exposure
+	updatedConfig.AllowPerRequestRawOverride = payload.ClientConfig.AllowPerRequestRawOverride
 
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {

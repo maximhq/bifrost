@@ -418,6 +418,10 @@ This is orthogonal to the send-back flags: enabling this does not affect whether
 Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. Note that this is gated by the **content storage** override, not the raw override — `allow_per_request_raw_override` only gates `x-bf-send-back-raw-request` and `x-bf-send-back-raw-response` (sending raw bytes back to the caller).
 </Warning>
 
+<Warning>
+**Content logging must also be enabled for raw bytes to be persisted.** The logging plugin only writes raw bytes when content logging is on — i.e. either global `disable_content_logging` is `false`, or the request sets `x-bf-disable-content-logging: false` (with `allow_per_request_content_storage_override` enabled). If content logging is off, raw bytes are dropped from the log row even when `x-bf-store-raw-request-response: true`.
+</Warning>
+
 <Tabs>
 <Tab title="Gateway (cURL)">
 ```bash
@@ -460,9 +464,9 @@ Input: messages,
 **Type:** `bool` (header values: `"true"` or `"false"`)
 **Required:** No
 
-Override the logging plugin's global `disable_content_logging` config for a single request. When set to `true`, messages, parameters, tool arguments, and tool results are omitted from the log record for that request. When set to `false`, content is recorded even if the global toggle is off.
+Override the logging plugin's global `disable_content_logging` config for a single request. When set to `true`, messages, parameters, tool arguments, tool results, **and raw provider bytes** are omitted from the log record for that request. When set to `false`, content (and raw bytes, if `x-bf-store-raw-request-response` is also enabled) is recorded even if the global toggle is off.
 
-This is useful when you need to suppress sensitive data (e.g. PII, credentials) for specific requests while keeping content logging enabled globally.
+This is useful when you need to suppress sensitive data (e.g. PII, credentials) for specific requests while keeping content logging enabled globally — or, conversely, to opt a single request into full content+raw capture while content logging is globally disabled.
 
 <Warning>
 Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. When the toggle is off, the global `disable_content_logging` setting is authoritative and this value is ignored.

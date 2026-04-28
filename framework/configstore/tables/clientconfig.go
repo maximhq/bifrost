@@ -9,34 +9,36 @@ import (
 
 // TableClientConfig represents global client configuration in the database
 type TableClientConfig struct {
-	ID                              uint   `gorm:"primaryKey;autoIncrement" json:"id"`
-	DropExcessRequests              bool   `gorm:"default:false" json:"drop_excess_requests"`
-	PrometheusLabelsJSON            string `gorm:"type:text" json:"-"` // JSON serialized []string
-	AllowedOriginsJSON              string `gorm:"type:text" json:"-"` // JSON serialized []string
-	AllowedHeadersJSON              string `gorm:"type:text" json:"-"` // JSON serialized []string
-	HeaderFilterConfigJSON          string `gorm:"type:text" json:"-"` // JSON serialized GlobalHeaderFilterConfig
-	InitialPoolSize                 int    `gorm:"default:300" json:"initial_pool_size"`
-	EnableLogging                   *bool  `gorm:"default:true" json:"enable_logging"`
-	DisableContentLogging           bool   `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
-	DisableDBPingsInHealth          bool   `gorm:"default:false" json:"disable_db_pings_in_health"`
-	LogRetentionDays                int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnforceAuthOnInference          bool   `gorm:"default:false" json:"enforce_auth_on_inference"`
-	EnforceGovernanceHeader         bool   `gorm:"" json:"enforce_governance_header"`
-	EnforceSCIMAuth                 bool   `gorm:"default:false" json:"enforce_scim_auth"`
-	AllowDirectKeys                 bool   `gorm:"" json:"allow_direct_keys"`
-	MaxRequestBodySizeMB            int    `gorm:"default:100" json:"max_request_body_size_mb"`
-	MCPAgentDepth                   int    `gorm:"default:10" json:"mcp_agent_depth"`
-	MCPToolExecutionTimeout         int    `gorm:"default:30" json:"mcp_tool_execution_timeout"`              // Timeout for individual tool execution in seconds (default: 30)
-	MCPCodeModeBindingLevel         string `gorm:"default:server" json:"mcp_code_mode_binding_level"`         // How tools are exposed in VFS: "server" or "tool"
-	MCPToolSyncInterval             int    `gorm:"default:10" json:"mcp_tool_sync_interval"`                  // Global tool sync interval in minutes (default: 10, 0 = disabled)
-	MCPDisableAutoToolInject        bool   `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
-	AsyncJobResultTTL               int    `gorm:"default:3600" json:"async_job_result_ttl"`                  // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeadersJSON             string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
-	LoggingHeadersJSON              string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
-	HideDeletedVirtualKeysInFilters bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys in logs filter dropdowns
-	RoutingChainMaxDepth            int    `gorm:"default:10" json:"routing_chain_max_depth"`                 // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalBaseURL                 string `gorm:"type:varchar(512)" json:"mcp_external_base_url,omitempty"` // Public base URL for OAuth callbacks/discovery when behind a reverse proxy
-	WhitelistedRoutesJSON           string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
+	ID                                    uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	DropExcessRequests                    bool   `gorm:"default:false" json:"drop_excess_requests"`
+	PrometheusLabelsJSON                  string `gorm:"type:text" json:"-"` // JSON serialized []string
+	AllowedOriginsJSON                    string `gorm:"type:text" json:"-"` // JSON serialized []string
+	AllowedHeadersJSON                    string `gorm:"type:text" json:"-"` // JSON serialized []string
+	HeaderFilterConfigJSON                string `gorm:"type:text" json:"-"` // JSON serialized GlobalHeaderFilterConfig
+	InitialPoolSize                       int    `gorm:"default:300" json:"initial_pool_size"`
+	EnableLogging                         *bool  `gorm:"default:true" json:"enable_logging"`
+	DisableContentLogging                 bool   `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
+	DisableDBPingsInHealth                bool   `gorm:"default:false" json:"disable_db_pings_in_health"`
+	LogRetentionDays                      int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
+	EnforceAuthOnInference                bool   `gorm:"default:false" json:"enforce_auth_on_inference"`
+	EnforceGovernanceHeader               bool   `gorm:"" json:"enforce_governance_header"`
+	EnforceSCIMAuth                       bool   `gorm:"default:false" json:"enforce_scim_auth"`
+	AllowDirectKeys                       bool   `gorm:"" json:"allow_direct_keys"`
+	MaxRequestBodySizeMB                  int    `gorm:"default:100" json:"max_request_body_size_mb"`
+	MCPAgentDepth                         int    `gorm:"default:10" json:"mcp_agent_depth"`
+	MCPToolExecutionTimeout               int    `gorm:"default:30" json:"mcp_tool_execution_timeout"`                    // Timeout for individual tool execution in seconds (default: 30)
+	MCPCodeModeBindingLevel               string `gorm:"default:server" json:"mcp_code_mode_binding_level"`               // How tools are exposed in VFS: "server" or "tool"
+	MCPToolSyncInterval                   int    `gorm:"default:10" json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = disabled)
+	MCPDisableAutoToolInject              bool   `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`               // When true, MCP tools are not injected into requests by default
+	AsyncJobResultTTL                     int    `gorm:"default:3600" json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeadersJSON                   string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
+	LoggingHeadersJSON                    string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
+	HideDeletedVirtualKeysInFilters       bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`       // Hide deleted virtual keys in logs filter dropdowns
+	RoutingChainMaxDepth                  int    `gorm:"default:10" json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
+	MCPExternalBaseURL                    string `gorm:"type:varchar(512)" json:"mcp_external_base_url,omitempty"`        // Public base URL for OAuth callbacks/discovery when behind a reverse proxy
+	WhitelistedRoutesJSON                 string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
+	AllowPerRequestContentStorageOverride bool   `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
+	AllowPerRequestRawOverride            bool   `gorm:"default:false" json:"allow_per_request_raw_override"`             // Allow per-request override for raw request/response storage
 
 	// Compat plugin feature flags
 	CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`

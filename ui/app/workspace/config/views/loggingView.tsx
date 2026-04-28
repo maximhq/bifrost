@@ -41,7 +41,9 @@ export default function LoggingView() {
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[]) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
-		if (field === "enable_logging" || field === "disable_content_logging") {
+		// Only enable_logging requires a restart (logging plugin is registered/skipped at startup).
+		// disable_content_logging is read live via pointer by the logging plugin and applies on the next request.
+		if (field === "enable_logging") {
 			setNeedsRestart(true);
 		}
 	}, []);
@@ -117,8 +119,10 @@ export default function LoggingView() {
 									Disable Content Logging
 								</label>
 								<p className="text-muted-foreground text-sm">
-									When enabled, only usage metadata (latency, cost, token count, etc.) will be logged. Request/response content will not be
-									stored.
+									When enabled, only usage metadata (latency, cost, token count, status, routing IDs, etc.) is logged. Request/response
+									content — messages, params, tool calls, and any raw provider bytes — is dropped from log records, even when{" "}
+									<code className="text-xs">store_raw_request_response</code> is on. Raw-byte send-back to callers via{" "}
+									<code className="text-xs">send_back_raw_*</code> is unaffected.
 								</p>
 							</div>
 							<Switch
@@ -128,7 +132,6 @@ export default function LoggingView() {
 								onCheckedChange={(checked) => handleConfigChange("disable_content_logging", checked)}
 							/>
 						</div>
-						{needsRestart && <RestartWarning />}
 					</div>
 				)}
 
@@ -141,8 +144,12 @@ export default function LoggingView() {
 							</label>
 							<p className="text-muted-foreground text-sm">
 								When enabled, individual requests can override the global content logging setting using the{" "}
-								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw provider bytes in logs using the{" "}
-								<code className="text-xs">x-bf-store-raw-request-response</code> header. Raw data is not stored by default — each request must explicitly opt in. Does not control sending raw bytes back to callers — see Allow Per-Request Raw Override.
+								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw provider
+								bytes in logs using the <code className="text-xs">x-bf-store-raw-request-response</code> header. Raw-byte storage requires
+								content logging to be on — either globally, or via{" "}
+								<code className="text-xs">x-bf-disable-content-logging: false</code> on the same request. If content logging is off, raw bytes
+								are dropped from the log record even when <code className="text-xs">x-bf-store-raw-request-response: true</code>. Does not
+								control sending raw bytes back to callers — see Allow Per-Request Raw Override.
 							</p>
 						</div>
 						<Switch

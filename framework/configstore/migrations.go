@@ -623,6 +623,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationMakeOAuthTokenExpiryNullable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowPerRequestContentStorageOverrideColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowPerRequestRawOverrideColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -6560,6 +6566,76 @@ func migrationMakeOAuthTokenExpiryNullable(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running make_oauth_token_expiry_nullable migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowPerRequestContentStorageOverrideColumn adds the allow_per_request_content_storage_override column to config_client.
+func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_per_request_content_storage_override_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AllowPerRequestContentStorageOverride"); err != nil {
+					return fmt.Errorf("failed to add allow_per_request_content_storage_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_content_storage_override"); err != nil {
+					return fmt.Errorf("failed to drop allow_per_request_content_storage_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running allow_per_request_content_storage_override migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowPerRequestRawOverrideColumn adds the allow_per_request_raw_override column to config_client.
+func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_per_request_raw_override_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AllowPerRequestRawOverride"); err != nil {
+					return fmt.Errorf("failed to add allow_per_request_raw_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allow_per_request_raw_override"); err != nil {
+					return fmt.Errorf("failed to drop allow_per_request_raw_override column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running allow_per_request_raw_override migration: %s", err.Error())
 	}
 	return nil
 }
