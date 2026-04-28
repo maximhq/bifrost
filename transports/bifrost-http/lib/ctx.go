@@ -214,7 +214,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		for i, p := range res.AllProviders {
 			providerStrs[i] = string(p)
 		}
-		bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+		bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
 			"No provider specified for model %s, found %d options in model catalog: [%s], selecting first: %s",
 			res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider,
 		))

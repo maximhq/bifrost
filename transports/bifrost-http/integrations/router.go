@@ -750,19 +750,19 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				for i, p := range availableProviders {
 					availableProvidersStrs[i] = string(p)
 				}
-				bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+				bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
 					"No provider specified for model %s, found %d options in model catalog: [%s]",
 					extractedModel, len(availableProviders), strings.Join(availableProvidersStrs, ", "),
 				))
 				if len(availableProviders) > 0 {
 					if slices.Contains(availableProviders, RouteConfigTypeToProvider[config.Type]) {
 						availableProviders = []schemas.ModelProvider{RouteConfigTypeToProvider[config.Type]}
-						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
 							"Integration route default provider %s is found in the available providers list, selecting it",
 							RouteConfigTypeToProvider[config.Type],
 						))
 					} else {
-						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, fmt.Sprintf(
+						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
 							"Integration route default provider %s is not found in the available providers list, selecting first: %s",
 							RouteConfigTypeToProvider[config.Type], availableProviders[0],
 						))

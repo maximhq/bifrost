@@ -30,7 +30,7 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testHandlerStore) GetMCPExternalBaseURL() string                 { return "" }
+func (s testHandlerStore) GetMCPExternalBaseURL() string              { return "" }
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
@@ -303,7 +303,7 @@ func TestConvertToBifrostContext_DimHeadersDoNotOverrideReservedContextKeys(t *t
 	ctx.Request.Header.Set("x-bf-dim-x-bf-vk", "attacker-vk")
 	ctx.Request.Header.Set("x-bf-prom-x-bf-vk", "attacker-vk")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
 	// request-id must remain from trusted source, not from x-bf-dim-request-id.
@@ -334,7 +334,7 @@ func TestConvertToBifrostContext_PromHeadersDoNotOverrideReservedContextKeys(t *
 	ctx.Request.Header.Set("x-bf-prom-request-id", "attacker-request-id")
 	ctx.Request.Header.Set("x-bf-prom-x-bf-vk", "attacker-vk")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
 	// request-id must remain from trusted source, not from x-bf-prom-request-id.
@@ -362,7 +362,7 @@ func TestConvertToBifrostContext_DimAndPromCanCoexistWithoutCrossing(t *testing.
 	ctx.Request.Header.Set("x-bf-dim-team", "platform")
 	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
 	defer cancel()
 
 	dimensions, ok := bifrostCtx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
