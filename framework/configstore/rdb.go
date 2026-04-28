@@ -3182,6 +3182,302 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 	return nil
 }
 
+// GetBudgetExtensions retrieves budget extensions, optionally filtered by budget ID and status.
+func (s *RDBConfigStore) GetBudgetExtensions(ctx context.Context, budgetID string, status string) ([]tables.TableBudgetExtension, error) {
+	var extensions []tables.TableBudgetExtension
+	q := s.db.Load().WithContext(ctx).Order("created_at DESC")
+	if budgetID != "" {
+		q = q.Where("budget_id = ?", budgetID)
+	}
+	if status != "" {
+		q = q.Where("status = ?", status)
+	}
+	if err := q.Find(&extensions).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return extensions, nil
+}
+
+// GetBudgetExtension retrieves a single budget extension by ID.
+func (s *RDBConfigStore) GetBudgetExtension(ctx context.Context, id string) (*tables.TableBudgetExtension, error) {
+	var ext tables.TableBudgetExtension
+	if err := s.db.Load().WithContext(ctx).Where("id = ?", id).First(&ext).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return &ext, nil
+}
+
+// CreateBudgetExtension creates a new budget extension record.
+func (s *RDBConfigStore) CreateBudgetExtension(ctx context.Context, ext *tables.TableBudgetExtension, tx ...*gorm.DB) error {
+	txDB := s.db.Load()
+	if len(tx) > 0 {
+		txDB = tx[0]
+	}
+	if err := txDB.WithContext(ctx).Create(ext).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// UpdateBudgetExtension updates an existing budget extension record.
+func (s *RDBConfigStore) UpdateBudgetExtension(ctx context.Context, ext *tables.TableBudgetExtension, tx ...*gorm.DB) error {
+	txDB := s.db.Load()
+	if len(tx) > 0 {
+		txDB = tx[0]
+	}
+	if err := txDB.WithContext(ctx).Save(ext).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// DeleteBudgetExtension deletes a budget extension by ID.
+func (s *RDBConfigStore) DeleteBudgetExtension(ctx context.Context, id string, tx ...*gorm.DB) error {
+	txDB := s.db.Load()
+	if len(tx) > 0 {
+		txDB = tx[0]
+	}
+	result := txDB.WithContext(ctx).Where("id = ?", id).Delete(&tables.TableBudgetExtension{})
+	if result.Error != nil {
+		return s.parseGormError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetActiveBudgetExtensions retrieves all approved, non-expired budget extensions for a budget.
+func (s *RDBConfigStore) GetActiveBudgetExtensions(ctx context.Context, budgetID string) ([]tables.TableBudgetExtension, error) {
+	var extensions []tables.TableBudgetExtension
+	now := time.Now()
+	if err := s.db.Load().WithContext(ctx).
+		Where("budget_id = ? AND status = ? AND starts_at <= ? AND expires_at > ?",
+			budgetID, tables.BudgetExtensionStatusApproved, now, now).
+		Find(&extensions).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return extensions, nil
+}
+
+// ExpireBudgetExtensions marks all approved extensions past their expiry as expired.
+// Returns the list of distinct budget IDs that were affected so callers can invalidate caches.
+func (s *RDBConfigStore) ExpireBudgetExtensions(ctx context.Context) ([]string, error) {
+	now := time.Now()
+
+	// First, find the distinct budget IDs that will be expired
+	var budgetIDs []string
+	if err := s.db.Load().WithContext(ctx).
+		Model(&tables.TableBudgetExtension{}).
+		Where("status = ? AND expires_at <= ?", tables.BudgetExtensionStatusApproved, now).
+		Distinct("budget_id").
+		Pluck("budget_id", &budgetIDs).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	if len(budgetIDs) == 0 {
+		return nil, nil
+	}
+
+	// Update status and set the audit timestamp
+	result := s.db.Load().WithContext(ctx).
+		Model(&tables.TableBudgetExtension{}).
+		Where("status = ? AND expires_at <= ?", tables.BudgetExtensionStatusApproved, now).
+		Updates(map[string]interface{}{
+			"status":     tables.BudgetExtensionStatusExpired,
+			"expired_at": now,
+		})
+	if result.Error != nil {
+		return nil, s.parseGormError(result.Error)
+	}
+	return budgetIDs, nil
+}
+
+// HasActiveExtension checks whether a budget already has an approved, non-expired extension.
+// Uses LIMIT 1 instead of COUNT for efficiency — stops scanning at the first match.
+func (s *RDBConfigStore) HasActiveExtension(ctx context.Context, budgetID string) (bool, error) {
+	now := time.Now()
+	var ext tables.TableBudgetExtension
+	err := s.db.Load().WithContext(ctx).
+		Where("budget_id = ? AND status = ? AND starts_at <= ? AND expires_at > ?",
+			budgetID, tables.BudgetExtensionStatusApproved, now, now).
+		Limit(1).
+		First(&ext).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, s.parseGormError(err)
+	}
+	return true, nil
+}
+
+// GetAllActiveBudgetExtensions returns all currently active extensions across all budgets.
+// Used for batch-loading at startup to avoid N+1 per-budget queries.
+func (s *RDBConfigStore) GetAllActiveBudgetExtensions(ctx context.Context) ([]tables.TableBudgetExtension, error) {
+	var extensions []tables.TableBudgetExtension
+	now := time.Now()
+	if err := s.db.Load().WithContext(ctx).
+		Where("status = ? AND starts_at <= ? AND expires_at > ?",
+			tables.BudgetExtensionStatusApproved, now, now).
+		Find(&extensions).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return extensions, nil
+}
+
+// ApproveBudgetExtensionAtomic atomically approves a budget extension within a DB transaction.
+// It locks the parent budget row to serialize concurrent approvals for the same budget,
+// verifies the extension is still pending, checks no other active extension exists,
+// parses duration, computes expiry, and updates the extension.
+//
+// Returns:
+//   - ErrNotFound if the extension doesn't exist
+//   - ErrExtensionNotPending if it's no longer pending (lost race or already actioned)
+//   - ErrActiveExtensionExists if the budget already has an active extension
+func (s *RDBConfigStore) ApproveBudgetExtensionAtomic(ctx context.Context, extID string, reviewedBy string, reviewNote string) (*tables.TableBudgetExtension, error) {
+	var result tables.TableBudgetExtension
+
+	err := s.db.Load().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. Read the extension
+		if err := tx.Where("id = ?", extID).First(&result).Error; err != nil {
+			return err
+		}
+
+		if result.Status != tables.BudgetExtensionStatusPending {
+			return ErrExtensionNotPending
+		}
+
+		// 2. Lock the parent budget row to serialize all approvals for this budget.
+		// This prevents the TOCTOU race where two concurrent approvals both see "no active
+		// extension" and both proceed. On PostgreSQL this uses SELECT FOR UPDATE; on SQLite
+		// writes are already serialized via file-level locking.
+		var budget tables.TableBudget
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", result.BudgetID).First(&budget).Error; err != nil {
+			return err
+		}
+
+		// 2a. Re-validate the extension amount against the CURRENT budget limits (inside the
+		// transaction, after the row lock). The budget's MaxLimit may have changed since the
+		// extension was created, so we must re-check here to enforce the cap.
+		if err := tables.ValidateExtensionAmount(result.Amount, budget.MaxLimit); err != nil {
+			return fmt.Errorf("extension amount no longer valid against current budget limits: %w", err)
+		}
+
+		// 3. Check no active extension exists (within the same TX, under the lock)
+		now := time.Now()
+		var activeExt tables.TableBudgetExtension
+		activeErr := tx.
+			Where("budget_id = ? AND status = ? AND starts_at <= ? AND expires_at > ?",
+				result.BudgetID, tables.BudgetExtensionStatusApproved, now, now).
+			Limit(1).
+			First(&activeExt).Error
+		if activeErr == nil {
+			// Found an active extension
+			return ErrActiveExtensionExists
+		}
+		if !errors.Is(activeErr, gorm.ErrRecordNotFound) {
+			return activeErr
+		}
+
+		// 4. Parse duration and compute expiry
+		duration, err := tables.ParseDuration(result.Duration)
+		if err != nil {
+			return fmt.Errorf("invalid extension duration: %w", err)
+		}
+		expiresAt := now.Add(duration)
+
+		// 5. Perform the update with an optimistic WHERE clause as a final safety net
+		updateResult := tx.Model(&tables.TableBudgetExtension{}).
+			Where("id = ? AND status = ?", extID, tables.BudgetExtensionStatusPending).
+			Updates(map[string]interface{}{
+				"status":      tables.BudgetExtensionStatusApproved,
+				"reviewed_by": reviewedBy,
+				"review_note": reviewNote,
+				"starts_at":   now,
+				"expires_at":  expiresAt,
+				"approved_at": now,
+				"updated_at":  now,
+			})
+		if updateResult.Error != nil {
+			return updateResult.Error
+		}
+		if updateResult.RowsAffected == 0 {
+			return ErrExtensionNotPending
+		}
+
+		// 6. Read back the final state
+		if err := tx.Where("id = ?", extID).First(&result).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		// Preserve sentinel errors without wrapping through parseGormError
+		if errors.Is(err, ErrExtensionNotPending) || errors.Is(err, ErrActiveExtensionExists) {
+			return nil, err
+		}
+		return nil, s.parseGormError(err)
+	}
+	return &result, nil
+}
+
+// RejectBudgetExtensionAtomic atomically rejects a budget extension using a conditional
+// UPDATE (WHERE status = 'pending'). This prevents the race where a concurrent approval
+// commits between our read and update, which would cause the rejection's full-column Save
+// to overwrite the approved state.
+//
+// Returns:
+//   - ErrNotFound if the extension doesn't exist
+//   - ErrExtensionNotPending if it's no longer pending (lost race or already actioned)
+func (s *RDBConfigStore) RejectBudgetExtensionAtomic(ctx context.Context, extID string, reviewedBy string, reviewNote string) (*tables.TableBudgetExtension, error) {
+	var result tables.TableBudgetExtension
+	now := time.Now()
+
+	err := s.db.Load().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. Read the extension
+		if err := tx.Where("id = ?", extID).First(&result).Error; err != nil {
+			return err
+		}
+
+		if result.Status != tables.BudgetExtensionStatusPending {
+			return ErrExtensionNotPending
+		}
+
+		// 2. Conditional update - only reject if still pending
+		updateResult := tx.Model(&tables.TableBudgetExtension{}).
+			Where("id = ? AND status = ?", extID, tables.BudgetExtensionStatusPending).
+			Updates(map[string]interface{}{
+				"status":      tables.BudgetExtensionStatusRejected,
+				"reviewed_by": reviewedBy,
+				"review_note": reviewNote,
+				"rejected_at": now,
+				"updated_at":  now,
+			})
+		if updateResult.Error != nil {
+			return updateResult.Error
+		}
+		if updateResult.RowsAffected == 0 {
+			return ErrExtensionNotPending
+		}
+
+		// 3. Read back the final state
+		if err := tx.Where("id = ?", extID).First(&result).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		if errors.Is(err, ErrExtensionNotPending) {
+			return nil, err
+		}
+		return nil, s.parseGormError(err)
+	}
+	return &result, nil
+}
+
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
 // rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {

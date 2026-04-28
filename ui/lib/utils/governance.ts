@@ -24,8 +24,34 @@ export function parseResetPeriod(duration: string): string {
 	return `${timeValue} ${unitName}`;
 }
 
+/**
+ * Formats a USD amount with adaptive precision so small values don't collapse to $0.00.
+ *
+ * Rules:
+ *   - NaN / non-finite → "$0.00"
+ *   - exactly 0       → "$0.00"
+ *   - |amount| ≥ 1    → 2 fixed decimals (e.g. $1.00, $123.45)
+ *   - |amount| < 1    → up to 6 decimals, trailing zeros trimmed, but always ≥ 2 decimals
+ *                       (e.g. 0.001 → $0.001, 0.00025 → $0.00025, 0.5 → $0.50)
+ *   - |amount| smaller than 1e-6 still renders the truncated value (does NOT become $0.00 when nonzero
+ *     — falls back to "<$0.000001" style if truncation would otherwise zero it out).
+ */
 export function formatCurrency(dollars: number) {
-	return `$${dollars.toFixed(2)}`;
+	if (!Number.isFinite(dollars)) return "$0.00";
+	if (dollars === 0) return "$0.00";
+	const abs = Math.abs(dollars);
+	const sign = dollars < 0 ? "-" : "";
+	if (abs >= 1) return `${sign}$${abs.toFixed(2)}`;
+	// Sub-dollar: render with up to 6 decimals, then trim trailing zeros while keeping at least 2 decimals.
+	let s = abs.toFixed(6); // "0.001000"
+	if (s.includes(".")) {
+		s = s.replace(/0+$/, "").replace(/\.$/, ""); // "0.001"
+		const decimals = s.split(".")[1]?.length ?? 0;
+		if (decimals < 2) s = `${s}${"0".repeat(2 - decimals)}`; // ensure min 2 decimals (e.g. "0.5" → "0.50")
+	}
+	// Guard: if rounding to 6 decimals zeroed out a tiny non-zero amount, surface it explicitly.
+	if (s === "0" || s === "0.00") return `${sign}<$0.000001`;
+	return `${sign}$${s}`;
 }
 
 /**
@@ -59,12 +85,17 @@ const shortDurationLabels: Record<string, string> = {
  * Formats rate limit into compact display lines.
  * e.g. ["10K tokens/hr", "100 req/hr"]
  */
-export function formatRateLimitLines(rateLimits: {
-	token_max_limit?: number | null;
-	token_reset_duration?: string | null;
-	request_max_limit?: number | null;
-	request_reset_duration?: string | null;
-} | null | undefined): string[] {
+export function formatRateLimitLines(
+	rateLimits:
+		| {
+				token_max_limit?: number | null;
+				token_reset_duration?: string | null;
+				request_max_limit?: number | null;
+				request_reset_duration?: string | null;
+		  }
+		| null
+		| undefined,
+): string[] {
 	if (!rateLimits) return [];
 	const lines: string[] = [];
 	if (rateLimits.token_max_limit != null) {

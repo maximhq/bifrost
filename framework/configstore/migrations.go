@@ -617,6 +617,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddBudgetExtensionsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7035,6 +7038,44 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_ocr_pricing_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetExtensionsTable creates the governance_budget_extensions table.
+//
+// This is a brand-new table — CreateTable reads the full TableBudgetExtension struct
+// at runtime, so all columns (including audit timestamps like ApprovedAt, RejectedAt,
+// ExpiredAt) and composite indexes (idx_budget_ext_active) are created in a single pass.
+// No separate ALTER TABLE migration is needed.
+func migrationAddBudgetExtensionsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_budget_extensions_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if !mg.HasTable(&tables.TableBudgetExtension{}) {
+				if err := mg.CreateTable(&tables.TableBudgetExtension{}); err != nil {
+					return fmt.Errorf("failed to create governance_budget_extensions table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if mg.HasTable(&tables.TableBudgetExtension{}) {
+				if err := mg.DropTable(&tables.TableBudgetExtension{}); err != nil {
+					return fmt.Errorf("failed to drop governance_budget_extensions table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running budget extensions table migration: %s", err.Error())
 	}
 	return nil
 }

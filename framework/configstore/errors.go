@@ -9,6 +9,10 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
+// Budget extension errors
+var ErrExtensionNotPending = errors.New("budget extension is not in pending status")
+var ErrActiveExtensionExists = errors.New("budget already has an active extension")
+
 // ErrUnresolvedKeys is returned when one or more keys could not be resolved
 type ErrUnresolvedKeys struct {
 	Identifiers []string

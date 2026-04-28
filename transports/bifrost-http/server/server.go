@@ -87,6 +87,7 @@ type ServerCallbacks interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
+	ReloadBudgetExtensions(ctx context.Context, budgetID string) error
 	// MCP related callbacks
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
@@ -677,6 +678,23 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	if err := store.DeleteRoutingRuleInMemory(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete routing rule from store: %w", err)
 	}
+	return nil
+}
+
+// ReloadBudgetExtensions loads active budget extensions for a budget from DB into the in-memory governance store
+func (s *BifrostHTTPServer) ReloadBudgetExtensions(ctx context.Context, budgetID string) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return fmt.Errorf("failed to get governance plugin for budget extension reload: %w", err)
+	}
+
+	extensions, err := s.Config.ConfigStore.GetActiveBudgetExtensions(ctx, budgetID)
+	if err != nil {
+		return fmt.Errorf("failed to load active budget extensions for budget %s: %w", budgetID, err)
+	}
+
+	store := governancePlugin.GetGovernanceStore()
+	store.UpdateBudgetExtensionsInMemory(budgetID, extensions)
 	return nil
 }
 

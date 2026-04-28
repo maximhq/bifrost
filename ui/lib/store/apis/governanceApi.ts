@@ -1,5 +1,7 @@
 import {
 	Budget,
+	BudgetExtension,
+	CreateBudgetExtensionRequest,
 	CreateCustomerRequest,
 	CreateModelConfigRequest,
 	CreatePricingOverrideRequest,
@@ -8,6 +10,7 @@ import {
 	CreateVirtualKeyRequest,
 	Customer,
 	DebugStatsResponse,
+	GetBudgetExtensionsResponse,
 	GetBudgetsResponse,
 	GetCustomersParams,
 	GetCustomersResponse,
@@ -27,6 +30,7 @@ import {
 	PricingOverride,
 	RateLimit,
 	ResetUsageRequest,
+	ReviewBudgetExtensionRequest,
 	Team,
 	UpdateBudgetRequest,
 	UpdateCustomerRequest,
@@ -778,6 +782,79 @@ export const governanceApi = baseApi.injectEndpoints({
 				}
 			},
 		}),
+
+		// Budget Extensions
+		getBudgetExtensions: builder.query<GetBudgetExtensionsResponse, { budgetId?: string; status?: string } | void>({
+			query: (params) => ({
+				url: "/governance/budget-extensions",
+				params: {
+					...(params?.budgetId && { budget_id: params.budgetId }),
+					...(params?.status && { status: params.status }),
+				},
+			}),
+			providesTags: (result, _error, params) =>
+				result
+					? [
+							...result.budget_extensions.map((e) => ({ type: "BudgetExtensions" as const, id: e.id })),
+							params?.budgetId
+								? ({ type: "BudgetExtensions" as const, id: `budget-${params.budgetId}` })
+								: ({ type: "BudgetExtensions" as const, id: "LIST" }),
+						]
+					: [{ type: "BudgetExtensions" as const, id: "LIST" }],
+		}),
+
+		createBudgetExtension: builder.mutation<
+			{ message: string; budget_extension: BudgetExtension },
+			CreateBudgetExtensionRequest
+		>({
+			query: (data) => ({
+				url: "/governance/budget-extensions",
+				method: "POST",
+				body: data,
+			}),
+			invalidatesTags: (_result, _error, arg) => [
+				{ type: "BudgetExtensions", id: "LIST" },
+				{ type: "BudgetExtensions", id: `budget-${arg.budget_id}` },
+			],
+		}),
+
+		approveBudgetExtension: builder.mutation<
+			{ message: string; budget_extension: BudgetExtension },
+			{ extensionId: string; data: ReviewBudgetExtensionRequest }
+		>({
+			query: ({ extensionId, data }) => ({
+				url: `/governance/budget-extensions/${extensionId}/approve`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: (result, _error) =>
+				result
+					? [
+							{ type: "BudgetExtensions", id: result.budget_extension.id },
+							{ type: "BudgetExtensions", id: `budget-${result.budget_extension.budget_id}` },
+							{ type: "BudgetExtensions", id: "LIST" },
+						]
+					: [{ type: "BudgetExtensions", id: "LIST" }],
+		}),
+
+		rejectBudgetExtension: builder.mutation<
+			{ message: string; budget_extension: BudgetExtension },
+			{ extensionId: string; data: ReviewBudgetExtensionRequest }
+		>({
+			query: ({ extensionId, data }) => ({
+				url: `/governance/budget-extensions/${extensionId}/reject`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: (result, _error) =>
+				result
+					? [
+							{ type: "BudgetExtensions", id: result.budget_extension.id },
+							{ type: "BudgetExtensions", id: `budget-${result.budget_extension.budget_id}` },
+							{ type: "BudgetExtensions", id: "LIST" },
+						]
+					: [{ type: "BudgetExtensions", id: "LIST" }],
+		}),
 	}),
 });
 
@@ -838,6 +915,13 @@ export const {
 	useGetProviderGovernanceQuery,
 	useUpdateProviderGovernanceMutation,
 	useDeleteProviderGovernanceMutation,
+
+	// Budget Extensions
+	useGetBudgetExtensionsQuery,
+	useLazyGetBudgetExtensionsQuery,
+	useCreateBudgetExtensionMutation,
+	useApproveBudgetExtensionMutation,
+	useRejectBudgetExtensionMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

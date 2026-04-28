@@ -5,7 +5,9 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitsTable from "./modelLimitsTable";
 
-const POLLING_INTERVAL = 5000;
+// Tight polling so the table reflects backend usage / limit changes within ~2s, satisfying
+// the budget-enforcement UX SLA (limit-reached badge must appear shortly after a 402).
+const POLLING_INTERVAL = 2000;
 const PAGE_SIZE = 25;
 
 export default function ModelLimitsView() {

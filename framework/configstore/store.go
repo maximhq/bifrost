@@ -203,6 +203,31 @@ type ConfigStore interface {
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error
 	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error
 
+	// Budget Extension CRUD
+	GetBudgetExtensions(ctx context.Context, budgetID string, status string) ([]tables.TableBudgetExtension, error)
+	GetBudgetExtension(ctx context.Context, id string) (*tables.TableBudgetExtension, error)
+	CreateBudgetExtension(ctx context.Context, ext *tables.TableBudgetExtension, tx ...*gorm.DB) error
+	UpdateBudgetExtension(ctx context.Context, ext *tables.TableBudgetExtension, tx ...*gorm.DB) error
+	DeleteBudgetExtension(ctx context.Context, id string, tx ...*gorm.DB) error
+	GetActiveBudgetExtensions(ctx context.Context, budgetID string) ([]tables.TableBudgetExtension, error)
+	// GetAllActiveBudgetExtensions returns all active extensions across all budgets (batch load).
+	GetAllActiveBudgetExtensions(ctx context.Context) ([]tables.TableBudgetExtension, error)
+	// ExpireBudgetExtensions marks approved extensions past their expiry as expired.
+	// Returns the list of affected budget IDs so callers can invalidate in-memory caches.
+	ExpireBudgetExtensions(ctx context.Context) ([]string, error)
+	// HasActiveExtension checks if a budget already has an approved, non-expired extension.
+	HasActiveExtension(ctx context.Context, budgetID string) (bool, error)
+	// ApproveBudgetExtensionAtomic atomically approves a budget extension within a DB transaction.
+	// It locks the parent budget row (serializing concurrent approvals for the same budget),
+	// verifies the extension is still pending, checks no other active extension exists,
+	// then updates the extension. Returns ErrExtensionNotPending or ErrActiveExtensionExists
+	// for business-rule violations.
+	ApproveBudgetExtensionAtomic(ctx context.Context, extID string, reviewedBy string, reviewNote string) (*tables.TableBudgetExtension, error)
+	// RejectBudgetExtensionAtomic atomically rejects a budget extension using a conditional
+	// UPDATE (WHERE status = 'pending'). This prevents overwriting a concurrently approved
+	// extension. Returns ErrExtensionNotPending if the extension is no longer pending.
+	RejectBudgetExtensionAtomic(ctx context.Context, extID string, reviewedBy string, reviewNote string) (*tables.TableBudgetExtension, error)
+
 	// Routing Rules CRUD
 	GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error)
 	GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error)

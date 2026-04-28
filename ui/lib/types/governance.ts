@@ -527,3 +527,49 @@ export interface GetProviderGovernanceResponse {
 	providers: ProviderGovernance[];
 	count: number;
 }
+
+// Budget Extension types
+export type BudgetExtensionStatus =
+	| "pending"
+	| "approved"
+	| "rejected"
+	| "expired";
+
+export interface BudgetExtension {
+	id: string;
+	budget_id: string;
+	amount: number;
+	reason?: string;
+	requested_by: string;
+	status: BudgetExtensionStatus;
+	reviewed_by?: string;
+	review_note?: string;
+	duration: string;
+	starts_at?: string;
+	expires_at?: string;
+	// Audit timestamps for state transitions
+	approved_at?: string;
+	rejected_at?: string;
+	expired_at?: string;
+	budget?: Budget;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CreateBudgetExtensionRequest {
+	budget_id: string;
+	amount: number;
+	duration: string;
+	reason?: string;
+	requested_by: string;
+}
+
+export interface ReviewBudgetExtensionRequest {
+	reviewed_by: string;
+	review_note?: string;
+}
+
+export interface GetBudgetExtensionsResponse {
+	budget_extensions: BudgetExtension[];
+}
+
