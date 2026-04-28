@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 
@@ -557,5 +558,51 @@ func TestToProviderRealtimeEventOmitsReadOnlySessionFieldsOnSessionUpdate(t *tes
 	}
 	if payload.Session["model"] != "gpt-realtime" {
 		t.Fatalf("session.model = %v, want gpt-realtime", payload.Session["model"])
+	}
+}
+
+func TestInputAudioBufferAppendRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	// Simulate raw audio bytes and base64-encode them as OpenAI expects.
+	rawAudio := []byte("fake-pcm-audio-data-bytes")
+	b64Audio := base64.StdEncoding.EncodeToString(rawAudio)
+
+	clientEvent := map[string]interface{}{
+		"type":  "input_audio_buffer.append",
+		"audio": b64Audio,
+	}
+	clientJSON, err := json.Marshal(clientEvent)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	// Step 1: Parse the client event (same path as wsrealtime.go).
+	bifrostEvent, err := schemas.ParseRealtimeEvent(clientJSON)
+	if err != nil {
+		t.Fatalf("ParseRealtimeEvent() error = %v", err)
+	}
+	if len(bifrostEvent.Audio) == 0 {
+		t.Fatal("bifrostEvent.Audio is empty after ParseRealtimeEvent")
+	}
+
+	// Step 2: Convert back to provider format.
+	provider := &OpenAIProvider{}
+	providerJSON, err := provider.ToProviderRealtimeEvent(bifrostEvent)
+	if err != nil {
+		t.Fatalf("ToProviderRealtimeEvent() error = %v", err)
+	}
+
+	// Step 3: Verify the output JSON contains the audio field with correct value.
+	var output map[string]interface{}
+	if err := json.Unmarshal(providerJSON, &output); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	audioStr, ok := output["audio"].(string)
+	if !ok {
+		t.Fatalf("audio field missing or not a string in output: %s", string(providerJSON))
+	}
+	if audioStr != b64Audio {
+		t.Fatalf("audio = %q, want %q", audioStr, b64Audio)
 	}
 }
