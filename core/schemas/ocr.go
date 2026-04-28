@@ -8,6 +8,8 @@ const (
 	OCRDocumentTypeDocumentURL OCRDocumentType = "document_url"
 	// OCRDocumentTypeImageURL represents an image URL input.
 	OCRDocumentTypeImageURL OCRDocumentType = "image_url"
+	// OCRDocumentTypeFile represents a file ID input (uploaded file).
+	OCRDocumentTypeFile OCRDocumentType = "file"
 )
 
 // OCRDocument represents the document input for an OCR request.
@@ -15,6 +17,7 @@ type OCRDocument struct {
 	Type        OCRDocumentType `json:"type"`
 	DocumentURL *string         `json:"document_url,omitempty"`
 	ImageURL    *string         `json:"image_url,omitempty"`
+	FileID     *string         `json:"file_id,omitempty"`
 }
 
 // OCRParameters contains optional parameters for an OCR request.

@@ -2124,6 +2124,7 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			},
 		}
 	}
+
 	if len(req.File) == 0 {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,

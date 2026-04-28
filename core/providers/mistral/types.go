@@ -146,6 +146,7 @@ type MistralOCRDocument struct {
 	Type        string `json:"type"`
 	DocumentURL string `json:"document_url,omitempty"`
 	ImageURL    string `json:"image_url,omitempty"`
+	FileID     string `json:"file_id,omitempty"`
 }
 
 // MistralOCRRequest represents a Mistral OCR API request.
@@ -203,4 +204,22 @@ type MistralOCRResponse struct {
 	Pages              []MistralOCRPage    `json:"pages"`
 	UsageInfo          *MistralOCRUsageInfo `json:"usage_info,omitempty"`
 	DocumentAnnotation *string             `json:"document_annotation,omitempty"`
+}
+
+// ============================================================================
+// File Types
+// ============================================================================
+
+// MistralFileResponse represents a Mistral file response.
+// Mistral's Files API is compatible with OpenAI's format.
+// Based on: https://docs.mistral.ai/api/endpoint/files
+type MistralFileResponse struct {
+	ID            string  `json:"id"`
+	Object       string  `json:"object"`
+	Bytes        int64   `json:"bytes"`
+	CreatedAt    int64   `json:"created_at"`
+	Filename     string  `json:"filename"`
+	Purpose      string  `json:"purpose"`
+	Status       string  `json:"status,omitempty"`
+	StatusDetails *string `json:"status_details,omitempty"`
 }
