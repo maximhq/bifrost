@@ -47,8 +47,6 @@ func TestParameterVariations(t *testing.T) {
 			// Create a fresh context for each subtest to avoid context pollution
 			ctx := CreateContextWithCacheKey("param-variations-test")
 
-			// Clear cache for this subtest
-			clearTestKeysWithStore(t, setup.Store)
 
 			// Make first request
 			_, err1 := setup.Client.ChatCompletionRequest(ctx, tt.request1)
@@ -512,8 +510,6 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 			// Create a fresh context for each subtest to avoid context pollution
 			ctx := CreateContextWithCacheKey("semantic-edge-test")
 
-			// Clear cache for this subtest
-			clearTestKeysWithStore(t, setup.Store)
 
 			// Make first request
 			request1 := CreateBasicChatRequest(test.prompt1, 0.1, 50)

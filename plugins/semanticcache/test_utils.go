@@ -2,8 +2,10 @@ package semanticcache
 
 import (
 	"context"
+	"hash/fnv"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,6 +141,52 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
 			BufferSize:  10,
+		},
+	}, nil
+}
+
+// MockEmbedder implements schemas.BifrostEmbedder for testing.
+// It returns deterministic vectors based on input text hash to enable semantic matching.
+type MockEmbedder struct {
+	Dimension int
+}
+
+func (m *MockEmbedder) EmbeddingRequest(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	// Get input text
+	var text string
+	if req.Input != nil {
+		if req.Input.Text != nil {
+			text = *req.Input.Text
+		} else if len(req.Input.Texts) > 0 {
+			text = strings.Join(req.Input.Texts, " ")
+		}
+	}
+
+	// Generate deterministic vector based on text
+	// Use FNV hash to create reproducible but different vectors for different texts
+	embedding := make([]float64, m.Dimension)
+	if text != "" {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(text))
+		seed := h.Sum64()
+		for i := range embedding {
+			// Mix the index into the seed so each dimension differs deterministically
+			v := seed ^ (uint64(i) * 0x9E3779B97F4A7C15)
+			embedding[i] = float64(v%10_000) / 10_000.0
+		}
+	}
+
+	return &schemas.BifrostEmbeddingResponse{
+		Data: []schemas.EmbeddingData{
+			{
+				Embedding: schemas.EmbeddingStruct{
+					EmbeddingArray: embedding,
+				},
+			},
+		},
+		Usage: &schemas.BifrostLLMUsage{
+			PromptTokens: 10,
+			TotalTokens:  10,
 		},
 	}, nil
 }
@@ -371,19 +419,12 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: true,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
-		},
 	})
 }
 
 // NewTestSetupWithConfig creates a new test setup with custom configuration
 func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
-	return NewTestSetupWithVectorStore(t, config, vectorstore.VectorStoreTypeWeaviate)
+	return NewTestSetupWithVectorStore(t, config, vectorstore.VectorStoreTypeQdrant)
 }
 
 // NewTestSetupWithVectorStore creates a new test setup with custom configuration and vector store type
@@ -420,12 +461,17 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
 
-	// Clear test keys
-	pluginImpl := plugin.(*Plugin)
-	clearTestKeysWithStore(t, pluginImpl.store)
-
 	// Get a mocked Bifrost client
 	client := getMockedBifrostClient(t, ctx, logger, plugin)
+
+	// Inject mock embedder into the plugin so it doesn't try to make real embedding calls
+	if config.Provider != "" {
+		if aware, ok := plugin.(schemas.BifrostAwarePlugin); ok {
+			aware.SetBifrost(&MockEmbedder{Dimension: config.Dimension})
+		} else {
+			t.Fatalf("plugin does not implement BifrostAwarePlugin")
+		}
+	}
 
 	return &TestSetup{
 		Logger: logger,
@@ -443,12 +489,6 @@ func (ts *TestSetup) Cleanup() {
 	}
 }
 
-// clearTestKeysWithStore removes all keys matching the test prefix using the store interface
-func clearTestKeysWithStore(t *testing.T, store vectorstore.VectorStore) {
-	// With the new unified VectorStore interface, cleanup is typically handled
-	// by the vector store implementation (e.g., dropping entire classes)
-	t.Logf("Test cleanup delegated to vector store implementation")
-}
 
 // CreateBasicChatRequest creates a basic chat completion request for testing
 func CreateBasicChatRequest(content string, temperature float64, maxTokens int) *schemas.BifrostChatRequest {
@@ -543,7 +583,7 @@ func WaitForCache(plugin schemas.LLMPlugin) {
 	if p, ok := plugin.(*Plugin); ok {
 		p.WaitForPendingOperations()
 	}
-	// Small buffer for Weaviate index consistency
+	// Small buffer for vector store index consistency (Qdrant by default)
 	time.Sleep(500 * time.Millisecond)
 }
 
@@ -648,13 +688,6 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -669,13 +702,6 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		CleanUpOnShutdown:   true,
 		Threshold:           0.8,
 		ExcludeSystemPrompt: &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -691,13 +717,6 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 		ExcludeSystemPrompt:          &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)

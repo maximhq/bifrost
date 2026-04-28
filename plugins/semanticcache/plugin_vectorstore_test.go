@@ -2,7 +2,6 @@ package semanticcache
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -11,25 +10,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
-
-// requiresVectors returns true if the vector store requires vectors for storage.
-// Some stores (like Qdrant, Pinecone, and Weaviate) require vectors for all entries,
-// while others (like Redis) can store metadata without vectors.
-func requiresVectors(storeType vectorstore.VectorStoreType) bool {
-	switch storeType {
-	case vectorstore.VectorStoreTypeQdrant, vectorstore.VectorStoreTypePinecone, vectorstore.VectorStoreTypeWeaviate:
-		return true
-	default:
-		return false
-	}
-}
-
-// skipIfNoAPIKey skips the test if OPENAI_API_KEY is not set and the store requires vectors.
-func skipIfNoAPIKey(t *testing.T, storeType vectorstore.VectorStoreType) {
-	if requiresVectors(storeType) && os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skipf("Skipping %s test: OPENAI_API_KEY not set (required for embedding generation)", storeType)
-	}
-}
 
 // VectorStoreTestCase defines a test case for a specific vector store
 type VectorStoreTestCase struct {
@@ -55,13 +35,6 @@ func getDefaultTestConfig() *Config {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: true,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
-		},
 	}
 }
 
@@ -69,7 +42,6 @@ func getDefaultTestConfig() *Config {
 func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 
@@ -179,7 +151,6 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 func TestSemanticCache_AllVectorStores_DirectHashMatch(t *testing.T) {
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 
@@ -221,7 +192,6 @@ func TestSemanticCache_AllVectorStores_DirectHashMatch(t *testing.T) {
 func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 
@@ -276,7 +246,6 @@ func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
 func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 
@@ -390,7 +359,6 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 

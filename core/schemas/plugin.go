@@ -290,6 +290,22 @@ type PluginConfig struct {
 	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
 }
 
+// BifrostEmbedder is the minimal interface for generating embeddings.
+// It allows plugins to request embeddings without importing the core bifrost package.
+type BifrostEmbedder interface {
+	EmbeddingRequest(ctx *BifrostContext, req *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
+}
+
+// BifrostAwarePlugin is an optional interface. Plugins implementing it receive
+// a reference to the parent Bifrost instance immediately after Init() completes.
+// SetBifrost may also be invoked during ReloadConfig while request hooks are
+// executing concurrently; implementations must therefore store the reference
+// using a synchronization primitive (e.g., atomic.Pointer or a mutex) and
+// load it atomically from hook code paths.
+type BifrostAwarePlugin interface {
+	SetBifrost(client BifrostEmbedder)
+}
+
 // ObservabilityPlugin is an interface for plugins that receive completed traces
 // for forwarding to observability backends (e.g., OTEL collectors, Datadog, etc.)
 //

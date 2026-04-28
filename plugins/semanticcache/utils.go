@@ -57,7 +57,7 @@ func flattenToFloat32Embedding(values [][]float64) []float32 {
 }
 
 // generateEmbedding generates an embedding for the given text using the configured provider.
-func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string) ([]float32, int, error) {
+func (plugin *Plugin) generateEmbedding(_ *schemas.BifrostContext, text string) ([]float32, int, error) {
 	// Create embedding request
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: plugin.config.Provider,
@@ -67,10 +67,34 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 		},
 	}
 
+	client := plugin.client.Load()
+	if client == nil {
+		return nil, 0, fmt.Errorf("embedding client not initialized: call SetBifrost() before using semantic cache")
+	}
+
+	// Use a fresh context (not derived from parent) to avoid inheriting the parent
+	// request ID, which would cause the logging plugin to overwrite the chat completion
+	// log entry with the embedding request data.
+	//
+	// Trade-off: This also drops governance context (virtual key, team, customer, routing
+	// rule, rate limits, budget checks). Embedding calls are not subject to ACL or traced
+	// to the originating request. This is intentional — embeddings are internal operations
+	// for cache lookup, not billable user requests.
+	//
+	// Apply a bounded timeout to prevent stalled embedding providers from keeping the
+	// goroutine alive indefinitely.
+	embeddingCtx, cancel := context.WithTimeout(context.Background(), EmbeddingRequestTimeout)
+	defer cancel()
+	bifrostCtx := schemas.NewBifrostContext(embeddingCtx, schemas.NoDeadline)
+
 	// Generate embedding using bifrost client
-	response, err := plugin.client.EmbeddingRequest(ctx, embeddingReq)
+	response, err := (*client).EmbeddingRequest(bifrostCtx, embeddingReq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to generate embedding: %v", err)
+	}
+
+	if response == nil {
+		return nil, 0, fmt.Errorf("nil response from embedding provider")
 	}
 
 	// Extract the first embedding from response

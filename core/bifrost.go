@@ -367,6 +367,17 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			bifrost.logger.Warn("failed to prepare provider %s: %v", providerKey, err)
 		}
 	}
+	for _, p := range config.LLMPlugins {
+		if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+			aware.SetBifrost(bifrost)
+		}
+	}
+	for _, p := range config.MCPPlugins {
+		if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+			aware.SetBifrost(bifrost)
+		}
+	}
+
 	return bifrost, nil
 }
 
@@ -389,6 +400,137 @@ func (bifrost *Bifrost) getTracer() schemas.Tracer {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	
+	// Update plugin lists with CAS retry to avoid race with concurrent plugin mutations
+	if config.LLMPlugins != nil {
+		nextLLMPlugins := append([]schemas.LLMPlugin(nil), config.LLMPlugins...)
+		// Call SetBifrost for all BifrostAwarePlugins before publishing
+		for _, p := range nextLLMPlugins {
+			if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+				bifrost.logger.Debug("calling SetBifrost for LLM plugin %s during ReloadConfig", p.GetName())
+				aware.SetBifrost(bifrost)
+			}
+		}
+		
+		for {
+			oldPlugins := bifrost.llmPlugins.Load()
+			if bifrost.llmPlugins.CompareAndSwap(oldPlugins, &nextLLMPlugins) {
+				// Cleanup removed or replaced plugins after successful swap
+				if oldPlugins != nil {
+					oldMap := make(map[string]schemas.LLMPlugin)
+					for _, p := range *oldPlugins {
+						oldMap[p.GetName()] = p
+					}
+					newMap := make(map[string]schemas.LLMPlugin, len(nextLLMPlugins))
+					for _, p := range nextLLMPlugins {
+						newMap[p.GetName()] = p
+					}
+					for name, oldPlugin := range oldMap {
+						newPlugin, exists := newMap[name]
+						// Cleanup if plugin was removed OR replaced with a different instance
+						if !exists || oldPlugin != newPlugin {
+							bifrost.logger.Debug("cleaning up removed/replaced LLM plugin %s", name)
+							if err := oldPlugin.Cleanup(); err != nil {
+								bifrost.logger.Warn("failed to cleanup LLM plugin %s: %v", name, err)
+							}
+						}
+					}
+				}
+				break
+			}
+			// Retry CAS
+		}
+	} else {
+		// Re-notify existing plugins even if config.LLMPlugins is nil
+		// Serialize with plugin lifecycle: snapshot, call SetBifrost, verify generation unchanged
+		for {
+			currentPlugins := bifrost.llmPlugins.Load()
+			if currentPlugins == nil {
+				break
+			}
+			// Call SetBifrost on snapshot
+			for _, p := range *currentPlugins {
+				if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+					// Check generation before each call to avoid reinitializing cleaned-up plugins
+					if bifrost.llmPlugins.Load() != currentPlugins {
+						break
+					}
+					bifrost.logger.Debug("re-calling SetBifrost for existing LLM plugin %s during ReloadConfig", p.GetName())
+					aware.SetBifrost(bifrost)
+				}
+			}
+			// Verify plugins haven't changed during SetBifrost calls
+			if bifrost.llmPlugins.Load() == currentPlugins {
+				break
+			}
+			// Retry if plugins were swapped concurrently
+		}
+	}
+	if config.MCPPlugins != nil {
+		nextMCPPlugins := append([]schemas.MCPPlugin(nil), config.MCPPlugins...)
+		// Call SetBifrost for all BifrostAwarePlugins before publishing
+		for _, p := range nextMCPPlugins {
+			if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+				bifrost.logger.Debug("calling SetBifrost for MCP plugin %s during ReloadConfig", p.GetName())
+				aware.SetBifrost(bifrost)
+			}
+		}
+		
+		for {
+			oldPlugins := bifrost.mcpPlugins.Load()
+			if bifrost.mcpPlugins.CompareAndSwap(oldPlugins, &nextMCPPlugins) {
+				// Cleanup removed or replaced plugins after successful swap
+				if oldPlugins != nil {
+					oldMap := make(map[string]schemas.MCPPlugin)
+					for _, p := range *oldPlugins {
+						oldMap[p.GetName()] = p
+					}
+					newMap := make(map[string]schemas.MCPPlugin, len(nextMCPPlugins))
+					for _, p := range nextMCPPlugins {
+						newMap[p.GetName()] = p
+					}
+					for name, oldPlugin := range oldMap {
+						newPlugin, exists := newMap[name]
+						// Cleanup if plugin was removed OR replaced with a different instance
+						if !exists || oldPlugin != newPlugin {
+							bifrost.logger.Debug("cleaning up removed/replaced MCP plugin %s", name)
+							if err := oldPlugin.Cleanup(); err != nil {
+								bifrost.logger.Warn("failed to cleanup MCP plugin %s: %v", name, err)
+							}
+						}
+					}
+				}
+				break
+			}
+			// Retry CAS
+		}
+	} else {
+		// Re-notify existing plugins even if config.MCPPlugins is nil
+		// Serialize with plugin lifecycle: snapshot, call SetBifrost, verify generation unchanged
+		for {
+			currentPlugins := bifrost.mcpPlugins.Load()
+			if currentPlugins == nil {
+				break
+			}
+			// Call SetBifrost on snapshot
+			for _, p := range *currentPlugins {
+				if aware, ok := p.(schemas.BifrostAwarePlugin); ok {
+					// Check generation before each call to avoid reinitializing cleaned-up plugins
+					if bifrost.mcpPlugins.Load() != currentPlugins {
+						break
+					}
+					bifrost.logger.Debug("re-calling SetBifrost for existing MCP plugin %s during ReloadConfig", p.GetName())
+					aware.SetBifrost(bifrost)
+				}
+			}
+			// Verify plugins haven't changed during SetBifrost calls
+			if bifrost.mcpPlugins.Load() == currentPlugins {
+				break
+			}
+			// Retry if plugins were swapped concurrently
+		}
+	}
+	
 	return nil
 }
 
@@ -2999,6 +3141,11 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.BasePlugin, pluginTypes []sc
 
 // reloadLLMPlugin reloads an LLM plugin with new instance
 func (bifrost *Bifrost) reloadLLMPlugin(plugin schemas.LLMPlugin) error {
+	// Initialize aware plugins before publishing
+	if aware, ok := plugin.(schemas.BifrostAwarePlugin); ok {
+		aware.SetBifrost(bifrost)
+	}
+	
 	for {
 		var pluginToCleanup schemas.LLMPlugin
 		found := false
@@ -3046,6 +3193,11 @@ func (bifrost *Bifrost) reloadLLMPlugin(plugin schemas.LLMPlugin) error {
 
 // reloadMCPPlugin reloads an MCP plugin with new instance
 func (bifrost *Bifrost) reloadMCPPlugin(plugin schemas.MCPPlugin) error {
+	// Initialize aware plugins before publishing
+	if aware, ok := plugin.(schemas.BifrostAwarePlugin); ok {
+		aware.SetBifrost(bifrost)
+	}
+	
 	for {
 		var pluginToCleanup schemas.MCPPlugin
 		found := false

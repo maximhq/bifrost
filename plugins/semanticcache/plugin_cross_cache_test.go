@@ -56,8 +56,6 @@ func TestCacheTypeIsolation(t *testing.T) {
 
 	testRequest := CreateBasicChatRequest("Define blockchain technology", 0.7, 100)
 
-	// Clear cache to start fresh
-	clearTestKeysWithStore(t, setup.Store)
 
 	// Test 1: Cache with direct-only
 	ctx1 := CreateContextWithCacheKeyAndType("test-cache-isolation", CacheTypeDirect)
