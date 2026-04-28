@@ -969,7 +969,7 @@ func TestMergeBetaHeaders(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 			"Anthropic-Beta": {"structured-outputs-2025-11-13"},
 		})
-		got := MergeBetaHeaders(nil, ctx)
+		got := MergeBetaHeaders(ctx, nil)
 		want := []string{"structured-outputs-2025-11-13"}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v, want %v", got, want)
@@ -978,9 +978,9 @@ func TestMergeBetaHeaders(t *testing.T) {
 
 	t.Run("provider_extra_headers_case_insensitive_key", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
-		got := MergeBetaHeaders(map[string]string{
+		got := MergeBetaHeaders(ctx, map[string]string{
 			"Anthropic-Beta": "mcp-client-2025-04-04",
-		}, ctx)
+		})
 		want := []string{"mcp-client-2025-04-04"}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v, want %v", got, want)
@@ -992,9 +992,9 @@ func TestMergeBetaHeaders(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 			"ANTHROPIC-BETA": {"foo,bar", "bar,baz"},
 		})
-		got := MergeBetaHeaders(map[string]string{
+		got := MergeBetaHeaders(ctx, map[string]string{
 			"anthropic-beta": "foo",
-		}, ctx)
+		})
 		sort.Strings(got)
 		wantSorted := []string{"bar", "baz", "foo"}
 		if !slices.Equal(got, wantSorted) {
@@ -1048,6 +1048,7 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicSkillsBetaHeader,
 			AnthropicFastModeBetaHeader,
 			AnthropicRedactThinkingBetaHeader,
+			AnthropicContextManagementBetaHeader,
 		}
 		for _, h := range unsupported {
 			result := FilterBetaHeadersForProvider([]string{h}, schemas.Vertex)
@@ -1061,7 +1062,6 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		supported := []string{
 			AnthropicComputerUseBetaHeader20251124,
 			AnthropicCompactionBetaHeader,
-			AnthropicContextManagementBetaHeader,
 			AnthropicInterleavedThinkingBetaHeader,
 			AnthropicContext1MBetaHeader,
 			AnthropicEagerInputStreamingBetaHeader,
@@ -1253,6 +1253,93 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 	}
 }
 
+// TestNetworkConfigBetaOverridesFlow proves the production sequence
+//   FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, networkConfig.ExtraHeaders), provider, networkConfig.BetaHeaderOverrides)
+// honours operator-configured BetaHeaderOverrides for each Anthropic-compatible provider.
+// This is the exact call sequence used at anthropic.go:205, vertex.go:407,
+// bedrock.go:208, and azure.go:259 — the wire layer where headers are set on the outbound request.
+func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
+	type pCase struct {
+		provider            schemas.ModelProvider
+		droppedByDefault    string
+		droppedByDefaultPfx string
+		allowedByDefault    string
+		allowedByDefaultPfx string
+	}
+	cases := []pCase{
+		{schemas.Anthropic, "interleaved-thinking-2025-05-14", AnthropicInterleavedThinkingBetaHeaderPrefix,
+			"prompt-caching-2024-07-31", "prompt-caching-"},
+		{schemas.Vertex, "context-management-2025-06-27", AnthropicContextManagementBetaHeaderPrefix,
+			"interleaved-thinking-2025-05-14", AnthropicInterleavedThinkingBetaHeaderPrefix},
+		{schemas.Bedrock, "files-api-2025-04-14", "files-api-",
+			"context-management-2025-06-27", AnthropicContextManagementBetaHeaderPrefix},
+		{schemas.Azure, "fast-mode-2026-02-01", AnthropicFastModeBetaHeaderPrefix,
+			"context-management-2025-06-27", AnthropicContextManagementBetaHeaderPrefix},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+
+		t.Run(string(tc.provider)+"/override_enables_default_dropped", func(t *testing.T) {
+			if tc.provider == schemas.Anthropic {
+				t.Skip("Anthropic accepts all known betas by default")
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+				AnthropicBetaHeader: {tc.droppedByDefault},
+			})
+			overrides := map[string]bool{tc.droppedByDefaultPfx: true}
+			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), tc.provider, overrides)
+			if len(got) != 1 || got[0] != tc.droppedByDefault {
+				t.Fatalf("expected override to enable %q for %s, got %v", tc.droppedByDefault, tc.provider, got)
+			}
+		})
+
+		t.Run(string(tc.provider)+"/override_disables_default_allowed", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+				AnthropicBetaHeader: {tc.allowedByDefault},
+			})
+			overrides := map[string]bool{tc.allowedByDefaultPfx: false}
+			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), tc.provider, overrides)
+			if len(got) != 0 {
+				t.Fatalf("expected override to disable %q for %s, got %v", tc.allowedByDefault, tc.provider, got)
+			}
+		})
+
+		t.Run(string(tc.provider)+"/override_only_affects_targeted_prefix", func(t *testing.T) {
+			const otherAllowed = "interleaved-thinking-2025-05-14"
+			if tc.allowedByDefaultPfx == AnthropicInterleavedThinkingBetaHeaderPrefix {
+				t.Skip("test fixture uses interleaved-thinking as the allowed beta")
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+				AnthropicBetaHeader: {tc.allowedByDefault + "," + otherAllowed},
+			})
+			overrides := map[string]bool{tc.allowedByDefaultPfx: false}
+			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), tc.provider, overrides)
+			if len(got) != 1 || got[0] != otherAllowed {
+				t.Fatalf("expected only %q to survive for %s, got %v", otherAllowed, tc.provider, got)
+			}
+		})
+
+		t.Run(string(tc.provider)+"/override_works_through_merge_with_provider_extra_headers", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+				AnthropicBetaHeader: {tc.allowedByDefault},
+			})
+			providerExtra := map[string]string{
+				AnthropicBetaHeader: tc.allowedByDefault,
+			}
+			overrides := map[string]bool{tc.allowedByDefaultPfx: false}
+			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, providerExtra), tc.provider, overrides)
+			if len(got) != 0 {
+				t.Fatalf("expected override to drop %q from merged sources for %s, got %v", tc.allowedByDefault, tc.provider, got)
+			}
+		})
+	}
+}
+
 func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
 		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
@@ -1280,6 +1367,38 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		// Confirm non-scope cache_control fields are retained.
 		if !providerUtils.JSONFieldExists(result, "cache_control.ttl") {
 			t.Errorf("expected cache_control.ttl to survive, got: %s", string(result))
+		}
+	})
+
+	t.Run("vertex_strips_entire_context_management_field", func(t *testing.T) {
+		// Vertex rejects the context_management field entirely ("Extra inputs are not permitted").
+		// This covers compact edits (Compaction:true keeps the beta header but not the body field)
+		// and clear edits (ContextEditing:false).
+		for _, editType := range []string{
+			string(ContextManagementEditTypeCompact),
+			string(ContextManagementEditTypeClearToolUses),
+			string(ContextManagementEditTypeClearThinking),
+		} {
+			input := []byte(`{"model":"claude-sonnet-4-6","context_management":{"edits":[{"type":"` + editType + `"}]}}`)
+			result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Vertex, "claude-sonnet-4-6")
+			if err != nil {
+				t.Fatalf("unexpected error for edit type %q: %v", editType, err)
+			}
+			if providerUtils.JSONFieldExists(result, "context_management") {
+				t.Errorf("expected context_management to be fully stripped for Vertex (edit type %q), got: %s", editType, string(result))
+			}
+		}
+	})
+
+	t.Run("anthropic_keeps_context_management_per_edit_type", func(t *testing.T) {
+		// Anthropic supports context_management; compact edits are kept, clear edits are also kept.
+		input := []byte(`{"model":"claude-sonnet-4-6","context_management":{"edits":[{"type":"` + string(ContextManagementEditTypeCompact) + `"},{"type":"` + string(ContextManagementEditTypeClearToolUses) + `"}]}}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "context_management") {
+			t.Errorf("expected context_management to be kept for Anthropic, got: %s", string(result))
 		}
 	})
 

@@ -1444,7 +1444,7 @@ func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
 					},
 				},
 				{
-					Type: schemas.ResponsesToolTypeWebSearch,
+					Type:                   schemas.ResponsesToolTypeWebSearch,
 					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
 				},
 			},
@@ -1539,6 +1539,141 @@ func TestToOpenAIResponsesRequest_PreservesExplicitEmptyToolParameters(t *testin
 	}
 	if string(marshaled) != `{}` {
 		t.Fatalf("expected parameters to remain {}, got %s", marshaled)
+	}
+}
+
+func TestResponsesTool_MarshalUnmarshal_ToolSearchTool(t *testing.T) {
+	jsonData := `{"type":"tool_search","execution":"client","description":"Search tools","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}`
+
+	t.Run("tool search tool - marshal", func(t *testing.T) {
+		tool := schemas.ResponsesTool{
+			Type:        schemas.ResponsesToolTypeToolSearch,
+			Description: schemas.Ptr("Search tools"),
+			ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{
+				Execution: schemas.Ptr("client"),
+				Parameters: &schemas.ToolFunctionParameters{
+					Type: "object",
+					Properties: schemas.NewOrderedMapFromPairs(
+						schemas.KV("query", schemas.NewOrderedMapFromPairs(
+							schemas.KV("type", "string"),
+						)),
+					),
+					Required: []string{"query"},
+					AdditionalProperties: &schemas.AdditionalPropertiesStruct{
+						AdditionalPropertiesBool: schemas.Ptr(false),
+					},
+				},
+			},
+		}
+
+		data, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var expected, actual map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+			t.Fatalf("failed to unmarshal expected JSON: %v", err)
+		}
+		if err := json.Unmarshal(data, &actual); err != nil {
+			t.Fatalf("failed to unmarshal actual JSON: %v", err)
+		}
+
+		if !mapsEqual(expected, actual) {
+			t.Errorf("marshaled JSON mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+		}
+	})
+
+	t.Run("tool search tool - unmarshal", func(t *testing.T) {
+		var tool schemas.ResponsesTool
+		if err := json.Unmarshal([]byte(jsonData), &tool); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if tool.Type != schemas.ResponsesToolTypeToolSearch {
+			t.Errorf("type mismatch: expected %s, got %s", schemas.ResponsesToolTypeToolSearch, tool.Type)
+		}
+		if tool.ResponsesToolToolSearch == nil {
+			t.Fatal("expected ResponsesToolToolSearch to be populated")
+		}
+		if tool.ResponsesToolToolSearch.Execution == nil || *tool.ResponsesToolToolSearch.Execution != "client" {
+			t.Fatal("expected execution=client to be preserved")
+		}
+		if tool.ResponsesToolToolSearch.Parameters == nil {
+			t.Fatal("expected parameters to be preserved")
+		}
+	})
+}
+
+func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testing.T) {
+	externalWebAccess := true
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gpt-5.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+						ExternalWebAccess:  &externalWebAccess,
+						SearchContentTypes: []string{"text", "image"},
+					},
+				},
+				{
+					Type:        schemas.ResponsesToolTypeNamespace,
+					Name:        schemas.Ptr("mcp__node_repl__"),
+					Description: schemas.Ptr("node repl tools"),
+					ResponsesToolNamespace: &schemas.ResponsesToolNamespace{
+						Tools: []schemas.ResponsesTool{{
+							Type:        schemas.ResponsesToolTypeFunction,
+							Name:        schemas.Ptr("js"),
+							Description: schemas.Ptr("run js"),
+							ResponsesToolFunction: &schemas.ResponsesToolFunction{
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("code", schemas.NewOrderedMapFromPairs(
+											schemas.KV("type", "string"),
+										)),
+									),
+									Required: []string{"code"},
+								},
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Tools) != 2 {
+		t.Fatalf("expected 2 tools to survive conversion, got %d", len(result.Tools))
+	}
+
+	webSearch := result.Tools[0].ResponsesToolWebSearch
+	if webSearch == nil {
+		t.Fatal("expected web_search tool to be preserved")
+	}
+	if webSearch.ExternalWebAccess == nil || !*webSearch.ExternalWebAccess {
+		t.Fatal("expected external_web_access=true to be preserved")
+	}
+	if len(webSearch.SearchContentTypes) != 2 || webSearch.SearchContentTypes[0] != "text" || webSearch.SearchContentTypes[1] != "image" {
+		t.Fatalf("expected search_content_types to be preserved, got %+v", webSearch.SearchContentTypes)
+	}
+
+	namespace := result.Tools[1]
+	if namespace.Type != schemas.ResponsesToolTypeNamespace {
+		t.Fatalf("expected namespace tool to survive conversion, got %s", namespace.Type)
+	}
+	if namespace.ResponsesToolNamespace == nil || len(namespace.ResponsesToolNamespace.Tools) != 1 {
+		t.Fatal("expected namespace child tools to be preserved")
 	}
 }
 

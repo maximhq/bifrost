@@ -256,7 +256,7 @@ func (provider *AzureProvider) completeRequest(
 		url = fmt.Sprintf("%s/%s", endpoint, path)
 
 		// Merge ExtraHeaders + context anthropic-beta, filter for Azure, then set as HTTP header
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Azure, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Azure, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
 			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 		} else {
 			req.Header.Del(anthropic.AnthropicBetaHeader)

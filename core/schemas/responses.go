@@ -1432,6 +1432,7 @@ type ResponsesTool struct {
 	*ResponsesToolLocalShell
 	*ResponsesToolCustom
 	*ResponsesToolWebSearchPreview
+	*ResponsesToolToolSearch
 	*ResponsesToolNamespace
 }
 
@@ -1558,6 +1559,10 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeWebSearchPreview:
 		if t.ResponsesToolWebSearchPreview != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolWebSearchPreview)
+		}
+	case ResponsesToolTypeToolSearch:
+		if t.ResponsesToolToolSearch != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolToolSearch)
 		}
 	case ResponsesToolTypeNamespace:
 		if t.ResponsesToolNamespace != nil {
@@ -1723,6 +1728,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolWebSearchPreview = &webSearchPreviewTool
+
+	case ResponsesToolTypeToolSearch:
+		var toolSearchTool ResponsesToolToolSearch
+		if err := Unmarshal(data, &toolSearchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolToolSearch = &toolSearchTool
 
 	case ResponsesToolTypeNamespace:
 		var namespaceTool ResponsesToolNamespace
@@ -1900,9 +1912,11 @@ type ResponsesToolComputerUsePreview struct {
 
 // ResponsesToolWebSearch represents a tool web search
 type ResponsesToolWebSearch struct {
-	Filters           *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`             // Filters for the search
-	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
-	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
+	ExternalWebAccess  *bool                               `json:"external_web_access,omitempty"`
+	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"` // Filters for the search
+	SearchContentTypes []string                            `json:"search_content_types,omitempty"`
+	SearchContextSize  *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
+	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
@@ -2134,6 +2148,12 @@ type ResponsesToolCustomFormat struct {
 type ResponsesToolWebSearchPreview struct {
 	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The user's location
+}
+
+// ResponsesToolToolSearch represents a Responses API tool_search tool.
+type ResponsesToolToolSearch struct {
+	Execution  *string                 `json:"execution,omitempty"`
+	Parameters *ToolFunctionParameters `json:"parameters,omitempty"`
 }
 
 // ResponsesToolWebFetch represents a web fetch tool

@@ -13,7 +13,7 @@ import (
 // Compared to the native Anthropic path, it strips model/region fields, remaps tool versions, injects beta headers
 // into the request body (rather than HTTP headers), and pins the Anthropic API version to DefaultVertexAnthropicVersion.
 func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, isCountTokens bool, betaHeaderOverrides map[string]bool, providerExtraHeaders map[string]string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
-	return anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+	jsonBody, buildErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 		Provider:                  schemas.Vertex,
 		Deployment:                deployment,
 		DeleteModelField:          true,
@@ -31,6 +31,14 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
 		ShouldSendBackRawResponse: shouldSendBackRawResponse,
 	})
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, deployment)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
+	}
+	return stripped, nil
 }
 
 // getCompleteURLForGeminiEndpoint constructs the complete URL for the Gemini endpoint, for both streaming and non-streaming requests

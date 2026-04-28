@@ -167,6 +167,8 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 	return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
 };
 
+const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
+
 const TIME_FILTER_PAGES = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs"]);
 
 const SidebarItemView = ({
@@ -194,6 +196,24 @@ const SidebarItemView = ({
 	expandSidebar: () => void;
 	highlightedUrl?: string;
 }) => {
+	const [flyoutOpen, setFlyoutOpen] = useState(false);
+	const flyoutCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const openFlyout = () => {
+		if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+		setFlyoutOpen(true);
+	};
+	const closeFlyout = () => {
+		if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+		flyoutCloseTimer.current = setTimeout(() => {
+			setFlyoutOpen(false);
+			flyoutCloseTimer.current = null;
+		}, 80);
+	};
+	useEffect(() => {
+		return () => {
+			if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+		};
+	}, []);
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isRouteMatch = (url: string) => {
 		if (url === "/workspace/custom-pricing") return pathname === url;
@@ -266,7 +286,7 @@ const SidebarItemView = ({
 	let menuButton: React.ReactNode;
 	if (hasSubItems) {
 		menuButton = (
-			<SidebarMenuButton tooltip={item.title} className={buttonClassName} onClick={handleClick}>
+			<SidebarMenuButton tooltip={isSidebarCollapsed ? undefined : item.title} className={buttonClassName} onClick={handleClick}>
 				{innerContent}
 			</SidebarMenuButton>
 		);
@@ -296,7 +316,72 @@ const SidebarItemView = ({
 
 	return (
 		<SidebarMenuItem key={item.title}>
-			{menuButton}
+			{isSidebarCollapsed && hasSubItems ? (
+				<Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
+					<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
+						<div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>{menuButton}</div>
+					</PopoverTrigger>
+					<PopoverContent
+						side="right"
+						align="start"
+						sideOffset={8}
+						className="w-48 p-1"
+						onMouseEnter={openFlyout}
+						onMouseLeave={closeFlyout}
+						data-testid={`sidebar-flyout-content-${slug(item.title)}`}
+					>
+						<div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">{item.title}</div>
+						{item.subItems?.map((subItem) => {
+							const href = getSidebarItemHref(subItem);
+							const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
+							const SubItemIcon = subItem.icon;
+							const subSlug = slug(subItem.title);
+							const inner = (
+								<div className="flex items-center gap-2">
+									{SubItemIcon && (
+										<SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+									)}
+									<span className={`text-sm ${isSubItemActive ? "font-medium text-primary" : "text-slate-500 dark:text-zinc-400"}`}>
+										{subItem.title}
+									</span>
+									{subItem.tag && (
+										<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+											{subItem.tag}
+										</Badge>
+									)}
+								</div>
+							);
+							return (
+								<div
+									key={subItem.title}
+									data-testid={`sidebar-flyout-subitem-${subSlug}`}
+									onClick={() => setFlyoutOpen(false)}
+								>
+									{subItem.hasAccess === false ? (
+										<div
+											data-testid={`sidebar-subitem-disabled-${subSlug}`}
+											className="flex h-7 cursor-not-allowed items-center rounded-sm px-2 text-muted-foreground hover:bg-destructive/5"
+										>
+											{inner}
+										</div>
+									) : (
+										<Link
+											to={href as any}
+											preload="intent"
+											data-testid={`sidebar-subitem-link-${subSlug}`}
+											className={`flex h-7 items-center rounded-sm px-2 ${isSubItemActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent"}`}
+										>
+											{inner}
+										</Link>
+									)}
+								</div>
+							);
+						})}
+					</PopoverContent>
+				</Popover>
+			) : (
+				menuButton
+			)}
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {

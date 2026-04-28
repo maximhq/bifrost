@@ -19,7 +19,7 @@ import (
 // unrecognised values. When used in filter parsing, period takes precedence over any explicit
 // start_time/end_time query parameters so every poll always covers the intended window.
 func resolvePeriod(period string) (start, end *time.Time) {
-	now := time.Now()
+	now := time.Now().UTC()
 	var from time.Time
 	switch period {
 	case "1h":

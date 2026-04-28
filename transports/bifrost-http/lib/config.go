@@ -780,9 +780,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 	} else if len(providersInConfigStore) == 0 {
 		// No providers in file and none in DB — auto-detect from environment
 		config.autoDetectProviders(ctx)
-		for k, v := range config.Providers {
-			providersInConfigStore[k] = v
-		}
+		maps.Copy(providersInConfigStore, config.Providers)
 	}
 	// Update store and config
 	if config.ConfigStore != nil {
@@ -797,7 +795,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 
 // processProvider processes a single provider configuration from config file
 func processProvider(
-	config *Config,
+	_ *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
 	providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig,
