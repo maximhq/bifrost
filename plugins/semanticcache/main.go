@@ -202,8 +202,9 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 }
 
 type PluginAccount struct {
-	provider schemas.ModelProvider
-	keys     []schemas.Key
+	provider    schemas.ModelProvider
+	keys        []schemas.Key
+	baseAccount schemas.Account
 }
 
 func (pa *PluginAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
@@ -211,10 +212,28 @@ func (pa *PluginAccount) GetConfiguredProviders() ([]schemas.ModelProvider, erro
 }
 
 func (pa *PluginAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	if providerKey != pa.provider && pa.baseAccount != nil {
+		return pa.baseAccount.GetKeysForProvider(ctx, providerKey)
+	}
+	if len(pa.keys) > 0 {
+		return pa.keys, nil
+	}
+	if pa.baseAccount != nil {
+		return pa.baseAccount.GetKeysForProvider(ctx, providerKey)
+	}
 	return pa.keys, nil
 }
 
 func (pa *PluginAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if pa.baseAccount != nil {
+		config, err := pa.baseAccount.GetConfigForProvider(providerKey)
+		if err == nil && config != nil {
+			return config, nil
+		}
+		if err != nil && providerKey == pa.provider && len(pa.keys) == 0 {
+			return nil, err
+		}
+	}
 	return &schemas.ProviderConfig{
 		NetworkConfig:            schemas.DefaultNetworkConfig,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
@@ -281,7 +300,7 @@ const (
 // Returns:
 //   - schemas.LLMPlugin: A configured semantic cache plugin instance
 //   - error: Any error that occurred during plugin initialization
-func Init(ctx context.Context, config *Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.LLMPlugin, error) {
+func Init(ctx context.Context, config *Config, logger schemas.Logger, store vectorstore.VectorStore, account schemas.Account) (schemas.LLMPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -334,8 +353,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 		bifrost, err := bifrost.Init(ctx, schemas.BifrostConfig{
 			Logger: logger,
 			Account: &PluginAccount{
-				provider: config.Provider,
-				keys:     config.Keys,
+				provider:    config.Provider,
+				keys:        config.Keys,
+				baseAccount: account,
 			},
 		})
 		if err != nil {

@@ -415,7 +415,7 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 		t.Skipf("Vector store %s not available or failed to connect: %v", storeType, err)
 	}
 
-	plugin, err := Init(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config, logger, store)
+	plugin, err := Init(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config, logger, store, nil)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}

@@ -1,0 +1,3 @@
+- fix: use provider account config for custom-provider semantic embeddings [@jairoguo](https://github.com/jairoguo)
+- fix: preserve cached provider metadata on cross-provider cache hits
+- chore: upgraded core to v1.4.20 and framework to v1.2.39

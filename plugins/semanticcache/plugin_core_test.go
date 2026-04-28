@@ -11,6 +11,23 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
+type customProviderAccount struct {
+	config *schemas.ProviderConfig
+	keys   []schemas.Key
+}
+
+func (a *customProviderAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{"custom-openai"}, nil
+}
+
+func (a *customProviderAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	return a.keys, nil
+}
+
+func (a *customProviderAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return a.config, nil
+}
+
 // TestSemanticCacheBasicFunctionality tests the core caching functionality
 func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	setup := NewTestSetup(t)
@@ -556,7 +573,7 @@ func TestInvalidProviderRejection(t *testing.T) {
 				},
 			}
 
-			_, err := Init(ctx, config, logger, mockStore)
+			_, err := Init(ctx, config, logger, mockStore, nil)
 			if err == nil {
 				t.Errorf("Expected error for provider '%s' but got none", provider)
 			}
@@ -594,8 +611,57 @@ func TestValidProviderAccepted(t *testing.T) {
 	}
 
 	// Should fail due to namespace creation, not provider validation
-	_, err := Init(ctx, config, logger, mockStore)
+	_, err := Init(ctx, config, logger, mockStore, nil)
 	if err != nil && strings.Contains(err.Error(), "does not support embedding operations") {
 		t.Errorf("Valid provider OpenAI should not be rejected for embedding support, but got: %v", err)
+	}
+}
+
+func TestPluginAccountUsesRuntimeProviderConfigForCustomProviders(t *testing.T) {
+	account := &customProviderAccount{
+		config: &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL: "https://embeddings.example.com/v1",
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 7,
+				BufferSize:  11,
+			},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				BaseProviderType: schemas.OpenAI,
+			},
+		},
+		keys: []schemas.Key{
+			{
+				ID:     "runtime-key",
+				Name:   "runtime-key",
+				Value:  *schemas.NewEnvVar("plain.runtime-key"),
+				Weight: 1,
+			},
+		},
+	}
+
+	pluginAccount := &PluginAccount{
+		provider:    "custom-openai",
+		baseAccount: account,
+	}
+
+	config, err := pluginAccount.GetConfigForProvider("custom-openai")
+	if err != nil {
+		t.Fatalf("expected delegated provider config, got error: %v", err)
+	}
+	if config.NetworkConfig.BaseURL != "https://embeddings.example.com/v1" {
+		t.Fatalf("expected delegated base URL, got %q", config.NetworkConfig.BaseURL)
+	}
+	if config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType != schemas.OpenAI {
+		t.Fatalf("expected custom provider config to be preserved, got %#v", config.CustomProviderConfig)
+	}
+
+	keys, err := pluginAccount.GetKeysForProvider(context.Background(), "custom-openai")
+	if err != nil {
+		t.Fatalf("expected delegated keys, got error: %v", err)
+	}
+	if len(keys) != 1 || keys[0].ID != "runtime-key" {
+		t.Fatalf("expected delegated keys, got %#v", keys)
 	}
 }
