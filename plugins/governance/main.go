@@ -887,9 +887,21 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
+	var teamID, customerID *string
+	teamIDStr, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string)
+	if ok {
+		teamID = &teamIDStr
+	}
+	customerIDStr, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string)
+	if ok {
+		customerID = &customerIDStr
+	}
+
 	// Build routing context
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
+		TeamID:                   teamID,
+		CustomerID:               customerID,
 		Provider:                 provider,
 		Model:                    model,
 		RequestType:              requestType,

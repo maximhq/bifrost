@@ -32,7 +32,7 @@ func TestBuildScopeChain_VirtualKeyOnly(t *testing.T) {
 		Name: "test-vk",
 	}
 
-	chain := buildScopeChain(vk)
+	chain := buildScopeChain(&RoutingContext{VirtualKey: vk})
 
 	require.Equal(t, 2, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -54,7 +54,7 @@ func TestBuildScopeChain_WithTeam(t *testing.T) {
 		Team: team,
 	}
 
-	chain := buildScopeChain(vk)
+	chain := buildScopeChain(&RoutingContext{VirtualKey: vk})
 
 	require.Equal(t, 3, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -83,7 +83,7 @@ func TestBuildScopeChain_FullHierarchy(t *testing.T) {
 		Team: team,
 	}
 
-	chain := buildScopeChain(vk)
+	chain := buildScopeChain(&RoutingContext{VirtualKey: vk})
 
 	require.Equal(t, 4, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)

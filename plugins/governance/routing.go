@@ -36,6 +36,8 @@ type RoutingDecision struct {
 // Reuses existing configstore table types for VirtualKey, Team, Customer
 type RoutingContext struct {
 	VirtualKey               *configstoreTables.TableVirtualKey // nil if no VK
+	TeamID                   *string                            // nil if no team (set explicitly or automatically derived from VirtualKey)
+	CustomerID               *string                            // nil if no customer (set explicitly or automatically derived from VirtualKey)
 	Provider                 schemas.ModelProvider              // Current provider
 	Model                    string                             // Current model
 	RequestType              string                             // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
@@ -126,7 +128,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			return nil, fmt.Errorf("failed to extract routing variables: %w", err)
 		}
 
-		scopeChain := buildScopeChain(routingCtx.VirtualKey)
+		scopeChain := buildScopeChain(routingCtx)
 		re.logger.Debug("[RoutingEngine] Scope chain (step=%d): %v", chainStep, scopeChainToStrings(scopeChain))
 		if chainStep == 0 {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
@@ -308,36 +310,53 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy
 // Returns scope levels in precedence order (highest to lowest)
 // VirtualKey > Team > Customer > Global
-func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel {
+func buildScopeChain(ctx *RoutingContext) []ScopeLevel {
 	var chain []ScopeLevel
 
 	// VirtualKey level (highest precedence)
-	if virtualKey != nil {
-		chain = append(chain, ScopeLevel{
-			ScopeName: "virtual_key",
-			ScopeID:   virtualKey.ID,
-		})
-
-		// Team level
-		if virtualKey.Team != nil {
+	if ctx != nil {
+		virtualKey := ctx.VirtualKey
+		if virtualKey != nil {
 			chain = append(chain, ScopeLevel{
-				ScopeName: "team",
-				ScopeID:   virtualKey.Team.ID,
+				ScopeName: "virtual_key",
+				ScopeID:   virtualKey.ID,
 			})
-
-			// Customer level (from Team)
-			if virtualKey.Team.Customer != nil {
+		}
+		// Use explicitly set TeamID | CustomerID if provided, otherwise derive from VirtualKey
+		if ctx.TeamID != nil || ctx.CustomerID != nil {
+			if ctx.TeamID != nil {
 				chain = append(chain, ScopeLevel{
-					ScopeName: "customer",
-					ScopeID:   virtualKey.Team.Customer.ID,
+					ScopeName: "team",
+					ScopeID:   *ctx.TeamID,
 				})
 			}
-		} else if virtualKey.Customer != nil {
-			// Customer level (VK attached directly to customer, no Team)
-			chain = append(chain, ScopeLevel{
-				ScopeName: "customer",
-				ScopeID:   virtualKey.Customer.ID,
-			})
+			if ctx.CustomerID != nil {
+				chain = append(chain, ScopeLevel{
+					ScopeName: "customer",
+					ScopeID:   *ctx.CustomerID,
+				})
+			}
+		} else if virtualKey != nil {
+			// Team level (automatically derived from VirtualKey)
+			if virtualKey.Team != nil {
+				chain = append(chain, ScopeLevel{
+					ScopeName: "team",
+					ScopeID:   virtualKey.Team.ID,
+				})
+				// Customer level (from Team)
+				if virtualKey.Team.Customer != nil {
+					chain = append(chain, ScopeLevel{
+						ScopeName: "customer",
+						ScopeID:   virtualKey.Team.Customer.ID,
+					})
+				}
+			} else if virtualKey.Customer != nil {
+				// Customer level (VK attached directly to customer, no Team)
+				chain = append(chain, ScopeLevel{
+					ScopeName: "customer",
+					ScopeID:   virtualKey.Customer.ID,
+				})
+			}
 		}
 	}
 
