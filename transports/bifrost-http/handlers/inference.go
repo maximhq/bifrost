@@ -67,7 +67,7 @@ func resolveModelAndProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model
 	if provider == "" {
 		providers := config.GetProvidersForModel(modelName)
 		if len(providers) == 0 {
-			return "", "", fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog", modelName)
+			return "", "", fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog to auto-resolve", modelName)
 		}
 		ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
 			Model:            modelName,

@@ -333,8 +333,17 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
                   </span>
                 ) : null}
                 {scope ? (
-                  <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-300">
-                    {scope}
+                  <span
+                    className={cn(
+                      "inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
+                      RoutingEngineUsedColors[
+                        scope as keyof typeof RoutingEngineUsedColors
+                      ] ?? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+                    )}
+                  >
+                    {RoutingEngineUsedLabels[
+                      scope as keyof typeof RoutingEngineUsedLabels
+                    ] ?? scope}
                   </span>
                 ) : null}
                 <span className="break-words whitespace-pre-wrap">{message}</span>
@@ -474,18 +483,18 @@ export function LogDetailView({
   const isPassthrough = isPassthroughOperation(log.object);
   const passthroughParams = isPassthrough
     ? (log.params as {
-        method?: string;
-        path?: string;
-        raw_query?: string;
-        status_code?: number;
-      })
+      method?: string;
+      path?: string;
+      raw_query?: string;
+      status_code?: number;
+    })
     : null;
 
   let toolsParameter = null;
   if (log.params?.tools) {
     try {
       toolsParameter = JSON.stringify(log.params.tools, null, 2);
-    } catch {}
+    } catch { }
   }
 
   const audioFormat =
@@ -508,7 +517,7 @@ export function LogDetailView({
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
       }
-    } catch {}
+    } catch { }
     return 0;
   })();
 
@@ -604,7 +613,7 @@ export function LogDetailView({
                 className={cn(
                   "rounded-sm px-2 py-0.5 font-medium",
                   RequestTypeColors[
-                    log.object as keyof typeof RequestTypeColors
+                  log.object as keyof typeof RequestTypeColors
                   ] ?? "bg-gray-100 text-gray-800",
                 )}
               >
@@ -630,13 +639,13 @@ export function LogDetailView({
               ) : null}
               {(log.is_large_payload_request ||
                 log.is_large_payload_response) && (
-                <Badge
-                  variant="outline"
-                  className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
-                >
-                  Large Payload
-                </Badge>
-              )}
+                  <Badge
+                    variant="outline"
+                    className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
+                  >
+                    Large Payload
+                  </Badge>
+                )}
             </div>
             <div className="mt-3 flex items-center gap-2">
               <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
@@ -714,11 +723,10 @@ export function LogDetailView({
             }
             sub={
               log.token_usage
-                ? `total ${formatTokens(log.token_usage.total_tokens ?? 0)}${
-                    log.token_usage.completion_tokens_details?.reasoning_tokens
-                      ? ` · reasoning ${formatTokens(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-                      : ""
-                  }`
+                ? `total ${formatTokens(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
+                  ? ` · reasoning ${formatTokens(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+                  : ""
+                }`
                 : "—"
             }
             hasRightBorder
@@ -742,7 +750,7 @@ export function LogDetailView({
                 : ""
             }
           />
-        </div>        
+        </div>
       </div>
       <details className="group bg-card rounded-sm border" open={false}>
         <summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
@@ -775,9 +783,9 @@ export function LogDetailView({
                   const d = log.timestamp ? new Date(log.timestamp) : null;
                   return d && !isNaN(d.getTime())
                     ? format(
-                        addMilliseconds(d, log.latency || 0),
-                        "yyyy-MM-dd hh:mm:ss aa",
-                      )
+                      addMilliseconds(d, log.latency || 0),
+                      "yyyy-MM-dd hh:mm:ss aa",
+                    )
                     : "N/A";
                 })()}
               />
@@ -854,7 +862,7 @@ export function LogDetailView({
                           log.stop_reason === "refusal"
                           ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
                           : log.stop_reason === "length" ||
-                              log.stop_reason === "max_tokens"
+                            log.stop_reason === "max_tokens"
                             ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
                             : "",
                       )}
@@ -905,22 +913,22 @@ export function LogDetailView({
               {(log.selected_prompt_id ||
                 log.selected_prompt_name ||
                 log.selected_prompt_version) && (
-                <LogEntryDetailsView
-                  className="w-full"
-                  label="Selected Prompt"
-                  value={
-                    <span className="break-words">
-                      {selectedPromptDisplayName}
-                      {selectedPromptDisplayName && log.selected_prompt_version
-                        ? " · "
-                        : ""}
-                      {log.selected_prompt_version ? (
-                        <>v{log.selected_prompt_version}</>
-                      ) : null}
-                    </span>
-                  }
-                />
-              )}
+                  <LogEntryDetailsView
+                    className="w-full"
+                    label="Selected Prompt"
+                    value={
+                      <span className="break-words">
+                        {selectedPromptDisplayName}
+                        {selectedPromptDisplayName && log.selected_prompt_version
+                          ? " · "
+                          : ""}
+                        {log.selected_prompt_version ? (
+                          <>v{log.selected_prompt_version}</>
+                        ) : null}
+                      </span>
+                    }
+                  />
+                )}
               {log.number_of_retries > 0 && (
                 <LogEntryDetailsView
                   className="w-full"
@@ -1025,7 +1033,7 @@ export function LogDetailView({
                             key={engine}
                             className={
                               RoutingEngineUsedColors[
-                                engine as keyof typeof RoutingEngineUsedColors
+                              engine as keyof typeof RoutingEngineUsedColors
                               ] ?? "bg-gray-100 text-gray-800"
                             }
                           >
@@ -1172,26 +1180,26 @@ export function LogDetailView({
                     <>
                       {log.token_usage.prompt_tokens_details
                         .cached_read_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Cache Read Tokens"
-                          value={
-                            log.token_usage.prompt_tokens_details
-                              .cached_read_tokens ?? 0
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Cache Read Tokens"
+                            value={
+                              log.token_usage.prompt_tokens_details
+                                .cached_read_tokens ?? 0
+                            }
+                          />
+                        )}
                       {log.token_usage.prompt_tokens_details
                         .cached_write_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Cache Write Tokens"
-                          value={
-                            log.token_usage.prompt_tokens_details
-                              .cached_write_tokens ?? 0
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Cache Write Tokens"
+                            value={
+                              log.token_usage.prompt_tokens_details
+                                .cached_write_tokens ?? 0
+                            }
+                          />
+                        )}
                       {log.token_usage.prompt_tokens_details.audio_tokens && (
                         <LogEntryDetailsView
                           className="w-full"
@@ -1208,48 +1216,48 @@ export function LogDetailView({
                     <>
                       {log.token_usage.completion_tokens_details
                         .reasoning_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Reasoning Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .reasoning_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Reasoning Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .reasoning_tokens || "-"
+                            }
+                          />
+                        )}
                       {log.token_usage.completion_tokens_details
                         .audio_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Output Audio Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .audio_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Output Audio Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .audio_tokens || "-"
+                            }
+                          />
+                        )}
                       {log.token_usage.completion_tokens_details
                         .accepted_prediction_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Accepted Prediction Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .accepted_prediction_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Accepted Prediction Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .accepted_prediction_tokens || "-"
+                            }
+                          />
+                        )}
                       {log.token_usage.completion_tokens_details
                         .rejected_prediction_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Rejected Prediction Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .rejected_prediction_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Rejected Prediction Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .rejected_prediction_tokens || "-"
+                            }
+                          />
+                        )}
                     </>
                   )}
                 </div>
@@ -1582,14 +1590,14 @@ export function LogDetailView({
             log.image_edit_input ||
             log.image_variation_input ||
             log.image_generation_output) && (
-            <ImageView
-              imageInput={log.image_generation_input}
-              imageEditInput={log.image_edit_input}
-              imageVariationInput={log.image_variation_input}
-              imageOutput={log.image_generation_output}
-              requestType={log.object}
-            />
-          )}
+              <ImageView
+                imageInput={log.image_generation_input}
+                imageEditInput={log.image_edit_input}
+                imageVariationInput={log.image_variation_input}
+                imageOutput={log.image_generation_output}
+                requestType={log.object}
+              />
+            )}
           {(log.video_generation_input || videoOutput || videoListOutput) && (
             <VideoView
               videoInput={log.video_generation_input}
@@ -1687,148 +1695,148 @@ export function LogDetailView({
           {!isPassthrough && ((log.input_history && log.input_history.length > 0) ||
             (log.output_message && !log.error_details?.error.message) ||
             (log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety")) && (
-            <div className="bg-card rounded-sm border p-5">
-              {(visibleRoles.size < allRoles.length
-                ? log.input_history?.filter((m) =>
+              <div className="bg-card rounded-sm border p-5">
+                {(visibleRoles.size < allRoles.length
+                  ? log.input_history?.filter((m) =>
                     visibleRoles.has(((m.role as string) || "user") as MessageRole)
                   )
-                : log.input_history
-              )?.map((message, index) => {
-                const role = ((message.role as string) ||
-                  "user") as MessageRole;
-                const text = extractMessageText(message);
-                const hasToolCalls =
-                  Array.isArray(message.tool_calls) &&
-                  message.tool_calls.length > 0;
-                const isLast =
-                  index === (log.input_history?.length ?? 0) - 1 &&
-                  !log.output_message &&
-                  !log.error_details?.error.message;
-                const lineCount = text ? text.split("\n").length : 0;
-                const approxTokens = text
-                  ? Math.max(1, Math.round(text.length / 4))
-                  : 0;
-                const meta = text
-                  ? role === "system" || role === "tool"
-                    ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-                    : `${lineCount} line${lineCount === 1 ? "" : "s"}`
-                  : hasToolCalls
-                    ? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
-                    : undefined;
-                const usePlainText = role === "user" || role === "assistant";
-                return (
-                  <MessageRow key={index} role={role} meta={meta} last={isLast}>
-                    {text ? (
-                      usePlainText ? (
-                        <CollapsibleCode text={text} preview={3} mono={false} />
-                      ) : (
-                        <CollapsibleCode
-                          text={text}
-                          preview={3}
-                          lang={role === "system" ? "xml" : undefined}
-                        />
-                      )
-                    ) : (
-                      <LogChatMessageView
-                        message={message}
-                        audioFormat={audioFormat}
-                      />
-                    )}
-                    {text &&
-                      Array.isArray(message.content) &&
-                      (message.content as ContentBlock[])
-                        .filter((b) => b.type === "image_url")
-                        .map((b, i) => {
-                          const src = b.image_url?.url;
-                          if (!src) return null;
-                          return (
-                            <img
-                              key={`${i}-${src}`}
-                              src={src}
-                              alt="Attached image"
-                              className="mt-2 max-w-full rounded border"
-                            />
-                          );
-                        })}
-                    {hasToolCalls && text ? (
-                      <div className="text-muted-foreground mt-2 text-[11px]">
-                        {message.tool_calls!
-                          .map((tc) => tc.function?.name)
-                          .filter(Boolean)
-                          .join(", ") ||
-                          `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
-                      </div>
-                    ) : null}
-                  </MessageRow>
-                );
-              })}
-              {log.output_message &&
-                !log.error_details?.error.message &&
-                visibleRoles.has("assistant") &&
-                (() => {
-                  const text = extractMessageText(log.output_message);
-                  const refusalText = log.output_message.refusal;
-                  const isStopReasonRefusal =
-                    log.stop_reason === "refusal" ||
-                    log.stop_reason === "content_filter" ||
-                    log.stop_reason === "safety";
-                  const showRefusal = refusalText || (!text && isStopReasonRefusal);
+                  : log.input_history
+                )?.map((message, index) => {
+                  const role = ((message.role as string) ||
+                    "user") as MessageRole;
+                  const text = extractMessageText(message);
+                  const hasToolCalls =
+                    Array.isArray(message.tool_calls) &&
+                    message.tool_calls.length > 0;
+                  const isLast =
+                    index === (log.input_history?.length ?? 0) - 1 &&
+                    !log.output_message &&
+                    !log.error_details?.error.message;
                   const lineCount = text ? text.split("\n").length : 0;
-                  const tokenMeta = log.token_usage?.completion_tokens
-                    ? `${log.token_usage.completion_tokens} tokens`
-                    : undefined;
+                  const approxTokens = text
+                    ? Math.max(1, Math.round(text.length / 4))
+                    : 0;
                   const meta = text
-                    ? tokenMeta
-                      ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ${tokenMeta}`
+                    ? role === "system" || role === "tool"
+                      ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
                       : `${lineCount} line${lineCount === 1 ? "" : "s"}`
-                    : showRefusal
-                      ? "refusal"
-                      : tokenMeta;
+                    : hasToolCalls
+                      ? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
+                      : undefined;
+                  const usePlainText = role === "user" || role === "assistant";
                   return (
-                    <MessageRow role="assistant" meta={meta} last>
-                      {showRefusal ? (
-                        <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
-                          <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                            <AlertCircle className="h-4 w-4 shrink-0" />
-                            <span className="text-[12.5px] font-semibold">
-                              Refusal
-                            </span>
-                          </div>
-                          {refusalText && (
-                            <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-                              {refusalText}
-                            </div>
-                          )}
-                        </div>
-                      ) : text ? (
-                        <CollapsibleCode text={text} preview={3} mono={false} />
+                    <MessageRow key={index} role={role} meta={meta} last={isLast}>
+                      {text ? (
+                        usePlainText ? (
+                          <CollapsibleCode text={text} preview={3} mono={false} />
+                        ) : (
+                          <CollapsibleCode
+                            text={text}
+                            preview={3}
+                            lang={role === "system" ? "xml" : undefined}
+                          />
+                        )
                       ) : (
                         <LogChatMessageView
-                          message={log.output_message}
+                          message={message}
                           audioFormat={audioFormat}
                         />
                       )}
+                      {text &&
+                        Array.isArray(message.content) &&
+                        (message.content as ContentBlock[])
+                          .filter((b) => b.type === "image_url")
+                          .map((b, i) => {
+                            const src = b.image_url?.url;
+                            if (!src) return null;
+                            return (
+                              <img
+                                key={`${i}-${src}`}
+                                src={src}
+                                alt="Attached image"
+                                className="mt-2 max-w-full rounded border"
+                              />
+                            );
+                          })}
+                      {hasToolCalls && text ? (
+                        <div className="text-muted-foreground mt-2 text-[11px]">
+                          {message.tool_calls!
+                            .map((tc) => tc.function?.name)
+                            .filter(Boolean)
+                            .join(", ") ||
+                            `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+                        </div>
+                      ) : null}
                     </MessageRow>
                   );
-                })()}
-              {!log.output_message &&
-                !log.error_details?.error.message &&
-                (log.stop_reason === "refusal" ||
-                  log.stop_reason === "content_filter" ||
-                  log.stop_reason === "safety") && (
-                  <MessageRow role="assistant" meta="refusal" last>
-                    <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
-                      <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                        <AlertCircle className="h-4 w-4 shrink-0" />
-                        <span className="text-[12.5px] font-semibold">
-                          Refusal
-                        </span>
+                })}
+                {log.output_message &&
+                  !log.error_details?.error.message &&
+                  visibleRoles.has("assistant") &&
+                  (() => {
+                    const text = extractMessageText(log.output_message);
+                    const refusalText = log.output_message.refusal;
+                    const isStopReasonRefusal =
+                      log.stop_reason === "refusal" ||
+                      log.stop_reason === "content_filter" ||
+                      log.stop_reason === "safety";
+                    const showRefusal = refusalText || (!text && isStopReasonRefusal);
+                    const lineCount = text ? text.split("\n").length : 0;
+                    const tokenMeta = log.token_usage?.completion_tokens
+                      ? `${log.token_usage.completion_tokens} tokens`
+                      : undefined;
+                    const meta = text
+                      ? tokenMeta
+                        ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ${tokenMeta}`
+                        : `${lineCount} line${lineCount === 1 ? "" : "s"}`
+                      : showRefusal
+                        ? "refusal"
+                        : tokenMeta;
+                    return (
+                      <MessageRow role="assistant" meta={meta} last>
+                        {showRefusal ? (
+                          <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+                            <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                              <AlertCircle className="h-4 w-4 shrink-0" />
+                              <span className="text-[12.5px] font-semibold">
+                                Refusal
+                              </span>
+                            </div>
+                            {refusalText && (
+                              <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+                                {refusalText}
+                              </div>
+                            )}
+                          </div>
+                        ) : text ? (
+                          <CollapsibleCode text={text} preview={3} mono={false} />
+                        ) : (
+                          <LogChatMessageView
+                            message={log.output_message}
+                            audioFormat={audioFormat}
+                          />
+                        )}
+                      </MessageRow>
+                    );
+                  })()}
+                {!log.output_message &&
+                  !log.error_details?.error.message &&
+                  (log.stop_reason === "refusal" ||
+                    log.stop_reason === "content_filter" ||
+                    log.stop_reason === "safety") && (
+                    <MessageRow role="assistant" meta="refusal" last>
+                      <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+                        <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                          <AlertCircle className="h-4 w-4 shrink-0" />
+                          <span className="text-[12.5px] font-semibold">
+                            Refusal
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  </MessageRow>
-                )}
-            </div>
-          )}
+                    </MessageRow>
+                  )}
+              </div>
+            )}
 
           {(() => {
             const rawInput = log.responses_input_history ?? [];
@@ -2004,34 +2012,34 @@ export function LogDetailView({
 
           {(log.error_details?.error.message ||
             log.error_details?.error.error != null) && (
-            <div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
-              <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span className="text-[12.5px] font-semibold">Error</span>
+              <div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
+                <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span className="text-[12.5px] font-semibold">Error</span>
+                  {log.error_details?.error.message ? (
+                    <CopyInlineButton text={log.error_details.error.message} />
+                  ) : null}
+                </div>
                 {log.error_details?.error.message ? (
-                  <CopyInlineButton text={log.error_details.error.message} />
+                  <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+                    {log.error_details.error.message}
+                  </div>
+                ) : null}
+                {log.error_details?.error.error != null ? (
+                  <details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
+                    <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
+                      <span className="font-medium">Details</span>
+                      <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+                    </summary>
+                    <div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
+                      {typeof log.error_details.error.error === "string"
+                        ? log.error_details.error.error
+                        : JSON.stringify(log.error_details.error.error, null, 2)}
+                    </div>
+                  </details>
                 ) : null}
               </div>
-              {log.error_details?.error.message ? (
-                <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-                  {log.error_details.error.message}
-                </div>
-              ) : null}
-              {log.error_details?.error.error != null ? (
-                <details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
-                  <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
-                    <span className="font-medium">Details</span>
-                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-                  </summary>
-                  <div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
-                    {typeof log.error_details.error.error === "string"
-                      ? log.error_details.error.error
-                      : JSON.stringify(log.error_details.error.error, null, 2)}
-                  </div>
-                </details>
-              ) : null}
-            </div>
-          )}
+            )}
         </TabsContent>
 
         <TabsContent value="tools" className="space-y-3">
@@ -2172,14 +2180,13 @@ export function LogDetailView({
               </div>
             </CollapsibleBox>
           )}
-          {log.routing_engine_logs && (
+          {log.routing_engine_logs ? (
             <RoutingDecisionLogs logs={log.routing_engine_logs} />
+          ) : (
+            <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+              No routing logs for this request.
+            </div>
           )}
-          {!log.attempt_trail?.length && !log.routing_engine_logs && (
-              <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-                No routing logs for this request.
-              </div>
-            )}
         </TabsContent>
 
         <TabsContent value="plugins" className="space-y-3">

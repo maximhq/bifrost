@@ -97,6 +97,30 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// rules in the chain run, rather than halting with a cycle error.
 	visitedRuleIDs := map[string]struct{}{}
 
+	// Build scope chain once — it's based on the immutable VirtualKey and won't change across chain steps.
+	scopeChain := buildScopeChain(routingCtx.VirtualKey)
+
+	// Cache rules per scope upfront to avoid redundant store lookups when rules chain
+	// and we re-evaluate the scope hierarchy on subsequent steps.
+	rulesPerScope := make(map[ScopeLevel][]*configstoreTables.TableRoutingRule, len(scopeChain))
+	for _, scope := range scopeChain {
+		rules := re.store.GetScopedRoutingRules(ctx, scope.ScopeName, scope.ScopeID)
+		if len(rules) == 0 {
+			continue
+		}
+		re.logger.Debug("[RoutingEngine] Loaded %d rules for scope=%s, scopeID=%s", len(rules), scope.ScopeName, scope.ScopeID)
+		rulesPerScope[scope] = rules
+	}
+
+	if len(rulesPerScope) == 0 {
+		re.logger.Debug("[RoutingEngine] No routing rules found for any scope, skipping evaluation")
+		return nil, nil
+	}
+
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
+		fmt.Sprintf("Evaluating routing rules for model=%s, provider=%s, requestType=%s", routingCtx.Model, routingCtx.Provider, routingCtx.RequestType))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
+
 	var finalDecision *RoutingDecision
 
 	for chainStep := 0; ; chainStep++ {
@@ -123,14 +147,11 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		variables, err := extractRoutingVariables(&iterCtx)
 		if err != nil {
 			re.logger.Error("[RoutingEngine] Failed to extract routing variables: %v", err)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Failed to extract routing variables: %v", err))
 			return nil, fmt.Errorf("failed to extract routing variables: %w", err)
 		}
 
-		scopeChain := buildScopeChain(routingCtx.VirtualKey)
-		re.logger.Debug("[RoutingEngine] Scope chain (step=%d): %v", chainStep, scopeChainToStrings(scopeChain))
-		if chainStep == 0 {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
-		}
+		re.logger.Debug("[RoutingEngine] Chain Step: %d", chainStep)
 
 		var stepDecision *RoutingDecision
 		var matchedRule *configstoreTables.TableRoutingRule
@@ -138,19 +159,17 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 	outerLoop:
 		for _, scope := range scopeChain {
-			scopeID := scope.ScopeID
-
-			rules := re.store.GetScopedRoutingRules(ctx, scope.ScopeName, scopeID)
-			re.logger.Debug("[RoutingEngine] Evaluating scope=%s, scopeID=%s, ruleCount=%d", scope.ScopeName, scopeID, len(rules))
-
-			if len(rules) == 0 {
+			rules, ok := rulesPerScope[scope]
+			if !ok {
 				continue
 			}
+			re.logger.Debug("[RoutingEngine] Evaluating scope=%s, scopeID=%s, ruleCount=%d", scope.ScopeName, scope.ScopeID, len(rules))
 
 			ruleNames := make([]string, 0, len(rules))
 			for _, r := range rules {
 				ruleNames = append(ruleNames, r.Name)
 			}
+
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
 
 			for _, rule := range rules {
