@@ -269,8 +269,8 @@ export interface AllowedRequests {
 	image_edit: boolean;
 	image_edit_stream: boolean;
 	image_variation: boolean;
-	ocr: boolean;
-	ocr_stream: boolean;
+	ocr?: boolean;
+	ocr_stream?: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
 	rerank: boolean;

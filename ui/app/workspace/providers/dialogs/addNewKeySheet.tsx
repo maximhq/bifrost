@@ -29,8 +29,8 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyId, provid
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar p-8" data-testid="key-form" onInteractOutside={(e) => e.preventDefault()}>
-				<SheetHeader className="flex flex-col items-start">
+			<SheetContent className="p-0 pt-4" data-testid="key-form" onInteractOutside={(e) => e.preventDefault()}>
+				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<div className={"flex items-center"}>
@@ -40,17 +40,15 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyId, provid
 						</div>
 					</SheetTitle>
 				</SheetHeader>
-				<div>
-					<ProviderKeyForm
-						provider={provider}
-						keyId={keyId}
-						onCancel={onCancel}
-						onSave={() => {
-							toast.success(successMessage);
-							onCancel();
-						}}
-					/>
-				</div>
+				<ProviderKeyForm
+					provider={provider}
+					keyId={keyId}
+					onCancel={onCancel}
+					onSave={() => {
+						toast.success(successMessage);
+						onCancel();
+					}}
+				/>
 			</SheetContent>
 		</Sheet>
 	);

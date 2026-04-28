@@ -117,33 +117,19 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 //   - string: Hexadecimal representation of the xxhash
 //   - error: Any error that occurred during request normalization or hashing
 func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, error) {
-	// Create a hash input structure that includes both input and parameters
-	hashInput := struct {
-		Input  interface{} `json:"input"`
-		Params interface{} `json:"params,omitempty"`
-		Stream bool        `json:"stream,omitempty"`
-	}{
-		Input:  plugin.getNormalizedInputForCaching(req),
-		Stream: bifrost.IsStreamRequestType(req.RequestType),
+	// Build canonical metadata first to ensure deterministic hashing
+	metadata, err := plugin.buildRequestMetadataForCaching(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to build metadata for request hash: %w", err)
 	}
 
-	switch req.RequestType {
-	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		hashInput.Params = req.TextCompletionRequest.Params
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
-		hashInput.Params = req.ChatRequest.Params
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
-		hashInput.Params = req.ResponsesRequest.Params
-	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
-		if req.SpeechRequest != nil {
-			hashInput.Params = req.SpeechRequest.Params
-		}
-	case schemas.EmbeddingRequest:
-		hashInput.Params = req.EmbeddingRequest.Params
-	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
-		hashInput.Params = req.TranscriptionRequest.Params
-	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
-		hashInput.Params = req.ImageGenerationRequest.Params
+	// Create a hash input structure that includes both input and canonical parameters
+	hashInput := struct {
+		Input  interface{}            `json:"input"`
+		Params map[string]interface{} `json:"params,omitempty"`
+	}{
+		Input:  plugin.getNormalizedInputForCaching(req),
+		Params: metadata,
 	}
 
 	// Marshal to JSON with deeply sorted keys for deterministic hashing

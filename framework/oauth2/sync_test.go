@@ -85,7 +85,7 @@ func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.
 	defer s.mu.Unlock()
 	var expiring []*tables.TableOauthToken
 	for _, token := range s.oauthTokens {
-		if token.ExpiresAt.Before(before) {
+		if token.ExpiresAt != nil && token.ExpiresAt.Before(before) {
 			expiring = append(expiring, bifrost.Ptr(*token))
 		}
 	}
@@ -103,7 +103,7 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 		AccessToken:  "old-access-token",
 		RefreshToken: "refresh-token",
 		TokenType:    "bearer",
-		ExpiresAt:    time.Now().Add(1 * time.Minute),
+		ExpiresAt:    bifrost.Ptr(time.Now().Add(1 * time.Minute)),
 		Scopes:       "[]",
 	}
 
@@ -127,6 +127,36 @@ func newTestWorker(store *testConfigStore) *TokenRefreshWorker {
 	provider := NewOAuth2Provider(store, noopLogger)
 	provider.retryBaseDelay = 1 * time.Millisecond // speed up retry backoff in tests
 	return NewTokenRefreshWorker(provider, noopLogger)
+}
+
+func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
+	t.Run("ignores nil expiry tokens", func(t *testing.T) {
+		store := newTestConfigStore()
+		now := time.Now()
+		before := now.Add(5 * time.Minute)
+
+		store.oauthTokens["nil-expiry"] = &tables.TableOauthToken{
+			ID:           "nil-expiry",
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			TokenType:    "bearer",
+			ExpiresAt:    nil,
+			Scopes:       "[]",
+		}
+		store.oauthTokens["expiring"] = &tables.TableOauthToken{
+			ID:           "expiring",
+			AccessToken:  "access-token-2",
+			RefreshToken: "refresh-token-2",
+			TokenType:    "bearer",
+			ExpiresAt:    bifrost.Ptr(now.Add(1 * time.Minute)),
+			Scopes:       "[]",
+		}
+
+		tokens, err := store.GetExpiringOauthTokens(context.Background(), before)
+		require.NoError(t, err)
+		require.Len(t, tokens, 1)
+		assert.Equal(t, "expiring", tokens[0].ID)
+	})
 }
 
 func TestTokenRefreshWorker_TransientError_DoesNotMarkExpired(t *testing.T) {

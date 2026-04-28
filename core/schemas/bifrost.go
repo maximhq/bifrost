@@ -285,6 +285,7 @@ const (
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
+	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 )
 
 const (
@@ -315,9 +316,10 @@ type KeyAttemptRecord struct {
 // RoutingEngineLogEntry represents a log entry from a routing engine
 // format: [timestamp] [engine] - message
 type RoutingEngineLogEntry struct {
-	Engine    string // e.g., "governance", "routing-rule", "openrouter"
-	Message   string // Human-readable decision/action message
-	Timestamp int64  // Unix milliseconds
+	Engine    string   `json:"engine"`    // e.g., "governance", "routing-rule", "openrouter"
+	Level     LogLevel `json:"level"`
+	Message   string   `json:"message"`   // Human-readable decision/action message
+	Timestamp int64    `json:"timestamp"` // Unix milliseconds
 }
 
 // PluginLogEntry represents a structured log entry emitted by a plugin via ctx.Log().

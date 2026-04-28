@@ -25,7 +25,7 @@ func TestAgent_MaxDepthEnforcement(t *testing.T) {
 	// Update tool manager config to set MaxAgentDepth = 5
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        5,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -100,7 +100,7 @@ func TestAgent_MaxDepthCustomValue(t *testing.T) {
 	// Set MaxAgentDepth = 3
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        3,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -166,7 +166,7 @@ func TestAgent_MaxDepthReached_ChatFormat(t *testing.T) {
 
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	}) // Max depth = 2
 
 	ctx := createTestContext()
@@ -226,7 +226,7 @@ func TestAgent_MaxDepthReached_ResponsesFormat(t *testing.T) {
 
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	}) // Max depth = 2
 
 	ctx := createTestContext()
@@ -301,7 +301,7 @@ func TestAgent_MaxDepth_CodeMode(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        3,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	}) // Max depth = 3
 
 	ctx := createTestContext()
@@ -387,7 +387,7 @@ func TestAgent_MaxDepth_CodeMode_ChatFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -461,7 +461,7 @@ func TestAgent_MaxDepth_CodeMode_ResponsesFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -965,7 +965,7 @@ func TestAgent_MaxDepthAndTimeout(t *testing.T) {
 	// Set both max depth and timeout
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        3,
-		ToolExecutionTimeout: 5 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(5 * time.Second),
 	}) // Max depth = 3, timeout = 5 seconds
 
 	ctx := createTestContext()
@@ -1039,7 +1039,7 @@ func TestAgent_MaxDepthZero(t *testing.T) {
 	// Set max depth = 0 (should not allow any iterations)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        0,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -1156,7 +1156,7 @@ func TestAgent_IterationTracking(t *testing.T) {
 
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        10,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()

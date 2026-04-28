@@ -165,6 +165,7 @@ export const baseApi = createApi({
 		"AccessProfiles",
 		"BusinessUnits",
 		"PromptDeployments",
+		"AuthType",
 	],
 	endpoints: () => ({}),
 });

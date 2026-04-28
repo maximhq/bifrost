@@ -4,6 +4,7 @@ package schemas
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"time"
 )
@@ -44,13 +45,10 @@ const (
 // NetworkConfig represents the network configuration for provider connections.
 // ExtraHeaders is automatically copied during provider initialization to prevent data races.
 //
-// RetryBackoffInitial and RetryBackoffMax are stored internally as time.Duration (nanoseconds),
-// but are serialized/deserialized to/from JSON as milliseconds (integers).
-// This means:
-//   - In JSON: values are represented as milliseconds (e.g., 1000 means 1000ms)
-//   - In Go: values are time.Duration (e.g., 1000ms = 1000000000 nanoseconds)
-//   - When unmarshaling from JSON: a value of 1000 is interpreted as 1000ms, not 1000ns
-//   - When marshaling to JSON: a time.Duration is converted to milliseconds
+// RetryBackoffInitial and RetryBackoffMax are stored internally as time.Duration (nanoseconds).
+// They accept two JSON formats for backward compatibility:
+//   - Duration string: "500ms", "5s", "1m" — parsed via time.ParseDuration (preferred)
+//   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
 	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
@@ -68,8 +66,11 @@ type NetworkConfig struct {
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
-// RetryBackoffInitial and RetryBackoffMax are interpreted as milliseconds in JSON,
-// but stored as time.Duration (nanoseconds) internally.
+//
+// RetryBackoffInitial and RetryBackoffMax accept two formats:
+//   - Duration string (preferred): "500ms", "5s", "1m" — parsed via time.ParseDuration
+//   - Integer (legacy): treated as milliseconds for backward compatibility
+//     (e.g. 500 → 500ms, matching the original behavior)
 func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
@@ -77,8 +78,8 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
 		MaxRetries                     int               `json:"max_retries"`
-		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
-		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
+		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      *EnvVar           `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
@@ -92,7 +93,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Copy all fields
+	// Copy all non-duration fields
 	nc.BaseURL = alias.BaseURL
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
@@ -104,16 +105,56 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
 
-	// Convert milliseconds to time.Duration (nanoseconds)
-	// Only convert if value is greater than 0
-	if alias.RetryBackoffInitial > 0 {
-		nc.RetryBackoffInitial = time.Duration(alias.RetryBackoffInitial) * time.Millisecond
+	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
+	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
+		dur, err := parseNetworkBackoffDuration(alias.RetryBackoffInitial, "retry_backoff_initial")
+		if err != nil {
+			return err
+		}
+		if dur > 0 {
+			nc.RetryBackoffInitial = dur
+		}
 	}
-	if alias.RetryBackoffMax > 0 {
-		nc.RetryBackoffMax = time.Duration(alias.RetryBackoffMax) * time.Millisecond
+
+	// Parse RetryBackoffMax: string → ParseDuration, integer → milliseconds (legacy)
+	if len(alias.RetryBackoffMax) > 0 && string(alias.RetryBackoffMax) != "null" {
+		dur, err := parseNetworkBackoffDuration(alias.RetryBackoffMax, "retry_backoff_max")
+		if err != nil {
+			return err
+		}
+		if dur > 0 {
+			nc.RetryBackoffMax = dur
+		}
 	}
 
 	return nil
+}
+
+// parseNetworkBackoffDuration parses a retry backoff JSON value.
+// Strings are parsed via time.ParseDuration.
+// Integers are treated as milliseconds for backward compatibility with the
+// original NetworkConfig JSON format.
+func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.Duration, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return 0, nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return 0, err
+		}
+		dur, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s %q: use a Go duration string like \"500ms\", \"5s\", \"1m\"", fieldName, s)
+		}
+		return dur, nil
+	}
+	// Integer: milliseconds (original legacy format)
+	var ms int64
+	if err := json.Unmarshal(data, &ms); err != nil {
+		return 0, fmt.Errorf("invalid %s: expected a duration string (e.g. \"500ms\") or integer milliseconds: %w", fieldName, err)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
 }
 
 // MarshalJSON customizes JSON marshaling for NetworkConfig.

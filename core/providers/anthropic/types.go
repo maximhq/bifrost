@@ -80,8 +80,10 @@ const (
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
 	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
-	AnthropicTaskBudgetsBetaHeaderPrefix         = "task-budgets-"
-	AnthropicEagerInputStreamingBetaHeaderPrefix = "fine-grained-tool-streaming-"
+	AnthropicTaskBudgetsBetaHeaderPrefix            = "task-budgets-"
+	AnthropicEagerInputStreamingBetaHeaderPrefix    = "fine-grained-tool-streaming-"
+	AnthropicContextManagementBetaHeaderPrefix      = "context-management-"
+	AnthropicCompactionBetaHeaderPrefix             = "compact-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -114,8 +116,9 @@ type ProviderFeatureSupport struct {
 	InputExamples       bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
 	StructuredOutputs   bool // strict tool validation / output_format (cite: A)
 	PromptCachingScope  bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
-	Compaction          bool // compact_20260112 (cite: A, B-header)
-	ContextEditing      bool // clear_tool_uses / clear_thinking (cite: A, B-header)
+	Compaction             bool // compact_20260112 (cite: A, B-header)
+	ContextEditing         bool // clear_tool_uses / clear_thinking (cite: A, B-header)
+	ContextManagementField bool // provider accepts the context_management JSON body field at all; false → entire field dropped regardless of edit types
 	FilesAPI            bool // files-api-2025-04-14, file_id source (cite: A)
 	InterleavedThinking bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
 	Skills              bool // Agent Skills — container.skills object (cite: A)
@@ -142,7 +145,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, InputExamples: true, StructuredOutputs: true, PromptCachingScope: true,
-		Compaction: true, ContextEditing: true, FilesAPI: true,
+		Compaction: true, ContextEditing: true, ContextManagementField: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
@@ -151,13 +154,22 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
 	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool, StructuredOutputs,
 	// PromptCachingScope (400 "unexpected beta header" per LiteLLM #19984),
+	// ContextEditing (400 "unexpected beta header" per live API error),
+	// ContextManagementField (400 "Extra inputs are not permitted" per live API error
+	//     when the request body carries a context_management object).
+	// Compaction IS supported on Vertex via the compact-2026-01-12 beta header even
+	//     though Anthropic's compaction docs don't list Vertex (verified by live
+	//     testing). The header passes through FilterBetaHeadersForProvider because
+	//     Compaction: true; the body-field stripper at utils.go:460 removes any
+	//     client-side context_management payload (gated by ContextManagementField:
+	//     false) so the request still succeeds. The two flags are intentionally
+	//     independent: one controls header forwarding, the other controls body shape.
 	// FilesAPI, WebFetch, CodeExecution, AdvancedToolUse, RedactThinking.
 	schemas.Vertex: {
 		WebSearch:   true, // web search GA on Vertex per A; earlier code restricted to web_search_20250305 — A doesn't qualify
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic:      true,
 		Compaction:          true,
-		ContextEditing:      true,
 		InterleavedThinking: true, // V-platform confirms; fails on non-allowlisted 4-series
 		Context1M:           true,
 		EagerInputStreaming: true, // fine-grained-tool-streaming GA per A
@@ -178,6 +190,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		StructuredOutputs:   true,
 		Compaction:          true, // compact-2026-01-12 per B-header
 		ContextEditing:      true, // context-management-2025-06-27 per B-header (bundles memory)
+		ContextManagementField: true, // Bedrock accepts context_management body field
 		InterleavedThinking: true, // per B-header; model-allowlisted
 		Context1M:           true, // Opus 4.6 / Sonnet 4.6 per A
 		EagerInputStreaming: true, // fine-grained-tool-streaming-2025-05-14 per B-header
@@ -193,7 +206,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, InputExamples: true, StructuredOutputs: true, PromptCachingScope: true,
-		Compaction: true, ContextEditing: true, FilesAPI: true,
+		Compaction: true, ContextEditing: true, ContextManagementField: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		RedactThinking: true, TaskBudgets: true,
 		EagerInputStreaming: true,

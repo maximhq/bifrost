@@ -41,17 +41,19 @@ type RedisConfig struct {
 	// Cluster mode
 	ClusterMode *schemas.EnvVar `json:"cluster_mode,omitempty"` // Use Redis Cluster client (default: false)
 
-	// Connection pool and timeout settings (passed directly to Redis client)
-	PoolSize        int           `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
-	MaxActiveConns  int           `json:"max_active_conns,omitempty"`   // Maximum number of active connections (optional)
-	MinIdleConns    int           `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
-	MaxIdleConns    int           `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
-	ConnMaxLifetime time.Duration `json:"conn_max_lifetime,omitempty"`  // Connection maximum lifetime (optional)
-	ConnMaxIdleTime time.Duration `json:"conn_max_idle_time,omitempty"` // Connection maximum idle time (optional)
-	DialTimeout     time.Duration `json:"dial_timeout,omitempty"`       // Timeout for socket connection (optional)
-	ReadTimeout     time.Duration `json:"read_timeout,omitempty"`       // Timeout for socket reads (optional)
-	WriteTimeout    time.Duration `json:"write_timeout,omitempty"`      // Timeout for socket writes (optional)
-	ContextTimeout  time.Duration `json:"context_timeout,omitempty"`    // Timeout for Redis operations (optional)
+	// Connection pool and timeout settings (passed directly to Redis client).
+	// All duration fields accept either a Go duration string (e.g. "5s", "500ms",
+	// "1m30s") or a plain integer nanosecond value for backward compatibility.
+	PoolSize        int             `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
+	MaxActiveConns  int             `json:"max_active_conns,omitempty"`   // Maximum number of active connections (optional)
+	MinIdleConns    int             `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
+	MaxIdleConns    int             `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
+	ConnMaxLifetime schemas.Duration `json:"conn_max_lifetime,omitempty"`  // Connection maximum lifetime (optional)
+	ConnMaxIdleTime schemas.Duration `json:"conn_max_idle_time,omitempty"` // Connection maximum idle time (optional)
+	DialTimeout     schemas.Duration `json:"dial_timeout,omitempty"`       // Timeout for socket connection (optional)
+	ReadTimeout     schemas.Duration `json:"read_timeout,omitempty"`       // Timeout for socket reads (optional)
+	WriteTimeout    schemas.Duration `json:"write_timeout,omitempty"`      // Timeout for socket writes (optional)
+	ContextTimeout  schemas.Duration `json:"context_timeout,omitempty"`    // Timeout for Redis operations (optional)
 }
 
 // RedisStore represents the Redis vector store.
@@ -71,7 +73,7 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 
 // CreateNamespace creates a new namespace in the Redis vector store.
 func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	// Check if index already exists
@@ -133,7 +135,7 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 
 // GetChunk retrieves a chunk from the Redis vector store.
 func (s *RedisStore) GetChunk(ctx context.Context, namespace string, id string) (SearchResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
@@ -170,7 +172,7 @@ func (s *RedisStore) GetChunk(ctx context.Context, namespace string, id string) 
 
 // GetChunks retrieves multiple chunks from the Redis vector store.
 func (s *RedisStore) GetChunks(ctx context.Context, namespace string, ids []string) ([]SearchResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if len(ids) == 0 {
@@ -234,7 +236,7 @@ func (s *RedisStore) GetChunks(ctx context.Context, namespace string, ids []stri
 
 // GetAll retrieves all chunks from the Redis vector store.
 func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	// Set default limit if not provided
@@ -1126,7 +1128,7 @@ func buildRedisQueryCondition(query Query, fieldTypes map[string]VectorStoreProp
 
 // GetNearest retrieves the nearest chunks from the Redis vector store.
 func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []float32, queries []Query, selectFields []string, threshold float64, limit int64) ([]SearchResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	// Build Redis query from the provided queries
@@ -1236,7 +1238,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 
 // Add stores a new chunk in the Redis vector store.
 func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
@@ -1290,7 +1292,7 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 
 // Delete deletes a chunk from the Redis vector store.
 func (s *RedisStore) Delete(ctx context.Context, namespace string, id string) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
@@ -1316,7 +1318,7 @@ func (s *RedisStore) Delete(ctx context.Context, namespace string, id string) er
 
 // DeleteAll deletes all chunks from the Redis vector store.
 func (s *RedisStore) DeleteAll(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error) {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	return s.deleteAllBySnapshot(ctx, namespace, queries)
@@ -1464,7 +1466,7 @@ func (s *RedisStore) getAllMatchingIDs(ctx context.Context, namespace string, qu
 
 // DeleteNamespace deletes a namespace from the Redis vector store.
 func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) error {
-	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	// Drop the index using FT.DROPINDEX
@@ -1701,11 +1703,11 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 			MaxActiveConns:  config.MaxActiveConns,
 			MinIdleConns:    config.MinIdleConns,
 			MaxIdleConns:    config.MaxIdleConns,
-			ConnMaxLifetime: config.ConnMaxLifetime,
-			ConnMaxIdleTime: config.ConnMaxIdleTime,
-			DialTimeout:     config.DialTimeout,
-			ReadTimeout:     config.ReadTimeout,
-			WriteTimeout:    config.WriteTimeout,
+			ConnMaxLifetime: time.Duration(config.ConnMaxLifetime),
+			ConnMaxIdleTime: time.Duration(config.ConnMaxIdleTime),
+			DialTimeout:     time.Duration(config.DialTimeout),
+			ReadTimeout:     time.Duration(config.ReadTimeout),
+			WriteTimeout:    time.Duration(config.WriteTimeout),
 		})
 	} else {
 		client = redis.NewClient(&redis.Options{
@@ -1719,11 +1721,11 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 			MaxActiveConns:  config.MaxActiveConns,
 			MinIdleConns:    config.MinIdleConns,
 			MaxIdleConns:    config.MaxIdleConns,
-			ConnMaxLifetime: config.ConnMaxLifetime,
-			ConnMaxIdleTime: config.ConnMaxIdleTime,
-			DialTimeout:     config.DialTimeout,
-			ReadTimeout:     config.ReadTimeout,
-			WriteTimeout:    config.WriteTimeout,
+			ConnMaxLifetime: time.Duration(config.ConnMaxLifetime),
+			ConnMaxIdleTime: time.Duration(config.ConnMaxIdleTime),
+			DialTimeout:     time.Duration(config.DialTimeout),
+			ReadTimeout:     time.Duration(config.ReadTimeout),
+			WriteTimeout:    time.Duration(config.WriteTimeout),
 		})
 	}
 

@@ -983,9 +983,9 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
 			if reqBody != nil {
-				reqBody.Stream = schemas.Ptr(true)
+				reqBody.Stream = new(true)
 				reqBody.StreamOptions = &schemas.ChatStreamOptions{
-					IncludeUsage: schemas.Ptr(true),
+					IncludeUsage: new(true),
 				}
 				if postRequestConverter != nil {
 					reqBody = postRequestConverter(reqBody)
@@ -1149,7 +1149,6 @@ func HandleOpenAIChatCompletionStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostChatResponse
-			// TODO fix this
 			if customResponseHandler != nil {
 				rawRequest, rawResponse, handlerErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
 				if handlerErr != nil {

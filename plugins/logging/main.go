@@ -412,6 +412,18 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 		}
 	}
 
+	// Include x-bf-dim-* dimensions in metadata.
+	if dims, ok := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string); ok {
+		for k, v := range dims {
+			if metadata == nil {
+				metadata = make(map[string]interface{})
+			}
+			if _, exists := metadata[k]; !exists {
+				metadata[k] = v
+			}
+		}
+	}
+
 	return metadata
 }
 
@@ -876,6 +888,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Apply streaming output fields to the entry
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw)
+		}
+		if entry.ErrorDetails != "" || entry.ErrorDetailsParsed != nil {
+			entry.Status = "error"
 		}
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {

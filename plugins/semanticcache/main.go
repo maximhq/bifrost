@@ -117,16 +117,16 @@ type StreamChunk struct {
 
 // StreamAccumulator manages accumulation of streaming chunks for caching
 type StreamAccumulator struct {
-	RequestID      string                 // The request ID
-	StorageID      string                 // The final cache entry ID
-	Chunks         []*StreamChunk         // All chunks for this stream
-	IsComplete     bool                   // Whether the stream is complete
-	HasError       bool                   // Whether any chunk in the stream had an error
-	FinalTimestamp time.Time              // When the stream completed
-	Embedding      []float32              // Embedding for the original request
-	Metadata       map[string]interface{} // Metadata for caching
-	TTL            time.Duration          // TTL for this cache entry
-	mu             sync.Mutex             // Protects chunk operations
+	RequestID      string         // The request ID
+	StorageID      string         // The final cache entry ID
+	Chunks         []*StreamChunk // All chunks for this stream
+	IsComplete     bool           // Whether the stream is complete
+	HasError       bool           // Whether any chunk in the stream had an error
+	FinalTimestamp time.Time      // When the stream completed
+	Embedding      []float32      // Embedding for the original request
+	Metadata       map[string]any // Metadata for caching
+	TTL            time.Duration  // TTL for this cache entry
+	mu             sync.Mutex     // Protects chunk operations
 }
 
 // Plugin implements the schemas.LLMPlugin interface for semantic caching.
@@ -308,10 +308,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 
 	// Set cache behavior defaults
 	if config.CacheByModel == nil {
-		config.CacheByModel = bifrost.Ptr(true)
+		config.CacheByModel = new(true)
 	}
 	if config.CacheByProvider == nil {
-		config.CacheByProvider = bifrost.Ptr(true)
+		config.CacheByProvider = new(true)
 	}
 
 	plugin := &Plugin{

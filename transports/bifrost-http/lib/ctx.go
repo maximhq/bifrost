@@ -68,10 +68,15 @@ func ParseSessionIDFromBaggage(header string) string {
 // preserving important header values for monitoring and tracing purposes.
 //
 // The function processes several types of special headers:
-// 1. Prometheus Headers (x-bf-prom-*):
-//   - All headers prefixed with 'x-bf-prom-' are copied to the context
-//   - The prefix is stripped and the remainder becomes the context key
-//   - Example: 'x-bf-prom-latency' becomes 'latency' in the context
+// 1. Dimension Headers (x-bf-dim-*):
+//   - All headers prefixed with 'x-bf-dim-' are collected into a map[string]string stored under
+//     schemas.BifrostContextKeyDimensions and are forwarded to all observability integrations
+//     (internal logs, OTEL spans, Prometheus custom labels, Datadog, etc.).
+//   - The prefix is stripped and the remainder becomes the dimension key.
+//   - Example: 'x-bf-dim-environment' with value 'production' stores {"environment": "production"}.
+//
+// 1a. Prometheus Headers (x-bf-prom-*) [DEPRECATED — use x-bf-dim-* instead]:
+//   - All headers prefixed with 'x-bf-prom-' are still accepted for backward compatibility.
 //
 // 2. Maxim Tracing Headers (x-bf-maxim-*):
 //   - Specifically handles 'x-bf-maxim-traceID' and 'x-bf-maxim-generationID'
@@ -177,6 +182,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	})
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)
+	// Initialize dimensions map for x-bf-dim-* headers
+	dimensions := make(map[string]string)
 	// Initialize extra headers map for headers prefixed with x-bf-eh-
 	extraHeaders := make(map[string][]string)
 	// Initialize extra headers map for headers in the mcp header combined allowlist
@@ -217,8 +224,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			}
 			return true
 		}
-		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok {
-			bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
+			if labelName != "path" && labelName != "method" {
+				dimensions[labelName] = string(value)
+			}
+			return true
+		}
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok && labelName != "" {
+			// x-bf-prom-* is Prometheus-only and must not flow into unified dimensions
+			// (logs/OTEL/Maxim/etc). Prometheus plugin reads headers directly.
 			return true
 		}
 		// Checking for maxim headers
@@ -509,6 +523,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	// Store the collected maxim tags in the context
 	if len(maximTags) > 0 {
 		bifrostCtx.SetValue(schemas.BifrostContextKey(maxim.TagsKey), maximTags)
+	}
+
+	// Store collected dimensions (x-bf-dim-* only) in the context
+	if len(dimensions) > 0 {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyDimensions, dimensions)
 	}
 
 	// Store collected extra headers in the context if any were found

@@ -8,9 +8,9 @@ icon: "shield-halved"
 Guardrails are an **enterprise-only** feature. They require the enterprise Bifrost image.
 </Note>
 
-<Warning>
-`env.*` references are currently **not supported** in `bifrost.guardrails` provider `config` values. Use explicit values there for now.
-</Warning>
+<Note>
+Credential and endpoint fields in guardrail provider `config` blocks support `env.*` references (e.g. `env.AWS_SECRET_ACCESS_KEY`). Bifrost resolves the value from the process environment at startup. See the [Environment Variable Support](#environment-variable-support) section for the complete per-provider field list.
+</Note>
 
 Guardrails are configured under `bifrost.guardrails` in your values file. The configuration has two parts:
 
@@ -44,10 +44,13 @@ bifrost:
               flags: "i"
             - pattern: "gh[ps]_[A-Za-z0-9]{36}"
               description: "GitHub token"
+          sampling_rate: 100
 ```
 
 </Tab>
 <Tab title="AWS Bedrock">
+
+Supports three auth modes: `keys` (static credentials), `api_key` (Bedrock API key), and `iam_role` (ambient IAM/IRSA — no explicit credentials required).
 
 ```yaml
 bifrost:
@@ -59,15 +62,34 @@ bifrost:
         enabled: true
         timeout: 15
         config:
-          guardrail_arn: "arn:aws:bedrock:us-east-1::guardrail/abc123"
-          guardrail_version: "DRAFT"          # or a published version number
-          region: "us-east-1"
-          access_key: "YOUR_AWS_ACCESS_KEY_ID" # omit to use instance role
-          secret_key: "YOUR_AWS_SECRET_ACCESS_KEY"
+          # Required fields
+          guardrail_arn: "env.BEDROCK_GUARDRAIL_ARN"
+          guardrail_version: "DRAFT"           # or a published version number
+          region: "env.AWS_REGION"
+
+          # Auth: keys (default)
+          auth_type: "keys"
+          access_key: "env.AWS_ACCESS_KEY_ID"
+          secret_key: "env.AWS_SECRET_ACCESS_KEY"
+          session_token: "env.AWS_SESSION_TOKEN"  # optional
+
+          # Auth: api_key (alternative)
+          # auth_type: "api_key"
+          # bedrock_api_key: "env.BEDROCK_API_KEY"
+
+          # Auth: iam_role (ambient — no credentials needed)
+          # auth_type: "iam_role"
+          # role_arn: "env.AWS_ROLE_ARN"          # optional: assume specific role
+          # external_id: "env.AWS_EXTERNAL_ID"    # optional
+          # session_name: "env.AWS_SESSION_NAME"  # optional
+
+          sampling_rate: 100
 ```
 
 </Tab>
 <Tab title="Azure Content Safety">
+
+Supports three auth modes: `api_key`, `default_credential` (managed identity / Azure CLI), and `entra_id` (service principal).
 
 ```yaml
 bifrost:
@@ -79,15 +101,49 @@ bifrost:
         enabled: true
         timeout: 10
         config:
-          endpoint: "https://your-resource.cognitiveservices.azure.com"
-          api_key: "YOUR_AZURE_CONTENT_SAFETY_KEY"
+          # Required field
+          endpoint: "env.AZURE_CONTENT_SAFETY_ENDPOINT"
+
+          # Auth: api_key (default)
+          auth_type: "api_key"
+          api_key: "env.AZURE_CONTENT_SAFETY_KEY"
+
+          # Auth: default_credential (managed identity / Azure CLI — no credentials needed)
+          # auth_type: "default_credential"
+
+          # Auth: entra_id (service principal)
+          # auth_type: "entra_id"
+          # client_id: "env.AZURE_CLIENT_ID"
+          # client_secret: "env.AZURE_CLIENT_SECRET"
+          # tenant_id: "env.AZURE_TENANT_ID"
+
+          # Feature toggles (plain booleans — no env.* support)
           analyze_enabled: true
-          analyze_severity_threshold: "medium"  # low | medium | high
+          analyze_severity_threshold: "medium"   # low | medium | high  (env.* supported)
           jailbreak_shield_enabled: true
           indirect_attack_shield_enabled: true
           copyright_enabled: false
           text_blocklist_enabled: false
           blocklist_names: []
+          sampling_rate: 100
+```
+
+</Tab>
+<Tab title="Patronus AI">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 4
+        provider_name: "patronus-ai"
+        policy_name: "patronus-eval"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.PATRONUS_API_KEY"
+          environment: "production"              # production | development  (env.* supported)
+          sampling_rate: 100
 ```
 
 </Tab>
@@ -97,22 +153,101 @@ bifrost:
 bifrost:
   guardrails:
     providers:
-      - id: 4
+      - id: 5
         provider_name: "grayswan"
         policy_name: "grayswan-jailbreak"
         enabled: true
         timeout: 15
         config:
-          api_key: "YOUR_GRAYSWAN_API_KEY"
-          violation_threshold: 0.7        # 0.0–1.0; higher = more permissive
-          reasoning_mode: "standard"      # standard | fast
-          policy_id: ""                   # optional: single policy ID
-          policy_ids: []                  # optional: multiple policy IDs
-          rules: {}                       # optional: inline rule map
+          api_key: "env.GRAYSWAN_API_KEY"
+          base_url: "env.GRAYSWAN_BASE_URL"     # optional custom endpoint  (env.* supported)
+          reasoning_mode: "standard"             # standard | fast | off  (env.* supported)
+
+          # Plain-value fields (no env.* support)
+          violation_threshold: 0.7              # 0.0–1.0; higher = more permissive
+          policy_id: ""                          # optional: single policy ID
+          policy_ids: []                         # optional: multiple policy IDs
+          rules: {}                              # optional: inline rule map
+          sampling_rate: 100
 ```
 
 </Tab>
 </Tabs>
+
+---
+
+## Environment Variable Support
+
+Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` string in addition to a literal value. Bifrost resolves the variable from the process environment at startup. Fields marked **plain only** must be a literal value (boolean, number, array, or string).
+
+### AWS Bedrock
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `guardrail_arn` | Yes | Yes | ARN of the Bedrock guardrail |
+| `guardrail_version` | Yes | Yes | `"DRAFT"` or a published version number |
+| `region` | Yes | Yes | AWS region (e.g. `"us-east-1"`) |
+| `auth_type` | No | Yes | `"keys"` (default) \| `"api_key"` \| `"iam_role"` |
+| `access_key` | Conditional | Yes | Required when `auth_type="keys"` |
+| `secret_key` | Conditional | Yes | Required when `auth_type="keys"` |
+| `session_token` | No | Yes | Optional temporary session token |
+| `bedrock_api_key` | Conditional | Yes | Required when `auth_type="api_key"` |
+| `role_arn` | No | Yes | IAM role ARN to assume (optional, `auth_type="iam_role"`) |
+| `external_id` | No | Yes | External ID for role assumption |
+| `session_name` | No | Yes | Session name for role assumption |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Azure Content Safety
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `endpoint` | Yes | Yes | Azure Content Safety resource URL |
+| `auth_type` | No | Yes | `"api_key"` (default) \| `"default_credential"` \| `"entra_id"` |
+| `api_key` | Conditional | Yes | Required when `auth_type="api_key"` |
+| `client_id` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `client_secret` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `tenant_id` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `analyze_severity_threshold` | No | Yes | `"low"` \| `"medium"` \| `"high"` (default: `"medium"`) |
+| `analyze_enabled` | No | **Plain only** | Enable text analysis (default: `true`) |
+| `jailbreak_shield_enabled` | No | **Plain only** | Enable jailbreak detection (default: `false`) |
+| `indirect_attack_shield_enabled` | No | **Plain only** | Enable indirect attack detection (default: `false`) |
+| `copyright_enabled` | No | **Plain only** | Enable copyright detection (default: `false`) |
+| `text_blocklist_enabled` | No | **Plain only** | Enable custom blocklists (default: `false`) |
+| `scopes` | No | **Plain only** | OAuth scopes (string array) |
+| `blocklist_names` | No | **Plain only** | Blocklist names to apply (string array) |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Patronus AI
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Patronus AI API key |
+| `environment` | No | Yes | `"production"` (default) \| `"development"` |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Gray Swan
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Gray Swan API key |
+| `base_url` | No | Yes | Custom API base URL (uses Gray Swan default if unset) |
+| `reasoning_mode` | No | Yes | `"standard"` \| `"fast"` \| `"off"` (default: `"standard"`) |
+| `violation_threshold` | No | **Plain only** | `0.0`–`1.0`; higher = more permissive (default: `0.5`) |
+| `policy_id` | No | **Plain only** | Single policy ID string |
+| `policy_ids` | No | **Plain only** | Multiple policy IDs (string array) |
+| `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Regex
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, flags? }` objects |
+| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 
 ---
 
@@ -175,7 +310,7 @@ bifrost:
         apply_to: "input"
         sampling_rate: 50
         timeout: 20
-        provider_config_ids: [4]
+        provider_config_ids: [5]
 
       - id: 104
         name: "strict-team-check"
@@ -223,8 +358,8 @@ bifrost:
         enabled: true
         timeout: 10
         config:
-          endpoint: "https://your-resource.cognitiveservices.azure.com"
-          api_key: "YOUR_AZURE_CONTENT_SAFETY_KEY"
+          endpoint: "env.AZURE_CONTENT_SAFETY_ENDPOINT"
+          api_key: "env.AZURE_CONTENT_SAFETY_KEY"
           analyze_enabled: true
           analyze_severity_threshold: "medium"
           jailbreak_shield_enabled: true

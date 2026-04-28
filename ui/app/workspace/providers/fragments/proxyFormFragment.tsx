@@ -6,8 +6,8 @@ import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/li
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
 import { proxyOnlyFormSchema, type EnvVar, type ProxyOnlyFormSchema } from "@/lib/types/schemas";
-import { toEnvVarFormValue, toOptionalEnvVarPayload } from "@/lib/utils/envVarForm";
 import { cn } from "@/lib/utils";
+import { toEnvVarFormValue, toOptionalEnvVarPayload } from "@/lib/utils/envVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
@@ -216,7 +216,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 				</div>
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 pb-6">
+				<div className="flex justify-end space-x-2">
 					<Button
 						type="button"
 						variant="outline"
@@ -229,7 +229,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 					</Button>
 					<Button
 						type="submit"
-						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
+						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
 						Save Proxy Configuration

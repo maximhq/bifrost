@@ -378,6 +378,9 @@ false
 {{- $keys := list }}
 {{- range $key := $providerConfig.keys }}
 {{- $keyCopy := deepCopy $key }}
+{{- if and (not (hasKey $keyCopy "id")) (hasKey $keyCopy "name") $keyCopy.name }}
+{{- $_ := set $keyCopy "id" $keyCopy.name }}
+{{- end }}
 {{- if not (hasKey $keyCopy "weight") }}
 {{- $_ := set $keyCopy "weight" 1 }}
 {{- end }}

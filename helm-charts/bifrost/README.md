@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.7
+**Latest Version:** 2.1.8
 
 ## Changelog
+
+### 2.1.8
+
+- Added provider key backward compatibility in Helm rendering:
+  - If `bifrost.providers.<provider>.keys[].id` is omitted and `name` is present, Helm now auto-populates `id = name`.
+  - This preserves legacy values files that only defined key names while still supporting `governance.virtualKeys[].provider_configs[].key_ids`.
 
 ### 2.1.7
 

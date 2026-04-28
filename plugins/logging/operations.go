@@ -368,6 +368,16 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.Cost = streamResponse.Data.Cost
 	}
 
+	// Cache
+	if streamResponse.Data.CacheDebug != nil {
+		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
+	}
+
+	// Finish/stop reason - always persist regardless of content logging settings
+	if streamResponse.Data.FinishReason != nil {
+		entry.StopReason = streamResponse.Data.FinishReason
+	}
+
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
 		// Transcription output
 		if streamResponse.Data.TranscriptionOutput != nil {
@@ -381,10 +391,6 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if streamResponse.Data.ImageGenerationOutput != nil {
 			entry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
 		}
-		// Cache debug
-		if streamResponse.Data.CacheDebug != nil {
-			entry.CacheDebugParsed = streamResponse.Data.CacheDebug
-		}
 		// Output message
 		if streamResponse.Data.OutputMessage != nil {
 			entry.OutputMessageParsed = streamResponse.Data.OutputMessage
@@ -396,9 +402,14 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if shouldStoreRaw {
 			// Raw request
 			if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
-				rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
-				if err == nil {
-					entry.RawRequest = string(rawRequestBytes)
+				switch raw := (*streamResponse.RawRequest).(type) {
+				case string:
+					entry.RawRequest = strings.TrimSpace(raw)
+				default:
+					rawRequestBytes, err := sonic.Marshal(raw)
+					if err == nil {
+						entry.RawRequest = string(rawRequestBytes)
+					}
 				}
 			}
 			// Raw response
@@ -466,6 +477,22 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 
 	// Extract raw request/response and output content
 	extraFields := result.GetExtraFields()
+
+	// Extract stop_reason - always persist regardless of content logging settings
+	if result.TextCompletionResponse != nil && len(result.TextCompletionResponse.Choices) > 0 {
+		if choice := result.TextCompletionResponse.Choices[0]; choice.FinishReason != nil {
+			entry.StopReason = choice.FinishReason
+		}
+	}
+	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
+		if choice := result.ChatResponse.Choices[0]; choice.FinishReason != nil {
+			entry.StopReason = choice.FinishReason
+		}
+	}
+	if result.ResponsesResponse != nil && result.ResponsesResponse.StopReason != nil {
+		entry.StopReason = result.ResponsesResponse.StopReason
+	}
+
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
 		if shouldStoreRaw {
 			if extraFields.RawRequest != nil {
@@ -541,6 +568,11 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
 	if result == nil || result.ResponsesResponse == nil {
 		return
+	}
+
+	// Stop reason - always persist regardless of content logging settings
+	if result.ResponsesResponse.StopReason != nil {
+		entry.StopReason = result.ResponsesResponse.StopReason
 	}
 
 	if usage := result.ResponsesResponse.Usage; usage != nil {
@@ -1096,6 +1128,17 @@ func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context) []string 
 		return []string{}
 	}
 	return engines
+}
+
+// GetAvailableStopReasons returns all unique stop reason values from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableStopReasons(ctx context.Context) []string {
+	stopReasons, err := p.store.GetDistinctStopReasons(ctx)
+	if err != nil {
+		p.logger.Error("failed to get available stop reasons: %v", err)
+		return []string{}
+	}
+	return stopReasons
 }
 
 // keyPairResultsToKeyPairs converts logstore.KeyPairResult slice to KeyPair slice

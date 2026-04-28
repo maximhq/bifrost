@@ -114,7 +114,9 @@ func (c *MCPConfig) UnmarshalJSON(data []byte) error {
 }
 
 type MCPToolManagerConfig struct {
-	ToolExecutionTimeout  time.Duration        `json:"tool_execution_timeout"`
+	// ToolExecutionTimeout accepts a Go duration string (e.g. "30s", "2m") or an
+	// integer nanosecond value for backward compatibility.
+	ToolExecutionTimeout  Duration             `json:"tool_execution_timeout"`
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default

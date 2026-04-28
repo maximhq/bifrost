@@ -305,30 +305,21 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 	return (
 		<Sheet open onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
+				<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
+					<div className="flex w-full items-center justify-between">
+						<div className="space-y-2">
+							<SheetTitle className="flex w-fit items-center gap-2 font-medium">
+								{mcpClient.config.name}
+								<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
+							</SheetTitle>
+							<SheetDescription>MCP server configuration and available tools</SheetDescription>
+						</div>
+					</div>
+				</SheetHeader>
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col">
-						<SheetHeader className="w-full p-0" showCloseButton={false}>
-							<div className="flex w-full items-center justify-between">
-								<div className="space-y-2">
-									<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-										{mcpClient.config.name}
-										<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
-									</SheetTitle>
-									<SheetDescription>MCP server configuration and available tools</SheetDescription>
-								</div>
-								<Button
-									className="ml-auto"
-									type="submit"
-									disabled={isUpdating || (!form.formState.isDirty && !vkConfigsDirty) || !hasUpdateMCPClientAccess}
-									isLoading={isUpdating}
-								>
-									Save Changes
-								</Button>
-							</div>
-						</SheetHeader>
-
-						<div className="gap-6 space-y-6">
+						<div className="gap-6 space-y-6 px-8">
 							{/* Name and Header Section */}
 							<div className="space-y-4">
 								<h3 className="font-semibold">Basic Information</h3>
@@ -988,6 +979,19 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									</div>
 								)}
 							</div>
+						</div>
+
+						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-8 py-4">
+							<Button type="button" variant="outline" onClick={onClose}>
+								Cancel
+							</Button>
+							<Button
+								type="submit"
+								disabled={isUpdating || (!form.formState.isDirty && !vkConfigsDirty) || !hasUpdateMCPClientAccess}
+								isLoading={isUpdating}
+							>
+								Save Changes
+							</Button>
 						</div>
 					</form>
 				</Form>

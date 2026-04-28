@@ -1232,7 +1232,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			return &schemas.MCPConfig{
 				ClientConfigs: clientConfigs,
 				ToolManagerConfig: &schemas.MCPToolManagerConfig{
-					ToolExecutionTimeout: 30 * time.Second, // default from TableClientConfig
+					ToolExecutionTimeout: schemas.Duration(30 * time.Second), // default from TableClientConfig
 					MaxAgentDepth:        10,               // default from TableClientConfig
 				},
 			}, nil
@@ -1240,7 +1240,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		return nil, err
 	}
 	toolManagerConfig := schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout:  time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
+		ToolExecutionTimeout:  schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
 		MaxAgentDepth:         clientConfig.MCPAgentDepth,
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,
@@ -4164,7 +4164,7 @@ func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error 
 func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
 	var tokens []*tables.TableOauthToken
 	result := s.DB().WithContext(ctx).
-		Where("expires_at < ?", before).
+		Where("expires_at IS NOT NULL AND expires_at < ?", before).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)

@@ -55,6 +55,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
 	chunk.RawResponse = nil
+	chunk.RawRequest = nil
 	a.chatStreamChunkPool.Put(chunk)
 }
 

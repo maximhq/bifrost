@@ -318,6 +318,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 		schemas.ResponsesToolTypeWebSearchPreview:   true,
 		schemas.ResponsesToolTypeMemory:             true,
 		schemas.ResponsesToolTypeToolSearch:         true,
+		schemas.ResponsesToolTypeNamespace:          true,
 	}
 
 	// Filter tools to only include supported types
@@ -356,6 +357,14 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 					// If only blocked domains or both empty, Filters stays nil
 				}
 
+				if tool.ResponsesToolWebSearch.ExternalWebAccess != nil {
+					externalWebAccess := *tool.ResponsesToolWebSearch.ExternalWebAccess
+					newWebSearch.ExternalWebAccess = &externalWebAccess
+				}
+				if len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+					newWebSearch.SearchContentTypes = append([]string(nil), tool.ResponsesToolWebSearch.SearchContentTypes...)
+				}
+
 				// Copy other fields if they exist
 				if tool.ResponsesToolWebSearch.UserLocation != nil {
 					newWebSearch.UserLocation = tool.ResponsesToolWebSearch.UserLocation
@@ -373,4 +382,3 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	}
 	resp.Tools = filteredTools
 }
-

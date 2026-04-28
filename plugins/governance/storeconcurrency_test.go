@@ -121,4 +121,3 @@ func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	assert.Equal(t, 0.0, final.CurrentUsage)
 	assert.True(t, final.LastReset.Equal(newLastReset))
 }
-

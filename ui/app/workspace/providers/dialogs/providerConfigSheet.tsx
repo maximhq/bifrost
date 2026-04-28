@@ -96,8 +96,8 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar p-8 sm:max-w-[50%]">
-				<SheetHeader className="flex flex-col items-start">
+			<SheetContent className="p-0 pt-4 sm:max-w-[50%]">
+				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<div className="flex items-center">
@@ -107,47 +107,49 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</div>
 					</SheetTitle>
 				</SheetHeader>
-				<div className="w-full rounded-sm border">
-					<Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
-						<div className="custom-scrollbar mb-4 w-full overflow-x-auto">
-							<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
-								{tabs.map((tab) => (
-									<TabsTrigger
-										key={tab.id}
-										value={tab.id}
-										data-testid={`provider-tab-${tab.id}`}
-										className="flex-none px-3 whitespace-nowrap"
-									>
-										{tab.label}
-									</TabsTrigger>
-								))}
-							</TabsList>
-						</div>
-						<TabsContent value="api-structure">
-							<ApiStructureFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="openai-config">
-							<OpenAIConfigFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="network">
-							<NetworkFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="proxy">
-							<ProxyFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="performance">
-							<PerformanceFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="governance">
-							<GovernanceFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="beta-headers">
-							<BetaHeadersFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="debugging">
-							<DebuggingFormFragment provider={provider} />
-						</TabsContent>
-					</Tabs>
+				<div className="px-8 py-4">
+					<div className="w-full rounded-sm border">
+						<Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab}>
+							<div className="custom-scrollbar mb-4 w-full overflow-x-auto">
+								<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
+									{tabs.map((tab) => (
+										<TabsTrigger
+											key={tab.id}
+											value={tab.id}
+											data-testid={`provider-tab-${tab.id}`}
+											className="flex-none px-3 whitespace-nowrap"
+										>
+											{tab.label}
+										</TabsTrigger>
+									))}
+								</TabsList>
+							</div>
+							<TabsContent value="api-structure">
+								<ApiStructureFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="openai-config">
+								<OpenAIConfigFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="network">
+								<NetworkFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="proxy">
+								<ProxyFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="performance">
+								<PerformanceFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="governance">
+								<GovernanceFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="beta-headers">
+								<BetaHeadersFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="debugging">
+								<DebuggingFormFragment provider={provider} />
+							</TabsContent>
+						</Tabs>
+					</div>
 				</div>
 			</SheetContent>
 		</Sheet>

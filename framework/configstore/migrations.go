@@ -617,6 +617,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationConvertMCPClientToolSyncIntervalMinutesToSeconds(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationMakeOAuthTokenExpiryNullable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -6524,6 +6527,36 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_per_user_oauth_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationMakeOAuthTokenExpiryNullable makes expires_at nullable for OAuth token tables.
+func migrationMakeOAuthTokenExpiryNullable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "make_oauth_token_expiry_nullable",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableOauthToken{}) && mg.HasColumn(&tables.TableOauthToken{}, "expires_at") {
+				if err := mg.AlterColumn(&tables.TableOauthToken{}, "ExpiresAt"); err != nil {
+					return fmt.Errorf("failed to alter oauth_tokens.expires_at to nullable: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableOauthUserToken{}) && mg.HasColumn(&tables.TableOauthUserToken{}, "expires_at") {
+				if err := mg.AlterColumn(&tables.TableOauthUserToken{}, "ExpiresAt"); err != nil {
+					return fmt.Errorf("failed to alter oauth_user_tokens.expires_at to nullable: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Forward-only migration: making expiry nullable is intentionally non-destructive.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running make_oauth_token_expiry_nullable migration: %s", err.Error())
 	}
 	return nil
 }

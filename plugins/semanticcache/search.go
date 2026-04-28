@@ -290,14 +290,16 @@ func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, req *
 		similarity = *result.Score
 	}
 
-	if hasValidStreamingResponse && !hasValidSingleResponse {
-		// Handle streaming response
-		return plugin.buildStreamingResponseFromResult(ctx, req, result, streamResponses, cacheType, threshold, similarity, inputTokens)
-	} else if hasValidSingleResponse && !hasValidStreamingResponse {
-		// Handle single response
+	isStreamRequest := bifrost.IsStreamRequestType(req.RequestType)
+
+	if isStreamRequest && hasValidStreamingResponse {
+		return plugin.buildStreamingResponseFromResult(ctx, req, result, streamChunks, cacheType, threshold, similarity, inputTokens)
+	} else if !isStreamRequest && hasValidSingleResponse {
 		return plugin.buildSingleResponseFromResult(ctx, req, result, singleResponse, cacheType, threshold, similarity, inputTokens)
 	} else {
-		return nil, fmt.Errorf("cached result has invalid response data: both or neither response/stream_chunks are present (response: %v, stream_chunks: %v)", singleResponse, streamResponses)
+		plugin.logger.Warn("%s Cache entry format mismatch for request %s (isStream=%t, hasSingle=%t, hasStream=%t), treating as miss",
+			PluginLoggerPrefix, result.ID, isStreamRequest, hasValidSingleResponse, hasValidStreamingResponse)
+		return nil, nil
 	}
 }
 
@@ -349,14 +351,8 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 }
 
 // buildStreamingResponseFromResult constructs a streaming response from cached data
-func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
+func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamArray []interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
 	requestedProvider, requestedModel, _ := req.GetRequestFields()
-
-	// Parse stream_chunks
-	streamArray, err := plugin.parseStreamChunks(streamData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse stream_chunks: %w", err)
-	}
 
 	// Mark cache-hit once to avoid concurrent ctx writes
 	ctx.SetValue(isCacheHitKey, true)
@@ -387,7 +383,13 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 				continue
 			}
 
-			// Add cache debug to only the last chunk and set stream end indicator
+			// Ensure RequestType is set on every chunk so downstream consumers
+			// (logging, telemetry, etc.) correctly identify this as a streaming response.
+			if ef := cachedResponse.GetExtraFields(); ef != nil && ef.RequestType == "" {
+				ef.RequestType = req.RequestType
+			}
+
+			// Add cache debug to only the last chunk
 			if i == len(streamArray)-1 {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				extraFields := cachedResponse.GetExtraFields()

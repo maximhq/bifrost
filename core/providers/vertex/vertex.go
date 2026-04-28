@@ -198,12 +198,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// No deployments configured - fetch from Model Garden API
-	var host string
-	if region == "global" {
-		host = "aiplatform.googleapis.com"
-	} else {
-		host = fmt.Sprintf("%s-aiplatform.googleapis.com", region)
-	}
+	host := getVertexModelListingAPIHost(region)
 
 	// Accumulate all publisher models from paginated requests
 	var allPublisherModels []VertexPublisherModel
@@ -228,7 +223,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		// Loop through all pages until no nextPageToken is returned
 		for {
 			// Build URL for publishers.models.list endpoint (Model Garden)
-			// Format: https://{region}-aiplatform.googleapis.com/v1beta1/publishers/{publisher}/models
+			// Format: https://{vertex-api-host}/v1beta1/publishers/{publisher}/models
 			requestURL := fmt.Sprintf("https://%s/v1beta1/publishers/%s/models?pageSize=%d", host, publisher, MaxPageSize)
 			if pageToken != "" {
 				requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
@@ -404,7 +399,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
@@ -474,6 +469,13 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 		}
 		jsonBody = remappedBody
+
+		// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
+		var stripErr error
+		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, request.Model)
+		if stripErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
+		}
 	}
 
 	// Auth query is used for fine-tuned models to pass the API key in the query string
@@ -489,41 +491,21 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s:generateContent", projectNumber, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s:generateContent", region, projectNumber, region, request.Model)
-		}
+		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
 	} else if schemas.IsAnthropicModel(request.Model) {
-		// Claude models use Anthropic publisher
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:rawPredict", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:rawPredict", region, projectID, region, request.Model)
-		}
+		// Claude models use Anthropic publisher — model-aware host for multi-region support
+		completeURL = getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":rawPredict")
 	} else if schemas.IsMistralModel(request.Model) {
 		// Mistral models use mistralai publisher with rawPredict
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:rawPredict", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:rawPredict", region, projectID, region, request.Model)
-		}
+		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":rawPredict")
 	} else if schemas.IsGeminiModel(request.Model) {
 		// Gemini models support api key
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, request.Model)
-		}
+		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", request.Model, ":generateContent")
 	} else {
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
-		}
+		completeURL = getVertexEndpointURL(region, "v1beta1", projectID, "openapi/chat/completions", "")
 	}
 
 	// Create HTTP request for streaming
@@ -726,7 +708,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
@@ -756,14 +738,16 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			if remapErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 			}
+
+			// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
+			var stripErr error
+			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, request.Model)
+			if stripErr != nil {
+				return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
+			}
 		}
 
-		var completeURL string
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:streamRawPredict", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, request.Model)
-		}
+		completeURL := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict")
 
 		// Prepare headers for Vertex Anthropic
 		headers := map[string]string{
@@ -888,21 +872,13 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		var completeURL string
 		if schemas.IsMistralModel(request.Model) {
 			// Mistral models use mistralai publisher with streamRawPredict
-			if region == "global" {
-				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:streamRawPredict", projectID, request.Model)
-			} else {
-				completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:streamRawPredict", region, projectID, region, request.Model)
-			}
+			completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":streamRawPredict")
 		} else {
 			// Other models use OpenAPI endpoint for gemini models
 			if key.Value.GetValue() != "" {
 				authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 			}
-			if region == "global" {
-				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
-			} else {
-				completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions", region, projectID, region)
-			}
+			completeURL = getVertexEndpointURL(region, "v1beta1", projectID, "openapi/chat/completions", "")
 		}
 
 		if authQuery != "" {
@@ -963,13 +939,8 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			return nil, providerUtils.NewConfigurationError("region is not set in key config")
 		}
 
-		// Claude models use Anthropic publisher
-		var url string
-		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/publishers/anthropic/models/%s:rawPredict", projectID, request.Model)
-		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/publishers/anthropic/models/%s:rawPredict", region, projectID, region, request.Model)
-		}
+		// Claude models use Anthropic publisher — model-aware host for multi-region support
+		url := getVertexModelAwarePublisherModelURL(region, "v1beta1", projectID, "anthropic", request.Model, ":rawPredict")
 
 		// Create HTTP request for streaming
 		req := fasthttp.AcquireRequest()
@@ -1233,12 +1204,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, bifrostErr
 		}
 
-		var url string
-		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:streamRawPredict", projectID, request.Model)
-		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict", region, projectID, region, request.Model)
-		}
+		url := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict")
 
 		// Prepare headers for Vertex Anthropic
 		headers := map[string]string{
@@ -1761,31 +1727,19 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s:generateContent", projectNumber, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s:generateContent", region, projectNumber, region, request.Model)
-		}
+		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
 
 	} else if schemas.IsImagenModel(request.Model) {
 		// Imagen models are published models, use publishers/google/models path
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predict", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict", region, projectID, region, request.Model)
-		}
+		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", request.Model, ":predict")
 	} else if schemas.IsGeminiModel(request.Model) {
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, request.Model)
-		}
+		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", request.Model, ":generateContent")
 	}
 
 	// Create HTTP request for image generation
@@ -1991,23 +1945,11 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		if projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s:generateContent", projectNumber, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s:generateContent", region, projectNumber, region, request.Model)
-		}
+		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
 	} else if schemas.IsImagenModel(request.Model) {
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predict", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict", region, projectID, region, request.Model)
-		}
+		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", request.Model, ":predict")
 	} else if schemas.IsGeminiModel(request.Model) {
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, request.Model)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, request.Model)
-		}
+		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", request.Model, ":generateContent")
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -2274,13 +2216,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
-	// Construct base URL based on region
-	var baseURL string
-	if region == "global" {
-		baseURL = "https://aiplatform.googleapis.com/v1"
-	} else {
-		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", region)
-	}
+	baseURL := getVertexAPIBaseURL(region, "v1")
 
 	// Construct the URL for fetching the operation status
 	// The operation name (bifrostReq.ID) already contains the full path:
@@ -2295,7 +2231,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.NewBifrostOperationError("invalid operation ID format", nil)
 	}
 
-	// Construct the URL: https://REGION-aiplatform.googleapis.com/v1/{modelPath}:fetchPredictOperation
+	// Construct the URL: https://{vertex-api-host}/v1/{modelPath}:fetchPredictOperation
 	completeURL := fmt.Sprintf("%s/%s:fetchPredictOperation", baseURL, modelPath)
 
 	// Auth query is used to pass the API key in the query string
@@ -2621,11 +2557,10 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	var completeURL string
 
 	if schemas.IsAnthropicModel(request.Model) {
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/count-tokens:rawPredict", projectID)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict", region, projectID, region)
-		}
+		// Use model-aware host based on request.Model, but URL path uses "count-tokens"
+		effectiveRegion := getVertexEffectiveRegion(region, request.Model)
+		baseURL := getVertexModelAwareAPIBaseURL(region, "v1", request.Model)
+		completeURL = fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, "anthropic", "count-tokens", ":rawPredict")
 	} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
@@ -2816,12 +2751,7 @@ func (provider *VertexProvider) Passthrough(
 		keyRegion = "global"
 	}
 
-	var baseURL string
-	if keyRegion == "global" {
-		baseURL = "https://aiplatform.googleapis.com/v1"
-	} else {
-		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", keyRegion)
-	}
+	baseURL := getVertexAPIBaseURL(keyRegion, "v1")
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
 	path := req.Path
@@ -2968,12 +2898,7 @@ func (provider *VertexProvider) PassthroughStream(
 		keyRegion = "global"
 	}
 
-	var baseURL string
-	if keyRegion == "global" {
-		baseURL = "https://aiplatform.googleapis.com/v1"
-	} else {
-		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", keyRegion)
-	}
+	baseURL := getVertexAPIBaseURL(keyRegion, "v1")
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments.
 	path := req.Path
