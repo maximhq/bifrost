@@ -325,6 +325,15 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.
+func (c *ClientConfig) Redacted() ClientConfig {
+	out := *c
+	if c.MCPExternalBaseURL != nil && c.MCPExternalBaseURL.IsFromEnv() {
+		out.MCPExternalBaseURL = c.MCPExternalBaseURL.Redacted()
+	}
+	return out
+}
+
 // ProviderConfig represents the configuration for a specific AI model provider.
 // It includes API keys, network settings, and concurrency settings.
 type ProviderConfig struct {
@@ -408,7 +417,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
 			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
+			if key.AzureKeyConfig.APIVersion != nil && key.AzureKeyConfig.APIVersion.IsFromEnv() {
+				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion.Redacted()
+			} else {
+				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
+			}
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
 			}

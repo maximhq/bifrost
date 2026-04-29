@@ -102,7 +102,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if cc != nil {
-			mapConfig["client_config"] = *cc
+			mapConfig["client_config"] = cc.Redacted()
 		}
 		// Fetching framework config
 		fc, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
@@ -113,7 +113,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(fc, nil)
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	} else {
-		mapConfig["client_config"] = h.store.ClientConfig
+		mapConfig["client_config"] = h.store.ClientConfig.Redacted()
 		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(nil, h.store.FrameworkConfig)
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	}
