@@ -5541,17 +5541,31 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// never overwritten — they are read-only from bifrost.go's perspective.
 
 		// Step 1: compute effective value for each flag (provider config ← per-request override).
+		// Per-request overrides are honoured only when the operator opted in via
+		// AllowPerRequestRawOverride / AllowPerRequestContentStorageOverride in
+		// ClientConfig. The transport propagates that opt-in into the context as
+		// BifrostContextKeyAllowPerRequestRaw/StorageOverride. Without those gates
+		// any client could request raw provider bytes back unconditionally — see
+		// upstream commit 54afe9e7f.
 		effectiveSendBackReq := config.SendBackRawRequest
-		if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
-			effectiveSendBackReq = override
+		allowRawOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
+		if allowRawOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
+				effectiveSendBackReq = override
+			}
 		}
 		effectiveSendBackResp := config.SendBackRawResponse
-		if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
-			effectiveSendBackResp = override
+		if allowRawOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
+				effectiveSendBackResp = override
+			}
 		}
 		effectiveStore := config.StoreRawRequestResponse
-		if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
-			effectiveStore = override
+		allowStorageOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool)
+		if allowStorageOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
+				effectiveStore = override
+			}
 		}
 
 		// Step 2: derive per-side capture and strip flags.

@@ -4142,6 +4142,110 @@ func (p *postHookObserverPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *sc
 	return resp, err, nil
 }
 
+// captureFlagPlugin records the bifrost-written capture flag from the request
+// context as observed inside PostLLMHook. requestWorker writes
+// BifrostContextKeyCaptureRawRequest before provider dispatch based on the
+// effective send-back/store decision, so this is the closest in-process probe
+// for what requestWorker decided.
+type captureFlagPlugin struct {
+	captureReqSeen   atomic.Bool
+	captureReqValue  atomic.Bool
+	captureRespValue atomic.Bool
+}
+
+func (p *captureFlagPlugin) GetName() string { return "capture-flag-test-plugin" }
+func (p *captureFlagPlugin) Cleanup() error  { return nil }
+func (p *captureFlagPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *captureFlagPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if v, ok := ctx.Value(schemas.BifrostContextKeyCaptureRawRequest).(bool); ok {
+		p.captureReqSeen.Store(true)
+		p.captureReqValue.Store(v)
+	}
+	if v, ok := ctx.Value(schemas.BifrostContextKeyCaptureRawResponse).(bool); ok {
+		p.captureRespValue.Store(v)
+	}
+	return resp, err, nil
+}
+
+// TestPerRequestRawOverride_GatedByAllowFlag pins the security contract that
+// requestWorker honours the per-request `x-bf-send-back-raw-request` /
+// `x-bf-send-back-raw-response` overrides ONLY when the operator opted in via
+// AllowPerRequestRawOverride (propagated as BifrostContextKeyAllowPerRequestRawOverride
+// by the transport). Without this gate, any client that sets the override
+// header gets raw provider request bytes back even when the operator has
+// disabled per-request overrides in ClientConfig — a credential / data
+// exposure risk. Upstream commit 54afe9e7f added the gate; our merge dropped
+// it; this test catches the regression.
+func TestPerRequestRawOverride_GatedByAllowFlag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+	}))
+	defer server.Close()
+
+	doRequest := func(t *testing.T, allowOverride bool) *captureFlagPlugin {
+		t.Helper()
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL+"/v1")
+		observer := &captureFlagPlugin{}
+
+		initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(initCtx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{observer},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		// Per-request override always set; only the gate flag varies.
+		ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+		ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+		if allowOverride {
+			ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+		}
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		_, bifrostErr := bf.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %+v", bifrostErr)
+		}
+		if !observer.captureReqSeen.Load() {
+			t.Fatal("PostLLMHook never observed BifrostContextKeyCaptureRawRequest — requestWorker did not run")
+		}
+		return observer
+	}
+
+	t.Run("OverrideIgnoredWhenGateOff", func(t *testing.T) {
+		o := doRequest(t, false)
+		if o.captureReqValue.Load() {
+			t.Error("CaptureRawRequest was true even though AllowPerRequestRawOverride was unset — gate is missing, per-request override leaked through")
+		}
+		if o.captureRespValue.Load() {
+			t.Error("CaptureRawResponse was true even though AllowPerRequestRawOverride was unset — gate is missing")
+		}
+	})
+
+	t.Run("OverrideHonoredWhenGateOn", func(t *testing.T) {
+		o := doRequest(t, true)
+		if !o.captureReqValue.Load() {
+			t.Error("CaptureRawRequest was false even though AllowPerRequestRawOverride was set — gate is over-restrictive, opt-in not honoured")
+		}
+		if !o.captureRespValue.Load() {
+			t.Error("CaptureRawResponse was false even though AllowPerRequestRawOverride was set")
+		}
+	})
+}
+
 // TestPostHookRunsForQueueResolutionFailure pins that when getProviderQueue
 // fails after RunLLMPreHooks already executed (e.g. an unconfigured provider
 // alias), the failure is routed through RunPostLLMHooks before being returned
