@@ -288,13 +288,20 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 // A nil *AllowedRequests means "all operations allowed."
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
-	ListModels            bool `json:"list_models"`
-	TextCompletion        bool `json:"text_completion"`
-	TextCompletionStream  bool `json:"text_completion_stream"`
-	ChatCompletion        bool `json:"chat_completion"`
-	ChatCompletionStream  bool `json:"chat_completion_stream"`
-	Responses             bool `json:"responses"`
-	ResponsesStream       bool `json:"responses_stream"`
+	ListModels           bool `json:"list_models"`
+	TextCompletion       bool `json:"text_completion"`
+	TextCompletionStream bool `json:"text_completion_stream"`
+	ChatCompletion       bool `json:"chat_completion"`
+	ChatCompletionStream bool `json:"chat_completion_stream"`
+	Responses            bool `json:"responses"`
+	ResponsesStream      bool `json:"responses_stream"`
+	// ResponsesRetrieve/Delete/Cancel/InputItems gate Responses API lifecycle verbs
+	// separately from create (Responses). If none of the four are set, lifecycle
+	// follows `responses` (legacy). If any is set, each verb requires its own flag.
+	ResponsesRetrieve     bool `json:"responses_retrieve"`
+	ResponsesDelete       bool `json:"responses_delete"`
+	ResponsesCancel       bool `json:"responses_cancel"`
+	ResponsesInputItems   bool `json:"responses_input_items"`
 	CountTokens           bool `json:"count_tokens"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
@@ -340,6 +347,13 @@ type AllowedRequests struct {
 	Realtime              bool `json:"realtime"`
 }
 
+// granularResponsesLifecycleUsed is true when any per-verb Responses lifecycle flag
+// is set. In that mode, each verb requires its own flag; unset verbs are denied even
+// if `responses` (create) is true.
+func (ar *AllowedRequests) granularResponsesLifecycleUsed() bool {
+	return ar.ResponsesRetrieve || ar.ResponsesDelete || ar.ResponsesCancel || ar.ResponsesInputItems
+}
+
 // IsOperationAllowed checks if a specific operation is allowed
 func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	if ar == nil {
@@ -361,7 +375,37 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
-	case ResponsesRetrieveRequest, ResponsesDeleteRequest, ResponsesCancelRequest, ResponsesInputItemsRequest:
+	case ResponsesRetrieveRequest:
+		if ar.ResponsesRetrieve {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
+		return ar.Responses
+	case ResponsesDeleteRequest:
+		if ar.ResponsesDelete {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
+		return ar.Responses
+	case ResponsesCancelRequest:
+		if ar.ResponsesCancel {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
+		return ar.Responses
+	case ResponsesInputItemsRequest:
+		if ar.ResponsesInputItems {
+			return true
+		}
+		if ar.granularResponsesLifecycleUsed() {
+			return false
+		}
 		return ar.Responses
 	case CountTokensRequest:
 		return ar.CountTokens

@@ -4507,6 +4507,13 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 		return false
 	}
 
+	// Responses lifecycle calls are keyed by response_id on the original provider/account;
+	// rewriting to a fallback provider would always miss.
+	switch req.RequestType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
+		return false
+	}
+
 	// Handle request cancellation
 	if primaryErr.Error != nil && primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
 		bifrost.logger.Debug("request cancelled, we should not try fallbacks")
@@ -4563,27 +4570,6 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
 		fallbackReq.ResponsesRequest = &tmp
-	}
-
-	if req.ResponsesRetrieveRequest != nil {
-		tmp := *req.ResponsesRetrieveRequest
-		tmp.Provider = fallback.Provider
-		fallbackReq.ResponsesRetrieveRequest = &tmp
-	}
-	if req.ResponsesDeleteRequest != nil {
-		tmp := *req.ResponsesDeleteRequest
-		tmp.Provider = fallback.Provider
-		fallbackReq.ResponsesDeleteRequest = &tmp
-	}
-	if req.ResponsesCancelRequest != nil {
-		tmp := *req.ResponsesCancelRequest
-		tmp.Provider = fallback.Provider
-		fallbackReq.ResponsesCancelRequest = &tmp
-	}
-	if req.ResponsesInputItemsRequest != nil {
-		tmp := *req.ResponsesInputItemsRequest
-		tmp.Provider = fallback.Provider
-		fallbackReq.ResponsesInputItemsRequest = &tmp
 	}
 
 	if req.CountTokensRequest != nil {
@@ -7407,7 +7393,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 
 	// Skip model check conditions
 	// We can improve these conditions in the future
-	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType))) || requestType == schemas.ListModelsRequest
+	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType))) || requestType == schemas.ListModelsRequest || isResponsesLifecycleRequestType(requestType)
 	if skipModelCheck {
 		// When skipping model check: just verify keys are enabled and have values
 		for _, key := range keys {

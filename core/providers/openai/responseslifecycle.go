@@ -26,6 +26,9 @@ func buildResponsesRetrieveQuery(req *schemas.BifrostResponsesRetrieveRequest) s
 	if req.StartingAfter != nil {
 		v.Set("starting_after", strconv.Itoa(*req.StartingAfter))
 	}
+	if req.IncludeObfuscation != nil {
+		v.Set("include_obfuscation", strconv.FormatBool(*req.IncludeObfuscation))
+	}
 	return v.Encode()
 }
 
@@ -36,9 +39,6 @@ func buildResponsesInputItemsQuery(req *schemas.BifrostResponsesInputItemsReques
 	v := url.Values{}
 	if req.After != "" {
 		v.Set("after", req.After)
-	}
-	if req.Before != "" {
-		v.Set("before", req.Before)
 	}
 	for _, inc := range req.Include {
 		if inc != "" {

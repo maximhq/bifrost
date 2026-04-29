@@ -4121,6 +4121,22 @@
             "responses_stream": {
               "type": "boolean"
             },
+            "responses_retrieve": {
+              "type": "boolean",
+              "description": "GET stored response by id (OpenAI Responses lifecycle)"
+            },
+            "responses_delete": {
+              "type": "boolean",
+              "description": "DELETE stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_cancel": {
+              "type": "boolean",
+              "description": "POST cancel in-flight stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_input_items": {
+              "type": "boolean",
+              "description": "GET list input items for a stored response (OpenAI Responses lifecycle)"
+            },
             "count_tokens": {
               "type": "boolean"
             },

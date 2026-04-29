@@ -358,6 +358,16 @@ func isPassthroughRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
 }
 
+// isResponsesLifecycleRequestType returns true for OpenAI Responses API lifecycle HTTP verbs.
+func isResponsesLifecycleRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsFinalChunk returns true if the given context is a final chunk.
 func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	if ctx == nil {

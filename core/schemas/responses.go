@@ -47,12 +47,17 @@ func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
 }
 
 // BifrostResponsesRetrieveRequest retrieves a stored response by ID (OpenAI GET /v1/responses/{id}).
+//
+// Multi-key note: when multiple API keys are configured for the same provider, pin
+// key selection (for example x-bf-api-key-id) on lifecycle calls so they hit the same
+// upstream account as the create that produced response_id.
 type BifrostResponsesRetrieveRequest struct {
-	Provider       ModelProvider `json:"provider"`
-	ResponseID     string        `json:"response_id"`
-	Include        []string      `json:"include,omitempty"`
-	StartingAfter  *int          `json:"starting_after,omitempty"`
-	RawRequestBody []byte        `json:"-"`
+	Provider           ModelProvider `json:"provider"`
+	ResponseID         string        `json:"response_id"`
+	Include            []string      `json:"include,omitempty"`
+	StartingAfter      *int          `json:"starting_after,omitempty"`
+	IncludeObfuscation *bool         `json:"include_obfuscation,omitempty"`
+	RawRequestBody     []byte        `json:"-"`
 }
 
 // GetRawRequestBody implements raw body passthrough when enabled on context.
@@ -64,6 +69,7 @@ func (r *BifrostResponsesRetrieveRequest) GetRawRequestBody() []byte {
 }
 
 // BifrostResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
 type BifrostResponsesDeleteRequest struct {
 	Provider       ModelProvider `json:"provider"`
 	ResponseID     string        `json:"response_id"`
@@ -79,6 +85,7 @@ func (r *BifrostResponsesDeleteRequest) GetRawRequestBody() []byte {
 }
 
 // BifrostResponsesCancelRequest cancels an in-flight stored response (OpenAI POST /v1/responses/{id}/cancel).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
 type BifrostResponsesCancelRequest struct {
 	Provider       ModelProvider `json:"provider"`
 	ResponseID     string        `json:"response_id"`
@@ -94,11 +101,11 @@ func (r *BifrostResponsesCancelRequest) GetRawRequestBody() []byte {
 }
 
 // BifrostResponsesInputItemsRequest lists input items for a response (OpenAI GET /v1/responses/{id}/input_items).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
 type BifrostResponsesInputItemsRequest struct {
 	Provider       ModelProvider `json:"provider"`
 	ResponseID     string        `json:"response_id"`
 	After          string        `json:"after,omitempty"`
-	Before         string        `json:"before,omitempty"`
 	Include        []string      `json:"include,omitempty"`
 	Limit          *int          `json:"limit,omitempty"`
 	Order          string        `json:"order,omitempty"`

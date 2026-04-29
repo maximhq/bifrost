@@ -1518,12 +1518,24 @@ func (h *CompletionHandler) responsesRetrieve(ctx *fasthttp.RequestCtx) {
 		switch string(key) {
 		case "include":
 			bifrostReq.Include = append(bifrostReq.Include, string(value))
-		case "starting_after":
-			if n, err := strconv.Atoi(string(value)); err == nil {
-				bifrostReq.StartingAfter = schemas.Ptr(n)
-			}
 		}
 	})
+	if raw := ctx.QueryArgs().Peek("starting_after"); len(raw) > 0 {
+		n, err := strconv.Atoi(string(raw))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "starting_after must be an integer")
+			return
+		}
+		bifrostReq.StartingAfter = schemas.Ptr(n)
+	}
+	if raw := ctx.QueryArgs().Peek("include_obfuscation"); len(raw) > 0 {
+		b, err := strconv.ParseBool(string(raw))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "include_obfuscation must be a boolean")
+			return
+		}
+		bifrostReq.IncludeObfuscation = &b
+	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
 	if bifrostCtx == nil {
@@ -1624,18 +1636,20 @@ func (h *CompletionHandler) responsesInputItems(ctx *fasthttp.RequestCtx) {
 		switch string(key) {
 		case "after":
 			bifrostReq.After = string(value)
-		case "before":
-			bifrostReq.Before = string(value)
 		case "include":
 			bifrostReq.Include = append(bifrostReq.Include, string(value))
 		case "order":
 			bifrostReq.Order = string(value)
-		case "limit":
-			if n, err := strconv.Atoi(string(value)); err == nil {
-				bifrostReq.Limit = schemas.Ptr(n)
-			}
 		}
 	})
+	if raw := ctx.QueryArgs().Peek("limit"); len(raw) > 0 {
+		n, err := strconv.Atoi(string(raw))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "limit must be an integer")
+			return
+		}
+		bifrostReq.Limit = schemas.Ptr(n)
+	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
 	if bifrostCtx == nil {

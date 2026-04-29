@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/url"
@@ -2366,12 +2367,22 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 				switch string(key) {
 				case "include":
 					r.Include = append(r.Include, string(value))
-				case "starting_after":
-					if n, err := strconv.Atoi(string(value)); err == nil {
-						r.StartingAfter = schemas.Ptr(n)
-					}
 				}
 			})
+			if raw := ctx.QueryArgs().Peek("starting_after"); len(raw) > 0 {
+				n, err := strconv.Atoi(string(raw))
+				if err != nil {
+					return fmt.Errorf("starting_after must be an integer")
+				}
+				r.StartingAfter = schemas.Ptr(n)
+			}
+			if raw := ctx.QueryArgs().Peek("include_obfuscation"); len(raw) > 0 {
+				b, err := strconv.ParseBool(string(raw))
+				if err != nil {
+					return fmt.Errorf("include_obfuscation must be a boolean")
+				}
+				r.IncludeObfuscation = &b
+			}
 		case *schemas.BifrostResponsesDeleteRequest:
 			r.ResponseID = idStr
 			r.Provider = provider
@@ -2385,18 +2396,19 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 				switch string(key) {
 				case "after":
 					r.After = string(value)
-				case "before":
-					r.Before = string(value)
 				case "include":
 					r.Include = append(r.Include, string(value))
 				case "order":
 					r.Order = string(value)
-				case "limit":
-					if n, err := strconv.Atoi(string(value)); err == nil {
-						r.Limit = schemas.Ptr(n)
-					}
 				}
 			})
+			if raw := ctx.QueryArgs().Peek("limit"); len(raw) > 0 {
+				n, err := strconv.Atoi(string(raw))
+				if err != nil {
+					return fmt.Errorf("limit must be an integer")
+				}
+				r.Limit = schemas.Ptr(n)
+			}
 		default:
 			return errors.New("invalid request type for responses lifecycle path")
 		}
