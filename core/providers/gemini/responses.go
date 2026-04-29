@@ -76,8 +76,6 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 		return nil, nil
 	}
 
-	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
-
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
