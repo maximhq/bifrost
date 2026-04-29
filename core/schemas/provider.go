@@ -259,8 +259,6 @@ type ProxyConfig struct {
 	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
-
-
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
 	// Create redacted config with same structure but redacted values
@@ -363,6 +361,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
+	case ResponsesRetrieveRequest, ResponsesDeleteRequest, ResponsesCancelRequest, ResponsesInputItemsRequest:
+		return ar.Responses
 	case CountTokensRequest:
 		return ar.CountTokens
 	case EmbeddingRequest:
@@ -649,6 +649,16 @@ type Provider interface {
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
 	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+}
+
+// ResponsesLifecycleProvider is an optional interface for OpenAI-style Responses API
+// secondary verbs (retrieve, delete, cancel, list input items). Checked via type assertion
+// in core dispatch; providers that do not implement it return unsupported_operation.
+type ResponsesLifecycleProvider interface {
+	ResponsesRetrieve(ctx *BifrostContext, key Key, req *BifrostResponsesRetrieveRequest) (*BifrostResponsesResponse, *BifrostError)
+	ResponsesDelete(ctx *BifrostContext, key Key, req *BifrostResponsesDeleteRequest) (*BifrostResponsesDeleteResponse, *BifrostError)
+	ResponsesCancel(ctx *BifrostContext, key Key, req *BifrostResponsesCancelRequest) (*BifrostResponsesResponse, *BifrostError)
+	ResponsesInputItems(ctx *BifrostContext, key Key, req *BifrostResponsesInputItemsRequest) (*BifrostResponsesInputItemsResponse, *BifrostError)
 }
 
 // WebSocketCapableProvider is an optional interface that providers can implement

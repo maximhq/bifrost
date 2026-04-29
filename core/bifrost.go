@@ -922,6 +922,203 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 	return response.CountTokensResponse, nil
 }
 
+// ResponsesRetrieveRequest retrieves a stored response by ID (OpenAI GET /v1/responses/{id}).
+func (bifrost *Bifrost) ResponsesRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRetrieveRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses retrieve request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for responses retrieve request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if req.ResponseID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "response_id is required for responses retrieve request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ResponsesRetrieveRequest
+	bifrostReq.ResponsesRetrieveRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.ResponsesResponse, nil
+}
+
+// ResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).
+func (bifrost *Bifrost) ResponsesDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesDeleteRequest) (*schemas.BifrostResponsesDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses delete request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesDeleteRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for responses delete request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesDeleteRequest,
+			},
+		}
+	}
+	if req.ResponseID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "response_id is required for responses delete request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesDeleteRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ResponsesDeleteRequest
+	bifrostReq.ResponsesDeleteRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.ResponsesDeleteResponse, nil
+}
+
+// ResponsesCancelRequest cancels an in-flight stored response (OpenAI POST /v1/responses/{id}/cancel).
+func (bifrost *Bifrost) ResponsesCancelRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesCancelRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses cancel request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesCancelRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for responses cancel request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesCancelRequest,
+			},
+		}
+	}
+	if req.ResponseID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "response_id is required for responses cancel request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesCancelRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ResponsesCancelRequest
+	bifrostReq.ResponsesCancelRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.ResponsesResponse, nil
+}
+
+// ResponsesInputItemsRequest lists input items for a stored response (OpenAI GET /v1/responses/{id}/input_items).
+func (bifrost *Bifrost) ResponsesInputItemsRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesInputItemsRequest) (*schemas.BifrostResponsesInputItemsResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses input items request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesInputItemsRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for responses input items request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesInputItemsRequest,
+			},
+		}
+	}
+	if req.ResponseID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "response_id is required for responses input items request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesInputItemsRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ResponsesInputItemsRequest
+	bifrostReq.ResponsesInputItemsRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.ResponsesInputItemsResponse, nil
+}
+
 // EmbeddingRequest sends an embedding request to the specified provider.
 func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -4368,6 +4565,27 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		fallbackReq.ResponsesRequest = &tmp
 	}
 
+	if req.ResponsesRetrieveRequest != nil {
+		tmp := *req.ResponsesRetrieveRequest
+		tmp.Provider = fallback.Provider
+		fallbackReq.ResponsesRetrieveRequest = &tmp
+	}
+	if req.ResponsesDeleteRequest != nil {
+		tmp := *req.ResponsesDeleteRequest
+		tmp.Provider = fallback.Provider
+		fallbackReq.ResponsesDeleteRequest = &tmp
+	}
+	if req.ResponsesCancelRequest != nil {
+		tmp := *req.ResponsesCancelRequest
+		tmp.Provider = fallback.Provider
+		fallbackReq.ResponsesCancelRequest = &tmp
+	}
+	if req.ResponsesInputItemsRequest != nil {
+		tmp := *req.ResponsesInputItemsRequest
+		tmp.Provider = fallback.Provider
+		fallbackReq.ResponsesInputItemsRequest = &tmp
+	}
+
 	if req.CountTokensRequest != nil {
 		tmp := *req.CountTokensRequest
 		tmp.Provider = fallback.Provider
@@ -5891,6 +6109,46 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.CountTokensResponse = countTokensResponse
+	case schemas.ResponsesRetrieveRequest:
+		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesRetrieveRequest, provider.GetProviderKey())
+		}
+		retrieveResp, bifrostError := lifecycle.ResponsesRetrieve(req.Context, key, req.BifrostRequest.ResponsesRetrieveRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ResponsesResponse = retrieveResp
+	case schemas.ResponsesDeleteRequest:
+		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesDeleteRequest, provider.GetProviderKey())
+		}
+		deleteResp, bifrostError := lifecycle.ResponsesDelete(req.Context, key, req.BifrostRequest.ResponsesDeleteRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ResponsesDeleteResponse = deleteResp
+	case schemas.ResponsesCancelRequest:
+		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesCancelRequest, provider.GetProviderKey())
+		}
+		cancelResp, bifrostError := lifecycle.ResponsesCancel(req.Context, key, req.BifrostRequest.ResponsesCancelRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ResponsesResponse = cancelResp
+	case schemas.ResponsesInputItemsRequest:
+		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesInputItemsRequest, provider.GetProviderKey())
+		}
+		itemsResp, bifrostError := lifecycle.ResponsesInputItems(req.Context, key, req.BifrostRequest.ResponsesInputItemsRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ResponsesInputItemsResponse = itemsResp
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
 		if bifrostError != nil {
@@ -6888,6 +7146,10 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.TextCompletionRequest = nil
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil
+	req.ResponsesRetrieveRequest = nil
+	req.ResponsesDeleteRequest = nil
+	req.ResponsesCancelRequest = nil
+	req.ResponsesInputItemsRequest = nil
 	req.CountTokensRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil

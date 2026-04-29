@@ -1437,6 +1437,90 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		response, err = config.VideoListResponseConverter(bifrostCtx, videoListResponse)
 		providerResponseHeaders = videoListResponse.ExtraFields.ProviderResponseHeaders
 
+	case bifrostReq.ResponsesRetrieveRequest != nil:
+		responsesRetrieveResponse, bifrostErr := g.client.ResponsesRetrieveRequest(bifrostCtx, bifrostReq.ResponsesRetrieveRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, responsesRetrieveResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if responsesRetrieveResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		if config.ResponsesResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ResponsesResponseConverter for integration"))
+			return
+		}
+		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesRetrieveResponse)
+		providerResponseHeaders = responsesRetrieveResponse.ExtraFields.ProviderResponseHeaders
+
+	case bifrostReq.ResponsesDeleteRequest != nil:
+		responsesDeleteResponse, bifrostErr := g.client.ResponsesDeleteRequest(bifrostCtx, bifrostReq.ResponsesDeleteRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, responsesDeleteResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if responsesDeleteResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		response = responsesDeleteResponse
+		providerResponseHeaders = responsesDeleteResponse.ExtraFields.ProviderResponseHeaders
+
+	case bifrostReq.ResponsesCancelRequest != nil:
+		responsesCancelResponse, bifrostErr := g.client.ResponsesCancelRequest(bifrostCtx, bifrostReq.ResponsesCancelRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, responsesCancelResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if responsesCancelResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		if config.ResponsesResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ResponsesResponseConverter for integration"))
+			return
+		}
+		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesCancelResponse)
+		providerResponseHeaders = responsesCancelResponse.ExtraFields.ProviderResponseHeaders
+
+	case bifrostReq.ResponsesInputItemsRequest != nil:
+		inputItemsResponse, bifrostErr := g.client.ResponsesInputItemsRequest(bifrostCtx, bifrostReq.ResponsesInputItemsRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, inputItemsResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if inputItemsResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		response = inputItemsResponse
+		providerResponseHeaders = inputItemsResponse.ExtraFields.ProviderResponseHeaders
+
 	case bifrostReq.CountTokensRequest != nil:
 		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {

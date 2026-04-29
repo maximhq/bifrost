@@ -328,8 +328,23 @@ func openAIModelGetter(_ *fasthttp.RequestCtx, req interface{}) (string, error) 
 		return r.Model, nil
 	case *openai.OpenAIVideoGenerationRequest:
 		return r.Model, nil
+	case *schemas.BifrostResponsesRetrieveRequest, *schemas.BifrostResponsesDeleteRequest, *schemas.BifrostResponsesCancelRequest, *schemas.BifrostResponsesInputItemsRequest:
+		return "", nil
 	}
 	return "", nil
+}
+
+// openAIResponsesWireConverter maps a Bifrost responses payload to the OpenAI wire JSON shape.
+func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+	if resp != nil && resp.ExtraFields.Provider == schemas.OpenAI {
+		if resp.ExtraFields.RawResponse != nil {
+			return resp.ExtraFields.RawResponse, nil
+		}
+	}
+	if resp == nil {
+		return nil, nil
+	}
+	return resp.WithDefaults(), nil
 }
 
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
@@ -734,14 +749,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
-				}
-				return resp.WithDefaults(), nil
-			},
+			ResponsesResponseConverter: openAIResponsesWireConverter,
 			AsyncResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error) {
 				bifrostResponse := &schemas.BifrostResponsesResponse{
 					ID:     &resp.ID,
@@ -824,6 +832,140 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 				}
 				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: GET retrieve
+	for _, path := range []string{
+		"/v1/responses/{response_id}",
+		"/responses/{response_id}",
+		"/openai/responses/{response_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesRetrieveRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesRetrieveRequest{}
+			},
+			GetRequestModel: openAIModelGetter,
+			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if rr, ok := req.(*schemas.BifrostResponsesRetrieveRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:              schemas.ResponsesRetrieveRequest,
+						ResponsesRetrieveRequest: rr,
+					}, nil
+				}
+				return nil, errors.New("invalid responses retrieve request")
+			},
+			ResponsesResponseConverter: openAIResponsesWireConverter,
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: DELETE
+	for _, path := range []string{
+		"/v1/responses/{response_id}",
+		"/responses/{response_id}",
+		"/openai/responses/{response_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesDeleteRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesDeleteRequest{}
+			},
+			GetRequestModel: openAIModelGetter,
+			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if dr, ok := req.(*schemas.BifrostResponsesDeleteRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:            schemas.ResponsesDeleteRequest,
+						ResponsesDeleteRequest: dr,
+					}, nil
+				}
+				return nil, errors.New("invalid responses delete request")
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: POST cancel
+	for _, path := range []string{
+		"/v1/responses/{response_id}/cancel",
+		"/responses/{response_id}/cancel",
+		"/openai/responses/{response_id}/cancel",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesCancelRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesCancelRequest{}
+			},
+			GetRequestModel: openAIModelGetter,
+			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if cr, ok := req.(*schemas.BifrostResponsesCancelRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:            schemas.ResponsesCancelRequest,
+						ResponsesCancelRequest: cr,
+					}, nil
+				}
+				return nil, errors.New("invalid responses cancel request")
+			},
+			ResponsesResponseConverter: openAIResponsesWireConverter,
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: GET input_items
+	for _, path := range []string{
+		"/v1/responses/{response_id}/input_items",
+		"/responses/{response_id}/input_items",
+		"/openai/responses/{response_id}/input_items",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesInputItemsRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesInputItemsRequest{}
+			},
+			GetRequestModel: openAIModelGetter,
+			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if ir, ok := req.(*schemas.BifrostResponsesInputItemsRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:                schemas.ResponsesInputItemsRequest,
+						ResponsesInputItemsRequest: ir,
+					}, nil
+				}
+				return nil, errors.New("invalid responses input items request")
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -2193,6 +2335,71 @@ func extractFileIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 			}
 		}
 
+		return nil
+	}
+}
+
+// extractResponsesLifecycleFromPath fills response_id, provider, and query-derived fields for Responses lifecycle routes.
+func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+		rid := ctx.UserValue("response_id")
+		if rid == nil {
+			return errors.New("response_id is required")
+		}
+		idStr, ok := rid.(string)
+		if !ok || idStr == "" {
+			return errors.New("response_id must be a non-empty string")
+		}
+		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
+		if provider == "" {
+			if isAzureSDKRequest(ctx) {
+				provider = schemas.Azure
+			} else {
+				provider = schemas.OpenAI
+			}
+		}
+		switch r := req.(type) {
+		case *schemas.BifrostResponsesRetrieveRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+			ctx.QueryArgs().VisitAll(func(key, value []byte) {
+				switch string(key) {
+				case "include":
+					r.Include = append(r.Include, string(value))
+				case "starting_after":
+					if n, err := strconv.Atoi(string(value)); err == nil {
+						r.StartingAfter = schemas.Ptr(n)
+					}
+				}
+			})
+		case *schemas.BifrostResponsesDeleteRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+		case *schemas.BifrostResponsesCancelRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+		case *schemas.BifrostResponsesInputItemsRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+			ctx.QueryArgs().VisitAll(func(key, value []byte) {
+				switch string(key) {
+				case "after":
+					r.After = string(value)
+				case "before":
+					r.Before = string(value)
+				case "include":
+					r.Include = append(r.Include, string(value))
+				case "order":
+					r.Order = string(value)
+				case "limit":
+					if n, err := strconv.Atoi(string(value)); err == nil {
+						r.Limit = schemas.Ptr(n)
+					}
+				}
+			})
+		default:
+			return errors.New("invalid request type for responses lifecycle path")
+		}
 		return nil
 	}
 }

@@ -98,6 +98,7 @@ type TestScenarios struct {
 	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
 	EagerInputStreaming          bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
 	ServerToolsViaOpenAIEndpoint bool // Anthropic server-tool shapes in tools[] via /v1/chat/completions (web_search / web_fetch / code_execution)
+	ResponsesLifecycle           bool // OpenAI GET/DELETE responses + input_items lifecycle (stored responses)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -927,6 +928,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ContainerFileRetrieve:      true, // OpenAI supports container file API
 			ContainerFileContent:       true, // OpenAI supports container file API
 			ContainerFileDelete:        true, // OpenAI supports container file API
+			ResponsesLifecycle:         true, // OpenAI stored response retrieve/delete/input_items
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
