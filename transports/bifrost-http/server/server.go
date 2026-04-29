@@ -697,6 +697,12 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
 	}
+	// Reloading governance plugin's enforce auth setting (fixes hot-reload for EnforceAuthOnInference)
+	if plugin, err := s.getGovernancePlugin(); err != nil {
+		logger.Warn("governance plugin not found during config reload, EnforceAuthOnInference not updated: %v", err)
+	} else {
+		plugin.UpdateEnforceAuthOnInference(config.EnforceAuthOnInference)
+	}
 	// Reloading config in bifrost client
 	if s.Client != nil {
 		account := lib.NewBaseAccount(s.Config)

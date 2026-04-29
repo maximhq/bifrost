@@ -58,6 +58,7 @@ type BaseGovernancePlugin interface {
 	PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
+	UpdateEnforceAuthOnInference(enforceAuthOnInference bool)
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
