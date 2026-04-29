@@ -331,7 +331,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			if mcpConfig.ToolManagerConfig != nil {
 				codeModeConfig = &mcp.CodeModeConfig{
 					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
-					ToolExecutionTimeout: mcpConfig.ToolManagerConfig.ToolExecutionTimeout,
+					ToolExecutionTimeout: time.Duration(mcpConfig.ToolManagerConfig.ToolExecutionTimeout),
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
@@ -3776,7 +3776,7 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:         maxAgentDepth,
-		ToolExecutionTimeout:  time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
+		ToolExecutionTimeout:  schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
 		DisableAutoToolInject: disableAutoToolInject,
 	})
@@ -4069,10 +4069,20 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		bifrost.releasePluginPipeline(pipeline)
 	}
 
+	// Capture provider/model from the original request for early-exit paths below.
+	// RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed are always
+	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
+	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
+	reqProvider, reqModel, _ := req.GetRequestFields()
+
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
+		bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 		_, bifrostErr = pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		if bifrostErr != nil {
+			bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+		}
 		drainAndAttachPluginLogs(ctx)
 		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
 			tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
@@ -4082,7 +4092,11 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	}
 	if shortCircuit != nil {
 		if shortCircuit.Error != nil {
+			shortCircuit.Error.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 			_, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+			}
 			drainAndAttachPluginLogs(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
 				tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
@@ -4094,7 +4108,13 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 			return nil, shortCircuit.Error
 		}
 		if shortCircuit.Response != nil {
+			shortCircuit.Response.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
+			}
 			drainAndAttachPluginLogs(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
 				tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
@@ -4123,8 +4143,17 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 		if IsFinalChunk(ctx) {
 			drainAndAttachPluginLogs(ctx)
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
+				tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
+			}
 		}
-		return resp, bifrostErr
+		if bifrostErr != nil {
+			bifrostErr.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
+			return nil, bifrostErr
+		} else if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
+		}
+		return resp, nil
 	}
 
 	return &WSStreamHooks{
@@ -4211,11 +4240,25 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		}
 	}
 
+	provider, model, _ = preReq.GetRequestFields()
+
 	return &RealtimeTurnHooks{
 		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if result != nil {
+				result.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+			}
+			if err != nil {
+				err.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+			}
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 			drainAndAttachPluginLogs(ctx)
-			return resp, bifrostErr
+			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+				return nil, bifrostErr
+			} else if resp != nil {
+				resp.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
+			}
+			return resp, nil
 		},
 		Cleanup: cleanup,
 	}, nil
@@ -4539,21 +4582,27 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
+			shortCircuit.Response.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			}
 			return resp, nil
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
+			shortCircuit.Error.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			}
 			return resp, nil
 		}
@@ -4674,8 +4723,11 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
 		drainAndAttachPluginLogs(msg.Context)
 		if bifrostErr != nil {
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
+		} else if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, provider, model, model)
 		}
 		bifrost.releaseChannelMessage(msg)
 		// Strip raw fields that were captured for logging but should not reach the client.
@@ -4697,6 +4749,11 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		bifrostErrPtr := &bifrostErrVal
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
 		drainAndAttachPluginLogs(msg.Context)
+		if bifrostErrPtr != nil {
+			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
+		} else if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, provider, model, model)
+		}
 		bifrost.releaseChannelMessage(msg)
 		// Strip raw fields on error path too.
 		dropReq, _ := ctx.Value(schemas.BifrostContextKeyDropRawRequestFromClient).(bool)
@@ -4784,11 +4841,14 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
+			shortCircuit.Response.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			}
 			return newBifrostMessageChan(resp), nil
 		}
@@ -4797,13 +4857,30 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			outputStream := make(chan *schemas.BifrostStreamChunk)
 			releasePipeline = false // pipeline is released inside the goroutine after stream drains
 
+			// Snapshot RequestType before the closure. The *BifrostRequest is released
+			// back to bifrostRequestPool when handleStreamRequest returns (via defer);
+			// a concurrent request can reuse it and overwrite RequestType.
+			shortCircuitRequestType := req.RequestType
+
 			// Create a post hook runner cause pipeline object is put back in the pool on defer
 			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if result != nil {
+					result.PopulateExtraFields(shortCircuitRequestType, origProvider, model, model)
+				}
+				if err != nil {
+					err.PopulateExtraFields(shortCircuitRequestType, origProvider, model, model)
+				}
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 				if IsFinalChunk(ctx) {
 					drainAndAttachPluginLogs(ctx)
 				}
-				return resp, bifrostErr
+				if bifrostErr != nil {
+					bifrostErr.PopulateExtraFields(shortCircuitRequestType, origProvider, model, model)
+					return nil, bifrostErr
+				} else if resp != nil {
+					resp.PopulateExtraFields(shortCircuitRequestType, origProvider, model, model)
+				}
+				return resp, nil
 			}
 
 			go func() {
@@ -4866,11 +4943,14 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
+			shortCircuit.Error.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
+			} else if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, origProvider, model, model)
 			}
 			return newBifrostMessageChan(resp), nil
 		}
@@ -4998,6 +5078,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// On error we will complete post-hooks
 		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
 		drainAndAttachPluginLogs(ctx)
+		if recoveredErr != nil {
+			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		} else if recoveredResp != nil {
+			recoveredResp.PopulateExtraFields(req.RequestType, provider, model, model)
+		}
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
 			return nil, recoveredErr
