@@ -9,7 +9,6 @@ interface ChartCardProps {
   headerActions?: ReactNode;
   loading?: boolean;
   testId?: string;
-  height?: string;
   className?: string;
 }
 
@@ -19,16 +18,15 @@ export function ChartCard({
   headerActions,
   loading,
   testId,
-  height = "200px",
   className,
 }: ChartCardProps) {
   if (loading) {
     return (
       <Card
-        className={cn("min-w-0 rounded-sm p-2 shadow-none", className)}
+        className={cn("min-w-0 rounded-sm p-2 shadow-none h-[330px]", className)}
         data-testid={testId}
       >
-        <div className="mb-2 space-y-2">
+        <div className="shrink-0 space-y-2">
           <span className="text-primary pl-2 text-sm font-medium">{title}</span>
           {headerActions && (
             <div
@@ -40,7 +38,7 @@ export function ChartCard({
           )}
         </div>
         <div
-          style={{ height }}
+          className="grow"
           data-testid={testId ? `${testId}-chart-skeleton` : undefined}
         >
           <Skeleton className="h-full w-full" />
@@ -51,10 +49,10 @@ export function ChartCard({
 
   return (
     <Card
-      className={cn("min-w-0 rounded-sm p-2 shadow-none", className)}
+      className={cn("min-w-0 rounded-sm p-2 shadow-none h-[330px]", className)}
       data-testid={testId}
     >
-      <div className="mb-2 space-y-2">
+      <div className="shrink-0 space-y-2">
         <span className="text-primary pl-2 text-sm font-medium">{title}</span>
         {headerActions && (
           <div
@@ -65,7 +63,7 @@ export function ChartCard({
           </div>
         )}
       </div>
-      <div style={{ height }}>{children}</div>
+      <div className="grow">{children}</div>
     </Card>
   );
 }
