@@ -4078,3 +4078,43 @@ func TestBifrostRequest_Clone_ProviderOverrideIndependence(t *testing.T) {
 		t.Errorf("mutation on clone leaked into original — Clone must deep-copy ProviderOverride")
 	}
 }
+
+// TestResolveQueueProviderKey_AliasRetargets pins the contract that an
+// override with BaseProviderType retargets a non-standard alias onto the base
+// type's queue. The lazy-create path in getProviderQueue and the closing-queue
+// reroute path in tryRequest/tryStreamRequest both depend on this — using the
+// raw alias key in either place causes alias-based requests to miss the
+// replacement queue during UpdateProvider and incorrectly fail with
+// "provider is shutting down".
+func TestResolveQueueProviderKey_AliasRetargets(t *testing.T) {
+	override := &schemas.ProviderOverride{BaseProviderType: schemas.OpenAI}
+	got := resolveQueueProviderKey(schemas.ModelProvider("acme-openai"), override)
+	if got != schemas.OpenAI {
+		t.Errorf("alias with BaseProviderType: got %q, want %q", got, schemas.OpenAI)
+	}
+}
+
+// TestResolveQueueProviderKey_StandardProviderUnchanged pins that built-in
+// providers are never retargeted, even if a plugin sets BaseProviderType — the
+// override is meaningful only for non-standard aliases. Built-in keys must
+// continue to address their own queues.
+func TestResolveQueueProviderKey_StandardProviderUnchanged(t *testing.T) {
+	override := &schemas.ProviderOverride{BaseProviderType: schemas.Anthropic}
+	got := resolveQueueProviderKey(schemas.OpenAI, override)
+	if got != schemas.OpenAI {
+		t.Errorf("standard provider must not be retargeted: got %q, want %q", got, schemas.OpenAI)
+	}
+}
+
+// TestResolveQueueProviderKey_NoOverride pins that the function is a no-op when
+// no override or no BaseProviderType is supplied — the request routes to its
+// own provider's queue.
+func TestResolveQueueProviderKey_NoOverride(t *testing.T) {
+	if got := resolveQueueProviderKey(schemas.OpenAI, nil); got != schemas.OpenAI {
+		t.Errorf("nil override: got %q, want %q", got, schemas.OpenAI)
+	}
+	emptyOverride := &schemas.ProviderOverride{BaseURL: "https://x"}
+	if got := resolveQueueProviderKey(schemas.ModelProvider("acme"), emptyOverride); got != schemas.ModelProvider("acme") {
+		t.Errorf("override without BaseProviderType: got %q, want %q", got, schemas.ModelProvider("acme"))
+	}
+}

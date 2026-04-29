@@ -3908,6 +3908,21 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	return nil
 }
 
+// resolveQueueProviderKey returns the provider key under which the request's queue
+// is registered in bifrost.requestQueues. When override.BaseProviderType is set for
+// a non-standard providerKey (e.g. a tenant-scoped alias like "acme-openai"), the
+// queue lives under the base type, not the alias. Both queue lookups
+// (getProviderQueue's lazy-create path and the closing-queue reroute path in
+// tryRequest/tryStreamRequest) must use the same resolved key — otherwise an
+// alias-based request whose base queue is being replaced by UpdateProvider misses
+// the replacement and incorrectly fails with "provider is shutting down".
+func resolveQueueProviderKey(providerKey schemas.ModelProvider, override *schemas.ProviderOverride) schemas.ModelProvider {
+	if override != nil && override.BaseProviderType != "" && !slices.Contains(schemas.StandardProviders, providerKey) {
+		return override.BaseProviderType
+	}
+	return providerKey
+}
+
 // getProviderQueue returns the ProviderQueue for a given provider key.
 // If the queue doesn't exist, it creates one at runtime and initializes the provider,
 // given the provider config is provided in the account interface implementation.
@@ -3919,12 +3934,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 // type's queue. This avoids materialising a permanent worker pool per alias and
 // ensures adapter selection is always consistent with BaseProviderType.
 func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, override *schemas.ProviderOverride) (*ProviderQueue, error) {
-	// Redirect non-standard aliases to their base provider's queue.
-	// "acme-openai" + BaseProviderType="openai" → use the "openai" queue.
-	// Credentials (Key) and URL (BaseURL) are still injected per-request via ProviderOverride.
-	if override != nil && override.BaseProviderType != "" && !slices.Contains(schemas.StandardProviders, providerKey) {
-		providerKey = override.BaseProviderType
-	}
+	providerKey = resolveQueueProviderKey(providerKey, override)
 
 	// Use read lock to allow concurrent reads but prevent concurrent updates
 	providerMutex := bifrost.getProviderMutex(providerKey)
@@ -4651,8 +4661,13 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	// lazy-creation path: getProviderQueue can resurrect a provider that was
 	// just removed by RemoveProvider if the account config still exists.
 	if pq.isClosing() {
+		// Resolve the queue's registered key, which differs from `provider` when
+		// override.BaseProviderType retargets a non-standard alias to a built-in queue.
+		// Probing requestQueues with the unresolved key would miss the replacement
+		// and incorrectly fall through to "provider is shutting down".
+		queueKey := resolveQueueProviderKey(provider, override)
 		var reroutedPq *ProviderQueue
-		if val, ok := bifrost.requestQueues.Load(provider); ok {
+		if val, ok := bifrost.requestQueues.Load(queueKey); ok {
 			if candidate := val.(*ProviderQueue); candidate != pq && !candidate.isClosing() {
 				reroutedPq = candidate
 			}
@@ -4999,8 +5014,13 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	// lazy-creation path: getProviderQueue can resurrect a provider that was
 	// just removed by RemoveProvider if the account config still exists.
 	if pq.isClosing() {
+		// Resolve the queue's registered key, which differs from `provider` when
+		// override.BaseProviderType retargets a non-standard alias to a built-in queue.
+		// Probing requestQueues with the unresolved key would miss the replacement
+		// and incorrectly fall through to "provider is shutting down".
+		queueKey := resolveQueueProviderKey(provider, override)
 		var reroutedPq *ProviderQueue
-		if val, ok := bifrost.requestQueues.Load(provider); ok {
+		if val, ok := bifrost.requestQueues.Load(queueKey); ok {
 			if candidate := val.(*ProviderQueue); candidate != pq && !candidate.isClosing() {
 				reroutedPq = candidate
 			}
