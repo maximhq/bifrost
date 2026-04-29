@@ -697,6 +697,58 @@ func mockOpenAIChatResponse(model string) []byte {
 	return b
 }
 
+// safeCapture is a mutex-guarded recorder for httptest handler observations.
+// Tests in this file run an httptest.Server whose handler goroutine writes
+// captured request fields and then a test goroutine reads them after
+// `bf.ChatCompletionRequest` returns. Today the writes happen-before the reads
+// because ChatCompletionRequest blocks on the response body, but the formal
+// race is enough to trip `go test -race` if the request path ever returns
+// before the handler goroutine exits (e.g. streaming, async post-processing).
+// safeCapture eliminates the race statically.
+type safeCapture struct {
+	mu         sync.Mutex
+	auth       string
+	host       string
+	path       string
+	sentinel   bool
+	authSeen   []string
+	attemptNum int
+}
+
+func (c *safeCapture) record(r *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.auth = r.Header.Get("Authorization")
+	c.host = r.Host
+	c.path = r.URL.Path
+}
+func (c *safeCapture) recordAuth(r *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.auth = r.Header.Get("Authorization")
+}
+func (c *safeCapture) markSentinel() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sentinel = true
+}
+func (c *safeCapture) recordAttempt(r *http.Request) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.authSeen = append(c.authSeen, r.Header.Get("Authorization"))
+	c.attemptNum++
+	return c.attemptNum
+}
+func (c *safeCapture) Auth() string     { c.mu.Lock(); defer c.mu.Unlock(); return c.auth }
+func (c *safeCapture) Host() string     { c.mu.Lock(); defer c.mu.Unlock(); return c.host }
+func (c *safeCapture) Path() string     { c.mu.Lock(); defer c.mu.Unlock(); return c.path }
+func (c *safeCapture) Sentinel() bool   { c.mu.Lock(); defer c.mu.Unlock(); return c.sentinel }
+func (c *safeCapture) AuthSeen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.authSeen...)
+}
+
 // Mock Account implementation for testing UpdateProvider
 type MockAccount struct {
 	mu      sync.RWMutex
@@ -2615,15 +2667,9 @@ func TestProviderOverride(t *testing.T) {
 		// to use the injected key and URL rather than the statically configured values.
 		const overrideKey = "sk-override-eu-key"
 
-		var (
-			capturedAuth string
-			capturedHost string
-			capturedPath string
-		)
+		cap := &safeCapture{}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
-			capturedHost = r.Host
-			capturedPath = r.URL.Path
+			cap.record(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
 		}))
@@ -2662,23 +2708,23 @@ func TestProviderOverride(t *testing.T) {
 			t.Fatal("expected non-nil response")
 		}
 		wantAuth := "Bearer " + overrideKey
-		if capturedAuth != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", got, wantAuth)
 		}
 		wantHost := strings.TrimPrefix(server.URL, "http://")
-		if capturedHost != wantHost {
-			t.Errorf("Host header: got %q, want %q", capturedHost, wantHost)
+		if got := cap.Host(); got != wantHost {
+			t.Errorf("Host header: got %q, want %q", got, wantHost)
 		}
-		if capturedPath != "/v1/chat/completions" {
-			t.Errorf("URL path: got %q, want %q", capturedPath, "/v1/chat/completions")
+		if got := cap.Path(); got != "/v1/chat/completions" {
+			t.Errorf("URL path: got %q, want %q", got, "/v1/chat/completions")
 		}
 	})
 
 	t.Run("StaticConfigUsedWhenNoOverride", func(t *testing.T) {
 		// Without a plugin override the static key and URL from account config must be used.
-		var capturedAuth string
+		cap := &safeCapture{}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
+			cap.recordAuth(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
 		}))
@@ -2713,8 +2759,8 @@ func TestProviderOverride(t *testing.T) {
 		}
 		// Static key from MockAccount.AddProviderWithBaseURL is "sk-test-openai".
 		wantAuth := "Bearer sk-test-openai"
-		if capturedAuth != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", got, wantAuth)
 		}
 	})
 
@@ -2724,9 +2770,9 @@ func TestProviderOverride(t *testing.T) {
 		// no static config entry exists. The plugin supplies key and URL via Update* methods.
 		const overrideKey = "sk-auto-init-key"
 
-		var capturedAuth string
+		cap := &safeCapture{}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
+			cap.recordAuth(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
 		}))
@@ -2762,8 +2808,8 @@ func TestProviderOverride(t *testing.T) {
 			t.Fatal("expected non-nil response")
 		}
 		wantAuth := "Bearer " + overrideKey
-		if capturedAuth != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", got, wantAuth)
 		}
 	})
 
@@ -2774,16 +2820,16 @@ func TestProviderOverride(t *testing.T) {
 		// overrideServer rather than sentinelServer.
 		const overrideKey = "sk-dialect-switch-key"
 
-		var sentinelHit bool
+		sentinel := &safeCapture{}
 		sentinelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			sentinelHit = true
+			sentinel.markSentinel()
 			w.WriteHeader(http.StatusInternalServerError)
 		}))
 		defer sentinelServer.Close()
 
-		var capturedAuth string
+		cap := &safeCapture{}
 		overrideServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
+			cap.recordAuth(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
 		}))
@@ -2823,12 +2869,12 @@ func TestProviderOverride(t *testing.T) {
 		if resp == nil {
 			t.Fatal("expected non-nil response")
 		}
-		if sentinelHit {
+		if sentinel.Sentinel() {
 			t.Error("Anthropic sentinel server was called; dialect was not switched to OpenAI")
 		}
 		wantAuth := "Bearer " + overrideKey
-		if capturedAuth != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", got, wantAuth)
 		}
 	})
 
@@ -2838,10 +2884,10 @@ func TestProviderOverride(t *testing.T) {
 	// is required; credentials and URL are supplied per-request via ProviderOverride.
 	t.Run("ArbitraryProviderViaBaseProviderType", func(t *testing.T) {
 		const arbitraryKey = "sk-arbitrary-tenant-key"
-		var capturedAuth string
+		cap := &safeCapture{}
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
+			cap.recordAuth(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
 		}))
@@ -2878,8 +2924,8 @@ func TestProviderOverride(t *testing.T) {
 		}
 
 		wantAuth := "Bearer " + arbitraryKey
-		if capturedAuth != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", got, wantAuth)
 		}
 	})
 
@@ -2888,11 +2934,7 @@ func TestProviderOverride(t *testing.T) {
 		// streaming path (tryStreamRequest), not only the non-streaming path (tryRequest).
 		const overrideKey = "sk-stream-override-key"
 
-		var (
-			capturedAuth string
-			capturedHost string
-			capturedPath string
-		)
+		cap := &safeCapture{}
 
 		// Minimal OpenAI-compatible SSE response: one content chunk then [DONE].
 		sseBody := "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
@@ -2905,9 +2947,7 @@ func TestProviderOverride(t *testing.T) {
 			"data: [DONE]\n\n"
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
-			capturedHost = r.Host
-			capturedPath = r.URL.Path
+			cap.record(r)
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.WriteHeader(http.StatusOK)
@@ -2955,15 +2995,15 @@ func TestProviderOverride(t *testing.T) {
 		}
 
 		wantAuth := "Bearer " + overrideKey
-		if capturedAuth != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", got, wantAuth)
 		}
 		wantHost := strings.TrimPrefix(server.URL, "http://")
-		if capturedHost != wantHost {
-			t.Errorf("Host header: got %q, want %q", capturedHost, wantHost)
+		if got := cap.Host(); got != wantHost {
+			t.Errorf("Host header: got %q, want %q", got, wantHost)
 		}
-		if capturedPath != "/v1/chat/completions" {
-			t.Errorf("URL path: got %q, want %q", capturedPath, "/v1/chat/completions")
+		if got := cap.Path(); got != "/v1/chat/completions" {
+			t.Errorf("URL path: got %q, want %q", got, "/v1/chat/completions")
 		}
 	})
 
@@ -2979,18 +3019,10 @@ func TestProviderOverride(t *testing.T) {
 			overrideKeyValue = "sk-override-no-rotate"
 		)
 
-		var (
-			mu         sync.Mutex
-			authSeen   []string
-			attemptNum int
-			failFirstN = 2
-		)
+		const failFirstN = 2
+		cap := &safeCapture{}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mu.Lock()
-			authSeen = append(authSeen, r.Header.Get("Authorization"))
-			attemptNum++
-			n := attemptNum
-			mu.Unlock()
+			n := cap.recordAttempt(r)
 			if n <= failFirstN {
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
@@ -3044,9 +3076,7 @@ func TestProviderOverride(t *testing.T) {
 		}
 
 		// Every attempt (including retries) must use the override key.
-		mu.Lock()
-		seen := append([]string(nil), authSeen...)
-		mu.Unlock()
+		seen := cap.AuthSeen()
 		if len(seen) < failFirstN+1 {
 			t.Fatalf("expected at least %d attempts, got %d (%v)", failFirstN+1, len(seen), seen)
 		}
@@ -3143,9 +3173,9 @@ func TestProviderOverride(t *testing.T) {
 			overrideKeyValue = "sk-override-wins"
 		)
 
-		var capturedAuth string
+		cap := &safeCapture{}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
+			cap.recordAuth(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
 		}))
@@ -3187,8 +3217,8 @@ func TestProviderOverride(t *testing.T) {
 		}
 
 		wantAuth := "Bearer " + overrideKeyValue
-		if capturedAuth != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q — DirectKey beat the override", capturedAuth, wantAuth)
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q — DirectKey beat the override", got, wantAuth)
 		}
 	})
 
@@ -3200,9 +3230,9 @@ func TestProviderOverride(t *testing.T) {
 		const overrideKeyValue = "sk-override-bypass-sticky"
 		const sessionID = "sess-bypass-sticky"
 
-		var capturedAuth string
+		cap := &safeCapture{}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			capturedAuth = r.Header.Get("Authorization")
+			cap.recordAuth(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
 		}))
@@ -3245,8 +3275,8 @@ func TestProviderOverride(t *testing.T) {
 		if resp == nil {
 			t.Fatal("expected non-nil response")
 		}
-		if capturedAuth != "Bearer "+overrideKeyValue {
-			t.Errorf("Authorization header: got %q, want Bearer %s", capturedAuth, overrideKeyValue)
+		if got := cap.Auth(); got != "Bearer "+overrideKeyValue {
+			t.Errorf("Authorization header: got %q, want Bearer %s", got, overrideKeyValue)
 		}
 
 		// No sticky entry must exist for this session — the override short-circuits above
@@ -3273,9 +3303,9 @@ func TestProviderOverride(t *testing.T) {
 		}))
 		defer primaryServer.Close()
 
-		var fallbackAuth string
+		fallbackCap := &safeCapture{}
 		fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fallbackAuth = r.Header.Get("Authorization")
+			fallbackCap.recordAuth(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o-mini"))
 		}))
@@ -3319,10 +3349,11 @@ func TestProviderOverride(t *testing.T) {
 
 		// Fallback must use the static key from OpenAI config, not the primary's override.
 		wantAuth := "Bearer sk-test-openai"
-		if fallbackAuth != wantAuth {
-			t.Errorf("fallback Authorization: got %q, want %q — primary override leaked into fallback", fallbackAuth, wantAuth)
+		got := fallbackCap.Auth()
+		if got != wantAuth {
+			t.Errorf("fallback Authorization: got %q, want %q — primary override leaked into fallback", got, wantAuth)
 		}
-		if fallbackAuth == "Bearer "+primaryOverrideValue {
+		if got == "Bearer "+primaryOverrideValue {
 			t.Errorf("fallback used primary override key %q; ProviderOverride was not cleared", primaryOverrideValue)
 		}
 	})
@@ -3461,9 +3492,9 @@ func TestFallbackToUnconfiguredProvider(t *testing.T) {
 	defer primaryServer.Close()
 
 	// fallbackServer accepts the request and returns a valid response.
-	var fallbackCapturedAuth string
+	fallbackCap := &safeCapture{}
 	fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fallbackCapturedAuth = r.Header.Get("Authorization")
+		fallbackCap.recordAuth(r)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(mockOpenAIChatResponse("gpt-4o-mini"))
 	}))
@@ -3509,8 +3540,8 @@ func TestFallbackToUnconfiguredProvider(t *testing.T) {
 		t.Fatal("expected non-nil response from fallback")
 	}
 	wantAuth := "Bearer " + fallbackKey
-	if fallbackCapturedAuth != wantAuth {
-		t.Errorf("fallback Authorization header: got %q, want %q", fallbackCapturedAuth, wantAuth)
+	if got := fallbackCap.Auth(); got != wantAuth {
+		t.Errorf("fallback Authorization header: got %q, want %q", got, wantAuth)
 	}
 }
 
