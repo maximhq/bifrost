@@ -1,0 +1,6 @@
+- feat: add Go duration string support for Redis and Weaviate fields via `schemas.Duration`
+- refactor: inherit provider keys from global client
+- fix: deterministic request hashing and `CacheDebug` propagation in streaming (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- chore: add log level param to `AppendRoutingEngineLog` and trim unused dependencies
+- chore: env var updates
+- chore: upgraded core to v1.5.6 and framework to v1.3.6

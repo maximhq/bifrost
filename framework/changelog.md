@@ -1,0 +1,19 @@
+- feat: add passthrough streaming accumulation
+- feat: dashboard local cache hit rate speedometer (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- feat: add db migrations and live-reload for per-request content storage and raw override flags
+- feat: add external base url support for reverse proxy mcp oauth
+- feat: add opt-in per-request overrides for content logging and raw request/response visibility
+- feat: store and show finish reason in LLM calls
+- feat: add finish reasons to root spans with correct model and provider names in OTEL
+- feat: add `schemas.Duration` type with Go duration string support
+- fix: fix migrations for conflicts
+- fix: fix cost info in OTEL calls and response tools
+- fix: native WebSocket `/responses` working with improved logging and cost tracking
+- fix: remove `MarshalJSON` auto-redaction; explicit redaction for env-backed fields
+- fix: correct `governance_budgets` join condition to use `virtual_key_id`
+- fix: input/output messages propagation to root span for OTEL
+- fix: route vertex multi-region-only models to multi-region endpoints when key is single-region
+- fix: make OAuth token `expires_at` nullable and guard refresh/reconnect
+- fix: propagate `RawRequest` through streaming pipeline and fix pool leak (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- fix: deterministic semanticcache request hashing and `CacheDebug` propagation (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- chore: upgraded core to v1.5.6

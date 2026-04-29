@@ -1,0 +1,2 @@
+- feat: add finish reasons to root spans with correct model and provider names
+- chore: upgraded core to v1.5.6 and framework to v1.3.6

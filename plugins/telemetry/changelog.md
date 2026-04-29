@@ -1,0 +1,2 @@
+- feat: forward `x-bf-dim-*` unified dimension headers to Prometheus metrics
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
