@@ -3349,11 +3349,11 @@
     },
     "scim_config": {
       "type": "object",
-      "description": "SAML/SCIM (System for Cross-domain Identity Management) configuration",
+      "description": "SCIM (System for Cross-domain Identity Management) configuration",
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Whether SAML/SCIM authentication is enabled"
+          "description": "Whether SCIM authentication is enabled"
         },
         "provider": {
           "type": "string",

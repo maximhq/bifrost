@@ -1,0 +1,253 @@
+---
+title: "Migrating to Enterprise"
+description: "Step-by-step guide for upgrading a Bifrost OSS deployment to Enterprise — storage, authentication, and clustering."
+icon: "arrow-up-right-dots"
+---
+
+Upgrading from Bifrost OSS to Enterprise involves three concrete configuration changes: replacing the SQLite-backed storage with PostgreSQL, replacing basic auth with SCIM-backed SSO, and (optionally) enabling multi-node clustering. This guide walks through each in order.
+
+<Frame>
+  <img src="/media/migration/oss-to-enterprise-overview.png" alt="OSS to Enterprise migration overview" />
+</Frame>
+
+---
+
+## What changes: OSS vs Enterprise
+
+| Capability | OSS | Enterprise |
+|---|---|---|
+| **Authentication** | Basic auth (username / password) | SCIM-backed SSO (Okta, Entra, Zitadel, Google) |
+| **Config & log storage** | SQLite (default) | PostgreSQL required |
+| **Multi-node clustering** | Not available | `cluster_config` with gossip protocol |
+| **RBAC** | Not available | Full role-based access control |
+| **Guardrails / Governance** | Limited | Full enterprise suite |
+
+---
+
+## Prerequisites
+
+Before starting the migration, ensure you have:
+
+- Access to the Bifrost Enterprise container image. See [Enterprise Deployment Overview](/deployment-guides/enterprise/overview) for registry authentication.
+- A dedicated PostgreSQL instance with the `bifrost` database created. See the [UTF-8 requirement note](/quickstart/gateway/setting-up#postgresql-utf8-requirement).
+- OAuth client credentials from your identity provider (Okta, Microsoft Entra, Zitadel, or Google Workspace).
+
+<Note>
+The PostgreSQL database must use **UTF-8 encoding**. Creating it with a different encoding (e.g., SQL_ASCII) will cause migration failures at startup.
+</Note>
+
+---
+
+## Step 1 — Provision PostgreSQL
+
+Enterprise features — SCIM, RBAC, governance rules, and the dashboard UI — all require a persistent, shared database. Both `config_store` and `logs_store` must be backed by PostgreSQL.
+
+<Tip>
+For production deployments, use a dedicated PostgreSQL instance with at least **4 vCPU and 16 GB RAM**. Shared or burstable instances (e.g., `db.t3.medium` on RDS) can saturate connection pools under concurrent inference traffic, causing `config_store` queries to queue behind log writes.
+</Tip>
+
+Update your `config.json`:
+
+```json
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "max_idle_conns": 5,
+      "max_open_conns": 50
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "max_idle_conns": 10,
+      "max_open_conns": 100
+    },
+    "retention_days": 90
+  }
+}
+```
+
+<Frame>
+  <img src="/media/migration/pg-config-storage.png" alt="PostgreSQL storage configuration in config.json" />
+</Frame>
+
+Bifrost runs schema migrations automatically on startup — no manual SQL is required. For the full storage configuration reference (object storage offload, vector store, etc.), see [Storage Configuration](/deployment-guides/config-json/storage).
+
+---
+
+## Step 2 — Replace basic auth with SCIM
+
+<Warning>
+`basic_auth` (username / password via `admin_username` / `admin_password`) is an **OSS-only** mechanism. It is intentionally disabled in Enterprise builds — it transmits credentials in plaintext and has no MFA, session management, or audit trail. Enterprise requires SCIM-backed SSO for all human access.
+</Warning>
+
+Remove or comment out any `admin_username` / `admin_password` fields from your existing config, then add the `scim_config` block and enable auth enforcement on inference:
+
+```json
+{
+  "client": {
+    "enforce_auth_on_inference": true
+  },
+  "scim_config": {
+    "enabled": true,
+    "provider": "okta",
+    "config": {
+      "issuerUrl": "env.OKTA_ISSUER_URL",
+      "clientId": "env.OKTA_CLIENT_ID",
+      "clientSecret": "env.OKTA_CLIENT_SECRET",
+      "apiToken": "env.OKTA_API_TOKEN"
+    }
+  }
+}
+```
+
+Replace `"provider": "okta"` and the `config` block with values for your identity provider. Each IdP has its own required fields:
+
+<CardGroup cols={2}>
+  <Card title="Okta" icon="o" href="/enterprise/setting-up-okta">
+    OIDC with Org or Custom Authorization Servers, group-to-role mapping, and API tokens for bulk user sync.
+  </Card>
+  <Card title="Microsoft Entra" icon="microsoft" href="/enterprise/setting-up-entra">
+    Entra ID (Azure AD) with app roles, group claims, and v1.0 / v2.0 token support.
+  </Card>
+  <Card title="Zitadel" icon="cloud" href="/enterprise/setting-up-zitadel">
+    Cloud or self-hosted Zitadel with project-scoped role claims and service-account-based provisioning.
+  </Card>
+  <Card title="Google Workspace" icon="google" href="/enterprise/setting-up-google-workspace">
+    Google Workspace domains with OAuth login plus optional Directory API sync via a service account.
+  </Card>
+</CardGroup>
+
+<Frame>
+  <img src="/media/migration/scim-setup-dashboard.png" alt="SCIM configuration screen in the Bifrost dashboard" />
+</Frame>
+
+<Warning>
+Always test your SCIM login in an **incognito window** before closing your existing admin session. If the IdP rejects the login, you will be locked out. See the [FAQ below](#faqs) for the recovery procedure.
+</Warning>
+
+For the full SCIM configuration reference — attribute mappings, bulk provisioning, and troubleshooting — see [User Provisioning (SCIM)](/enterprise/user-provisioning).
+
+---
+
+## Step 3 — Configure cluster_config (multi-node only)
+
+<Note>
+Skip this step if you are running a single-node Enterprise deployment.
+</Note>
+
+<Warning>
+`cluster_config` is an **enterprise-only** capability. OSS builds silently ignore this section.
+</Warning>
+
+Add `cluster_config` to `config.json` with either static peers or automatic discovery:
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "region": "us-east-1",
+    "gossip": {
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
+    },
+    "discovery": {
+      "enabled": true,
+      "type": "kubernetes",
+      "k8s_namespace": "bifrost",
+      "k8s_label_selector": "app=bifrost"
+    }
+  }
+}
+```
+
+After deploying, verify nodes can reach each other using the cluster diagnostic:
+
+1. Open the Bifrost dashboard and navigate to **Settings → Cluster**.
+2. Click **Run Diagnostic**. The wizard broadcasts a probe to all known peers and reports per-node ACK status in real time.
+
+<Frame>
+  <img src="/media/migration/cluster-diagnostic.png" alt="Cluster diagnostic wizard in the Bifrost dashboard" />
+</Frame>
+
+A successful diagnostic shows all expected peers in the **Acked** list. Peers stuck in **Unacked** indicate a gossip port connectivity issue — check firewall rules on port `10101` (or whichever gossip port you configured).
+
+For discovery-method deep dives and deployment patterns, see [Enterprise Clustering](/enterprise/clustering) and the [cluster_config reference](/deployment-guides/config-json/cluster).
+
+---
+
+## Verification checklist
+
+| Check | How |
+|---|---|
+| Config and log stores connected | `GET /health` — expect `200 OK` with all store pings passing |
+| SCIM login works | Sign in via SSO in an incognito window |
+| Role assignments correct | Verify your user appears with the expected role under **Governance → Users** |
+| Cluster nodes visible (multi-node) | Dashboard **Settings → Cluster** shows all peers as active |
+
+---
+
+## FAQs
+
+<AccordionGroup>
+
+<Accordion title="I misconfigured SCIM and I'm locked out of the dashboard">
+
+Connect directly to your PostgreSQL database and run the following queries:
+
+```sql
+-- Disable SCIM auth enforcement
+UPDATE config_client SET enforce_scim_auth = false;
+
+-- Disable all SCIM providers
+UPDATE enterprise_scim_providers SET enabled = false;
+```
+
+Then **restart Bifrost**. The dashboard will be accessible again without SSO, giving you time to correct the SCIM configuration.
+
+<Warning>
+Re-enable SCIM as soon as the configuration is corrected. Leaving auth disabled exposes your gateway to unauthenticated access.
+</Warning>
+
+</Accordion>
+
+<Accordion title="Authentication stopped working after upgrading to Enterprise">
+
+Basic auth (`admin_username` / `admin_password`) is an OSS-only feature. It is not available in Enterprise builds because it transmits credentials in plaintext and provides no audit trail or MFA support.
+
+Enterprise requires SCIM-backed SSO for all human dashboard access. Follow [Step 2](#step-2--replace-basic-auth-with-scim) in this guide to configure your identity provider.
+
+Inference traffic using Bifrost API keys (`bfst-*`) is unaffected — API keys bypass the SCIM middleware entirely.
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Related
+
+- [User Provisioning (SCIM)](/enterprise/user-provisioning) — full SCIM configuration reference, attribute mappings, bulk import
+- [Role-Based Access Control](/enterprise/rbac) — permissions model and custom roles
+- [Enterprise Clustering](/enterprise/clustering) — clustering architecture, discovery methods, deployment patterns
+- [Storage Configuration](/deployment-guides/config-json/storage) — full config_store / logs_store reference
+- [Enterprise Deployment Overview](/deployment-guides/enterprise/overview) — container registry access and cloud-specific setup
