@@ -2139,6 +2139,17 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 	return jsonSchema
 }
 
+func NormalizeModelName(model string) string {
+	model = strings.TrimSpace(model)
+	if len(model) >= len("google/") && strings.EqualFold(model[:len("google/")], "google/") {
+		strippedModel := model[len("google/"):]
+		if schemas.IsGeminiModel(strippedModel) || schemas.IsVeoModel(strippedModel) || schemas.IsImagenModel(strippedModel) || schemas.IsGemmaModel(strippedModel) {
+			return strippedModel
+		}
+	}
+	return model
+}
+
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
 func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *Schema) *schemas.ResponsesTextConfig {
 	name := "json_response"

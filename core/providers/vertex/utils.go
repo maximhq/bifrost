@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -157,6 +158,7 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 // for custom/fine-tuned models, it uses the projectNumber
 // for gemini models, it uses the projectID
 func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID string, projectNumber string, method string) string {
+	deployment = gemini.NormalizeModelName(deployment)
 	var url string
 	if schemas.IsAllDigitsASCII(deployment) {
 		// Custom/fine-tuned models use projectNumber

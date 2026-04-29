@@ -1281,6 +1281,10 @@ func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
 }
 
+func IsGemmaModel(model string) bool {
+	return strings.Contains(model, "gemma")
+}
+
 // IsImagenModel checks if the model is an Imagen model.
 func IsImagenModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "imagen")

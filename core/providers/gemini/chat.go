@@ -14,6 +14,8 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		return nil, nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
