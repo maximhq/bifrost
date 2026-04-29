@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/bytedance/sonic"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -80,7 +79,10 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 		}
 	}()
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	// Lifecycle JSON is always consumed in-process (no transport streaming). Skip
+	// PrepareResponseStreaming so large-response threshold mode never leaves the body
+	// on a stream-only path that finalizeOpenAIResponse would treat as unsupported here.
+	activeClient := provider.client
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(fullURL)
@@ -150,13 +152,19 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 	response := &schemas.BifrostResponsesResponse{}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	_, _, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
 	response.ExtraFields.Latency = latencyMs
 	response.ExtraFields.ProviderResponseHeaders = headers
 	response.ExtraFields.Provider = provider.GetProviderKey()
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
 	return response, nil
 }
 
@@ -176,27 +184,23 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	var wire struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Deleted bool   `json:"deleted"`
+	response := &schemas.BifrostResponsesDeleteResponse{}
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
-	if err := sonic.Unmarshal(bodyBytes, &wire); err != nil {
-		sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-		sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-		opErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
-		return nil, providerUtils.EnrichError(ctx, opErr, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
+	response.ExtraFields.Latency = latencyMs
+	response.ExtraFields.ProviderResponseHeaders = headers
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
 	}
-	return &schemas.BifrostResponsesDeleteResponse{
-		ID:      wire.ID,
-		Object:  wire.Object,
-		Deleted: wire.Deleted,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:                 latencyMs,
-			ProviderResponseHeaders: headers,
-			Provider:                provider.GetProviderKey(),
-		},
-	}, nil
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
 }
 
 // ResponsesCancel implements schemas.ResponsesLifecycleProvider.
@@ -218,13 +222,20 @@ func (provider *OpenAIProvider) ResponsesCancel(ctx *schemas.BifrostContext, key
 	response := &schemas.BifrostResponsesResponse{}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	_, _, err := providerUtils.HandleProviderResponse(bodyBytes, response, []byte("{}"), sendBackRawRequest, sendBackRawResponse)
+	cancelBody := []byte("{}")
+	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, cancelBody, sendBackRawRequest, sendBackRawResponse)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, []byte("{}"), bodyBytes, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, err, cancelBody, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
 	response.ExtraFields.Latency = latencyMs
 	response.ExtraFields.ProviderResponseHeaders = headers
 	response.ExtraFields.Provider = provider.GetProviderKey()
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
 	return response, nil
 }
 
@@ -244,29 +255,21 @@ func (provider *OpenAIProvider) ResponsesInputItems(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 
-	var wire struct {
-		Object  string                     `json:"object"`
-		Data    []schemas.ResponsesMessage `json:"data"`
-		HasMore bool                       `json:"has_more"`
-		FirstID string                     `json:"first_id"`
-		LastID  string                     `json:"last_id"`
+	response := &schemas.BifrostResponsesInputItemsResponse{}
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
-	if err := sonic.Unmarshal(bodyBytes, &wire); err != nil {
-		sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-		sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-		opErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
-		return nil, providerUtils.EnrichError(ctx, opErr, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
+	response.ExtraFields.Latency = latencyMs
+	response.ExtraFields.ProviderResponseHeaders = headers
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
 	}
-	return &schemas.BifrostResponsesInputItemsResponse{
-		Object:  wire.Object,
-		Data:    wire.Data,
-		HasMore: wire.HasMore,
-		FirstID: wire.FirstID,
-		LastID:  wire.LastID,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:                 latencyMs,
-			ProviderResponseHeaders: headers,
-			Provider:                provider.GetProviderKey(),
-		},
-	}, nil
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
 }
