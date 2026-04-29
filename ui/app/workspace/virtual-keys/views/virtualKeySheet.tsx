@@ -48,7 +48,7 @@ import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, Virtu
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
-import { Building, Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
+import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
@@ -1487,7 +1487,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 												</Button>
 											</span>
 										</TooltipTrigger>
-										{(isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit) && (
+										{(isLoading || !form.formState.isDirty || !canSubmit) && (
 											<TooltipContent>
 												<p>
 													{!canSubmit
