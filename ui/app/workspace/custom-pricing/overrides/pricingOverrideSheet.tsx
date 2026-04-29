@@ -1009,7 +1009,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 													</Button>
 												</FormControl>
 											</PopoverTrigger>
-											<PopoverContent align="start" className="w-[320px] p-2" onWheel={(e) => e.stopPropagation()}>
+											<PopoverContent align="start" className="w-[320px] p-2">
 												<div className="max-h-72 space-y-1 overflow-y-auto" onWheel={(e) => e.stopPropagation()}>
 													{REQUEST_TYPE_GROUPS.map((group) => (
 														<div key={group.label}>
