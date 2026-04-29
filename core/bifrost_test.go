@@ -4653,3 +4653,82 @@ func TestConcurrentStreamingPostHookRunnerNoChannelMessageRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestStreamingChunkProviderIsAliasNotBase pins that streaming chunks emitted
+// through a provider alias (e.g. "my-org-openai" → BaseProviderType=openai)
+// carry the ALIAS in ExtraFields.Provider, not the base provider. The
+// non-streaming path achieves this by re-populating ExtraFields with the
+// post-hook-resolved request provider in tryRequest after the worker returns;
+// the streaming path emits chunks directly from the provider goroutine and
+// has no comparable "after-the-fact" correction site, so the per-attempt
+// postHookRunner must capture the alias up front. Without that snapshot,
+// chunks would silently report ExtraFields.Provider=openai for an
+// "my-org-openai" request, breaking accounting and per-tenant attribution
+// in plugins that rely on Provider for routing decisions.
+func TestStreamingChunkProviderIsAliasNotBase(t *testing.T) {
+	const aliasProvider = schemas.ModelProvider("my-org-openai")
+	const aliasKey = "sk-alias-stream-key"
+
+	sseBody := "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
+		"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"," +
+		"\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
+		"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{}," +
+		"\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3," +
+		"\"completion_tokens\":1,\"total_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer server.Close()
+
+	// Empty account — alias is not registered. The plugin sets BaseProviderType
+	// so getProviderQueue routes the request through the openai queue, but the
+	// post-hook-resolved request provider remains the alias.
+	account := NewMockAccount()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{newArbitraryProviderPlugin(aliasProvider, schemas.OpenAI, aliasKey, server.URL)},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	ch, bifrostErr := bf.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: aliasProvider,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletionStreamRequest failed: %v", bifrostErr)
+	}
+	if ch == nil {
+		t.Fatal("expected non-nil stream channel")
+	}
+
+	chunkCount := 0
+	for chunk := range ch {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream returned error: %v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse == nil {
+			continue
+		}
+		chunkCount++
+		if got := chunk.BifrostChatResponse.ExtraFields.Provider; got != aliasProvider {
+			t.Errorf("chunk ExtraFields.Provider: got %q, want %q (alias) — base-provider key leaked into streaming chunk metadata", got, aliasProvider)
+		}
+	}
+	if chunkCount == 0 {
+		t.Fatal("no chat-response chunks observed; cannot verify provider attribution")
+	}
+}

@@ -5737,6 +5737,16 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// provider goroutine is still emitting chunks and invoking postHookRunner.
 				// Reading req.RequestType inside the closure would race with that overwrite.
 				attemptRequestType := req.RequestType
+				// Snapshot the post-hook-resolved request provider (the alias the caller
+				// asked for) instead of using provider.GetProviderKey() inside the closure.
+				// resolveQueueProviderKey retargets aliases like `acme-openai` onto the
+				// base queue, so provider.GetProviderKey() returns the BASE provider, not
+				// the alias. The non-streaming path corrects this in tryRequest by
+				// re-populating ExtraFields with the alias after the response arrives;
+				// streaming chunks are emitted directly from the provider goroutine and
+				// never get that correction. Snapshotting attemptProvider here keeps
+				// streaming ExtraFields.Provider symmetric with the non-streaming path.
+				attemptProvider, _, _ := req.BifrostRequest.GetRequestFields()
 				pipeline := bifrost.getPluginPipeline()
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
@@ -5745,20 +5755,20 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// req.RequestType by reference would let a later retry's alias or a
 					// recycled ChannelMessage's request type bleed into this attempt's chunks.
 					if result != nil {
-						result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						result.PopulateExtraFields(attemptRequestType, attemptProvider, originalModelRequested, attemptResolvedModel)
 					}
 					if err != nil {
-						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						err.PopulateExtraFields(attemptRequestType, attemptProvider, originalModelRequested, attemptResolvedModel)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
 						drainAndAttachPluginLogs(ctx)
 					}
 					if bifrostErr != nil {
-						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						bifrostErr.PopulateExtraFields(attemptRequestType, attemptProvider, originalModelRequested, attemptResolvedModel)
 						return nil, bifrostErr
 					} else if resp != nil {
-						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						resp.PopulateExtraFields(attemptRequestType, attemptProvider, originalModelRequested, attemptResolvedModel)
 					}
 					return resp, nil
 				}
