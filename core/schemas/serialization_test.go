@@ -1364,6 +1364,10 @@ func TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil(t *testing.T) {
 // requests. These tests pin the contract.
 
 func TestProviderOverride_KeyOmittedFromJSON(t *testing.T) {
+	// BaseURL is plugin-supplied and may carry userinfo or query tokens
+	// (e.g. https://user:tok@host or ?access_token=...). Don't pin its raw
+	// presence in the JSON output here — that would lock in unsafe
+	// serialisation. Only assert the credential-bearing Key fields are absent.
 	override := ProviderOverride{
 		Key:              &Key{ID: "leak-canary", Value: *NewEnvVar("sk-secret-do-not-leak")},
 		BaseURL:          "https://eu.api.openai.com",
@@ -1376,9 +1380,6 @@ func TestProviderOverride_KeyOmittedFromJSON(t *testing.T) {
 
 	assert.NotContains(t, body, "leak-canary", "ProviderOverride.Key.ID must not appear in JSON")
 	assert.NotContains(t, body, "sk-secret-do-not-leak", "ProviderOverride.Key.Value must not appear in JSON")
-	// BaseURL and BaseProviderType remain serialisable for diagnostic logging.
-	assert.Contains(t, body, "https://eu.api.openai.com")
-	assert.Contains(t, body, "openai")
 }
 
 func TestBifrostRequest_ProviderOverrideOmittedFromJSON(t *testing.T) {

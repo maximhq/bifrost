@@ -4642,10 +4642,20 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pq, err := bifrost.getProviderQueue(provider, override)
 	if err != nil {
 		bifrostErr := newBifrostError(err)
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:            req.RequestType,
-			Provider:               provider,
-			OriginalModelRequested: model,
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		// Pre-hooks already ran with preCount plugins; route the queue-resolution
+		// failure through the same post-hook path so plugins observing pre/post
+		// pairs (logging, accounting) see the terminal error and so plugin logs
+		// are flushed.
+		resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		drainAndAttachPluginLogs(ctx)
+		if postErr != nil {
+			postErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			return nil, postErr
+		}
+		if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, provider, model, model)
+			return resp, nil
 		}
 		return nil, bifrostErr
 	}
@@ -4675,10 +4685,16 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		if reroutedPq == nil {
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:            req.RequestType,
-				Provider:               provider,
-				OriginalModelRequested: model,
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+			drainAndAttachPluginLogs(ctx)
+			if postErr != nil {
+				postErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				return nil, postErr
+			}
+			if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+				return resp, nil
 			}
 			return nil, bifrostErr
 		}
@@ -4995,10 +5011,20 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	pq, err := bifrost.getProviderQueue(provider, override)
 	if err != nil {
 		bifrostErr := newBifrostError(err)
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:            req.RequestType,
-			Provider:               provider,
-			OriginalModelRequested: model,
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		// Pre-hooks already ran with preCount plugins; route the queue-resolution
+		// failure through the same post-hook path so plugins observing pre/post
+		// pairs (logging, accounting) see the terminal error and so plugin logs
+		// are flushed.
+		resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		drainAndAttachPluginLogs(ctx)
+		if postErr != nil {
+			postErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			return nil, postErr
+		}
+		if resp != nil {
+			resp.PopulateExtraFields(req.RequestType, provider, model, model)
+			return newBifrostMessageChan(resp), nil
 		}
 		return nil, bifrostErr
 	}
@@ -5028,10 +5054,16 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		if reroutedPq == nil {
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:            req.RequestType,
-				Provider:               provider,
-				OriginalModelRequested: model,
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+			drainAndAttachPluginLogs(ctx)
+			if postErr != nil {
+				postErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				return nil, postErr
+			}
+			if resp != nil {
+				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+				return newBifrostMessageChan(resp), nil
 			}
 			return nil, bifrostErr
 		}

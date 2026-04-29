@@ -4118,3 +4118,74 @@ func TestResolveQueueProviderKey_NoOverride(t *testing.T) {
 		t.Errorf("override without BaseProviderType: got %q, want %q", got, schemas.ModelProvider("acme"))
 	}
 }
+
+// postHookObserverPlugin records whether PreLLMHook and PostLLMHook were each
+// invoked and captures the post-hook's view of the BifrostError. Used to pin
+// that error paths after pre-hooks ran (such as queue-resolution failures) still
+// route through the plugin pipeline rather than short-circuiting and skipping
+// the symmetric post-hook callback.
+type postHookObserverPlugin struct {
+	preCalls    int32
+	postCalls   int32
+	lastPostErr *schemas.BifrostError
+}
+
+func (p *postHookObserverPlugin) GetName() string { return "post-hook-observer-test-plugin" }
+func (p *postHookObserverPlugin) Cleanup() error  { return nil }
+func (p *postHookObserverPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	atomic.AddInt32(&p.preCalls, 1)
+	return req, nil, nil
+}
+func (p *postHookObserverPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	atomic.AddInt32(&p.postCalls, 1)
+	p.lastPostErr = err
+	return resp, err, nil
+}
+
+// TestPostHookRunsForQueueResolutionFailure pins that when getProviderQueue
+// fails after RunLLMPreHooks already executed (e.g. an unconfigured provider
+// alias), the failure is routed through RunPostLLMHooks before being returned
+// to the caller. Without this, plugins that rely on pre/post pairing — logging,
+// accounting, request-state cleanup — silently leak in-flight state when the
+// gateway can't even allocate a queue for the request. Catches regressions
+// where the early `return nil, bifrostErr` from the queue-resolution branch
+// bypasses the post-hook + plugin-log-drain sequence used by every other
+// terminal error path in tryRequest/tryStreamRequest.
+func TestPostHookRunsForQueueResolutionFailure(t *testing.T) {
+	account := NewMockAccount()
+	observer := &postHookObserverPlugin{}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{observer},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	// Use a non-standard provider name with no config — getProviderQueue will
+	// fail with "config is nil for provider <name>" because the alias isn't in
+	// dynamicallyConfigurableProviders and no override.BaseProviderType is set.
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	_, bifrostErr := bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: schemas.ModelProvider("never-configured-alias"),
+		Model:    "any-model",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected queue-resolution failure for unconfigured provider")
+	}
+
+	if got := atomic.LoadInt32(&observer.preCalls); got != 1 {
+		t.Fatalf("PreLLMHook calls: got %d, want 1 — observer must have run pre-hook before queue-resolution", got)
+	}
+	if got := atomic.LoadInt32(&observer.postCalls); got != 1 {
+		t.Errorf("PostLLMHook calls: got %d, want 1 — queue-resolution failure must route through post-hooks so plugins observing pre/post pairs see the terminal error", got)
+	}
+	if observer.lastPostErr == nil {
+		t.Errorf("PostLLMHook saw no error — the bifrostErr from getProviderQueue must be passed to plugins")
+	}
+}
