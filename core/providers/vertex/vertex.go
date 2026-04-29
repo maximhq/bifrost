@@ -429,7 +429,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				if err != nil {
 					return nil, fmt.Errorf("failed to delete model field: %w", err)
 				}
-			} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+			} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
 				if err != nil {
 					return nil, err
@@ -524,7 +524,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		} else {
 			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:rawPredict", region, projectID, region, deployment)
 		}
-	} else if schemas.IsGeminiModel(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsGemmaModel(deployment) {
 		// Gemini models support api key
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
@@ -662,7 +662,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -866,7 +866,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				RequestType: schemas.ChatCompletionStreamRequest,
 			},
 		)
-	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 		// Use Gemini-style streaming for Gemini models
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -1162,7 +1162,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
@@ -1417,7 +1417,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				RequestType: schemas.ResponsesStreamRequest,
 			},
 		)
-	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 		region := key.VertexKeyConfig.Region.GetValue()
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
@@ -1984,7 +1984,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		} else {
 			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict", region, projectID, region, deployment)
 		}
-	} else if schemas.IsGeminiModel(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsGemmaModel(deployment) {
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
@@ -2240,7 +2240,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		} else {
 			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict", region, projectID, region, deployment)
 		}
-	} else if schemas.IsGeminiModel(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsGemmaModel(deployment) {
 		if region == "global" {
 			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, deployment)
 		} else {
@@ -2947,7 +2947,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		} else {
 			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict", region, projectID, region)
 		}
-	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
