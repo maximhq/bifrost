@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -3645,3 +3646,326 @@ func (p *fallbackOverridePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *sc
 func (p *fallbackOverridePlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
+
+type countingTracer struct {
+	schemas.NoOpTracer
+	flushed atomic.Int32
+}
+
+func (t *countingTracer) CreateTrace(_ string, _ ...string) string {
+	return "trace-ws-final"
+}
+
+func (t *countingTracer) CompleteAndFlushTrace(_ string) {
+	t.flushed.Add(1)
+}
+
+func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	account := NewMockAccount()
+	tracer := &countingTracer{}
+
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Tracer:  tracer,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	hooks, bifrostErr := client.RunStreamPreHooks(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.WebSocketResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+	}
+	defer hooks.Cleanup()
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	_, bifrostErr = hooks.PostHookRunner(ctx, &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Object:    "response",
+			CreatedAt: int(time.Now().Unix()),
+			Model:     "gpt-4o-mini",
+		},
+	}, nil)
+	if bifrostErr != nil {
+		t.Fatalf("PostHookRunner returned error: %v", bifrostErr)
+	}
+
+	if tracer.flushed.Load() != 1 {
+		t.Fatalf("expected trace flush count 1, got %d", tracer.flushed.Load())
+	}
+}
+
+// TestPluginPipelineStreamingRace exercises accumulatePluginTiming, FinalizeStreamingPostHookSpans,
+// resetPluginPipeline, and GetChunkCount concurrently to catch a regression of the
+// "concurrent map read and map write" panic that previously surfaced in production. Running
+// `go test -race` will fail fast on any reintroduced race. Restored from upstream commit
+// 5cbcff978 (test fixes #3004) — the original move from core/internal/plugins/ into this file
+// was dropped during the upstream merge.
+func TestPluginPipelineStreamingRace(t *testing.T) {
+	p := &PluginPipeline{
+		logger: NewDefaultLogger(schemas.LogLevelError),
+		tracer: &schemas.NoOpTracer{},
+	}
+
+	const writers = 8
+	const iterations = 2000
+
+	var wg sync.WaitGroup
+
+	// Per-chunk accumulator writers — simulate multiple plugins accumulating
+	// timing for every streamed chunk.
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			pluginName := fmt.Sprintf("plugin-%d", id%3) // a few distinct plugin keys
+			for i := 0; i < iterations; i++ {
+				p.accumulatePluginTiming(pluginName, time.Microsecond, i%17 == 0)
+			}
+		}(w)
+	}
+
+	// End-of-stream finalizer racing with writers.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ctx := context.Background()
+		for i := 0; i < iterations/10; i++ {
+			p.FinalizeStreamingPostHookSpans(ctx)
+		}
+	}()
+
+	// resetPluginPipeline racing with writers — simulates the pool returning
+	// the pipeline to another request mid-flight.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations/10; i++ {
+			p.resetPluginPipeline()
+		}
+	}()
+
+	// Concurrent GetChunkCount readers.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = p.GetChunkCount()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// extraFieldsClobberPlugin returns BRAND NEW BifrostResponse / BifrostError values from
+// PostLLMHook with empty ExtraFields. Bifrost's contract is that it re-populates
+// RequestType/Provider/OriginalModelRequested/ResolvedModelUsed AFTER each plugin run, so
+// callers always see populated ExtraFields regardless of what the plugin returns.
+//
+// This is the test counterpart of the regression that was silently introduced during the
+// upstream merge: dropped `PopulateExtraFields(...)` calls after `RunPostLLMHooks` left
+// callers staring at empty Provider/Model fields whenever a plugin substituted a fresh
+// response or error. These tests pin the behaviour for the success path, the cancellation
+// branch, and the streaming path.
+type extraFieldsClobberPlugin struct {
+	wantErrorMessage string
+}
+
+func (p *extraFieldsClobberPlugin) GetName() string { return "extra-fields-clobber-test-plugin" }
+func (p *extraFieldsClobberPlugin) Cleanup() error  { return nil }
+func (p *extraFieldsClobberPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *extraFieldsClobberPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if err != nil {
+		// Replace with a fresh BifrostError that has empty ExtraFields; Bifrost must
+		// re-populate them before returning to the caller.
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: p.wantErrorMessage},
+		}, nil
+	}
+	if resp != nil {
+		// Replace with a fresh BifrostResponse with empty ExtraFields.
+		return &schemas.BifrostResponse{
+			ChatResponse: resp.ChatResponse,
+		}, nil, nil
+	}
+	return resp, err, nil
+}
+
+// TestPostLLMHook_PopulatesExtraFieldsOnReplacedResponse pins the rule that when a plugin
+// returns a NEW BifrostResponse from PostLLMHook (with empty ExtraFields), the caller still
+// receives Provider/Model/RequestType populated. Catches dropped post-hook
+// PopulateExtraFields lines in `tryRequest`.
+func TestPostLLMHook_PopulatesExtraFieldsOnReplacedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&extraFieldsClobberPlugin{}},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	resp, bifrostErr := bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.ExtraFields.Provider != schemas.OpenAI {
+		t.Errorf("Provider: got %q, want %q (plugin returned fresh response with empty ExtraFields — Bifrost must re-populate)", resp.ExtraFields.Provider, schemas.OpenAI)
+	}
+	if resp.ExtraFields.OriginalModelRequested != "gpt-4o" {
+		t.Errorf("OriginalModelRequested: got %q, want %q", resp.ExtraFields.OriginalModelRequested, "gpt-4o")
+	}
+	if resp.ExtraFields.RequestType != schemas.ChatCompletionRequest {
+		t.Errorf("RequestType: got %q, want %q", resp.ExtraFields.RequestType, schemas.ChatCompletionRequest)
+	}
+}
+
+// TestPostLLMHook_PopulatesExtraFieldsOnReplacedError pins the rule that when a plugin
+// returns a NEW BifrostError from PostLLMHook (with empty ExtraFields), the caller still
+// receives Provider/Model/RequestType populated. Catches dropped post-hook
+// PopulateExtraFields lines on the error branch of `tryRequest`.
+func TestPostLLMHook_PopulatesExtraFieldsOnReplacedError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream boom"}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&extraFieldsClobberPlugin{wantErrorMessage: "plugin-replaced-error"}},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	_, bifrostErr := bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected error from upstream 500")
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "plugin-replaced-error" {
+		t.Fatalf("expected plugin-replaced error message, got %+v", bifrostErr.Error)
+	}
+	if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+		t.Errorf("Provider: got %q, want %q (plugin returned fresh error with empty ExtraFields — Bifrost must re-populate)", bifrostErr.ExtraFields.Provider, schemas.OpenAI)
+	}
+	if bifrostErr.ExtraFields.OriginalModelRequested != "gpt-4o" {
+		t.Errorf("OriginalModelRequested: got %q, want %q", bifrostErr.ExtraFields.OriginalModelRequested, "gpt-4o")
+	}
+	if bifrostErr.ExtraFields.RequestType != schemas.ChatCompletionRequest {
+		t.Errorf("RequestType: got %q, want %q", bifrostErr.ExtraFields.RequestType, schemas.ChatCompletionRequest)
+	}
+}
+
+// TestResetBifrostRequest_ClearsAllFields uses reflection to verify that resetBifrostRequest
+// clears every pointer/string/typed field on BifrostRequest. This guards against future
+// additions to BifrostRequest that aren't matched by a corresponding clear in
+// resetBifrostRequest — including, critically, ProviderOverride, whose leak across pooled
+// requests would expose one tenant's API key to another. New fields trip the test
+// automatically; the developer must update resetBifrostRequest to make it pass.
+func TestResetBifrostRequest_ClearsAllFields(t *testing.T) {
+	// Populate every accessible field with a non-zero sentinel so we can detect any
+	// field that resetBifrostRequest forgets to clear.
+	req := &schemas.BifrostRequest{
+		RequestType:                  schemas.ChatCompletionRequest,
+		ProviderOverride:             &schemas.ProviderOverride{Key: &schemas.Key{ID: "leak-canary"}, BaseURL: "https://leak.example", BaseProviderType: schemas.OpenAI},
+		ListModelsRequest:            &schemas.BifrostListModelsRequest{},
+		TextCompletionRequest:        &schemas.BifrostTextCompletionRequest{},
+		ChatRequest:                  &schemas.BifrostChatRequest{},
+		ResponsesRequest:             &schemas.BifrostResponsesRequest{},
+		CountTokensRequest:           &schemas.BifrostResponsesRequest{},
+		EmbeddingRequest:             &schemas.BifrostEmbeddingRequest{},
+		RerankRequest:                &schemas.BifrostRerankRequest{},
+		OCRRequest:                   &schemas.BifrostOCRRequest{},
+		SpeechRequest:                &schemas.BifrostSpeechRequest{},
+		TranscriptionRequest:         &schemas.BifrostTranscriptionRequest{},
+		ImageGenerationRequest:       &schemas.BifrostImageGenerationRequest{},
+		ImageEditRequest:             &schemas.BifrostImageEditRequest{},
+		ImageVariationRequest:        &schemas.BifrostImageVariationRequest{},
+		VideoGenerationRequest:       &schemas.BifrostVideoGenerationRequest{},
+		VideoRetrieveRequest:         &schemas.BifrostVideoRetrieveRequest{},
+		VideoDownloadRequest:         &schemas.BifrostVideoDownloadRequest{},
+		VideoListRequest:             &schemas.BifrostVideoListRequest{},
+		VideoRemixRequest:            &schemas.BifrostVideoRemixRequest{},
+		VideoDeleteRequest:           &schemas.BifrostVideoDeleteRequest{},
+		FileUploadRequest:            &schemas.BifrostFileUploadRequest{},
+		FileListRequest:              &schemas.BifrostFileListRequest{},
+		FileRetrieveRequest:          &schemas.BifrostFileRetrieveRequest{},
+		FileDeleteRequest:            &schemas.BifrostFileDeleteRequest{},
+		FileContentRequest:           &schemas.BifrostFileContentRequest{},
+		BatchCreateRequest:           &schemas.BifrostBatchCreateRequest{},
+		BatchListRequest:             &schemas.BifrostBatchListRequest{},
+		BatchRetrieveRequest:         &schemas.BifrostBatchRetrieveRequest{},
+		BatchCancelRequest:           &schemas.BifrostBatchCancelRequest{},
+		BatchDeleteRequest:           &schemas.BifrostBatchDeleteRequest{},
+		BatchResultsRequest:          &schemas.BifrostBatchResultsRequest{},
+		ContainerCreateRequest:       &schemas.BifrostContainerCreateRequest{},
+		ContainerListRequest:         &schemas.BifrostContainerListRequest{},
+		ContainerRetrieveRequest:     &schemas.BifrostContainerRetrieveRequest{},
+		ContainerDeleteRequest:       &schemas.BifrostContainerDeleteRequest{},
+		ContainerFileCreateRequest:   &schemas.BifrostContainerFileCreateRequest{},
+		ContainerFileListRequest:     &schemas.BifrostContainerFileListRequest{},
+		ContainerFileRetrieveRequest: &schemas.BifrostContainerFileRetrieveRequest{},
+		ContainerFileContentRequest:  &schemas.BifrostContainerFileContentRequest{},
+		ContainerFileDeleteRequest:   &schemas.BifrostContainerFileDeleteRequest{},
+		PassthroughRequest:           &schemas.BifrostPassthroughRequest{},
+	}
+
+	resetBifrostRequest(req)
+
+	v := reflect.ValueOf(req).Elem()
+	tt := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		name := tt.Field(i).Name
+		if !f.CanInterface() {
+			continue
+		}
+		if !f.IsZero() {
+			t.Errorf("resetBifrostRequest left field %q non-zero (value=%v) — every BifrostRequest field must be cleared so a pooled request cannot leak state across tenants", name, f.Interface())
+		}
+	}
+}
+
