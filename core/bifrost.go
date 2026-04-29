@@ -4562,6 +4562,37 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	return nil, primaryErr
 }
 
+// finalizeAfterPreHookErr runs RunPostLLMHooks and drains plugin logs for an
+// error path that fires after pre-hooks have already executed but before the
+// worker receives the request — queue resolution, closing-queue rejection,
+// queue-full / pq.done / ctx-cancelled-during-enqueue. It pairs the pre-hook
+// with a post-hook so plugins that rely on pre/post symmetry (logging,
+// accounting, in-flight bookkeeping) observe the terminal error, and it
+// flushes plugin logs that would otherwise leak. The caller is responsible
+// for any pre-step cleanup (e.g. releaseChannelMessage); for streaming entry
+// points it must wrap a non-nil response via newBifrostMessageChan.
+func (bifrost *Bifrost) finalizeAfterPreHookErr(
+	ctx *schemas.BifrostContext,
+	pipeline *PluginPipeline,
+	preCount int,
+	requestType schemas.RequestType,
+	provider schemas.ModelProvider,
+	model string,
+	bifrostErr *schemas.BifrostError,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+	drainAndAttachPluginLogs(ctx)
+	if postErr != nil {
+		postErr.PopulateExtraFields(requestType, provider, model, model)
+		return nil, postErr
+	}
+	if resp != nil {
+		resp.PopulateExtraFields(requestType, provider, model, model)
+		return resp, nil
+	}
+	return nil, bifrostErr
+}
+
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -4643,21 +4674,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if err != nil {
 		bifrostErr := newBifrostError(err)
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		// Pre-hooks already ran with preCount plugins; route the queue-resolution
-		// failure through the same post-hook path so plugins observing pre/post
-		// pairs (logging, accounting) see the terminal error and so plugin logs
-		// are flushed.
-		resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
-		drainAndAttachPluginLogs(ctx)
-		if postErr != nil {
-			postErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, postErr
-		}
-		if resp != nil {
-			resp.PopulateExtraFields(req.RequestType, provider, model, model)
-			return resp, nil
-		}
-		return nil, bifrostErr
+		return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)
@@ -4686,22 +4703,15 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
-			drainAndAttachPluginLogs(ctx)
-			if postErr != nil {
-				postErr.PopulateExtraFields(req.RequestType, provider, model, model)
-				return nil, postErr
-			}
-			if resp != nil {
-				resp.PopulateExtraFields(req.RequestType, provider, model, model)
-				return resp, nil
-			}
-			return nil, bifrostErr
+			return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		}
 		pq = reroutedPq
 	}
 
-	// Use select with done channel to detect shutdown during send
+	// Use select with done channel to detect shutdown during send.
+	// Every error branch below funnels through finalizeAfterPreHookErr so that
+	// plugin pre/post pairs and plugin logs are honoured even when the request
+	// never reaches a worker.
 	select {
 	case pq.queue <- msg:
 		// Message was sent successfully
@@ -4709,26 +4719,26 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
 			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		}
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		}
 		select {
 		case pq.queue <- msg:
@@ -4737,12 +4747,12 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		}
 	}
 
@@ -5008,25 +5018,24 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		ctx.SetValue(schemas.BifrostContextKeyProviderOverride, override)
 	}
 
+	// finalizeStream wraps finalizeAfterPreHookErr for the streaming entry point,
+	// converting a non-nil post-hook response into a stream channel.
+	finalizeStream := func(bifrostErr *schemas.BifrostError) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		resp, finalErr := bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
+		if finalErr != nil {
+			return nil, finalErr
+		}
+		if resp != nil {
+			return newBifrostMessageChan(resp), nil
+		}
+		return nil, bifrostErr
+	}
+
 	pq, err := bifrost.getProviderQueue(provider, override)
 	if err != nil {
 		bifrostErr := newBifrostError(err)
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		// Pre-hooks already ran with preCount plugins; route the queue-resolution
-		// failure through the same post-hook path so plugins observing pre/post
-		// pairs (logging, accounting) see the terminal error and so plugin logs
-		// are flushed.
-		resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
-		drainAndAttachPluginLogs(ctx)
-		if postErr != nil {
-			postErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, postErr
-		}
-		if resp != nil {
-			resp.PopulateExtraFields(req.RequestType, provider, model, model)
-			return newBifrostMessageChan(resp), nil
-		}
-		return nil, bifrostErr
+		return finalizeStream(bifrostErr)
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)
@@ -5055,22 +5064,15 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, postErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
-			drainAndAttachPluginLogs(ctx)
-			if postErr != nil {
-				postErr.PopulateExtraFields(req.RequestType, provider, model, model)
-				return nil, postErr
-			}
-			if resp != nil {
-				resp.PopulateExtraFields(req.RequestType, provider, model, model)
-				return newBifrostMessageChan(resp), nil
-			}
-			return nil, bifrostErr
+			return finalizeStream(bifrostErr)
 		}
 		pq = reroutedPq
 	}
 
-	// Use select with done channel to detect shutdown during send
+	// Use select with done channel to detect shutdown during send.
+	// Every error branch below funnels through finalizeStream so that plugin
+	// pre/post pairs and plugin logs are honoured even when the request never
+	// reaches a worker.
 	select {
 	case pq.queue <- msg:
 		// Message was sent successfully
@@ -5078,26 +5080,26 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return finalizeStream(bifrostErr)
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
+		return finalizeStream(bifrostErr)
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
 			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return finalizeStream(bifrostErr)
 		}
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return finalizeStream(bifrostErr)
 		}
 		select {
 		case pq.queue <- msg:
@@ -5106,12 +5108,12 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return finalizeStream(bifrostErr)
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			return nil, bifrostErr
+			return finalizeStream(bifrostErr)
 		}
 	}
 

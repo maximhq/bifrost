@@ -3439,7 +3439,9 @@ func newArbitraryProviderPlugin(providerName, baseType schemas.ModelProvider, ke
 func (p *arbitraryProviderPlugin) GetName() string { return "arbitrary-provider-test-plugin" }
 func (p *arbitraryProviderPlugin) Cleanup() error  { return nil }
 func (p *arbitraryProviderPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	req.UpdateProvider(p.providerName) //nolint:errcheck
+	if err := req.UpdateProvider(p.providerName); err != nil {
+		return nil, nil, err
+	}
 	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
 	req.UpdateProviderBaseURL(p.baseURL)
 	req.UpdateBaseProviderType(p.baseType)
@@ -3463,7 +3465,9 @@ func newProviderSwitchPlugin(provider schemas.ModelProvider, key, baseURL string
 func (p *providerSwitchPlugin) GetName() string { return "provider-switch-test-plugin" }
 func (p *providerSwitchPlugin) Cleanup() error  { return nil }
 func (p *providerSwitchPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	req.UpdateProvider(p.provider) //nolint:errcheck
+	if err := req.UpdateProvider(p.provider); err != nil {
+		return nil, nil, err
+	}
 	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
 	req.UpdateProviderBaseURL(p.baseURL)
 	return req, nil, nil
@@ -4158,7 +4162,7 @@ func TestResolveQueueProviderKey_NoOverride(t *testing.T) {
 type postHookObserverPlugin struct {
 	preCalls    int32
 	postCalls   int32
-	lastPostErr *schemas.BifrostError
+	lastPostErr atomic.Pointer[schemas.BifrostError]
 }
 
 func (p *postHookObserverPlugin) GetName() string { return "post-hook-observer-test-plugin" }
@@ -4169,7 +4173,7 @@ func (p *postHookObserverPlugin) PreLLMHook(_ *schemas.BifrostContext, req *sche
 }
 func (p *postHookObserverPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	atomic.AddInt32(&p.postCalls, 1)
-	p.lastPostErr = err
+	p.lastPostErr.Store(err)
 	return resp, err, nil
 }
 
@@ -4320,7 +4324,106 @@ func TestPostHookRunsForQueueResolutionFailure(t *testing.T) {
 	if got := atomic.LoadInt32(&observer.postCalls); got != 1 {
 		t.Errorf("PostLLMHook calls: got %d, want 1 — queue-resolution failure must route through post-hooks so plugins observing pre/post pairs see the terminal error", got)
 	}
-	if observer.lastPostErr == nil {
+	if observer.lastPostErr.Load() == nil {
 		t.Errorf("PostLLMHook saw no error — the bifrostErr from getProviderQueue must be passed to plugins")
+	}
+}
+
+// TestPostHookRunsForEnqueueDrop pins that when a request fails *during enqueue*
+// — not just at queue resolution — the failure is still routed through
+// RunPostLLMHooks. The pq.done / queue-full / ctx-cancelled-while-waiting
+// branches all fire after RunLLMPreHooks has already executed; without this
+// pairing, plugins that rely on pre/post symmetry (logging, accounting) leak
+// in-flight state and plugin logs are dropped on backpressure.
+//
+// We exercise the queue-full + DropExcessRequests=true branch because it's
+// the only enqueue-time failure that's deterministically reachable from a
+// test: concurrency=1 + bufferSize=0 + a hanging handler guarantees the
+// second concurrent request finds no worker and an unbuffered channel,
+// hitting the `default:` arm of the outer enqueue select.
+func TestPostHookRunsForEnqueueDrop(t *testing.T) {
+	// Block the worker indefinitely so the queue-send for a second request finds
+	// no receiver. Cleanup order matters because the worker is hung in the
+	// handler at test end: close(release) must run first so the handler returns
+	// and frees its connection, then server.Close, then bf.Shutdown. Since
+	// t.Cleanup is LIFO, register them in reverse.
+	release := make(chan struct{})
+	hit := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case hit <- struct{}{}:
+		default:
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+	}))
+
+	account := NewMockAccount()
+	// Concurrency=1 (one worker) + bufferSize=0 (unbuffered queue) so the second
+	// request reliably hits the default branch in the enqueue select.
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 0, server.URL+"/v1")
+	observer := &postHookObserverPlugin{}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:            account,
+		Logger:             NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins:         []schemas.LLMPlugin{observer},
+		DropExcessRequests: true,
+	})
+	if err != nil {
+		server.Close()
+		t.Fatalf("Init failed: %v", err)
+	}
+	// LIFO: registered last → runs first.
+	t.Cleanup(func() { bf.Shutdown() })
+	t.Cleanup(func() { server.Close() })
+	t.Cleanup(func() { close(release) })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	mkReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		}
+	}
+
+	// First request: launched in a goroutine because the handler hangs forever.
+	// We only need it to reach the worker so subsequent enqueues see no receiver.
+	go func() {
+		_, _ = bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mkReq())
+	}()
+	select {
+	case <-hit:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first request never reached the handler — cannot reliably exercise queue-full path")
+	}
+
+	// At this point the worker is parked inside the handler; the request channel
+	// is unbuffered and has no receiver. The next request must hit the queue-full
+	// drop branch in the enqueue select.
+	preBefore := atomic.LoadInt32(&observer.preCalls)
+	postBefore := atomic.LoadInt32(&observer.postCalls)
+
+	_, bifrostErr := bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mkReq())
+	if bifrostErr == nil {
+		t.Fatal("expected request-dropped error from queue-full enqueue")
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "queue is full") {
+		t.Errorf("error message: got %+v, want it to mention 'queue is full'", bifrostErr.Error)
+	}
+
+	// Pre-hook ran for the dropped request; post-hook must have run too so the
+	// pre/post pair is symmetric.
+	if got := atomic.LoadInt32(&observer.preCalls) - preBefore; got != 1 {
+		t.Fatalf("PreLLMHook calls for dropped request: got %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&observer.postCalls) - postBefore; got != 1 {
+		t.Errorf("PostLLMHook calls for dropped request: got %d, want 1 — enqueue-time failures must route through post-hooks so plugins observing pre/post pairs see the terminal error", got)
+	}
+	if observer.lastPostErr.Load() == nil {
+		t.Errorf("PostLLMHook saw no error — the queue-full bifrostErr must be passed to plugins")
 	}
 }
