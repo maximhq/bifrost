@@ -6910,25 +6910,39 @@ func (bifrost *Bifrost) releaseMCPRequest(req *schemas.BifrostMCPRequest) {
 }
 
 // getOverrideKey returns the explicit API key from a ProviderOverride stored in ctx,
-// or nil when no override key is present. Used to short-circuit key-pool selection
-// in all key-selection helpers so that UpdateAPIKey pre-hooks work for every
-// request type (chat, list-models, batch, file operations).
-func getOverrideKey(ctx *schemas.BifrostContext) *schemas.Key {
+// validated and normalised for baseProviderType, or (nil, nil) when no override key is
+// present. Used to short-circuit key-pool selection in all key-selection helpers so
+// that UpdateAPIKey pre-hooks work for every request type (chat, list-models, batch,
+// file operations).
+//
+// The override key is copied before validation so that validateKey's normalisation
+// side-effects (e.g. materialising an empty BedrockKeyConfig for IRSA-style ambient
+// auth) apply only to the returned copy, leaving the plugin-supplied original
+// untouched. This matches the contract of the parallel DirectKey path.
+func getOverrideKey(ctx *schemas.BifrostContext, baseProviderType schemas.ModelProvider) (*schemas.Key, error) {
 	if ctx == nil {
-		return nil
+		return nil, nil
 	}
 	override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride)
 	if !ok || override == nil || override.Key == nil {
-		return nil
+		return nil, nil
 	}
-	return override.Key
+	key := *override.Key
+	if err := validateKey(baseProviderType, &key); err != nil {
+		return nil, fmt.Errorf("invalid override key for provider %v: %w", baseProviderType, err)
+	}
+	return &key, nil
 }
 
 // getAllSupportedKeys retrieves all valid keys for a ListModels request.
 // allowing the provider to aggregate results from multiple keys.
 func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider) ([]schemas.Key, error) {
 	// Honor a per-request key injected by a plugin via UpdateAPIKey.
-	if overrideKey := getOverrideKey(ctx); overrideKey != nil {
+	overrideKey, err := getOverrideKey(ctx, baseProviderType)
+	if err != nil {
+		return nil, err
+	}
+	if overrideKey != nil {
 		return []schemas.Key{*overrideKey}, nil
 	}
 	// Check if key has been set in the context explicitly
@@ -6982,7 +6996,11 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 // Model filtering: if model is specified and key has model restrictions, only include if model is in list.
 func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider, model *string, isBatchOp bool) ([]schemas.Key, error) {
 	// Honor a per-request key injected by a plugin via UpdateAPIKey.
-	if overrideKey := getOverrideKey(ctx); overrideKey != nil {
+	overrideKey, err := getOverrideKey(ctx, baseProviderType)
+	if err != nil {
+		return nil, err
+	}
+	if overrideKey != nil {
 		return []schemas.Key{*overrideKey}, nil
 	}
 	// Check if key has been set in the context explicitly
@@ -7078,10 +7096,15 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // or stickiness constraint is in effect.
 func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) ([]schemas.Key, bool, error) {
 	// ProviderOverride: plugin injected a per-request key via req.UpdateAPIKey — no pool,
-	// no rotation, no validation (consistent with getAllSupportedKeys and
-	// getKeysForBatchAndFileOps). Override wins over DirectKey: a PreLLMHook sets it as
-	// a deliberate runtime decision.
-	if overrideKey := getOverrideKey(ctx); overrideKey != nil {
+	// no rotation. The key is validated/normalised against baseProviderType (matching the
+	// DirectKey path below) so provider-specific invariants like Bedrock's BedrockKeyConfig
+	// being non-nil hold even for plugin-injected keys. Override wins over DirectKey:
+	// a PreLLMHook sets it as a deliberate runtime decision.
+	overrideKey, err := getOverrideKey(ctx, baseProviderType)
+	if err != nil {
+		return nil, false, err
+	}
+	if overrideKey != nil {
 		return []schemas.Key{*overrideKey}, false, nil
 	}
 	// DirectKey: caller supplied a key directly — no pool, no rotation.
