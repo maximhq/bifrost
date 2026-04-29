@@ -1906,7 +1906,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 			var extraParams map[string]interface{}
 			var err error
 
-			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 				reqBody := gemini.ToGeminiImageGenerationRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("image generation input is not provided")
@@ -2075,7 +2075,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		}, nil
 	}
 
-	if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+	if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -2157,7 +2157,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Validate model type before processing
-	if !schemas.IsGeminiModel(deployment) && !schemas.IsAllDigitsASCII(deployment) && !schemas.IsImagenModel(deployment) {
+	if !schemas.IsGeminiModel(deployment) && !schemas.IsAllDigitsASCII(deployment) && !schemas.IsImagenModel(deployment) && !schemas.IsGemmaModel(deployment) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image edit is only supported for Gemini and Imagen models, got: %s", deployment), providerName)
 	}
 
@@ -2169,7 +2169,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			var extraParams map[string]interface{}
 			var err error
 
-			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 				reqBody := gemini.ToGeminiImageEditRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("image edit input is not provided")
@@ -2326,7 +2326,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		}, nil
 	}
 
-	if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+	if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) || schemas.IsGemmaModel(deployment) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
