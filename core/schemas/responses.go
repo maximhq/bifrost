@@ -572,6 +572,27 @@ type ResponsesMessage struct {
 	*ResponsesReasoning
 }
 
+// UnmarshalJSON normalises the "arguments" field which OpenAI returns as a plain
+// JSON string for most tool types but as a raw JSON object for some (e.g.
+// tool_search). When an object is encountered it is compact-encoded as a JSON
+// string so all downstream consumers continue to see a *string value.
+func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
+	if argVal := gjson.GetBytes(data, "arguments"); argVal.Exists() && argVal.Type == gjson.JSON {
+		normalized, err := Marshal(argVal.Raw)
+		if err != nil {
+			return err
+		}
+		data, err = sjson.SetRawBytes(data, "arguments", normalized)
+		if err != nil {
+			return err
+		}
+	}
+	if err := Unmarshal(data, m); err != nil {
+		return err
+	}
+	return nil
+}
+
 type ResponsesMessageRoleType string
 
 const (
@@ -1364,6 +1385,7 @@ const (
 	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
 	ResponsesToolTypeMemory             ResponsesToolType = "memory"
 	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
+	ResponsesToolTypeNamespace          ResponsesToolType = "namespace"
 )
 
 // normalizeResponsesToolType maps versioned/provider-specific tool type strings
@@ -1392,6 +1414,8 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 		return ResponsesToolTypeCodeInterpreter
 	case strings.HasPrefix(s, "memory") && t != ResponsesToolTypeMemory:
 		return ResponsesToolTypeMemory
+	case strings.HasPrefix(s, "namespace"):
+		return ResponsesToolTypeNamespace
 	default:
 		return t
 	}
@@ -1425,6 +1449,8 @@ type ResponsesTool struct {
 	*ResponsesToolLocalShell
 	*ResponsesToolCustom
 	*ResponsesToolWebSearchPreview
+	*ResponsesToolToolSearch
+	*ResponsesToolNamespace
 }
 
 // mergeJSONFields merges all top-level fields from src into dst using sjson,
@@ -1550,6 +1576,14 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeWebSearchPreview:
 		if t.ResponsesToolWebSearchPreview != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolWebSearchPreview)
+		}
+	case ResponsesToolTypeToolSearch:
+		if t.ResponsesToolToolSearch != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolToolSearch)
+		}
+	case ResponsesToolTypeNamespace:
+		if t.ResponsesToolNamespace != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolNamespace)
 		}
 	}
 	if err != nil {
@@ -1711,6 +1745,20 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolWebSearchPreview = &webSearchPreviewTool
+
+	case ResponsesToolTypeToolSearch:
+		var toolSearchTool ResponsesToolToolSearch
+		if err := Unmarshal(data, &toolSearchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolToolSearch = &toolSearchTool
+
+	case ResponsesToolTypeNamespace:
+		var namespaceTool ResponsesToolNamespace
+		if err := Unmarshal(data, &namespaceTool); err != nil {
+			return err
+		}
+		t.ResponsesToolNamespace = &namespaceTool
 	}
 
 	return nil
@@ -1881,9 +1929,11 @@ type ResponsesToolComputerUsePreview struct {
 
 // ResponsesToolWebSearch represents a tool web search
 type ResponsesToolWebSearch struct {
-	Filters           *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`             // Filters for the search
-	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
-	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
+	ExternalWebAccess  *bool                               `json:"external_web_access,omitempty"`
+	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"` // Filters for the search
+	SearchContentTypes []string                            `json:"search_content_types,omitempty"`
+	SearchContextSize  *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
+	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
@@ -2117,11 +2167,22 @@ type ResponsesToolWebSearchPreview struct {
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The user's location
 }
 
+// ResponsesToolToolSearch represents a Responses API tool_search tool.
+type ResponsesToolToolSearch struct {
+	Execution  *string                 `json:"execution,omitempty"`
+	Parameters *ToolFunctionParameters `json:"parameters,omitempty"`
+}
+
 // ResponsesToolWebFetch represents a web fetch tool
 type ResponsesToolWebFetch struct {
 	MaxUses          *int                           `json:"max_uses,omitempty"`
 	Filters          *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
 	MaxContentTokens *int                           `json:"max_content_tokens,omitempty"`
+}
+
+// ResponsesToolNamespace represents a namespace tool that groups related function tools.
+type ResponsesToolNamespace struct {
+	Tools []ResponsesTool `json:"tools,omitempty"`
 }
 
 // ======================================================= Streaming Structs =======================================================
@@ -2241,6 +2302,25 @@ type BifrostResponsesStreamResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// UnmarshalJSON normalises the top-level "arguments" field for streaming done
+// events where OpenAI may return a JSON object instead of a JSON string.
+func (resp *BifrostResponsesStreamResponse) UnmarshalJSON(data []byte) error {
+	if argVal := gjson.GetBytes(data, "arguments"); argVal.Exists() && argVal.Type == gjson.JSON {
+		normalized, err := Marshal(argVal.Raw)
+		if err != nil {
+			return err
+		}
+		data, err = sjson.SetRawBytes(data, "arguments", normalized)
+		if err != nil {
+			return err
+		}
+	}
+	if err := Unmarshal(data, resp); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStreamResponse {
