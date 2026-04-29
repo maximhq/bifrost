@@ -4543,3 +4543,113 @@ func TestPostHookRunsWhenPreHookNilsRequest(t *testing.T) {
 		}
 	})
 }
+
+// TestConcurrentStreamingPostHookRunnerNoChannelMessageRace exercises the
+// streaming postHookRunner closure under concurrent traffic with the race
+// detector enabled. The closure captures the worker's *ChannelMessage by
+// reference; that pointer is returned to channelMessagePool as soon as
+// tryStreamRequest picks up the stream channel from msg.ResponseStream, so a
+// later getChannelMessage call can overwrite msg.BifrostRequest (and therefore
+// msg.RequestType) while the provider goroutine is still emitting chunks and
+// invoking the closure. Reading req.RequestType inside the closure races with
+// that overwrite. This test runs many concurrent streams, each producing
+// several chunks with small artificial latency, so `go test -race` reliably
+// observes the read/write conflict if the per-attempt snapshot is dropped.
+func TestConcurrentStreamingPostHookRunnerNoChannelMessageRace(t *testing.T) {
+	// Build a long SSE body (many chunks) so each stream's provider goroutine
+	// stays alive emitting chunks long enough for *other* concurrent requests
+	// to recycle the same pooled ChannelMessage out of sync.Pool.
+	const chunksPerStream = 40
+	var sseB strings.Builder
+	for i := 0; i < chunksPerStream; i++ {
+		sseB.WriteString("data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
+			"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"," +
+			"\"content\":\"x\"},\"finish_reason\":null}]}\n\n")
+	}
+	sseB.WriteString("data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
+		"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{}," +
+		"\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3," +
+		"\"completion_tokens\":1,\"total_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n")
+	sseBody := sseB.String()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		// Flush between chunks with a small delay so each stream's provider
+		// goroutine remains active for several milliseconds, widening the
+		// window in which another request's getChannelMessage can recycle
+		// the pooled ChannelMessage and overwrite its BifrostRequest.
+		flusher, _ := w.(http.Flusher)
+		for _, line := range strings.SplitAfter(sseBody, "\n\n") {
+			if line == "" {
+				continue
+			}
+			_, _ = w.Write([]byte(line))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(500 * time.Microsecond)
+		}
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	// Multiple workers + multi-slot buffer so requests overlap and reuse
+	// pooled ChannelMessages while other streams are still emitting chunks.
+	account.AddProviderWithBaseURL(schemas.OpenAI, 4, 16, server.URL+"/v1")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		// Tiny pool forces sync.Pool to recycle the same physical
+		// *ChannelMessage across concurrent requests, which is what makes
+		// the race observable. With the default pool size (5000), 5000
+		// fresh objects mask the race entirely.
+		InitialPoolSize: 2,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	const concurrent = 64
+	var wg sync.WaitGroup
+	wg.Add(concurrent)
+	for i := 0; i < concurrent; i++ {
+		go func() {
+			defer wg.Done()
+			content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+			reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+			})
+			if bifrostErr != nil {
+				t.Errorf("ChatCompletionStreamRequest failed: %v", bifrostErr)
+				return
+			}
+			if ch == nil {
+				t.Error("expected non-nil stream channel")
+				return
+			}
+			for chunk := range ch {
+				// Each chunk's ExtraFields.RequestType must match the request
+				// type of the request that started this stream, not whatever
+				// other concurrent request happened to recycle the pooled
+				// ChannelMessage. If the snapshot is dropped, recycled writes
+				// to req.BifrostRequest race with these reads.
+				if chunk.BifrostChatResponse != nil &&
+					chunk.BifrostChatResponse.ExtraFields.RequestType != schemas.ChatCompletionStreamRequest {
+					t.Errorf("chunk RequestType: got %q, want %q",
+						chunk.BifrostChatResponse.ExtraFields.RequestType,
+						schemas.ChatCompletionStreamRequest)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
