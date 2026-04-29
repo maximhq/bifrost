@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -45,8 +44,6 @@ var vertexClientPool sync.Map
 var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
 
 var vertexProjectsPathRe = regexp.MustCompile(`/projects/[^/]+`)
-
-const maxStreamPassthroughCaptureBytes = 1024 * 1024
 
 // vertexBodyProjectsRe matches projects/{project} in body JSON values,
 // where the path may appear as "projects/X (after a JSON quote) or /projects/X (mid-path).
@@ -2861,20 +2858,14 @@ func (provider *VertexProvider) Passthrough(
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
-	originalHeaders := make(map[string]string, len(headers))
-	maps.Copy(originalHeaders, headers)
-	for k := range headers {
-		if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
-			delete(headers, k)
-		}
-	}
+
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
 		Body:       body,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
-			ProviderResponseHeaders: originalHeaders,
+			ProviderResponseHeaders: headers,
 		},
 	}
 
@@ -3044,8 +3035,6 @@ func (provider *VertexProvider) PassthroughStream(
 		defer stopCancellation()
 		streamStart := time.Now()
 
-		fullResponseBody := make([]byte, 0, maxStreamPassthroughCaptureBytes)
-		fullResponseBodyTruncated := false
 		terminalDetector := &providerUtils.StreamTerminalDetector{}
 		buf := make([]byte, 4096)
 		for {
@@ -3053,31 +3042,14 @@ func (provider *VertexProvider) PassthroughStream(
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
-				if !fullResponseBodyTruncated {
-					remaining := maxStreamPassthroughCaptureBytes - len(fullResponseBody)
-					if remaining > 0 {
-						if n <= remaining {
-							fullResponseBody = append(fullResponseBody, chunk...)
-						} else {
-							fullResponseBody = append(fullResponseBody, chunk[:remaining]...)
-							fullResponseBodyTruncated = true
-						}
-					} else {
-						fullResponseBodyTruncated = true
-					}
-				}
-				select {
-				case ch <- &schemas.BifrostStreamChunk{
-					BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
+					PassthroughResponse: &schemas.BifrostPassthroughResponse{
 						StatusCode:  statusCode,
 						Headers:     headers,
 						Body:        chunk,
 						ExtraFields: extraFields,
 					},
-				}:
-				case <-ctx.Done():
-					return
-				}
+				}, ch, postHookSpanFinalizer)
 
 				// Vertex streamGenerateContent passthrough can emit terminal markers
 				// (finishReason) before the underlying HTTP body is closed.
@@ -3085,38 +3057,26 @@ func (provider *VertexProvider) PassthroughStream(
 				if terminalDetector.ObserveChunk(chunk) {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					extraFields.Latency = time.Since(streamStart).Milliseconds()
-					var capturedBody []byte
-					if !fullResponseBodyTruncated {
-						capturedBody = append([]byte(nil), fullResponseBody...)
-					}
-					finalResp := &schemas.BifrostResponse{
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 						PassthroughResponse: &schemas.BifrostPassthroughResponse{
 							StatusCode:  statusCode,
 							Headers:     headers,
-							Body:        capturedBody,
 							ExtraFields: extraFields,
 						},
-					}
-					postHookRunner(ctx, finalResp, nil)
+					}, ch, postHookSpanFinalizer)
 					return
 				}
 			}
 			if readErr == io.EOF {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				extraFields.Latency = time.Since(streamStart).Milliseconds()
-				var capturedBody []byte
-				if !fullResponseBodyTruncated {
-					capturedBody = append([]byte(nil), fullResponseBody...)
-				}
-				finalResp := &schemas.BifrostResponse{
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{
 						StatusCode:  statusCode,
 						Headers:     headers,
-						Body:        capturedBody,
 						ExtraFields: extraFields,
 					},
-				}
-				postHookRunner(ctx, finalResp, nil)
+				}, ch, postHookSpanFinalizer)
 				return
 			}
 			if readErr != nil {

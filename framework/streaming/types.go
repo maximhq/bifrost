@@ -17,6 +17,7 @@ const (
 	StreamTypeImage         StreamType = "image.generation"
 	StreamTypeTranscription StreamType = "audio.transcription"
 	StreamTypeResponses     StreamType = "responses"
+	StreamTypePassthrough   StreamType = "passthrough"
 )
 
 // AccumulatedData contains the accumulated data for a stream
@@ -39,6 +40,7 @@ type AccumulatedData struct {
 	AudioOutput           *schemas.BifrostSpeechResponse
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
 	ImageGenerationOutput *schemas.BifrostImageGenerationResponse
+	PassthroughOutput     *schemas.BifrostPassthroughResponse // For passthrough streaming
 	FinishReason          *string
 	LogProbs              *schemas.BifrostLogProbs
 	RawResponse           *string
@@ -139,6 +141,11 @@ type StreamAccumulator struct {
 
 	// TerminalErrorChunkIndex holds the reserved chunk index for the terminal error (-1 = unset); reused across plugin calls for correct dedup.
 	TerminalErrorChunkIndex int
+
+	// Passthrough streaming accumulation
+	PassthroughBody []byte // Accumulated body bytes from passthrough streaming chunks
+	PassthroughStatusCode int // Status code from passthrough response
+	PassthroughHeaders map[string]string // Headers from passthrough response
 
 	IsComplete     bool
 	FinalTimestamp time.Time

@@ -29,6 +29,7 @@ type StreamAccumulatorResult struct {
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
 	ImageGenerationOutput *BifrostImageGenerationResponse // For image generation streaming
+	PassthroughOutput     *BifrostPassthroughResponse     // For passthrough streaming
 	FinishReason          *string                         // Finish reason
 	RawResponse           *string                         // Raw response
 	RawRequest            interface{}                     // Raw request

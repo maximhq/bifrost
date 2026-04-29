@@ -401,6 +401,7 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest
 	// Edit images/ Image variation requests will be added here
 	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest || requestType == schemas.ImageEditStreamRequest
+	isPassthroughStreaming := requestType == schemas.PassthroughStreamRequest
 
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
@@ -419,6 +420,9 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	} else if isImageStreaming {
 		// Handle image streaming
 		return a.processImageStreamingResponse(ctx, result, bifrostErr)
+	} else if isPassthroughStreaming {
+		// Handle passthrough streaming with raw body accumulation
+		return a.processPassthroughStreamingResponse(ctx, result, bifrostErr)
 	}
 	return nil, fmt.Errorf("request type missing/invalid for accumulator: %s", requestType)
 }
