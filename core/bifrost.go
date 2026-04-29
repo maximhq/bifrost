@@ -4650,12 +4650,8 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:            req.RequestType,
-			Provider:               origProvider,
-			OriginalModelRequested: model,
-		}
-		return nil, bifrostErr
+		bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
+		return bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, origProvider, model, bifrostErr)
 	}
 
 	// Provider and model come from the request after hook rewrites.
@@ -4998,10 +4994,13 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:            req.RequestType,
-			Provider:               origProvider,
-			OriginalModelRequested: model,
+		bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
+		resp, finalErr := bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, origProvider, model, bifrostErr)
+		if finalErr != nil {
+			return nil, finalErr
+		}
+		if resp != nil {
+			return newBifrostMessageChan(resp), nil
 		}
 		return nil, bifrostErr
 	}

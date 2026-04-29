@@ -3671,7 +3671,9 @@ func (p *fallbackOverridePlugin) Cleanup() error  { return nil }
 func (p *fallbackOverridePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 	if idx > 0 {
-		req.UpdateProvider(schemas.OpenAI) //nolint:errcheck
+		if err := req.UpdateProvider(schemas.OpenAI); err != nil {
+			return nil, nil, err
+		}
 		req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.fallbackKey)})
 		req.UpdateProviderBaseURL(p.fallbackBaseURL)
 	}
@@ -4426,4 +4428,118 @@ func TestPostHookRunsForEnqueueDrop(t *testing.T) {
 	if observer.lastPostErr.Load() == nil {
 		t.Errorf("PostLLMHook saw no error — the queue-full bifrostErr must be passed to plugins")
 	}
+}
+
+// nilRequestPlugin nils out the BifrostRequest in PreLLMHook to drive the
+// "preReq == nil after plugin hooks" branch of tryRequest/tryStreamRequest.
+// It also records PostLLMHook invocations so a test can pin that the
+// nil-request error is routed through the plugin pipeline rather than
+// returned directly to the caller.
+type nilRequestPlugin struct {
+	preCalls    int32
+	postCalls   int32
+	lastPostErr atomic.Pointer[schemas.BifrostError]
+}
+
+func (p *nilRequestPlugin) GetName() string { return "nil-request-test-plugin" }
+func (p *nilRequestPlugin) Cleanup() error  { return nil }
+func (p *nilRequestPlugin) PreLLMHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	atomic.AddInt32(&p.preCalls, 1)
+	return nil, nil, nil
+}
+func (p *nilRequestPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	atomic.AddInt32(&p.postCalls, 1)
+	p.lastPostErr.Store(err)
+	return resp, err, nil
+}
+
+// TestPostHookRunsWhenPreHookNilsRequest pins that when a pre-hook returns
+// (nil, nil, nil) — leaving preReq nil after the plugin pipeline — the
+// resulting "request after plugin hooks cannot be nil" error is still routed
+// through RunPostLLMHooks, matching every other terminal error path in
+// tryRequest/tryStreamRequest. Without this routing, plugins that rely on
+// pre/post symmetry (logging, accounting, request-state cleanup) silently
+// leak in-flight state when a pre-hook nils the request.
+func TestPostHookRunsWhenPreHookNilsRequest(t *testing.T) {
+	t.Run("ChatCompletion", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 1, 10)
+		niller := &nilRequestPlugin{}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{niller},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		_, bifrostErr := bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr == nil {
+			t.Fatal("expected nil-preReq error after pre-hook nilled the request")
+		}
+		if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "cannot be nil") {
+			t.Errorf("error message: got %+v, want it to mention nil request after plugin hooks", bifrostErr.Error)
+		}
+		if got := atomic.LoadInt32(&niller.preCalls); got != 1 {
+			t.Fatalf("PreLLMHook calls: got %d, want 1", got)
+		}
+		if got := atomic.LoadInt32(&niller.postCalls); got != 1 {
+			t.Errorf("PostLLMHook calls: got %d, want 1 — nil-preReq error must route through post-hooks so plugins observing pre/post pairs see the terminal error", got)
+		}
+		if niller.lastPostErr.Load() == nil {
+			t.Errorf("PostLLMHook saw no error — the nil-preReq bifrostErr must be passed to plugins")
+		}
+	})
+
+	t.Run("ChatCompletionStream", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 1, 10)
+		niller := &nilRequestPlugin{}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{niller},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		ch, bifrostErr := bf.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		// The pre-hook nils the request so the streaming path returns the
+		// "cannot be nil" error. A post-hook may convert the error into a
+		// response, but the contract this test pins is post-hook invocation,
+		// not what the post-hook returns.
+		if bifrostErr == nil && ch == nil {
+			t.Fatal("expected either an error or a stream channel from streaming path")
+		}
+		if bifrostErr != nil && (bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "cannot be nil")) {
+			t.Errorf("error message: got %+v, want it to mention nil request after plugin hooks", bifrostErr.Error)
+		}
+		if got := atomic.LoadInt32(&niller.preCalls); got != 1 {
+			t.Fatalf("PreLLMHook calls: got %d, want 1", got)
+		}
+		if got := atomic.LoadInt32(&niller.postCalls); got != 1 {
+			t.Errorf("PostLLMHook calls: got %d, want 1 — nil-preReq error in streaming path must route through post-hooks", got)
+		}
+		if niller.lastPostErr.Load() == nil {
+			t.Errorf("PostLLMHook saw no error — the nil-preReq bifrostErr must be passed to plugins")
+		}
+	})
 }
