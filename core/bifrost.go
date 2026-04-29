@@ -5357,6 +5357,18 @@ func executeRequestWithRetries[T any](
 		} else {
 			// Populate LLM response attributes for non-streaming responses
 			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
+				// Populate ExtraFields with provider/model/requestType before cost
+				// calculation, because the per-request worker only calls PopulateExtraFields
+				// after executeRequestWithRetries returns (line ~5802).  Without this,
+				// resp.GetExtraFields().Provider is empty and CalculateCost always returns 0.
+				// This is currently done for showing correct OTEL cost calculations. Will check if there is a better way to get this done
+				resolvedModelUsed := model
+				if req != nil {
+					if _, rm, _ := req.GetRequestFields(); rm != "" {
+						resolvedModelUsed = rm
+					}
+				}
+				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
 			}
 

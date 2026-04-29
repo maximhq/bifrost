@@ -308,6 +308,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 				Name:                 p.Data.OutputMessage.Name,
 			}
 		}
+		usage := p.Data.TokenUsage
+		if usage == nil && p.Data.Cost != nil && *p.Data.Cost > 0 {
+			usage = &schemas.BifrostLLMUsage{
+				Cost: &schemas.BifrostCost{TotalCost: *p.Data.Cost},
+			}
+		}
 		chatResp := &schemas.BifrostChatResponse{
 			ID:      p.RequestID,
 			Object:  "chat.completion",
@@ -323,7 +329,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 					},
 				},
 			},
-			Usage: p.Data.TokenUsage,
+			Usage: usage,
 		}
 
 		resp.ChatResponse = chatResp
