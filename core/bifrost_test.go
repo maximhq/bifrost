@@ -3969,3 +3969,112 @@ func TestResetBifrostRequest_ClearsAllFields(t *testing.T) {
 	}
 }
 
+// TestGetOverrideKey_NilPaths pins the contract that getOverrideKey returns
+// (nil, nil) — never a non-nil error — when the context is nil, when no
+// ProviderOverride is set, and when an override exists but has no Key. The
+// upstream key-pool selectors fall back to normal pool-based selection when
+// these paths return nil; if any of them ever returned a non-nil err for
+// "no override," every plugin-less request would fail.
+func TestGetOverrideKey_NilPaths(t *testing.T) {
+	// nil context
+	if k, err := getOverrideKey(nil, schemas.OpenAI); k != nil || err != nil {
+		t.Errorf("nil ctx: got (%v, %v), want (nil, nil)", k, err)
+	}
+
+	// context without any override
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if k, err := getOverrideKey(ctx, schemas.OpenAI); k != nil || err != nil {
+		t.Errorf("ctx without override: got (%v, %v), want (nil, nil)", k, err)
+	}
+
+	// context with ProviderOverride present but no Key (BaseURL-only override)
+	ctxBaseURLOnly := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctxBaseURLOnly.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		BaseURL: "https://eu.example",
+	})
+	if k, err := getOverrideKey(ctxBaseURLOnly, schemas.OpenAI); k != nil || err != nil {
+		t.Errorf("ctx with BaseURL-only override: got (%v, %v), want (nil, nil)", k, err)
+	}
+}
+
+// TestGetOverrideKey_ValidatesKey pins the contract that getOverrideKey runs
+// validateKey on the override key before returning, surfacing per-provider
+// invariant failures (e.g. Vertex's required VertexKeyConfig) as errors rather
+// than letting an unvalidated key slip through to the provider layer. Without
+// this, a plugin that injects a malformed key for a strict provider would
+// produce a downstream nil-deref at request time.
+func TestGetOverrideKey_ValidatesKey(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// Vertex requires VertexKeyConfig; an override key without it is invalid.
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		Key: &schemas.Key{ID: "missing-vertex-config"},
+	})
+	k, err := getOverrideKey(ctx, schemas.Vertex)
+	if err == nil {
+		t.Fatalf("expected validateKey to reject Vertex override without VertexKeyConfig, got key=%v err=nil", k)
+	}
+	if k != nil {
+		t.Errorf("expected nil key on validation failure, got %v", k)
+	}
+}
+
+// TestGetOverrideKey_DoesNotMutateCallerKey pins that validateKey's
+// normalisation side-effects (e.g. materialising an empty BedrockKeyConfig) are
+// applied to the returned copy only — the plugin's original Key struct must be
+// untouched, since it may be reused across requests.
+func TestGetOverrideKey_DoesNotMutateCallerKey(t *testing.T) {
+	original := &schemas.Key{ID: "bedrock-irsa"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		Key: original,
+	})
+
+	k, err := getOverrideKey(ctx, schemas.Bedrock)
+	if err != nil {
+		t.Fatalf("Bedrock override should validate (BedrockKeyConfig is optional): %v", err)
+	}
+	if k == nil {
+		t.Fatal("expected non-nil validated key")
+	}
+	// Returned copy should have BedrockKeyConfig materialised.
+	if k.BedrockKeyConfig == nil {
+		t.Errorf("expected validateKey to materialise BedrockKeyConfig on returned copy")
+	}
+	// Original must remain untouched so the plugin can reuse it across requests.
+	if original.BedrockKeyConfig != nil {
+		t.Errorf("validateKey mutated the caller's original Key — getOverrideKey must operate on a copy")
+	}
+}
+
+// TestBifrostRequest_Clone_ProviderOverrideIndependence pins that Clone produces
+// a request whose ProviderOverride pointer is distinct from the original's, so
+// prepareFallbackRequest's `clone.ProviderOverride = nil` cannot accidentally
+// nil the original's override mid-flight.
+func TestBifrostRequest_Clone_ProviderOverrideIndependence(t *testing.T) {
+	original := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		ProviderOverride: &schemas.ProviderOverride{
+			BaseURL:          "https://eu.example",
+			BaseProviderType: schemas.OpenAI,
+		},
+	}
+
+	clone := original.Clone()
+
+	if clone.ProviderOverride == original.ProviderOverride {
+		t.Fatal("Clone returned a request whose ProviderOverride is the same pointer as the original — fallbacks would corrupt the primary request's override")
+	}
+	if clone.ProviderOverride == nil {
+		t.Fatal("Clone dropped ProviderOverride entirely")
+	}
+	if clone.ProviderOverride.BaseURL != original.ProviderOverride.BaseURL {
+		t.Errorf("BaseURL: clone has %q, original %q — values must be copied by value", clone.ProviderOverride.BaseURL, original.ProviderOverride.BaseURL)
+	}
+
+	// Mutating the clone must not affect the original.
+	clone.ProviderOverride.BaseURL = "https://mutated"
+	if original.ProviderOverride.BaseURL == "https://mutated" {
+		t.Errorf("mutation on clone leaked into original — Clone must deep-copy ProviderOverride")
+	}
+}
