@@ -26,7 +26,7 @@ export default function SecurityView() {
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const showPasswordSection =
-		!IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type === "password");
+		!IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
