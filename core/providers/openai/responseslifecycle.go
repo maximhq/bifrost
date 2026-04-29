@@ -64,6 +64,7 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 	key schemas.Key,
 	body []byte,
 ) ([]byte, int64, map[string]string, *schemas.BifrostError) {
+	effectiveBody := body
 	fullURL := provider.buildRequestURL(ctx, relativePath, requestType)
 	if rawQuery != "" {
 		fullURL = fullURL + "?" + rawQuery
@@ -89,7 +90,8 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 		if len(body) > 0 {
 			req.SetBody(body)
 		} else if method == http.MethodPost {
-			req.SetBodyString("{}")
+			effectiveBody = []byte("{}")
+			req.SetBody(effectiveBody)
 		}
 	}
 
@@ -103,7 +105,7 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, 0, nil, providerUtils.EnrichError(ctx, bifrostErr, body, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, 0, nil, providerUtils.EnrichError(ctx, bifrostErr, effectiveBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -111,13 +113,13 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, 0, providerResponseHeaders, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), body, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, 0, providerResponseHeaders, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), effectiveBody, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	bodyBytes, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, provider.GetProviderKey(), provider.logger)
 	respOwned = false
 	if finalErr != nil {
-		return nil, 0, providerResponseHeaders, providerUtils.EnrichError(ctx, finalErr, body, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, 0, providerResponseHeaders, providerUtils.EnrichError(ctx, finalErr, effectiveBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 	if lpResult != nil {
 		return nil, lpResult.Latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(
@@ -180,7 +182,10 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 		Deleted bool   `json:"deleted"`
 	}
 	if err := sonic.Unmarshal(bodyBytes, &wire); err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+		sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+		opErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		return nil, providerUtils.EnrichError(ctx, opErr, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
 	return &schemas.BifrostResponsesDeleteResponse{
 		ID:      wire.ID,
@@ -247,7 +252,10 @@ func (provider *OpenAIProvider) ResponsesInputItems(ctx *schemas.BifrostContext,
 		LastID  string                     `json:"last_id"`
 	}
 	if err := sonic.Unmarshal(bodyBytes, &wire); err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+		sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+		opErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		return nil, providerUtils.EnrichError(ctx, opErr, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
 	return &schemas.BifrostResponsesInputItemsResponse{
 		Object:  wire.Object,
