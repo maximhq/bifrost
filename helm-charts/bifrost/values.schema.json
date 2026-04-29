@@ -263,41 +263,58 @@
             },
             "initialPoolSize": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "description": "Initial size of the connection pool",
+              "default": 300
             },
             "allowedOrigins": {
               "type": "array",
-              "description": "CORS allowed origins (supports \"*\" or URI strings)",
               "items": {
-                "oneOf": [
+                "anyOf": [
                   {
                     "type": "string",
                     "const": "*"
                   },
                   {
                     "type": "string",
-                    "format": "uri",
-                    "not": { "const": "*" }
+                    "format": "uri"
                   }
                 ]
-              }
+              },
+              "description": "CORS allowed origins (supports \"*\" or URI strings)"
             },
             "enableLogging": {
               "type": "boolean",
               "description": "Enable request/response logging"
             },
             "disableContentLogging": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Disable logging of sensitive content (inputs, outputs, embeddings, etc.)"
+            },
+            "allowPerRequestContentStorageOverride": {
+              "type": "boolean",
+              "description": "Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key, and to opt in to raw-byte persistence in logs via x-bf-store-raw-request-response. When false (default), the global disable_content_logging setting is authoritative and per-request storage overrides are ignored. Does not control sending raw bytes back to callers.",
+              "default": false
+            },
+            "allowPerRequestRawOverride": {
+              "type": "boolean",
+              "description": "Allow individual requests to send raw provider request/response bytes back to the caller via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), the provider-level send_back_raw_request/response settings are authoritative and per-request overrides are ignored. Does not affect raw-byte persistence in logs.",
+              "default": false
             },
             "disableDbPingsInHealth": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Disable DB pings in health check",
+              "default": false
             },
             "logRetentionDays": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "description": "Number of days to retain logs",
+              "default": 365
             },
             "enforceGovernanceHeader": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Deprecated: use enforceAuthOnInference"
             },
             "allowDirectKeys": {
               "type": "boolean",
@@ -356,7 +373,8 @@
                   },
                   "description": "Headers to always block from being forwarded"
                 }
-              }
+              },
+              "additionalProperties": false
             },
             "enforceAuthOnInference": {
               "type": "boolean",
@@ -376,12 +394,14 @@
             "mcpAgentDepth": {
               "type": "integer",
               "minimum": 1,
-              "description": "DEPRECATED: Maximum depth for MCP agent mode tool execution. Use bifrost.mcp.toolManagerConfig.maxAgentDepth."
+              "description": "DEPRECATED: Maximum depth for MCP agent mode tool execution. Use bifrost.mcp.toolManagerConfig.maxAgentDepth.",
+              "default": 10
             },
             "mcpToolExecutionTimeout": {
               "type": "integer",
               "minimum": 1,
-              "description": "DEPRECATED: Timeout for individual MCP tool execution in seconds. Use bifrost.mcp.toolManagerConfig.toolExecutionTimeout."
+              "description": "DEPRECATED: Timeout for individual MCP tool execution in seconds. Use bifrost.mcp.toolManagerConfig.toolExecutionTimeout.",
+              "default": 30
             },
             "mcpCodeModeBindingLevel": {
               "type": "string",
@@ -395,43 +415,69 @@
             },
             "asyncJobResultTTL": {
               "type": "integer",
-              "minimum": 1,
-              "description": "Default TTL for async job results in seconds"
+              "description": "Default TTL for async job results in seconds (default: 3600 = 1 hour)",
+              "default": 3600,
+              "minimum": 1
             },
             "requiredHeaders": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "description": "Headers that must be present on every request"
+              "description": "Headers that must be present on every request. Requests missing any of these headers are rejected with 400. Case-insensitive matching."
             },
             "loggingHeaders": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "description": "Headers to capture in log metadata"
+              "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
             },
             "whitelistedRoutes": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "description": "Routes that bypass auth middleware"
+              "description": "Routes that bypass auth middleware. Requests to these exact paths skip authentication checks."
             },
             "hideDeletedVirtualKeysInFilters": {
               "type": "boolean",
-              "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data"
+              "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
+              "default": false
             },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
-              "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject."
+              "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
+              "default": false
             },
             "routingChainMaxDepth": {
               "type": "integer",
               "minimum": 1,
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
+            },
+            "mcpExternalBaseUrl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "envVar": {
+                      "type": "string"
+                    },
+                    "fromEnv": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy (e.g. \"https://api.example.com\"). Supports env var syntax: \"env.MY_VAR\"."
             }
           },
           "additionalProperties": false
@@ -444,15 +490,20 @@
               "properties": {
                 "pricingUrl": {
                   "type": "string",
-                  "description": "Custom pricing URL (optional, can be empty)"
+                  "description": "Custom pricing URL (optional, can be empty)",
+                  "format": "uri"
                 },
                 "pricingSyncInterval": {
                   "type": "integer",
+                  "description": "Pricing sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+                  "default": 86400,
                   "minimum": 3600
                 }
-              }
+              },
+              "additionalProperties": false
             }
-          }
+          },
+          "additionalProperties": false
         },
         "providers": {
           "type": "object",
@@ -488,18 +539,23 @@
               "type": "array",
               "items": {
                 "$ref": "#/$defs/mcpClientConfig"
-              }
+              },
+              "description": "MCP client configurations"
             },
             "toolManagerConfig": {
               "type": "object",
               "properties": {
                 "toolExecutionTimeout": {
                   "type": "integer",
-                  "minimum": 1
+                  "description": "Tool execution timeout in seconds",
+                  "minimum": 1,
+                  "default": 30
                 },
                 "maxAgentDepth": {
                   "type": "integer",
-                  "minimum": 1
+                  "description": "Max agent depth",
+                  "minimum": 1,
+                  "default": 10
                 },
                 "codeModeBindingLevel": {
                   "type": "string",
@@ -508,14 +564,22 @@
                 },
                 "disableAutoToolInject": {
                   "type": "boolean",
-                  "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified.",
+                  "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
                   "default": false
                 }
               }
             },
             "toolSyncInterval": {
-              "type": "string",
-              "description": "Global default interval for syncing tools from MCP servers (Go duration string, e.g. '10m', '1h', '0s' to use runtime default)"
+              "description": "Global default interval for syncing tools from MCP servers (Go duration string, e.g. '10m', '1h', '0s' to use runtime default). Legacy numeric nanoseconds are also supported for backward compatibility.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(?:\\d+(?:\\.\\d+)?(?:ns|us|\u00b5s|ms|s|m|h))+$"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
             },
             "toolGroups": {
               "type": "array",
@@ -738,7 +802,7 @@
                       "oneOf": [
                         {
                           "type": "string",
-                          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$"
                         },
                         {
                           "type": "integer",
@@ -1496,10 +1560,12 @@
                     "timeoutSeconds",
                     "successThreshold",
                     "failureThreshold"
-                  ]
+                  ],
+                  "additionalProperties": false
                 }
               },
-              "required": ["port", "config"]
+              "required": ["port", "config"],
+              "additionalProperties": false
             },
             "grpc": {
               "type": "object",
@@ -1543,6 +1609,16 @@
                   "type": "string",
                   "description": "Service name for discovery backends (required for consul/etcd/udp; used as default for mdns)"
                 },
+                "bindPort": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Port to bind for cluster communication"
+                },
+                "dialTimeout": {
+                  "type": "string",
+                  "description": "Timeout for discovery dial operations as a Go duration string (e.g. '5s', '1m')"
+                },
                 "allowedAddressSpace": {
                   "type": "array",
                   "items": {
@@ -1583,7 +1659,8 @@
                   "description": "Etcd endpoints for service discovery"
                 },
                 "mdnsService": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "mDNS service name for local network discovery"
                 }
               },
               "allOf": [
@@ -1639,6 +1716,8 @@
               "description": "Provider-specific configuration"
             }
           },
+          "required": ["enabled"],
+          "additionalProperties": false,
           "allOf": [
             {
               "if": {
@@ -1680,13 +1759,19 @@
                         "description": "JWT audience for validation (optional)"
                       },
                       "userIdField": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "JWT claim field for user ID (default: 'sub')",
+                        "default": "sub"
                       },
                       "teamIdsField": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "JWT claim field for team IDs (default: 'groups')",
+                        "default": "groups"
                       },
                       "rolesField": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "JWT claim field for roles (default: 'roles')",
+                        "default": "roles"
                       }
                     },
                     "required": [
@@ -1694,7 +1779,8 @@
                       "clientId",
                       "clientSecret",
                       "apiToken"
-                    ]
+                    ],
+                    "additionalProperties": false
                   }
                 }
               }
@@ -1731,7 +1817,9 @@
                       },
                       "cloud": {
                         "type": "string",
-                        "enum": ["commercial", "gcc-high", "dod"]
+                        "enum": ["commercial", "gcc-high", "dod"],
+                        "default": "commercial",
+                        "description": "Cloud environment: 'commercial' (default), 'gcc-high' for US Government GCC High, or 'dod' for Department of Defense"
                       },
                       "audience": {
                         "type": "string",
@@ -1743,16 +1831,23 @@
                         "description": "App ID URI for v1.0 tokens (e.g., api://{clientId})"
                       },
                       "userIdField": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "JWT claim field for user ID (default: 'oid')",
+                        "default": "oid"
                       },
                       "teamIdsField": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "JWT claim field for team IDs (default: 'groups')",
+                        "default": "groups"
                       },
                       "rolesField": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "JWT claim field for roles (default: 'roles')",
+                        "default": "roles"
                       }
                     },
-                    "required": ["tenantId", "clientId"]
+                    "required": ["tenantId", "clientId"],
+                    "additionalProperties": false
                   }
                 }
               }
@@ -2167,9 +2262,11 @@
                   "description": "Maximum lifetime of a connection in seconds",
                   "default": 7200
                 }
-              }
+              },
+              "additionalProperties": false
             }
-          }
+          },
+          "additionalProperties": false
         }
       }
     },
@@ -2480,7 +2577,7 @@
                 },
                 "timeout": {
                   "type": "string",
-                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
                   "description": "Timeout for Weaviate operations (e.g., '5s')"
                 },
                 "className": {
@@ -2596,32 +2693,32 @@
                 },
                 "connMaxLifetime": {
                   "type": "string",
-                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
                   "description": "Connection maximum lifetime (e.g., '30m')"
                 },
                 "connMaxIdleTime": {
                   "type": "string",
-                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
                   "description": "Connection maximum idle time (e.g., '5m')"
                 },
                 "dialTimeout": {
                   "type": "string",
-                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
                   "description": "Timeout for socket connection (e.g., '5s')"
                 },
                 "readTimeout": {
                   "type": "string",
-                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
                   "description": "Timeout for socket reads (e.g., '3s')"
                 },
                 "writeTimeout": {
                   "type": "string",
-                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
                   "description": "Timeout for socket writes (e.g., '3s')"
                 },
                 "contextTimeout": {
                   "type": "string",
-                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
                   "description": "Timeout for Redis/Valkey operations (e.g., '10s')"
                 },
                 "existingSecret": {
@@ -2823,7 +2920,8 @@
         "passwordKey": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "pluginBase": {
       "type": "object",
@@ -3192,11 +3290,13 @@
         },
         "retry_backoff_initial_ms": {
           "type": "integer",
-          "minimum": 100
+          "minimum": 100,
+          "description": "Initial retry backoff in milliseconds"
         },
         "retry_backoff_max_ms": {
           "type": "integer",
-          "minimum": 100
+          "minimum": 100,
+          "description": "Maximum retry backoff in milliseconds"
         },
         "insecure_skip_verify": {
           "type": "boolean",
@@ -3224,10 +3324,13 @@
         },
         "beta_header_overrides": {
           "type": "object",
-          "additionalProperties": { "type": "boolean" },
-          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes, values are true (supported) or false (unsupported)."
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         }
-      }
+      },
+      "additionalProperties": false
     },
     "concurrencyConfig": {
       "type": "object",
@@ -3243,7 +3346,8 @@
           "description": "Buffer size for requests"
         }
       },
-      "required": ["concurrency", "buffer_size"]
+      "required": ["concurrency", "buffer_size"],
+      "additionalProperties": false
     },
     "proxyConfig": {
       "type": "object",
@@ -3255,17 +3359,15 @@
           "description": "Type of proxy to use"
         },
         "url": {
-          "anyOf": [
+          "oneOf": [
             {
               "type": "string",
-              "pattern": "^env\\.[A-Za-z0-9_]+$"
+              "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
             },
             {
               "type": "string",
               "format": "uri",
-              "not": {
-                "pattern": "^env\\.[A-Za-z0-9_]+$"
-              }
+              "not": { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
             }
           ],
           "description": "URL of the proxy server (supports env.VAR_NAME or a literal URI)"
@@ -3283,7 +3385,8 @@
           "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, supports env.VAR_NAME)"
         }
       },
-      "required": ["type"]
+      "required": ["type"],
+      "additionalProperties": false
     },
     "mcpClientConfig": {
       "type": "object",
@@ -3512,7 +3615,7 @@
                 }
               }
             },
-            "anyOf": [
+            "oneOf": [
               {
                 "required": ["mcpClientId"]
               },
