@@ -4,9 +4,16 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.8
+**Latest Version:** 2.1.9
 
 ## Changelog
+
+### 2.1.9
+
+- Added Kubernetes pod-discovery RBAC templates for cluster discovery:
+  - Added `templates/rbac.yaml` to render a namespaced `Role`/`RoleBinding` for pod `get/list/watch`.
+  - Added `rbac.podDiscovery.enabled` to `values.yaml` and `values.schema.json` for controlled enablement (defaults to `true`).
+  - RBAC resources render only when `rbac.podDiscovery.enabled`, `bifrost.cluster.enabled`, and `bifrost.cluster.discovery.enabled` are true, with discovery `type: kubernetes`.
 
 ### 2.1.8
 

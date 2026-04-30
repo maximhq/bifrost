@@ -171,11 +171,13 @@ function ComboboxInput({
 function ComboboxContent({
 	className,
 	children,
+	noPortalForContent,
 	...props
 }: {
 	className?: string;
 	children?: React.ReactNode;
 	anchor?: React.RefObject<HTMLElement | null>;
+	noPortalForContent?: boolean;
 	[key: string]: any;
 }) {
 	const { filter } = useComboboxContext();
@@ -185,6 +187,7 @@ function ComboboxContent({
 			className={cn("w-[var(--radix-popover-trigger-width)] p-0", className)}
 			align="start"
 			sideOffset={4}
+			noPortal={noPortalForContent}
 			onOpenAutoFocus={(e) => e.preventDefault()}
 			{...props}
 		>
@@ -306,7 +309,7 @@ interface ComboboxSelectMultiProps extends ComboboxSelectBaseProps {
 	onValueChange?: (value: string[]) => void;
 }
 
-type ComboboxSelectProps = ComboboxSelectSingleProps | ComboboxSelectMultiProps;
+type ComboboxSelectProps = (ComboboxSelectSingleProps | ComboboxSelectMultiProps) & { noPortal?: boolean };
 
 function ComboboxSelect(props: ComboboxSelectProps) {
 	const {
@@ -316,6 +319,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		disableSearch = false,
 		className,
 		emptyMessage = "No results found.",
+		noPortal
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -379,7 +383,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						<ChevronDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
 					</Button>
 				</PopoverTrigger>
-				<PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start" sideOffset={1}>
+				<PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start" sideOffset={1} noPortal={noPortal}>
 					<CommandPrimitive filter={() => 1}>
 						{!disableSearch && (
 							<div className="flex items-center border-b px-3">
@@ -465,7 +469,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					</div>
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start" sideOffset={4}>
+			<PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start" sideOffset={4} noPortal={noPortal}>
 				<CommandPrimitive filter={() => 1}>
 					{!disableSearch && (
 						<div className="flex items-center border-b px-3">
@@ -514,7 +518,8 @@ export {
 	ComboboxLabel,
 	ComboboxList,
 	ComboboxSelect,
-	ComboboxSeparator,
+	ComboboxSeparator
 };
 
 export type { ComboboxSelectOption, ComboboxSelectProps };
+

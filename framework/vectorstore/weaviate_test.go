@@ -48,7 +48,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		Scheme:  scheme,
 		Host:    host,
 		APIKey:  schemas.NewEnvVar("env.WEAVIATE_API_KEY"),
-		Timeout: timeout,
+		Timeout: schemas.Duration(timeout),
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)

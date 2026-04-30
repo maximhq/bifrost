@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -14,6 +15,7 @@ import {
   useUpdateCoreConfigMutation,
 } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
+import { EnvVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -57,6 +59,10 @@ export default function MCPView() {
 
   const hasChanges = useMemo(() => {
     if (!config) return false;
+    const externalBaseURLChanged =
+      (localConfig.mcp_external_base_url?.value ?? "") !== (config.mcp_external_base_url?.value ?? "") ||
+      (localConfig.mcp_external_base_url?.env_var ?? "") !== (config.mcp_external_base_url?.env_var ?? "") ||
+      (localConfig.mcp_external_base_url?.from_env ?? false) !== (config.mcp_external_base_url?.from_env ?? false);
     return (
       localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
       localConfig.mcp_tool_execution_timeout !==
@@ -66,7 +72,8 @@ export default function MCPView() {
       localConfig.mcp_tool_sync_interval !==
         (config.mcp_tool_sync_interval ?? 10) ||
       localConfig.mcp_disable_auto_tool_inject !==
-        (config.mcp_disable_auto_tool_inject ?? false)
+        (config.mcp_disable_auto_tool_inject ?? false) ||
+      externalBaseURLChanged
     );
   }, [config, localConfig]);
 
@@ -318,6 +325,29 @@ export default function MCPView() {
               </div>
             )}
           </div>
+        </div>
+        {/* External Base URL */}
+        <div className="space-y-2 rounded-sm border p-4">
+          <div className="space-y-0.5">
+            <label htmlFor="external-base-url" className="text-sm font-medium">
+              External Base URL
+            </label>
+            <p className="text-muted-foreground text-sm">
+              Override the base URL used for OAuth callbacks and discovery metadata (
+              <code className="text-xs">/.well-known/oauth-authorization-server</code>, etc.) when Bifrost runs behind a reverse proxy.
+              Supports env var syntax (e.g. <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
+            </p>
+          </div>
+          <EnvVarInput
+            id="external-base-url"
+            data-testid="mcp-external-base-url-input"
+            placeholder="https://api.example.com or env.BIFROST_EXTERNAL_URL"
+            value={localConfig.mcp_external_base_url}
+            onChange={(value: EnvVar) =>
+              setLocalConfig((prev) => ({ ...prev, mcp_external_base_url: value }))
+            }
+            disabled={!hasSettingsUpdateAccess}
+          />
         </div>
       </div>
       <div className="flex justify-end pt-2">

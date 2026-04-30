@@ -33,7 +33,8 @@ type SearchFilters struct {
 	Models            []string          `json:"models,omitempty"`
 	Aliases           []string          `json:"aliases,omitempty"`
 	Status            []string          `json:"status,omitempty"`
-	Objects           []string          `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID   string            `json:"parent_request_id,omitempty"`
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
@@ -93,13 +94,16 @@ type SessionSummaryResult struct {
 }
 
 type SearchStats struct {
-	TotalRequests              int64   `json:"total_requests"`
-	SuccessRate                float64 `json:"success_rate"`                          // Percentage of individual attempts that succeeded
-	UserFacingSuccessRate      float64 `json:"user_facing_success_rate"`              // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
-	UserFacingTotalRequests    int64   `json:"user_facing_total_requests"`            // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
-	AverageLatency             float64 `json:"average_latency"`                       // Average latency in milliseconds
-	TotalTokens                int64   `json:"total_tokens"`                          // Total tokens used
-	TotalCost                  float64 `json:"total_cost"`                            // Total cost in dollars
+	TotalRequests             int64   `json:"total_requests"`
+	SuccessRate               float64 `json:"success_rate"`                            // Percentage of individual attempts that succeeded
+	UserFacingSuccessRate     float64 `json:"user_facing_success_rate"`                // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
+	UserFacingTotalRequests   int64   `json:"user_facing_total_requests"`              // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
+	AverageLatency            float64 `json:"average_latency"`                         // Average latency in milliseconds
+	TotalTokens               int64   `json:"total_tokens"`                            // Total tokens used
+	TotalCost                 float64 `json:"total_cost"`                              // Total cost in dollars
+	CacheHitRateTotalRequests *int64  `json:"cache_hit_rate_total_requests,omitempty"` // Completed requests used as local-cache hit-rate denominator
+	DirectCacheHits           *int64  `json:"direct_cache_hits,omitempty"`             // Number of direct (exact) semantic cache hits
+	SemanticCacheHits         *int64  `json:"semantic_cache_hits,omitempty"`           // Number of semantic (fuzzy) cache hits
 }
 
 // Log represents a complete log entry for a request/response cycle
@@ -164,6 +168,7 @@ type Log struct {
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
 	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
 	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
 	ContentSummary          string    `gorm:"type:text" json:"-"`

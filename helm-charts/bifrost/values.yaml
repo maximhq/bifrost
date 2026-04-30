@@ -34,6 +34,15 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template
   name: ""
 
+rbac:
+  podDiscovery:
+    # Create Role/RoleBinding to allow pod discovery in-cluster.
+    # This is rendered only when:
+    # - bifrost.cluster.enabled=true
+    # - bifrost.cluster.discovery.enabled=true
+    # - bifrost.cluster.discovery.type=kubernetes
+    enabled: true
+
 # Annotations to add to the deployment metadata
 # Useful for tools like Keel (keel.sh) for automatic image updates
 # Example:

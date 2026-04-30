@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -605,6 +606,10 @@ type modelListQuery struct {
 	KeyIDs     []string
 	Limit      int
 	Unfiltered bool
+	// VK-based filtering: populated when a virtual key is found in request headers.
+	// HasVKFilter=true restricts providers/models to those allowed by the VK.
+	HasVKFilter       bool
+	VKProviderConfigs []tables.TableVirtualKeyProviderConfig
 }
 
 type listedModel struct {
@@ -618,10 +623,16 @@ type listedModel struct {
 //   - query: Filter models by name (case-insensitive partial match)
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of provider key UUIDs to filter models accessible by those keys
-//   - vks: Comma-separated list of virtual key UUIDs to filter models accessible by those virtual keys
 //   - limit: Maximum number of results to return (default: 5)
+//
+// Request headers:
+//   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
+//     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
-	query := parseModelListQuery(ctx, 5)
+	query, ok := h.parseModelListQuery(ctx, 5)
+	if !ok {
+		return
+	}
 	allModels, total, err := h.listManagementModels(query)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
@@ -655,8 +666,15 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
 //   - unfiltered: If true, bypass provider-level model pool restrictions only
 //   - limit: Maximum number of results to return (default: 20)
+//
+// Request headers:
+//   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
+//     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
-	query := parseModelListQuery(ctx, 20)
+	query, ok := h.parseModelListQuery(ctx, 20)
+	if !ok {
+		return
+	}
 
 	modelCatalog := h.inMemoryStore.ModelCatalog
 	if modelCatalog == nil {
@@ -694,8 +712,9 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// parseModelListQuery normalizes the management model-list query string.
-func parseModelListQuery(ctx *fasthttp.RequestCtx, defaultLimit int) modelListQuery {
+// parseModelListQuery normalizes the management model-list query string and resolves
+// any virtual key present in the request headers to populate provider/model filters.
+func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultLimit int) (modelListQuery, bool) {
 	queryArgs := ctx.QueryArgs()
 	query := modelListQuery{
 		Provider:   schemas.ModelProvider(string(queryArgs.Peek("provider"))),
@@ -722,7 +741,30 @@ func parseModelListQuery(ctx *fasthttp.RequestCtx, defaultLimit int) modelListQu
 		}
 	}
 
-	return query
+	// Resolve virtual key from request headers and populate provider/model filters.
+	if vkValue := governanceplugin.ParseVirtualKeyFromFastHTTPRequest(ctx); vkValue != nil {
+		trimmedVKValue := strings.TrimSpace(*vkValue)
+
+		if h.dbStore == nil {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "database store unavailable")
+			return query, false
+		}
+
+		vk, err := h.dbStore.GetVirtualKeyByValue(ctx, trimmedVKValue)
+		if err != nil {
+			if !errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to resolve virtual key: %v", err))
+				return query, false
+			}
+		}
+
+		if vk != nil {
+			query.HasVKFilter = true
+			query.VKProviderConfigs = vk.ProviderConfigs
+		}
+	}
+
+	return query, true
 }
 
 // listManagementModels lists models across one or all providers and applies the top-level limit.
@@ -736,6 +778,17 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 		if err != nil {
 			return nil, 0, err
 		}
+	}
+
+	// When a virtual key is present, restrict the provider list to those explicitly
+	// permitted by the VK. An empty ProviderConfigs means no providers are allowed
+	// (deny-by-default), so we return nothing even if providers are configured.
+	if query.HasVKFilter {
+		providers = slices.DeleteFunc(providers, func(p schemas.ModelProvider) bool {
+			return !slices.ContainsFunc(query.VKProviderConfigs, func(pc tables.TableVirtualKeyProviderConfig) bool {
+				return strings.EqualFold(pc.Provider, string(p))
+			})
+		})
 	}
 
 	models := make([]listedModel, 0)
@@ -759,6 +812,17 @@ func (h *ProviderHandler) listManagementModelsForProvider(
 	models := h.modelsManager.GetModelsForProvider(provider)
 	if query.Unfiltered {
 		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+	}
+
+	// Apply VK-level model whitelist filtering.
+	// AllowedModels=["*"] passes all; empty AllowedModels denies all (deny-by-default).
+	if query.HasVKFilter {
+		if idx := slices.IndexFunc(query.VKProviderConfigs, func(pc tables.TableVirtualKeyProviderConfig) bool {
+			return strings.EqualFold(pc.Provider, string(provider))
+		}); idx >= 0 {
+			allowedModels := query.VKProviderConfigs[idx].AllowedModels
+			models = slices.DeleteFunc(models, func(m string) bool { return !allowedModels.IsAllowed(m) })
+		}
 	}
 
 	if len(query.KeyIDs) == 0 || query.Unfiltered {
@@ -850,18 +914,21 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 // When a non-nil catalog is provided, it also checks whether any allowlisted
 // model resolves to the same base model name as the queried model (alias matching).
 func keyAllowsModelForList(key schemas.Key, model string, catalog *modelcatalog.ModelCatalog) bool {
-	if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+	if key.BlacklistedModels.IsBlocked(model) {
 		return false
 	}
 	if len(key.Models) > 0 {
-		if slices.Contains(key.Models, model) {
+		if key.Models.IsAllowed(model) {
 			return true
 		}
 		// Catalog-aware alias matching: a key allowlisting "gpt-4o-2024-08-06"
 		// should also grant access to its base model "gpt-4o" in listings.
 		if catalog != nil {
 			for _, allowed := range key.Models {
-				if catalog.GetBaseModelName(allowed) == model {
+				if strings.EqualFold(
+					catalog.GetBaseModelName(allowed),
+					catalog.GetBaseModelName(model),
+				) {
 					return true
 				}
 			}

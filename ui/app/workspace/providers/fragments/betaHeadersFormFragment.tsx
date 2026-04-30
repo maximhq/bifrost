@@ -1,12 +1,12 @@
+import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider, NetworkConfig } from "@/lib/types/config";
-import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
 import { betaHeadersFormSchema, type BetaHeadersFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -259,8 +259,8 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6" data-testid="provider-config-beta-headers-content">
-				<div className="space-y-2">
+			<form onSubmit={form.handleSubmit(onSubmit)} data-testid="provider-config-beta-headers-content">
+				<div className="space-y-2 px-6 pb-6">
 					<p className="text-muted-foreground text-xs">
 						Configure which Anthropic beta headers are allowed for this provider. Override the defaults when a provider adds or removes
 						support for a beta feature.
@@ -402,7 +402,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 					</div>
 				</div>
 
-				<div className="flex justify-end space-x-2 pb-6">
+				<div className="bg-card sticky bottom-0 flex justify-end gap-2 rounded-b-sm border-t px-6 py-4">
 					<Button
 						type="submit"
 						disabled={!isManuallyDirty || !hasUpdateProviderAccess || isUpdatingProvider}

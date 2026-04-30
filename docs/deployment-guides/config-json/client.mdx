@@ -52,6 +52,38 @@ Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where m
 
 ---
 
+## Reverse Proxy
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mcp_external_base_url` | string or EnvVar | — | Public base URL advertised for OAuth callbacks and discovery metadata |
+
+When Bifrost runs behind a reverse proxy, the OAuth callback URL and well-known discovery endpoints (`/.well-known/oauth-authorization-server`, etc.) are built from the incoming `Host` header — which is your proxy's internal address, not its public address. Set `mcp_external_base_url` to override this with the proxy's public URL.
+
+The field supports env var syntax so the URL can be injected at runtime:
+
+```json
+{
+  "client": {
+    "mcp_external_base_url": "env.BIFROST_EXTERNAL_URL"
+  }
+}
+```
+
+Or as a plain URL:
+
+```json
+{
+  "client": {
+    "mcp_external_base_url": "https://api.yourcompany.com"
+  }
+}
+```
+
+This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) and the management API, with no restart required.
+
+---
+
 ## Security & CORS
 
 | Field | Type | Default | Description |
@@ -249,6 +281,8 @@ A top-level `auth_config` is also accepted for backwards compatibility, but `gov
     "disable_content_logging": false,
     "log_retention_days": 90,
     "logging_headers": ["x-request-id", "x-user-id"],
+
+    "mcp_external_base_url": "env.BIFROST_EXTERNAL_URL",
 
     "allowed_origins": ["https://app.yourcompany.com"],
     "allow_direct_keys": false,

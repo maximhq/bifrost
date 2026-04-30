@@ -448,6 +448,140 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 ---
 
+## GKE Workload Identity Federation
+
+When running Bifrost on GKE, [Workload Identity Federation](https://cloud.google.com/kubernetes-engine/docs/concepts/workload-identity) (WIF) lets pods authenticate to Vertex AI without managing service account keys. The pod inherits an IAM identity through the Kubernetes ServiceAccount, and Bifrost picks it up automatically via [Application Default Credentials](#2-application-default-credentials).
+
+**What you need:**
+
+1. The GCP-side prerequisites below (API enabled, IAM service account, WIF binding)
+2. A Bifrost Vertex key using **"Service Account (Attached)"** auth — see [Application Default Credentials](#2-application-default-credentials) for Web UI, API, config.json, and Go SDK setup. For Helm, see [Helm — Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai).
+3. The Kubernetes ServiceAccount annotated for WIF:
+
+```bash
+kubectl annotate serviceaccount KSA_NAME \
+  --namespace NAMESPACE \
+  iam.gke.io/gcp-service-account=IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com
+```
+
+Replace `IAM_SA_NAME` with the IAM Service Account created in [Step 3](#gcp-prerequisites) below.
+
+### GCP Prerequisites
+
+<Accordion title="Step 1: Enable the Vertex AI API">
+
+The Vertex AI API must be enabled in your project. Search for `aiplatform` in the [API Library](https://console.cloud.google.com/apis/library) or run:
+
+```bash
+gcloud services enable aiplatform.googleapis.com --project=PROJECT_ID
+```
+
+WIF uses the IAM Credentials API for token exchange. Enable it as well:
+
+```bash
+gcloud services enable iamcredentials.googleapis.com --project=PROJECT_ID
+```
+
+</Accordion>
+
+<Accordion title="Step 2: Enable Workload Identity on GKE">
+
+**Autopilot clusters:** WIF is always enabled. Skip this step.
+
+**Standard clusters:** Enable the workload identity pool and GKE metadata server:
+
+```bash
+# Enable Workload Identity on the cluster
+gcloud container clusters update CLUSTER_NAME \
+  --location=LOCATION \
+  --workload-pool=PROJECT_ID.svc.id.goog
+
+# Enable GKE metadata server on each node pool
+gcloud container node-pools update NODEPOOL_NAME \
+  --cluster=CLUSTER_NAME \
+  --location=LOCATION \
+  --workload-metadata=GKE_METADATA
+```
+
+Verify:
+
+```bash
+gcloud container clusters describe CLUSTER_NAME \
+  --location=LOCATION \
+  --format="value(workloadIdentityConfig.workloadPool)"
+# Expected: PROJECT_ID.svc.id.goog
+```
+
+</Accordion>
+
+<Accordion title="Step 3: Create an IAM Service Account and grant Vertex access">
+
+Create a dedicated IAM Service Account (or use an existing one) and grant it the Vertex AI User role:
+
+```bash
+# Create the service account
+gcloud iam service-accounts create IAM_SA_NAME \
+  --display-name="Bifrost Vertex AI" \
+  --project=PROJECT_ID
+
+# Grant Vertex AI access
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+```
+
+</Accordion>
+
+<Accordion title="Step 4: Bind the Kubernetes ServiceAccount to the IAM Service Account">
+
+Allow the Kubernetes ServiceAccount to impersonate the IAM Service Account:
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding \
+  IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="serviceAccount:PROJECT_ID.svc.id.goog[NAMESPACE/KSA_NAME]"
+```
+
+Replace `NAMESPACE` and `KSA_NAME` with your Bifrost pod's namespace and Kubernetes ServiceAccount name.
+
+Then annotate the Kubernetes ServiceAccount so GKE knows which IAM identity to map:
+
+```bash
+kubectl annotate serviceaccount KSA_NAME \
+  --namespace NAMESPACE \
+  iam.gke.io/gcp-service-account=IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com
+```
+
+If deploying with the Bifrost Helm chart, set the annotation via `serviceAccount.annotations` in your values file — see [Helm — Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai) for the full example.
+
+</Accordion>
+
+### Verify
+
+From inside the Bifrost pod, confirm the GKE metadata server returns a token:
+
+```bash
+kubectl exec -n NAMESPACE POD_NAME -- \
+  wget -qO- --header="Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+```
+
+Replace `NAMESPACE` and `POD_NAME` with your Bifrost namespace and any running Bifrost pod name (e.g., `bifrost-0` for a StatefulSet or use `kubectl get pods -n NAMESPACE` to find it).
+
+A JSON response with an `access_token` field confirms WIF is working. Then send a request through Bifrost to a Vertex model (e.g., `vertex/gemini-2.5-flash`) to verify end-to-end.
+
+### Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+| --- | --- | --- |
+| `"could not find default credentials"` | GKE metadata server not enabled, or Kubernetes ServiceAccount missing WIF annotation | Enable GKE metadata server on the node pool ([Step 2](#gcp-prerequisites)); verify the `iam.gke.io/gcp-service-account` annotation on the ServiceAccount ([Step 4](#gcp-prerequisites)) |
+| `403 Forbidden` from Vertex API | IAM Service Account lacks Vertex permissions | Grant `roles/aiplatform.user` to the IAM Service Account |
+| `403` during token exchange | WIF binding missing | Run the `add-iam-policy-binding` command from Step 4; confirm `roles/iam.workloadIdentityUser` is granted |
+| Wrong project or region errors | Bifrost config mismatch | Check `project_id` and `region` in the Vertex key configuration |
+
+---
+
 ## Beta Headers
 
 For Anthropic models on Vertex AI, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request.

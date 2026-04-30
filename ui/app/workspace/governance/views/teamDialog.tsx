@@ -1,5 +1,4 @@
 import FormFooter from "@/components/formFooter";
-import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,6 +9,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alertDialog";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -250,34 +250,34 @@ export default function TeamDialog({
 
       // Rate limit validation - token limits
       ...(formData.tokenMaxLimit !== undefined &&
-      formData.tokenMaxLimit !== null
+        formData.tokenMaxLimit !== null
         ? [
-            Validator.minValue(
-              tokenMaxLimitNum || 0,
-              1,
-              "Token max limit must be at least 1",
-            ),
-            Validator.required(
-              formData.tokenResetDuration,
-              "Token reset duration is required",
-            ),
-          ]
+          Validator.minValue(
+            tokenMaxLimitNum || 0,
+            1,
+            "Token max limit must be at least 1",
+          ),
+          Validator.required(
+            formData.tokenResetDuration,
+            "Token reset duration is required",
+          ),
+        ]
         : []),
 
       // Rate limit validation - request limits
       ...(formData.requestMaxLimit !== undefined &&
-      formData.requestMaxLimit !== null
+        formData.requestMaxLimit !== null
         ? [
-            Validator.minValue(
-              requestMaxLimitNum || 0,
-              1,
-              "Request max limit must be at least 1",
-            ),
-            Validator.required(
-              formData.requestResetDuration,
-              "Request reset duration is required",
-            ),
-          ]
+          Validator.minValue(
+            requestMaxLimitNum || 0,
+            1,
+            "Request max limit must be at least 1",
+          ),
+          Validator.required(
+            formData.requestResetDuration,
+            "Request reset duration is required",
+          ),
+        ]
         : []),
     ]);
   }, [formData, tokenMaxLimitNum, requestMaxLimitNum]);
@@ -381,7 +381,7 @@ export default function TeamDialog({
 
   return (
     <Dialog open onOpenChange={onCancel}>
-      <DialogContent className="max-w-2xl" data-testid="team-dialog-content">
+      <DialogContent className="sm:max-w-2xl" data-testid="team-dialog-content">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {isEditing ? "Edit Team" : "Create Team"}
@@ -556,20 +556,20 @@ export default function TeamDialog({
                     <span className="font-semibold">$0.00</span> and snap the
                     reset date to the start of the current{" "}
                     {pendingCalendarAlignIdx !== null &&
-                    formData.budgets[pendingCalendarAlignIdx]?.resetDuration ===
+                      formData.budgets[pendingCalendarAlignIdx]?.resetDuration ===
                       "1d"
                       ? "day"
                       : pendingCalendarAlignIdx !== null &&
-                          formData.budgets[pendingCalendarAlignIdx]
-                            ?.resetDuration === "1w"
+                        formData.budgets[pendingCalendarAlignIdx]
+                          ?.resetDuration === "1w"
                         ? "week"
                         : pendingCalendarAlignIdx !== null &&
-                            formData.budgets[pendingCalendarAlignIdx]
-                              ?.resetDuration === "1M"
+                          formData.budgets[pendingCalendarAlignIdx]
+                            ?.resetDuration === "1M"
                           ? "month"
                           : pendingCalendarAlignIdx !== null &&
-                              formData.budgets[pendingCalendarAlignIdx]
-                                ?.resetDuration === "1Y"
+                            formData.budgets[pendingCalendarAlignIdx]
+                              ?.resetDuration === "1Y"
                             ? "year"
                             : "period"}
                     . The usage reset to $0.00 cannot be undone, but calendar
@@ -631,118 +631,118 @@ export default function TeamDialog({
             {isEditing &&
               ((team?.budgets && team.budgets.length > 0) ||
                 team?.rate_limit) && (
-              <div className="bg-muted/50 space-y-4 rounded-lg border p-4">
-                <p className="text-sm font-medium">Current Usage</p>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {team?.budgets?.map((b) => (
-                    <div key={b.id} className="space-y-1">
-                      <p className="text-muted-foreground text-xs">
-                        Budget ({b.reset_duration})
-                      </p>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">
-                          {formatCurrency(b.current_usage)} /{" "}
-                          {formatCurrency(b.max_limit)}
-                        </span>
-                        <Badge
-                          variant={
-                            b.max_limit > 0 && b.current_usage >= b.max_limit
-                              ? "destructive"
-                              : "default"
-                          }
-                          className="text-xs"
-                        >
-                          {b.max_limit > 0
-                            ? Math.round((b.current_usage / b.max_limit) * 100)
-                            : 0}
-                          %
-                        </Badge>
+                <div className="bg-muted/50 space-y-4 rounded-lg border p-4">
+                  <p className="text-sm font-medium">Current Usage</p>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {team?.budgets?.map((b) => (
+                      <div key={b.id} className="space-y-1">
+                        <p className="text-muted-foreground text-xs">
+                          Budget ({b.reset_duration})
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm">
+                            {formatCurrency(b.current_usage)} /{" "}
+                            {formatCurrency(b.max_limit)}
+                          </span>
+                          <Badge
+                            variant={
+                              b.max_limit > 0 && b.current_usage >= b.max_limit
+                                ? "destructive"
+                                : "default"
+                            }
+                            className="text-xs"
+                          >
+                            {b.max_limit > 0
+                              ? Math.round((b.current_usage / b.max_limit) * 100)
+                              : 0}
+                            %
+                          </Badge>
+                        </div>
+                        <p className="text-muted-foreground text-xs">
+                          Last Reset:{" "}
+                          {formatDistanceToNow(new Date(b.last_reset), {
+                            addSuffix: true,
+                          })}
+                        </p>
                       </div>
-                      <p className="text-muted-foreground text-xs">
-                        Last Reset:{" "}
-                        {formatDistanceToNow(new Date(b.last_reset), {
-                          addSuffix: true,
-                        })}
-                      </p>
-                    </div>
-                  ))}
-                  {team?.rate_limit?.token_max_limit && (
-                    <div className="space-y-1">
-                      <p className="text-muted-foreground text-xs">Tokens</p>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">
-                          {team.rate_limit.token_current_usage.toLocaleString()}{" "}
-                          / {team.rate_limit.token_max_limit.toLocaleString()}
-                        </span>
-                        <Badge
-                          variant={
-                            team.rate_limit.token_max_limit > 0 &&
-                            team.rate_limit.token_current_usage >=
-                              team.rate_limit.token_max_limit
-                              ? "destructive"
-                              : "default"
-                          }
-                          className="text-xs"
-                        >
-                          {team.rate_limit.token_max_limit > 0
-                            ? Math.round(
+                    ))}
+                    {team?.rate_limit?.token_max_limit && (
+                      <div className="space-y-1">
+                        <p className="text-muted-foreground text-xs">Tokens</p>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm">
+                            {team.rate_limit.token_current_usage.toLocaleString()}{" "}
+                            / {team.rate_limit.token_max_limit.toLocaleString()}
+                          </span>
+                          <Badge
+                            variant={
+                              team.rate_limit.token_max_limit > 0 &&
+                                team.rate_limit.token_current_usage >=
+                                team.rate_limit.token_max_limit
+                                ? "destructive"
+                                : "default"
+                            }
+                            className="text-xs"
+                          >
+                            {team.rate_limit.token_max_limit > 0
+                              ? Math.round(
                                 (team.rate_limit.token_current_usage /
                                   team.rate_limit.token_max_limit) *
-                                  100,
+                                100,
                               )
-                            : 0}
-                          %
-                        </Badge>
+                              : 0}
+                            %
+                          </Badge>
+                        </div>
+                        <p className="text-muted-foreground text-xs">
+                          Last Reset:{" "}
+                          {formatDistanceToNow(
+                            new Date(team.rate_limit.token_last_reset),
+                            { addSuffix: true },
+                          )}
+                        </p>
                       </div>
-                      <p className="text-muted-foreground text-xs">
-                        Last Reset:{" "}
-                        {formatDistanceToNow(
-                          new Date(team.rate_limit.token_last_reset),
-                          { addSuffix: true },
-                        )}
-                      </p>
-                    </div>
-                  )}
-                  {team?.rate_limit?.request_max_limit && (
-                    <div className="space-y-1">
-                      <p className="text-muted-foreground text-xs">Requests</p>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">
-                          {team.rate_limit.request_current_usage.toLocaleString()}{" "}
-                          / {team.rate_limit.request_max_limit.toLocaleString()}
-                        </span>
-                        <Badge
-                          variant={
-                            team.rate_limit.request_max_limit > 0 &&
-                            team.rate_limit.request_current_usage >=
-                              team.rate_limit.request_max_limit
-                              ? "destructive"
-                              : "default"
-                          }
-                          className="text-xs"
-                        >
-                          {team.rate_limit.request_max_limit > 0
-                            ? Math.round(
+                    )}
+                    {team?.rate_limit?.request_max_limit && (
+                      <div className="space-y-1">
+                        <p className="text-muted-foreground text-xs">Requests</p>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm">
+                            {team.rate_limit.request_current_usage.toLocaleString()}{" "}
+                            / {team.rate_limit.request_max_limit.toLocaleString()}
+                          </span>
+                          <Badge
+                            variant={
+                              team.rate_limit.request_max_limit > 0 &&
+                                team.rate_limit.request_current_usage >=
+                                team.rate_limit.request_max_limit
+                                ? "destructive"
+                                : "default"
+                            }
+                            className="text-xs"
+                          >
+                            {team.rate_limit.request_max_limit > 0
+                              ? Math.round(
                                 (team.rate_limit.request_current_usage /
                                   team.rate_limit.request_max_limit) *
-                                  100,
+                                100,
                               )
-                            : 0}
-                          %
-                        </Badge>
+                              : 0}
+                            %
+                          </Badge>
+                        </div>
+                        <p className="text-muted-foreground text-xs">
+                          Last Reset:{" "}
+                          {formatDistanceToNow(
+                            new Date(team.rate_limit.request_last_reset),
+                            { addSuffix: true },
+                          )}
+                        </p>
                       </div>
-                      <p className="text-muted-foreground text-xs">
-                        Last Reset:{" "}
-                        {formatDistanceToNow(
-                          new Date(team.rate_limit.request_last_reset),
-                          { addSuffix: true },
-                        )}
-                      </p>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
           </div>
 
           <FormFooter

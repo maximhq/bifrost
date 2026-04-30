@@ -119,7 +119,7 @@ func NewToolsManagerWithCodeMode(
 ) *ToolsManager {
 	if config == nil {
 		config = &schemas.MCPToolManagerConfig{
-			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
+			ToolExecutionTimeout: schemas.Duration(schemas.DefaultToolExecutionTimeout),
 			MaxAgentDepth:        schemas.DefaultMaxAgentDepth,
 			CodeModeBindingLevel: schemas.CodeModeBindingLevelServer,
 		}
@@ -128,7 +128,7 @@ func NewToolsManagerWithCodeMode(
 		config.MaxAgentDepth = schemas.DefaultMaxAgentDepth
 	}
 	if config.ToolExecutionTimeout <= 0 {
-		config.ToolExecutionTimeout = schemas.DefaultToolExecutionTimeout
+		config.ToolExecutionTimeout = schemas.Duration(schemas.DefaultToolExecutionTimeout)
 	}
 	// Default to server-level binding if not specified
 	if config.CodeModeBindingLevel == "" {
@@ -155,11 +155,11 @@ func NewToolsManagerWithCodeMode(
 	}
 
 	// Initialize atomic values
-	manager.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
+	manager.toolExecutionTimeout.Store(time.Duration(config.ToolExecutionTimeout))
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	manager.disableAutoToolInject.Store(config.DisableAutoToolInject)
 
-	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
+	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 	return manager
 }
 
@@ -814,7 +814,7 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 		return
 	}
 	if config.ToolExecutionTimeout > 0 {
-		m.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
+		m.toolExecutionTimeout.Store(time.Duration(config.ToolExecutionTimeout))
 	}
 	if config.MaxAgentDepth > 0 {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
@@ -824,13 +824,13 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0) {
 		m.codeMode.UpdateConfig(&CodeModeConfig{
 			BindingLevel:         config.CodeModeBindingLevel,
-			ToolExecutionTimeout: config.ToolExecutionTimeout,
+			ToolExecutionTimeout: time.Duration(config.ToolExecutionTimeout),
 		})
 	}
 
 	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
 
-	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
+	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 }
 
 // executeToolWithUserToken creates a temporary MCP connection using the user's

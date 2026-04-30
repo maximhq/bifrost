@@ -236,9 +236,15 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 		}
 	}
 
-	// Extract finish reason from first choice
-	if len(resp.Choices) > 0 && resp.Choices[0].FinishReason != nil {
-		attrs[schemas.AttrFinishReason] = *resp.Choices[0].FinishReason
+	// Extract finish reasons from all choices
+	var finishReasons []string
+	for _, choice := range resp.Choices {
+		if choice.FinishReason != nil {
+			finishReasons = append(finishReasons, *choice.FinishReason)
+		}
+	}
+	if len(finishReasons) > 0 {
+		attrs[schemas.AttrFinishReasons] = finishReasons
 	}
 
 	// Usage
@@ -378,15 +384,22 @@ func PopulateTextCompletionResponseAttributes(resp *schemas.BifrostTextCompletio
 		attrs[schemas.AttrSystemFprint] = resp.SystemFingerprint
 	}
 
-	// Extract output text
+	// Extract output text and finish reasons from all choices
 	var outputs []string
+	var finishReasons []string
 	for _, choice := range resp.Choices {
 		if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
 			outputs = append(outputs, *choice.TextCompletionResponseChoice.Text)
 		}
+		if choice.FinishReason != nil {
+			finishReasons = append(finishReasons, *choice.FinishReason)
+		}
 	}
 	if len(outputs) > 0 {
 		attrs[schemas.AttrOutputMessages] = outputs
+	}
+	if len(finishReasons) > 0 {
+		attrs[schemas.AttrFinishReasons] = finishReasons
 	}
 
 	// Usage
@@ -745,11 +758,25 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrRespTruncation] = *resp.Truncation
 	}
 	if resp.Tools != nil {
-		tools := make([]string, len(resp.Tools))
-		for i, tool := range resp.Tools {
-			tools[i] = string(tool.Type)
+		type toolInfo struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
 		}
-		attrs[schemas.AttrRespTools] = strings.Join(tools, ",")
+		tools := make([]toolInfo, len(resp.Tools))
+		for i, tool := range resp.Tools {
+			if tool.Name != nil {
+				info := toolInfo{Name: *tool.Name}
+				if tool.Description != nil {
+					info.Description = *tool.Description
+				}
+				tools[i] = info
+			} else {
+				tools[i] = toolInfo{Name: string(tool.Type)}
+			}
+		}
+		if data, err := schemas.MarshalString(tools); err == nil {
+			attrs[schemas.AttrRespTools] = data
+		}
 	}
 
 	// Usage

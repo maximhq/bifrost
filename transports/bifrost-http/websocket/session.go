@@ -28,6 +28,10 @@ type Session struct {
 	// LastResponseID tracks the most recent response ID for previous_response_id chaining.
 	lastResponseID string
 
+	// responsesCompleted is true once at least one Responses WS turn has reached
+	// a terminal event. EOF after that point is just client disconnect cleanup.
+	responsesCompleted bool
+
 	// providerSessionID tracks the upstream provider's session identifier when exposed.
 	providerSessionID string
 
@@ -128,6 +132,7 @@ func (s *Session) SetLastResponseID(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastResponseID = id
+	s.responsesCompleted = true
 }
 
 // LastResponseID returns the last response ID.
@@ -135,6 +140,20 @@ func (s *Session) LastResponseID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.lastResponseID
+}
+
+// HasCompletedResponsesTurn reports whether this session already completed a Responses WS turn.
+func (s *Session) HasCompletedResponsesTurn() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.responsesCompleted
+}
+
+// MarkResponsesTurnCompleted records terminal completion even when no response ID is available.
+func (s *Session) MarkResponsesTurnCompleted() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responsesCompleted = true
 }
 
 // SetProviderSessionID stores the upstream provider session identifier when available.

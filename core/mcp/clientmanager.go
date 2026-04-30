@@ -53,6 +53,12 @@ func (m *MCPManager) ReconnectClient(id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s not found", id)
 	}
+	// Per-user OAuth clients do not maintain a persistent upstream connection.
+	// Reconnect is not applicable because auth is resolved per request/user identity.
+	if client.ExecutionConfig != nil && client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+		m.mu.Unlock()
+		return fmt.Errorf("reconnect is not supported for per_user_oauth clients")
+	}
 	config := client.ExecutionConfig
 	m.mu.Unlock()
 

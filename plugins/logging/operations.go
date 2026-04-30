@@ -147,6 +147,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	cacheDebug *schemas.BifrostCacheDebug,
 	routingEngineLogs string,
 	data *UpdateLogData,
+	contentLoggingEnabled bool,
 ) error {
 	updates := make(map[string]interface{})
 	if selectedKeyID != "" {
@@ -177,7 +178,6 @@ func (p *LoggerPlugin) updateLogEntry(
 	if routingEngineLogs != "" {
 		updates["routing_engine_logs"] = routingEngineLogs
 	}
-	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
 	tempEntry := &logstore.Log{}
 	needsSerialization := false
 
@@ -294,12 +294,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	if data.IsLargePayloadResponse {
 		updates["is_large_payload_response"] = true
 		// Large payload preview is already a string — skip sonic.Marshal.
-		if p.disableContentLogging == nil || !*p.disableContentLogging {
+		if contentLoggingEnabled {
 			if str, ok := data.RawResponse.(string); ok {
 				updates["raw_response"] = str
 			}
 		}
-	} else if (p.disableContentLogging == nil || !*p.disableContentLogging) && data.RawResponse != nil {
+	} else if contentLoggingEnabled && data.RawResponse != nil {
 		rawResponseBytes, err := sonic.Marshal(data.RawResponse)
 		if err != nil {
 			p.logger.Error("failed to marshal raw response: %v", err)
@@ -332,7 +332,7 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
-func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool) {
+func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	if streamResponse.Data == nil {
 		return
 	}
@@ -373,7 +373,29 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
 	}
 
-	if p.disableContentLogging == nil || !*p.disableContentLogging {
+	// Finish/stop reason - always persist regardless of content logging settings
+	if streamResponse.Data.FinishReason != nil {
+		entry.StopReason = streamResponse.Data.FinishReason
+	}
+
+	// Cache
+	if streamResponse.Data.CacheDebug != nil {
+		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
+	}
+
+	// Finish/stop reason - always persist regardless of content logging settings
+	if streamResponse.Data.FinishReason != nil {
+		entry.StopReason = streamResponse.Data.FinishReason
+	}
+
+	// Passthrough status code
+	if streamResponse.Data.PassthroughOutput != nil {
+		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
+			params.StatusCode = streamResponse.Data.PassthroughOutput.StatusCode
+		}
+	}
+
+	if contentLoggingEnabled {
 		// Transcription output
 		if streamResponse.Data.TranscriptionOutput != nil {
 			entry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
@@ -393,6 +415,10 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		// Responses output
 		if streamResponse.Data.OutputMessages != nil {
 			entry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
+		}
+		// Passthrough output
+		if streamResponse.Data.PassthroughOutput != nil {
+			entry.PassthroughResponseBody = string(streamResponse.Data.PassthroughOutput.Body)
 		}
 		if shouldStoreRaw {
 			// Raw request
@@ -425,7 +451,7 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
-func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
+func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	if result == nil {
 		return
 	}
@@ -472,7 +498,23 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 
 	// Extract raw request/response and output content
 	extraFields := result.GetExtraFields()
-	if p.disableContentLogging == nil || !*p.disableContentLogging {
+
+	// Extract stop_reason - always persist regardless of content logging settings
+	if result.TextCompletionResponse != nil && len(result.TextCompletionResponse.Choices) > 0 {
+		if choice := result.TextCompletionResponse.Choices[0]; choice.FinishReason != nil {
+			entry.StopReason = choice.FinishReason
+		}
+	}
+	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
+		if choice := result.ChatResponse.Choices[0]; choice.FinishReason != nil {
+			entry.StopReason = choice.FinishReason
+		}
+	}
+	if result.ResponsesResponse != nil && result.ResponsesResponse.StopReason != nil {
+		entry.StopReason = result.ResponsesResponse.StopReason
+	}
+
+	if contentLoggingEnabled {
 		if shouldStoreRaw {
 			if extraFields.RawRequest != nil {
 				rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest)
@@ -544,9 +586,14 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	}
 }
 
-func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool) {
+func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	if result == nil || result.ResponsesResponse == nil {
 		return
+	}
+
+	// Stop reason - always persist regardless of content logging settings
+	if result.ResponsesResponse.StopReason != nil {
+		entry.StopReason = result.ResponsesResponse.StopReason
 	}
 
 	if usage := result.ResponsesResponse.Usage; usage != nil {
@@ -556,8 +603,6 @@ func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *s
 		entry.CompletionTokens = bifrostUsage.CompletionTokens
 		entry.TotalTokens = bifrostUsage.TotalTokens
 	}
-
-	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
 
 	if contentLoggingEnabled {
 		if outputMessage := extractRealtimeOutputMessage(result.ResponsesResponse.Output); outputMessage != nil {
@@ -1102,6 +1147,17 @@ func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context) []string 
 		return []string{}
 	}
 	return engines
+}
+
+// GetAvailableStopReasons returns all unique stop reason values from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableStopReasons(ctx context.Context) []string {
+	stopReasons, err := p.store.GetDistinctStopReasons(ctx)
+	if err != nil {
+		p.logger.Error("failed to get available stop reasons: %v", err)
+		return []string{}
+	}
+	return stopReasons
 }
 
 // keyPairResultsToKeyPairs converts logstore.KeyPairResult slice to KeyPair slice

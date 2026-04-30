@@ -54,6 +54,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
 		params.routing_engine_used = filters.routing_engine_used.join(",");
 	}
+	if (filters.stop_reasons && filters.stop_reasons.length > 0) {
+		params.stop_reasons = filters.stop_reasons.join(",");
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {
@@ -295,6 +298,7 @@ export const logsApi = baseApi.injectEndpoints({
 				virtual_keys: VirtualKey[];
 				routing_rules: RoutingRule[];
 				routing_engines: string[];
+				stop_reasons: string[];
 				metadata_keys: Record<string, string[]>;
 			},
 			void

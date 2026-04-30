@@ -26,7 +26,7 @@ func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return nil
 }
 
-func (s testWSHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+func (s testWSHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
 	return nil
 }
 
@@ -49,6 +49,10 @@ func (s testWSHandlerStore) GetKVStore() *kvstore.Store {
 func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return nil
 }
+
+func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
+func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
+func (s testWSHandlerStore) GetMCPExternalBaseURL() string              { return "" }
 
 type timeoutNetError struct{}
 

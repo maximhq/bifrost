@@ -551,6 +551,7 @@ export interface LogEntry {
 	cache_debug?: CacheDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)
 	status: string; // "success" or "error"
+	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
@@ -573,6 +574,7 @@ export interface LogFilters {
 	routing_rule_ids?: string[];
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
+	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
@@ -605,6 +607,9 @@ export interface LogStats {
 	average_latency: number;
 	total_tokens: number;
 	total_cost: number;
+	cache_hit_rate_total_requests?: number | null;
+	direct_cache_hits?: number | null;
+	semantic_cache_hits?: number | null;
 }
 
 export interface LogSessionDetailResponse {

@@ -554,7 +554,7 @@ func TestTableOauthToken_EncryptDecrypt(t *testing.T) {
 		AccessToken:  "access-token-secret-value",
 		RefreshToken: "refresh-token-secret-value",
 		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
+		ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 
 	require.NoError(t, db.Create(token).Error)
@@ -577,7 +577,7 @@ func TestTableOauthToken_EmptyRefreshToken(t *testing.T) {
 		ID:          "oauth-tok-norefresh",
 		AccessToken: "access-only-token",
 		TokenType:   "Bearer",
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ExpiresAt:   bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 
 	require.NoError(t, db.Create(token).Error)
@@ -950,7 +950,7 @@ func TestTableOauthToken_UpdatePreservesDecryption(t *testing.T) {
 		AccessToken:  "original-access",
 		RefreshToken: "original-refresh",
 		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
+		ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 	require.NoError(t, db.Create(token).Error)
 
@@ -1132,7 +1132,7 @@ func TestTableOauthToken_FindMultipleDecryptsAll(t *testing.T) {
 			AccessToken:  "access-" + id,
 			RefreshToken: "refresh-" + id,
 			TokenType:    "Bearer",
-			ExpiresAt:    time.Now().Add(time.Hour),
+			ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 		}
 		require.NoError(t, db.Create(token).Error)
 	}
@@ -1405,7 +1405,7 @@ func TestTableOauthToken_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 		AccessToken:  "access-plain",
 		RefreshToken: "refresh-plain",
 		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
+		ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 
 	require.NoError(t, db.Create(token).Error)

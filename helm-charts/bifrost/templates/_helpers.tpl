@@ -1356,6 +1356,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- end }}
 
+{{/* Validate RBAC pod discovery + service account configuration */}}
+{{- if and .Values.rbac .Values.rbac.podDiscovery .Values.rbac.podDiscovery.enabled }}
+{{- if and .Values.bifrost.cluster.enabled .Values.bifrost.cluster.discovery.enabled (eq .Values.bifrost.cluster.discovery.type "kubernetes") }}
+{{- if and (not .Values.serviceAccount.create) (not .Values.serviceAccount.name) }}
+{{- fail "ERROR: rbac.podDiscovery.enabled requires either serviceAccount.create=true or an explicit serviceAccount.name when serviceAccount.create=false." }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{/* Validate external Weaviate when vector store type is weaviate */}}
 {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") }}
 {{- if .Values.vectorStore.weaviate.external.enabled }}

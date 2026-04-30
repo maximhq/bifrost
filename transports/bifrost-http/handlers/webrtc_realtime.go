@@ -252,12 +252,7 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 	sdpOffer string,
 	exchangeSDP func(ctx *schemas.BifrostContext, key schemas.Key, upstreamOffer string) (string, *schemas.BifrostError),
 ) {
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(
-		ctx,
-		h.handlerStore.ShouldAllowDirectKeys(),
-		h.config.GetHeaderMatcher(),
-		h.config.GetMCPHeaderCombinedAllowlist(),
-	)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	defer cancel()
 	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	if strings.HasPrefix(string(ctx.Path()), "/openai") {

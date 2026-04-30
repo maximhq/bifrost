@@ -14,9 +14,9 @@ Bifrost offers two powerful methods for routing requests across AI providers, ea
 When both methods are available, **governance takes precedence** because users have explicitly defined their routing preferences through provider configurations on Virtual Keys.
 
 <Info>
-**When to use which method:**
-- Use **Governance** when you need explicit control, compliance requirements, or specific cost optimization strategies
-- Use **Adaptive Load Balancing** for automatic performance optimization and minimal configuration overhead
+  **When to use which method:**
+  - Use **Governance** when you need explicit control, compliance requirements, or specific cost optimization strategies
+  - Use **Adaptive Load Balancing** for automatic performance optimization and minimal configuration overhead
 </Info>
 
 ---
@@ -26,7 +26,10 @@ When both methods are available, **governance takes precedence** because users h
 The Model Catalog is Bifrost's central registry that tracks which models are available from which providers. It powers both governance-based routing and adaptive load balancing by maintaining an up-to-date mapping of models to providers.
 
 <Info>
-**Architecture Documentation**: For detailed technical documentation on the Model Catalog implementation, including API reference, thread safety, and advanced usage patterns, see [Model Catalog Architecture](/architecture/framework/model-catalog).
+  **Architecture Documentation**: For detailed technical documentation on the
+  Model Catalog implementation, including API reference, thread safety, and
+  advanced usage patterns, see [Model Catalog
+  Architecture](/architecture/framework/model-catalog).
 </Info>
 
 ### Data Sources
@@ -48,7 +51,9 @@ The Model Catalog combines two data sources to maintain a comprehensive and up-t
    - **Stored as**: In-memory map `modelPool[provider][]models`
 
 <Info>
-**Why two sources?** Pricing data provides comprehensive model coverage with cost information, while the List Models API ensures you can use newly released models immediately without waiting for pricing data updates.
+  **Why two sources?** Pricing data provides comprehensive model coverage with
+  cost information, while the List Models API ensures you can use newly released
+  models immediately without waiting for pricing data updates.
 </Info>
 
 ### How Model Availability is Determined
@@ -73,6 +78,7 @@ Bifrost uses a sophisticated multi-step process to determine if a model is avail
     - Routing Methods to validate `allowed_models`
     - Dashboard model selector dropdowns
     - API responses for `/v1/models?provider=openai`
+
   </Accordion>
 
   <Accordion title="GetProvidersForModel(model)">
@@ -134,6 +140,7 @@ Bifrost uses a sophisticated multi-step process to determine if a model is avail
     - Load balancing to find candidate providers
     - Fallback generation
     - Model validation in requests
+
   </Accordion>
 
   <Accordion title="Pricing Lookup with Fallbacks">
@@ -163,6 +170,7 @@ Bifrost uses a sophisticated multi-step process to determine if a model is avail
     - Cost calculation for billing
     - Model validation during routing
     - Budget enforcement
+
   </Accordion>
 </AccordionGroup>
 
@@ -219,6 +227,7 @@ Bifrost uses a sophisticated multi-step process to determine if a model is avail
     </Steps>
 
     **Result**: Bifrost is ready with a comprehensive model catalog combining both sources.
+
   </Accordion>
 
   <Accordion title="Ongoing Sync (Background)">
@@ -261,6 +270,7 @@ Bifrost uses a sophisticated multi-step process to determine if a model is avail
     - Pricing URL fails but database has data → Use cached database records
     - Pricing URL fails and no database data → Error logged, existing memory cache retained
     - List models API fails → Log warning, retain existing model pool entries
+
   </Accordion>
 
   <Accordion title="Fallback Strategy">
@@ -296,6 +306,7 @@ Bifrost uses a sophisticated multi-step process to determine if a model is avail
     ```
 
     This design ensures **requests never fail due to sync issues** as long as one data source is available.
+
   </Accordion>
 </AccordionGroup>
 
@@ -307,6 +318,7 @@ The `allowed_models` field in provider configs controls which models can be used
 <Tab title="Wildcard allowed_models (Use Catalog)">
 
 **Configuration**:
+
 ```json
 {
   "provider_configs": [
@@ -320,11 +332,13 @@ The `allowed_models` field in provider configs controls which models can be used
 ```
 
 **Behavior**:
+
 - Bifrost calls `GetModelsForProvider("openai")`
 - Returns all models in `modelPool["openai"]`
 - Request validated against catalog
 
 **Examples**:
+
 ```bash
 # ✅ Allowed (in catalog)
 curl -H "x-bf-vk: vk-123" -d '{"model": "gpt-4o"}'
@@ -337,12 +351,14 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "claude-3-5-sonnet"}'
 ```
 
 **Use Cases**:
+
 - Default behavior for most deployments
 - Automatically stays up-to-date with provider's model offerings
 - No manual model list maintenance required
 
 <Warning>
-Using `"allowed_models": []` (empty array) means **deny all models** — no requests will be served. Use `["*"]` to allow all models via the catalog.
+  Using `"allowed_models": []` (empty array) means **deny all models** — no
+  requests will be served. Use `["*"]` to allow all models via the catalog.
 </Warning>
 
 </Tab>
@@ -350,17 +366,18 @@ Using `"allowed_models": []` (empty array) means **deny all models** — no requ
 <Tab title="Explicit allowed_models (Strict Control)">
 
 **Configuration**:
+
 ```json
 {
   "provider_configs": [
     {
       "provider": "openai",
-      "allowed_models": ["gpt-4o", "gpt-4o-mini"],  // Only these two
+      "allowed_models": ["gpt-4o", "gpt-4o-mini"], // Only these two
       "weight": 1.0
     },
     {
       "provider": "anthropic",
-      "allowed_models": ["claude-3-5-sonnet-20241022"],  // Specific version
+      "allowed_models": ["claude-3-5-sonnet-20241022"], // Specific version
       "weight": 1.0
     }
   ]
@@ -368,12 +385,14 @@ Using `"allowed_models": []` (empty array) means **deny all models** — no requ
 ```
 
 **Behavior**:
+
 - Bifrost validates request model against explicit list
 - Catalog is **ignored** for this provider
 - Supports both direct matches and provider-prefixed entries
 - Case-sensitive matching
 
 **Examples**:
+
 ```bash
 # ✅ Allowed (in explicit list)
 curl -H "x-bf-vk: vk-123" -d '{"model": "gpt-4o"}'
@@ -406,6 +425,7 @@ You can also use provider-prefixed model names in `allowed_models`. Bifrost will
 ```
 
 **How it works**:
+
 ```bash
 # Request without prefix
 curl -H "x-bf-vk: vk-123" -d '{"model": "gpt-4o"}'
@@ -419,6 +439,7 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "gpt-4o"}'
 This is particularly useful for proxy providers (OpenRouter, Vertex) where you want to explicitly control which upstream models are accessible.
 
 **Use Cases**:
+
 - Compliance requirements (only approved models)
 - Cost control (restrict to cheaper models)
 - Version pinning (prevent automatic updates)
@@ -432,6 +453,7 @@ This is particularly useful for proxy providers (OpenRouter, Vertex) where you w
 **Key Concept**: Aliases are **key-level** mappings that allow user-friendly model names to map to provider-specific identifiers.
 
 **How Aliases Work**:
+
 - Defined at the **Key level**, not Virtual Key level
 - Structure: `aliases: {"user-facing-name": "provider-specific-id"}`
 - **Alias key** (left side): User-facing model name used in requests
@@ -440,6 +462,7 @@ This is particularly useful for proxy providers (OpenRouter, Vertex) where you w
 **Azure OpenAI Example**:
 
 Provider configuration with alias mapping:
+
 ```json
 {
   "providers": {
@@ -463,6 +486,7 @@ Provider configuration with alias mapping:
 ```
 
 **What Happens**:
+
 1. **Allowed models derived from aliases**: `["gpt-4o", "gpt-4o-mini"]`
 2. **User requests with alias**: `{"model": "gpt-4o"}`
 3. **Bifrost validates**: `gpt-4o` is in derived allowed models ✅
@@ -496,6 +520,7 @@ Provider configuration with alias mapping:
 ```
 
 **What Happens**:
+
 1. **Allowed models**: `["claude-sonnet", "claude-opus"]` (from alias keys)
 2. **User requests**: `{"model": "claude-sonnet"}`
 3. **Bifrost validates**: `claude-sonnet` in allowed models ✅
@@ -505,6 +530,7 @@ Provider configuration with alias mapping:
 **Priority of Model Restrictions**:
 
 When determining allowed models for a key:
+
 ```
 1. If key.models is NOT empty → Use key.models
 2. Else if aliases exist → Use alias keys
@@ -512,14 +538,15 @@ When determining allowed models for a key:
 ```
 
 **Example with Both**:
+
 ```json
 {
   "keys": [
     {
-      "models": ["gpt-4o", "gpt-3.5-turbo"],  // Explicit restriction
+      "models": ["gpt-4o", "gpt-3.5-turbo"], // Explicit restriction
       "aliases": {
         "gpt-4o": "my-deployment",
-        "gpt-4-turbo": "another-deployment"  // NOT accessible!
+        "gpt-4-turbo": "another-deployment" // NOT accessible!
       },
       "azure_key_config": {
         "endpoint": "https://your-resource.openai.azure.com"
@@ -528,9 +555,11 @@ When determining allowed models for a key:
   ]
 }
 ```
+
 Result: Only `["gpt-4o", "gpt-3.5-turbo"]` allowed (models field takes priority)
 
 **Vertex Example** (similar pattern):
+
 ```json
 {
   "keys": [
@@ -549,12 +578,14 @@ Result: Only `["gpt-4o", "gpt-3.5-turbo"]` allowed (models field takes priority)
 ```
 
 **Use Cases for Aliases**:
+
 - **Azure**: Map generic model names to specific deployment names in your Azure resource
 - **Bedrock**: Use short aliases for long inference profile ARNs
 - **Vertex**: Map to specific model versions or regional endpoints
 - **Multi-environment**: Different aliases per key (dev/staging/prod)
 
 **Key Insight**:
+
 ```
 User Request: {"model": "gpt-4o"}
               ↓
@@ -574,6 +605,7 @@ This allows user-friendly model names in requests while supporting provider-spec
 <Tab title="Cross-Provider Model Routing">
 
 **Configuration**:
+
 ```json
 {
   "provider_configs": [
@@ -592,12 +624,14 @@ This allows user-friendly model names in requests while supporting provider-spec
 ```
 
 **Request**:
+
 ```bash
 curl -H "x-bf-vk: vk-123" \
      -d '{"model": "gpt-4o"}'
 ```
 
 **Routing Behavior**:
+
 1. **Model validation**: Both providers have `gpt-4o` in allowed_models ✅
 2. **Weighted selection**: 50% chance each
 3. **Provider selected**: Let's say Azure
@@ -623,6 +657,7 @@ curl -H "x-bf-vk: vk-123" \
     - Bifrost checks: `GetModelsForProvider("openrouter")`
     - Finds: `anthropic/claude-3-5-sonnet` in OpenRouter catalog
     - ✅ Allowed, routes to OpenRouter
+
   </Step>
 
   <Step title="Weighted Routing via Proxy Provider">
@@ -653,6 +688,7 @@ curl -H "x-bf-vk: vk-123" \
     - **Fallbacks**: `["openai/gpt-4o"]` (1% provider as fallback)
 
     **Why this works**: Bifrost now supports provider-prefixed entries in `allowed_models`, so `"openai/gpt-4o"` matches requests for `"gpt-4o"`.
+
   </Step>
 
   <Step title="Vertex as Multi-Provider Gateway">
@@ -672,6 +708,7 @@ curl -H "x-bf-vk: vk-123" \
     - Finds: `["anthropic", "vertex", "bedrock"]`
     - Validation: `claude-3-5-sonnet` in allowed_models ✅
     - Sends to Vertex as: `anthropic/claude-3-5-sonnet`
+
   </Step>
 
   <Step title="Groq OpenAI Compatibility">
@@ -690,6 +727,7 @@ curl -H "x-bf-vk: vk-123" \
     - Special handling: Checks Groq catalog for `openai/gpt-3.5-turbo`
     - ✅ Found, validation passes
     - Sends to Groq as: `openai/gpt-3.5-turbo`
+
   </Step>
 </Steps>
 
@@ -704,6 +742,7 @@ curl -H "x-bf-vk: vk-123" \
 When a Virtual Key has `provider_configs`, governance uses the model catalog for validation:
 
 **Wildcard allowed_models Example**:
+
 ```json
 {
   "provider_configs": [
@@ -717,6 +756,7 @@ When a Virtual Key has `provider_configs`, governance uses the model catalog for
 ```
 
 **Request Flow**:
+
 ```bash
 curl -H "x-bf-vk: vk-123" -d '{"model": "gpt-4o"}'
 
@@ -727,6 +767,7 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "gpt-4o"}'
 ```
 
 **Rejection Example**:
+
 ```bash
 curl -H "x-bf-vk: vk-123" -d '{"model": "claude-3-5-sonnet"}'
 
@@ -743,6 +784,7 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "claude-3-5-sonnet"}'
 When load balancing selects providers, it queries the catalog to find candidates:
 
 **Request Flow**:
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "gpt-4o", "messages": [...]}'
@@ -757,6 +799,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 **Cross-Provider Discovery**:
+
 ```bash
 curl -d '{"model": "claude-3-5-sonnet"}'
 
@@ -777,7 +820,57 @@ This is how Bifrost achieves **intelligent cross-provider routing** without manu
 </Tabs>
 
 <Note>
-**Model Catalog is essential for cross-provider routing**. Without it, Bifrost wouldn't know that `gpt-4o` is available from OpenAI, Azure, and Groq, or that `claude-3-5-sonnet` can be routed through Anthropic, Vertex, Bedrock, and OpenRouter. This knowledge powers both governance validation and load balancing provider discovery.
+  **Model Catalog is essential for cross-provider routing**. Without it, Bifrost
+  wouldn't know that `gpt-4o` is available from OpenAI, Azure, and Groq, or that
+  `claude-3-5-sonnet` can be routed through Anthropic, Vertex, Bedrock, and
+  OpenRouter. This knowledge powers both governance validation and load
+  balancing provider discovery.
+</Note>
+
+---
+
+## Default Provider Resolution
+
+<Info>
+  Default provider resolution via model catalog is available in **Bifrost
+  v1.5.0-prerelease7 and above**.
+</Info>
+
+When a request includes a bare model name without a `provider/` prefix (e.g., `"model": "gpt-4o"` instead of `"model": "openai/gpt-4o"`), Bifrost automatically resolves the provider using the Model Catalog. Note that this default behavior is applied **after all other routing engines** have run.
+
+### How It Works
+
+1. **Request arrives** without a provider prefix (e.g., `"model": "gpt-4o"`)
+2. **Catalog lookup**: Bifrost calls `GetProvidersForModel("gpt-4o")` to find all providers that support the model
+3. **Provider selected**: A provider from the catalog's available list is used (e.g., `openai`)
+4. **Request continues**: The resolved `provider/model` string is used for load balancing and fallback handling
+
+This is logged as the **`model-catalog`** routing engine in telemetry and routing logs, with a message like:
+
+```
+No provider specified for model gpt-4o, found 3 options in model catalog:
+[openai, azure, groq], selecting first: openai
+```
+
+### Example
+
+```bash
+# These two requests are equivalent when the model catalog
+# maps gpt-4o → openai as the first provider:
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+<Note>
+  If the model catalog is not available or the model is not found in any
+  provider, the request returns an error asking for the `provider/model` format.
+  For deterministic provider selection, always use the explicit `provider/model`
+  prefix.
 </Note>
 
 ---
@@ -858,13 +951,13 @@ When a Virtual Key has `provider_configs` defined:
 
 ### Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **Explicit Control** | Define exactly which providers and models are accessible |
-| **Budget Enforcement** | Automatically exclude providers exceeding budget limits |
-| **Rate Limit Protection** | Skip providers that have hit rate limits |
-| **Weighted Distribution** | Control traffic distribution with custom weights |
-| **Automatic Fallbacks** | Failed providers automatically retry with next highest weight |
+| Feature                   | Description                                                   |
+| ------------------------- | ------------------------------------------------------------- |
+| **Explicit Control**      | Define exactly which providers and models are accessible      |
+| **Budget Enforcement**    | Automatically exclude providers exceeding budget limits       |
+| **Rate Limit Protection** | Skip providers that have hit rate limits                      |
+| **Weighted Distribution** | Control traffic distribution with custom weights              |
+| **Automatic Fallbacks**   | Failed providers automatically retry with next highest weight |
 
 ### Best Practices
 
@@ -921,6 +1014,7 @@ When a Virtual Key has `provider_configs` defined:
 **`allowed_models: []` (empty array)**: Denies **all** models — no requests will be served for this provider config. This is deny-by-default behavior introduced in v1.5.0.
 
 **Empty `provider_configs`**: When `provider_configs` is empty (no providers configured), **all providers are blocked** (deny-by-default). You must explicitly add provider configurations to allow traffic through a Virtual Key.
+
 </Note>
 
 ---
@@ -928,7 +1022,9 @@ When a Virtual Key has `provider_configs` defined:
 ## Adaptive Load Balancing
 
 <Info>
-**Enterprise Feature**: Adaptive Load Balancing is available in Bifrost Enterprise. [Contact us](https://www.getmaxim.ai/bifrost/enterprise) to enable it.
+  **Enterprise Feature**: Adaptive Load Balancing is available in Bifrost
+  Enterprise. [Contact us](https://www.getmaxim.ai/bifrost/enterprise) to enable
+  it.
 </Info>
 
 Adaptive Load Balancing automatically optimizes routing based on real-time performance metrics. It operates at **two levels** to provide both macro-level provider selection and micro-level key optimization.
@@ -936,10 +1032,10 @@ Adaptive Load Balancing automatically optimizes routing based on real-time perfo
 ### Two-Level Architecture
 
 <Card title="Why Two Levels?" icon="layer-group">
-Separating provider selection (direction) from key selection (route) enables:
-- **Provider-level optimization**: Choose the best provider for a model based on aggregate performance
-- **Key-level optimization**: Within that provider, choose the best API key based on individual key performance
-- **Resilience**: Even when provider is specified (by governance or user), key-level load balancing still optimizes which API key to use
+  Separating provider selection (direction) from key selection (route) enables:
+  - **Provider-level optimization**: Choose the best provider for a model based on aggregate performance
+  - **Key-level optimization**: Within that provider, choose the best API key based on individual key performance
+  - **Resilience**: Even when provider is specified (by governance or user), key-level load balancing still optimizes which API key to use
 </Card>
 
 ```mermaid
@@ -1007,7 +1103,9 @@ Score = (P_{error} \times 0.5) + (P_{latency} \times 0.2) + (P_{util} \times 0.0
 $$
 
 <Tip>
-Lower penalties = Higher weights = More traffic. The system self-heals by quickly penalizing failing routes but enabling fast recovery once issues are resolved.
+  Lower penalties = Higher weights = More traffic. The system self-heals by
+  quickly penalizing failing routes but enabling fast recovery once issues are
+  resolved.
 </Tip>
 
 ### Request Flow
@@ -1043,25 +1141,28 @@ Lower penalties = Higher weights = More traffic. The system self-heals by quickl
 
 ### Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **Automatic Optimization** | No manual weight tuning required |
-| **Real-time Adaptation** | Weights recomputed every 5 seconds based on live metrics |
-| **Circuit Breakers** | Failing routes automatically removed from rotation |
-| **Fast Recovery** | 90% penalty reduction in 30 seconds after issues resolve |
-| **Health States** | Routes transition between Healthy, Degraded, Failed, and Recovering |
-| **Smart Exploration** | 25% chance to probe potentially recovered routes |
-
+| Feature                    | Description                                                         |
+| -------------------------- | ------------------------------------------------------------------- |
+| **Automatic Optimization** | No manual weight tuning required                                    |
+| **Real-time Adaptation**   | Weights recomputed every 5 seconds based on live metrics            |
+| **Circuit Breakers**       | Failing routes automatically removed from rotation                  |
+| **Fast Recovery**          | 90% penalty reduction in 30 seconds after issues resolve            |
+| **Health States**          | Routes transition between Healthy, Degraded, Failed, and Recovering |
+| **Smart Exploration**      | 25% chance to probe potentially recovered routes                    |
 
 ### Dashboard Visibility
 
 Monitor load balancing performance in real-time:
 
 <Frame>
-  <img src="/media/ui-load-balancing.png" alt="Adaptive Load Balancing Dashboard" />
+  <img
+    src="/media/ui-load-balancing.png"
+    alt="Adaptive Load Balancing Dashboard"
+  />
 </Frame>
 
 The dashboard shows:
+
 - Weight distribution across provider-model-key routes
 - Performance metrics (error rates, latency, success rates)
 - State transitions (Healthy → Degraded → Failed → Recovering)
@@ -1079,6 +1180,7 @@ When both methods are available in your Bifrost deployment, they work together i
 - **Level 2 (Route/Key)**: **Always runs**, even when provider is specified
 
 This means key-level optimization works regardless of how the provider was chosen!
+
 </Warning>
 
 ### Execution Flow
@@ -1138,7 +1240,9 @@ flowchart TD
    - **Result**: Optimal key selected within the provider
 
 <Info>
-**Important**: Even when governance specifies `azure/gpt-4o`, load balancing **still optimizes which Azure key to use** based on performance metrics. This is the power of the two-level architecture!
+  **Important**: Even when governance specifies `azure/gpt-4o`, load balancing
+  **still optimizes which Azure key to use** based on performance metrics. This
+  is the power of the two-level architecture!
 </Info>
 
 ### Example Scenarios
@@ -1147,10 +1251,12 @@ flowchart TD
 <Tab title="Governance Only">
 
 **Setup:**
+
 - Virtual Key has `provider_configs` defined
 - No adaptive load balancing enabled
 
 **Request:**
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "x-bf-vk: vk-prod-main" \
@@ -1158,6 +1264,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 **Behavior:**
+
 1. **Governance** applies weighted provider routing → selects Azure (70% weight)
 2. Model becomes `azure/gpt-4o`
 3. **Standard key selection** (non-adaptive) chooses an Azure key based on static weights
@@ -1168,17 +1275,20 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Load Balancing Only">
 
 **Setup:**
+
 - **No Virtual Key** (do not send `x-bf-vk`) → this is the **Load Balancing–only** setup
 - **Virtual Key with empty / missing `provider_configs`** → **blocks all providers** (deny-by-default) and therefore is **NOT** an LB-only setup
 - Adaptive load balancing enabled
 
 **Request:**
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "gpt-4o", "messages": [...]}'
 ```
 
 **Behavior:**
+
 1. **Load Balancing Level 1** applies performance-based provider routing → selects OpenAI (best performing)
 2. Model becomes `openai/gpt-4o`
 3. **Load Balancing Level 2** selects best OpenAI key based on performance metrics (error rate, latency, TPM status)
@@ -1189,11 +1299,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Both Available (Governance + Load Balancing)">
 
 **Setup:**
+
 - Virtual Key has `provider_configs` defined
 - Adaptive load balancing enabled
 - Azure has 3 keys: `azure-key-1`, `azure-key-2`, `azure-key-3`
 
 **Request:**
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "x-bf-vk: vk-prod-main" \
@@ -1201,6 +1313,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 **Behavior:**
+
 1. **Governance** applies first (respects explicit user config) → selects Azure provider
 2. Model becomes `azure/gpt-4o`
 3. **Load Balancing Level 1** sees "/" and **skips provider selection** (already decided)
@@ -1218,16 +1331,19 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Manual Provider Selection">
 
 **Setup:**
+
 - Both governance and load balancing enabled
 - OpenAI has 2 keys available
 
 **Request:**
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{"model": "openai/gpt-4o", "messages": [...]}'
 ```
 
 **Behavior:**
+
 1. **Governance** sees "/" and skips
 2. **Load Balancing Level 1** sees "/" and **skips provider selection**
 3. **Load Balancing Level 2** still runs! Selects best OpenAI key based on current metrics
@@ -1240,13 +1356,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Provider vs Key Selection Rules
 
-| Scenario | Provider Selection | Key Selection |
-|----------|-------------------|---------------|
-| VK with provider_configs | **Governance** (weighted random) | **Standard** or **Adaptive** (if enabled) |
-| VK without provider_configs + LB | **Blocked** (empty = no providers allowed) | N/A |
-| No VK + LB | **Load Balancing Level 1** (performance) | **Load Balancing Level 2** (performance) |
-| Model with provider prefix + LB | **Skip** (already specified) | **Load Balancing Level 2** (performance) ✅ |
-| No Load Balancing enabled | **Governance** or **User** or **Model Catalog** | **Standard** (static weights) |
+| Scenario                         | Provider Selection                              | Key Selection                               |
+| -------------------------------- | ----------------------------------------------- | ------------------------------------------- |
+| VK with provider_configs         | **Governance** (weighted random)                | **Standard** or **Adaptive** (if enabled)   |
+| VK without provider_configs + LB | **Blocked** (empty = no providers allowed)      | N/A                                         |
+| No VK + LB                       | **Load Balancing Level 1** (performance)        | **Load Balancing Level 2** (performance)    |
+| Model with provider prefix + LB  | **Skip** (already specified)                    | **Load Balancing Level 2** (performance) ✅ |
+| No Load Balancing enabled        | **Governance** or **User** or **Model Catalog** | **Standard** (static weights)               |
 
 <Note>
 **Critical Insight**:
@@ -1254,6 +1370,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 - **Key selection** runs independently and benefits from load balancing **even when provider is predetermined**
 
 This separation is what makes the two-level architecture so powerful!
+
 </Note>
 
 ---
@@ -1261,7 +1378,11 @@ This separation is what makes the two-level architecture so powerful!
 ## Routing Rules (Dynamic Expression-Based Routing)
 
 <Info>
-**Position in routing pipeline**: Routing Rules execute **before governance provider selection** and can override it. They are evaluated before adaptive load balancing, enabling dynamic provider/model overrides based on runtime conditions like headers, parameters, capacity metrics, and organizational hierarchy.
+  **Position in routing pipeline**: Routing Rules execute **before governance
+  provider selection** and can override it. They are evaluated before adaptive
+  load balancing, enabling dynamic provider/model overrides based on runtime
+  conditions like headers, parameters, capacity metrics, and organizational
+  hierarchy.
 </Info>
 
 ### Overview
@@ -1331,21 +1452,25 @@ request                    // Request rate limit usage %
 ### Examples
 
 #### Route based on user tier
+
 ```cel
 headers["x-tier"] == "premium"   // → openai/gpt-4o
 ```
 
 #### Route to fallback when budget high
+
 ```cel
 budget_used > 85                 // → groq/llama-2 (cheaper)
 ```
 
 #### Route by team
+
 ```cel
 team_name == "ml-research"       // → anthropic/claude-3-opus
 ```
 
 #### Complex multi-condition routing
+
 ```cel
 headers["x-environment"] == "production" &&
 tokens_used < 75 &&
@@ -1367,20 +1492,21 @@ Within each scope, rules are sorted by **priority** (ascending: 0 before 10).
 
 ### Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **CEL Expressions** | Powerful, composable condition language with multiple operators |
-| **Scope Hierarchy** | Rules at VirtualKey/Team/Customer/Global levels with proper precedence |
-| **Dynamic Override** | Override provider and/or model based on runtime conditions |
-| **Fallback Chains** | Define multiple fallback providers for automatic failover |
-| **Priority Ordering** | Lower priority evaluated first within same scope |
-| **Capacity Awareness** | Access real-time budget and rate limit usage percentages |
+| Feature                | Description                                                            |
+| ---------------------- | ---------------------------------------------------------------------- |
+| **CEL Expressions**    | Powerful, composable condition language with multiple operators        |
+| **Scope Hierarchy**    | Rules at VirtualKey/Team/Customer/Global levels with proper precedence |
+| **Dynamic Override**   | Override provider and/or model based on runtime conditions             |
+| **Fallback Chains**    | Define multiple fallback providers for automatic failover              |
+| **Priority Ordering**  | Lower priority evaluated first within same scope                       |
+| **Capacity Awareness** | Access real-time budget and rate limit usage percentages               |
 
 ### Integration with Governance
 
 Routing Rules execute **before** governance provider selection and can override it:
 
 **If a routing rule matches**:
+
 ```
 Routing Rules evaluate
                     ↓
@@ -1394,6 +1520,7 @@ Load Balancing selects best key
 ```
 
 **If no routing rule matches**:
+
 ```
 Routing Rules evaluate
                     ↓
@@ -1479,16 +1606,31 @@ For complete documentation, see [Routing Rules Documentation](/providers/routing
 ## Additional Resources
 
 <CardGroup cols={2}>
-  <Card title="Governance Routing" icon="shield-check" href="/features/governance/routing">
-    Configuration instructions for setting up governance routing via Virtual Keys (Web UI, API, config.json)
+  <Card
+    title="Governance Routing"
+    icon="shield-check"
+    href="/features/governance/routing"
+  >
+    Configuration instructions for setting up governance routing via Virtual
+    Keys (Web UI, API, config.json)
   </Card>
   <Card title="Routing Rules" icon="sliders" href="/providers/routing-rules">
-    Dynamic, expression-based routing using CEL expressions for runtime conditions
+    Dynamic, expression-based routing using CEL expressions for runtime
+    conditions
   </Card>
-  <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
-    Technical implementation details: scoring algorithms, weight calculations, and performance characteristics
+  <Card
+    title="Adaptive Load Balancing"
+    icon="brain"
+    href="/enterprise/adaptive-load-balancing"
+  >
+    Technical implementation details: scoring algorithms, weight calculations,
+    and performance characteristics
   </Card>
-  <Card title="Virtual Keys" icon="key" href="/features/governance/virtual-keys">
+  <Card
+    title="Virtual Keys"
+    icon="key"
+    href="/features/governance/virtual-keys"
+  >
     Learn how to create and configure Virtual Keys
   </Card>
   <Card title="Fallbacks" icon="arrow-rotate-right" href="/features/fallbacks">

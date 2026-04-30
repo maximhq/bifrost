@@ -86,12 +86,7 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(
-		ctx,
-		h.handlerStore.ShouldAllowDirectKeys(),
-		h.config.GetHeaderMatcher(),
-		h.config.GetMCPHeaderCombinedAllowlist(),
-	)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	defer cancel()
 	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	if route.DefaultProvider == schemas.OpenAI {

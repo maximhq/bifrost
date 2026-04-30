@@ -64,8 +64,8 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// GetHeaderMatcher returns the precompiled header matcher for header filtering
 	GetHeaderMatcher() *HeaderMatcher
-	// GetAvailableProviders returns the list of available providers
-	GetAvailableProviders() []schemas.ModelProvider
+	// GetProvidersForModel returns the list of providers that can serve a given model.
+	GetProvidersForModel(model string) []schemas.ModelProvider
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
 	// Returns nil if no plugins are loaded or streaming interception is not needed.
 	GetStreamChunkInterceptor() StreamChunkInterceptor
@@ -79,6 +79,13 @@ type HandlerStore interface {
 	GetKVStore() *kvstore.Store
 	// GetMCPHeaderCombinedAllowlist returns the combined allowlist for MCP headers
 	GetMCPHeaderCombinedAllowlist() schemas.WhiteList
+	// ShouldAllowPerRequestStorageOverride returns whether per-request overrides for content storage are permitted
+	ShouldAllowPerRequestStorageOverride() bool
+	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
+	ShouldAllowPerRequestRawOverride() bool
+	// GetMCPExternalBaseURL returns the configured external base URL for OAuth callbacks/metadata,
+	// or empty string if not configured (falls back to dynamic Host-header-based URL).
+	GetMCPExternalBaseURL() string
 }
 
 // Retry backoff constants for validation
@@ -1170,10 +1177,14 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 			config.ClientConfig.MCPAgentDepth = mcpCfg.ToolManagerConfig.MaxAgentDepth
 			changed = true
 		}
-		toolTimeoutSec := int(mcpCfg.ToolManagerConfig.ToolExecutionTimeout / time.Second)
-		if toolTimeoutSec > 0 && config.ClientConfig.MCPToolExecutionTimeout != toolTimeoutSec {
-			config.ClientConfig.MCPToolExecutionTimeout = toolTimeoutSec
-			changed = true
+		if d := mcpCfg.ToolManagerConfig.ToolExecutionTimeout.D(); d > 0 {
+			// Ceiling-round to whole seconds: any sub-second value (e.g. 500ms) becomes 1s
+			// rather than being truncated to 0 and silently treated as "unset".
+			toolTimeoutSec := int(math.Ceil(d.Seconds()))
+			if config.ClientConfig.MCPToolExecutionTimeout != toolTimeoutSec {
+				config.ClientConfig.MCPToolExecutionTimeout = toolTimeoutSec
+				changed = true
+			}
 		}
 		if mcpCfg.ToolManagerConfig.CodeModeBindingLevel != "" {
 			codeModeLevel := string(mcpCfg.ToolManagerConfig.CodeModeBindingLevel)
@@ -2615,8 +2626,8 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 					Order:     plugin.Order,
 				}
 				if plugin.Name == semanticcache.PluginName {
-					if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
-						logger.Warn("failed to add provider keys to semantic cache config: %v", err)
+					if err := config.ValidateSemanticCacheConfig(pluginConfig); err != nil {
+						logger.Warn("failed to validate semantic cache config: %v", err)
 					}
 				}
 				config.PluginConfigs[i] = pluginConfig
@@ -2685,16 +2696,6 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 		}
 	}
 
-	// Process semantic cache plugin
-	for i, plugin := range config.PluginConfigs {
-		if plugin.Name == semanticcache.PluginName {
-			if err := config.AddProviderKeysToSemanticCacheConfig(plugin); err != nil {
-				logger.Warn("failed to add provider keys to semantic cache config: %v", err)
-			}
-			config.PluginConfigs[i] = plugin
-		}
-	}
-
 	// Update store
 	if config.ConfigStore != nil {
 		logger.Debug("updating plugins in store")
@@ -2715,11 +2716,6 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 				Version:   *plugin.Version,
 				Placement: plugin.Placement,
 				Order:     plugin.Order,
-			}
-			if plugin.Name == semanticcache.PluginName {
-				if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {
-					logger.Warn("failed to remove provider keys from semantic cache config: %v", err)
-				}
 			}
 			if err := config.ConfigStore.UpsertPlugin(ctx, pluginConfig); err != nil {
 				logger.Warn("failed to update plugin: %v", err)
@@ -3251,6 +3247,22 @@ func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
 }
 
+// ShouldAllowPerRequestStorageOverride returns whether per-request content storage overrides are permitted.
+func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
+	return c.ClientConfig.AllowPerRequestContentStorageOverride
+}
+
+// ShouldAllowPerRequestRawOverride returns whether per-request raw request/response overrides are permitted.
+func (c *Config) ShouldAllowPerRequestRawOverride() bool {
+	return c.ClientConfig.AllowPerRequestRawOverride
+}
+
+// GetMCPExternalBaseURL returns the configured external base URL for OAuth callbacks and metadata,
+// or empty string if not configured. Resolves env var references automatically.
+func (c *Config) GetMCPExternalBaseURL() string {
+	return c.ClientConfig.MCPExternalBaseURL.GetValue()
+}
+
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.
 // Lock-free via atomic pointer; safe for concurrent reads from hot paths.
 func (c *Config) GetHeaderMatcher() *HeaderMatcher {
@@ -3369,6 +3381,28 @@ func (c *Config) GetPerUserOAuthMCPClientsForVirtualKey(ctx context.Context, vir
 		}
 	}
 	return result
+}
+
+// GetProvidersForModel returns the list of providers for a given model, sorted
+// deterministically so callers picking providers[0] always get the same result.
+func (c *Config) GetProvidersForModel(model string) []schemas.ModelProvider {
+	if c.ModelCatalog == nil {
+		return []schemas.ModelProvider{}
+	}
+	providersInCatalog := c.ModelCatalog.GetProvidersForModel(model)
+	// Filter out the providers which are not present in the configured provider list for the client
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	allowedProviders := make([]schemas.ModelProvider, 0, len(providersInCatalog))
+	for configuredProvider := range c.Providers {
+		if slices.Contains(providersInCatalog, configuredProvider) {
+			allowedProviders = append(allowedProviders, configuredProvider)
+		}
+	}
+	slices.SortFunc(allowedProviders, func(a, b schemas.ModelProvider) int {
+		return strings.Compare(string(a), string(b))
+	})
+	return allowedProviders
 }
 
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
@@ -4756,7 +4790,7 @@ func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.Provider
 	return nil
 }
 
-func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConfig) error {
+func (c *Config) ValidateSemanticCacheConfig(config *schemas.PluginConfig) error {
 	if config.Name != semanticcache.PluginName {
 		return nil
 	}
@@ -4825,12 +4859,10 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	}
 	configMap["embedding_model"] = embeddingModel
 
-	keys, err := c.GetProviderConfigRaw(schemas.ModelProvider(provider))
-	if err != nil {
+	// Validate that the provider is configured in the global client (keys are inherited automatically).
+	if _, err := c.GetProviderConfigRaw(schemas.ModelProvider(provider)); err != nil {
 		return fmt.Errorf("failed to get provider config for %s: %w", provider, err)
 	}
-
-	configMap["keys"] = keys.Keys
 
 	return nil
 }
@@ -4877,49 +4909,6 @@ func semanticCacheConfigDimension(configMap map[string]interface{}) (int, bool, 
 	default:
 		return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be numeric, got %T", dimensionVal)
 	}
-}
-
-func (c *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstoreTables.TablePlugin) error {
-	if config.Name != semanticcache.PluginName {
-		return nil
-	}
-
-	// Check if config.Config exists
-	if config.Config == nil {
-		return fmt.Errorf("semantic_cache plugin config is nil")
-	}
-
-	// Type assert config.Config to map[string]interface{}
-	configMap, ok := config.Config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
-	}
-
-	configMap["keys"] = []schemas.Key{}
-
-	config.Config = configMap
-
-	return nil
-}
-
-func (c *Config) GetAvailableProviders() []schemas.ModelProvider {
-	c.Mu.RLock()
-	defer c.Mu.RUnlock()
-	availableProviders := []schemas.ModelProvider{}
-	for provider, config := range c.Providers {
-		// Check if the provider has at least one key with a non-empty value. If so, add the provider to the list.
-		// If the provider allows empty keys, add the provider to the list.
-		for _, key := range config.Keys {
-			if key.Value.GetValue() != "" || bifrost.CanProviderKeyValueBeEmpty(provider) {
-				if key.Enabled != nil && !*key.Enabled {
-					continue
-				}
-				availableProviders = append(availableProviders, provider)
-				break
-			}
-		}
-	}
-	return availableProviders
 }
 
 func DeepCopy[T any](in T) (T, error) {

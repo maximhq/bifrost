@@ -165,7 +165,9 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 		// Get token metadata
 		token, err := h.store.ConfigStore.GetOauthTokenByID(context.Background(), *oauthConfig.TokenID)
 		if err == nil && token != nil {
-			response["token_expires_at"] = token.ExpiresAt
+			if token.ExpiresAt != nil {
+				response["token_expires_at"] = token.ExpiresAt
+			}
 			response["token_scopes"] = token.Scopes
 		}
 	}

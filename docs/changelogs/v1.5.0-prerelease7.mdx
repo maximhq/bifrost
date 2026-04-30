@@ -1,0 +1,169 @@
+---
+title: "v1.5.0-prerelease7"
+description: "v1.5.0-prerelease7 changelog - 2026-04-29"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.0-prerelease7
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.0-prerelease7
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.0-prerelease7
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.0-prerelease7">
+## ✨ Features
+
+- **Passthrough Streaming Accumulation** — Added accumulator for passthrough streaming responses, enabling proper logging and cost tracking on raw provider streams
+- **Auto-Resolve Provider** — Inference and integration routes now auto-resolve the provider when no provider prefix is given on the model name
+- **Per-Request Content Logging Overrides** — Opt-in per-request overrides for content logging and raw request/response visibility, with DB migrations and live-reload
+- **Unified Dimension Headers (`x-bf-dim-*`)** — New unified dimension headers automatically forwarded to logs, traces, Prometheus, and Maxim tags
+- **OpenAI Realtime Audio (Base64)** — Audio base64 encoding support for OpenAI realtime provider (thanks [@Mahmoud-Khater](https://github.com/Mahmoud-Khater)!)
+- **Local Cache Hit Rate Speedometer** — Dashboard speedometer showing local cache hit rate (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- **VK-Scoped Model Lists** — Model list endpoints now scoped to virtual-key-allowed providers and models via request headers
+- **MCP Reverse Proxy OAuth** — External base URL support for reverse-proxy MCP OAuth flows
+- **`schemas.Duration` Type** — Go duration string support for MCP, Redis, Weaviate, and mocker duration fields
+- **Finish Reasons in OTEL Root Spans** — Finish reasons added to root spans, with correct model and provider names propagated
+- **Routing Rules Scope Cache** — Cache routing rules per scope upfront, plus model-catalog routing engine label and icon
+
+## 🐞 Fixed
+
+- **OTEL Cost Info** — Fixed cost info in OTEL calls and response tools
+- **Migrations Conflict Resolution** — Fixed migrations for conflicts
+- **WebSocket /responses Reliability** — WebSocket responses now working with improved logging, cost tracking, and VK stripping
+- **MarshalJSON Auto-Redaction** — Removed `MarshalJSON` auto-redaction; explicit redaction now applied to env-backed fields in `ProxyConfig`, `ClientConfig`, and `AzureKeyConfig`
+- **Vertex `google/` Prefix** — Strip `google/` prefix from Vertex model IDs across all request types
+- **Vertex Multi-Region Routing** — Multi-region-only models now route to multi-region endpoints when the provider key is configured for a single region only
+- **OAuth Token `expires_at`** — `expires_at` is now nullable; refresh/reconnect guarded on nil expiry
+- **OpenAI Responses Tool Fields** — Preserved tool fields in OpenAI responses (thanks [@princepal9120](https://github.com/princepal9120)!)
+- **Semantic Cache Determinism** — Deterministic request hashing and `CacheDebug` propagation in streaming (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- **Streaming Pool-Reuse Corruption** — Snapshot `RequestType` before closure to prevent pool-reuse corruption in streaming requests
+- **Self-Looping Chain Rules** — Chain rules with self-loops now continue evaluating subsequent rules instead of halting
+- **Default Routing Provider Filter** — Filter out unconfigured providers in default routing
+- **Network Config Fallback for Ollama/SGL** — Fall back to network config if key config URL is not set for Ollama and SGL
+- **`base_url` Backward Compatibility** — `base_url` added to `network_config` for backward compatibility
+- **Streaming Pipeline `RawRequest`** — Propagate `RawRequest` through streaming pipeline and fix pool leak (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- **Logging Streaming Errors** — Improved streaming error handling in logging plugin (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- **`governance_budgets` Join** — Corrected join condition to use `virtual_key_id`
+- **OTEL Input/Output Messages** — Fixed input/output messages propagation to root span
+- **`resolvePeriod` UTC** — Fixed UTC handling in `resolvePeriod` time calculation
+- **Dockerfile.local** — `Dockerfile.local` now uses local packages (thanks [@ReStranger](https://github.com/ReStranger)!)
+- **Semanticcache Provider Keys** — Inherit provider keys from global client in semanticcache plugin
+
+## 🔧 Maintenance
+
+- **Helm Chart Upgrades** — Guardrails Helm chart upgrade; Helm `apply` step added; Kubernetes pod-discovery RBAC templates added
+- **Dashboard UI Polish** — Popover scrolling, sheets/cluster page indentation, save-button validation, dialog overflow, fixed `ChartCard` heights, broader `ComboboxSelect` adoption (pricing, routing, assignment fields)
+- **Plugin Lifecycle Logging** — Added log level param to `AppendRoutingEngineLog`; trimmed unused dependencies in semanticcache
+- **OpenAPI Regeneration** — Regenerated `openapi.json`
+
+</Update>
+<Update label="Core" description="1.5.6">
+- feat: add passthrough streaming accumulation
+- feat: add `x-bf-dim-*` unified dimension headers forwarded to logs, traces, Prometheus, and Maxim tags
+- feat: add `schemas.Duration` type with Go duration string support for MCP, Redis, Weaviate, and mocker duration fields
+- feat: add audio base64 encoding for OpenAI realtime provider (thanks [@Mahmoud-Khater](https://github.com/Mahmoud-Khater)!)
+- feat: auto-resolve provider when no provider prefix is given on inference and integration routes
+- feat: add opt-in per-request overrides for content logging and raw request/response visibility
+- feat: add finish reasons to root spans with correct model and provider names in OTEL
+- fix: fix cost info in OTEL calls and response tools
+- fix: remove `MarshalJSON` auto-redaction; apply explicit redaction for env-backed fields in `ProxyConfig`, `ClientConfig`, and `AzureKeyConfig`
+- fix: strip `google/` prefix from Vertex model IDs across all request types
+- fix: snapshot `RequestType` before closure to prevent pool-reuse corruption in streaming
+- fix: fallback to network config if key config url is not set for ollama and sgl
+- fix: route vertex multi-region-only models to multi-region endpoints when key is single-region
+- fix: make OAuth token `expires_at` nullable and guard refresh/reconnect on nil expiry
+- fix: preserve responses tool fields in openai (thanks [@princepal9120](https://github.com/princepal9120)!)
+- fix: deterministic semanticcache request hashing and `CacheDebug` propagation in streaming (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- chore: env var updates and bedrock cli compatibility changes
+- chore: add ollama and vllm key configs in llmtests
+- test: add roundtrip test for `input_audio_buffer.append` audio serialization
+
+</Update>
+<Update label="Framework" description="1.3.6">
+- feat: add passthrough streaming accumulation
+- feat: dashboard local cache hit rate speedometer (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- feat: add db migrations and live-reload for per-request content storage and raw override flags
+- feat: add external base url support for reverse proxy mcp oauth
+- feat: add opt-in per-request overrides for content logging and raw request/response visibility
+- feat: store and show finish reason in LLM calls
+- feat: add finish reasons to root spans with correct model and provider names in OTEL
+- feat: add `schemas.Duration` type with Go duration string support
+- fix: fix migrations for conflicts
+- fix: fix cost info in OTEL calls and response tools
+- fix: native WebSocket `/responses` working with improved logging and cost tracking
+- fix: remove `MarshalJSON` auto-redaction; explicit redaction for env-backed fields
+- fix: correct `governance_budgets` join condition to use `virtual_key_id`
+- fix: input/output messages propagation to root span for OTEL
+- fix: route vertex multi-region-only models to multi-region endpoints when key is single-region
+- fix: make OAuth token `expires_at` nullable and guard refresh/reconnect
+- fix: propagate `RawRequest` through streaming pipeline and fix pool leak (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- fix: deterministic semanticcache request hashing and `CacheDebug` propagation (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- chore: upgraded core to v1.5.6
+
+</Update>
+<Update label="compat" description="0.1.5">
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="governance" description="1.5.6">
+- perf: cache routing rules per scope upfront and add model-catalog routing engine label and icon
+- fix: allow self-looping chain rules to continue evaluating subsequent rules instead of halting
+- chore: guardrails helm chart upgrade
+- chore: bedrock cli compatibility changes
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="jsonparser" description="1.5.6">
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="logging" description="1.5.6">
+- feat: add passthrough streaming accumulation
+- feat: opt-in per-request overrides for content logging and raw request/response visibility
+- feat: store and show finish reason in LLM calls
+- feat: forward `x-bf-dim-*` unified dimension headers to logs and traces
+- fix: improve streaming error handling (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- fix: deterministic semanticcache request hashing and `CacheDebug` propagation in streaming (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="maxim" description="1.6.6">
+- feat: forward `x-bf-dim-*` unified dimension headers as Maxim tags
+- fix: deterministic request hashing for cache (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="mocker" description="1.5.6">
+- feat: add Go duration string support for mocker duration fields via `schemas.Duration`
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="otel" description="1.2.6">
+- feat: add finish reasons to root spans with correct model and provider names
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="prompts" description="1.0.6">
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="semanticcache" description="1.5.6">
+- feat: add Go duration string support for Redis and Weaviate fields via `schemas.Duration`
+- refactor: inherit provider keys from global client
+- fix: deterministic request hashing and `CacheDebug` propagation in streaming (thanks [@loss-and-quick](https://github.com/loss-and-quick)!)
+- chore: add log level param to `AppendRoutingEngineLog` and trim unused dependencies
+- chore: env var updates
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>
+<Update label="telemetry" description="1.5.6">
+- feat: forward `x-bf-dim-*` unified dimension headers to Prometheus metrics
+- chore: upgraded core to v1.5.6 and framework to v1.3.6
+
+</Update>

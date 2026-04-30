@@ -71,45 +71,47 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent
-				className="p-8"
+				className="p-0"
 				onOpenAutoFocus={(e) => {
 					e.preventDefault();
 					document.getElementById("name")?.focus();
 				}}
 			>
-				<form onSubmit={handleSubmit(onSubmit)}>
-					<SheetHeader className="flex flex-col items-start">
+				<form onSubmit={handleSubmit(onSubmit)} className="flex flex-col grow">
+					<SheetHeader className="flex flex-col items-start px-8 pt-8">
 						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
 						<SheetDescription>
 							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}
 						</SheetDescription>
 					</SheetHeader>
 
-					<div className="mt-6 space-y-4">
-						<div className="space-y-2">
-							<Label htmlFor="name">Name</Label>
-							<Input
-								id="name"
-								data-testid="prompt-name-input"
-								placeholder="Customer Support Assistant"
-								{...register("name", {
-									required: "Prompt name is required",
-									validate: (v) => v.trim().length > 0 || "Prompt name cannot be blank",
-								})}
-								autoFocus
-							/>
-							{errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
+					<div className="flex flex-col gap-6 grow">
+						<div className="space-y-4 grow px-8" >
+							<div className="space-y-2">
+								<Label htmlFor="name">Name</Label>
+								<Input
+									id="name"
+									data-testid="prompt-name-input"
+									placeholder="Customer Support Assistant"
+									{...register("name", {
+										required: "Prompt name is required",
+										validate: (v) => v.trim().length > 0 || "Prompt name cannot be blank",
+									})}
+									autoFocus
+								/>
+								{errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
+							</div>
 						</div>
-					</div>
 
-					<SheetFooter className="mt-6 flex flex-row items-center justify-end gap-2 p-0">
-						<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
-							Cancel
-						</Button>
-						<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
-							{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
-						</Button>
-					</SheetFooter>
+						<SheetFooter className="flex flex-row items-center justify-end gap-2 py-4 px-8 border-t">
+							<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
+								Cancel
+							</Button>
+							<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
+								{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+							</Button>
+						</SheetFooter>
+					</div>
 				</form>
 			</SheetContent>
 		</Sheet>

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -593,7 +594,7 @@ func (g *Gormigrate) insertMigration(id string) error {
 	v.FieldByName("Sequence").SetInt(seq)
 	v.FieldByName("AppliedAt").Set(reflect.ValueOf(time.Now()))
 	v.FieldByName("Status").SetString("success")
-	return g.tx.Table(g.options.TableName).Create(record).Error
+	return g.tx.Table(g.options.TableName).Clauses(clause.OnConflict{DoNothing: true}).Create(record).Error
 }
 
 func (g *Gormigrate) begin() {

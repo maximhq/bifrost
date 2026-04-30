@@ -435,8 +435,28 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"customer_name":       customerName,
 	}
 
-	// Get all custom prometheus labels from context BEFORE the goroutine
+	// Get all custom prometheus labels from context BEFORE the goroutine.
+	// Resolution order (first match wins):
+	//   1. x-bf-dim-* headers (canonical; set by HTTP transport as BifrostContextKeyDimensions)
+	//   2. x-bf-prom-* headers (deprecated; kept for backward compatibility)
+	//   3. Direct BifrostContextKey lookup (Go SDK usage — documented API)
+	dims, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	requestHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	for _, key := range p.customLabels {
+		if dims != nil {
+			if v, ok := dims[key]; ok {
+				labelValues[key] = v
+				continue
+			}
+		}
+		// support for to be deprecated x-bf-prom-* headers
+		if requestHeaders != nil {
+			if v, ok := requestHeaders["x-bf-prom-"+key]; ok {
+				labelValues[key] = v
+				continue
+			}
+		}
+		// fallback: direct context key (Go SDK usage, documented API)
 		if value := ctx.Value(schemas.BifrostContextKey(key)); value != nil {
 			if strValue, ok := value.(string); ok {
 				labelValues[key] = strValue

@@ -331,7 +331,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			if mcpConfig.ToolManagerConfig != nil {
 				codeModeConfig = &mcp.CodeModeConfig{
 					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
-					ToolExecutionTimeout: mcpConfig.ToolManagerConfig.ToolExecutionTimeout,
+					ToolExecutionTimeout: time.Duration(mcpConfig.ToolManagerConfig.ToolExecutionTimeout),
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
@@ -3786,7 +3786,7 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:         maxAgentDepth,
-		ToolExecutionTimeout:  time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
+		ToolExecutionTimeout:  schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
 		DisableAutoToolInject: disableAutoToolInject,
 	})
@@ -4917,23 +4917,27 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			outputStream := make(chan *schemas.BifrostStreamChunk)
 			releasePipeline = false // pipeline is released inside the goroutine after stream drains
 
+			// Snapshot RequestType before the closure. The *BifrostRequest is released
+			// back to bifrostRequestPool when handleStreamRequest returns (via defer);
+			// a concurrent request can reuse it and overwrite RequestType.
+			shortCircuitRequestType := req.RequestType
 			// Create a post hook runner cause pipeline object is put back in the pool on defer
 			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				if result != nil {
-					result.PopulateExtraFields(req.RequestType, provider, model, model)
+					result.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 				}
 				if err != nil {
-					err.PopulateExtraFields(req.RequestType, provider, model, model)
+					err.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 				}
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 				if IsFinalChunk(ctx) {
 					drainAndAttachPluginLogs(ctx)
 				}
 				if bifrostErr != nil {
-					bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+					bifrostErr.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 					return nil, bifrostErr
 				} else if resp != nil {
-					resp.PopulateExtraFields(req.RequestType, provider, model, model)
+					resp.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 				}
 				return resp, nil
 			}
@@ -5353,6 +5357,18 @@ func executeRequestWithRetries[T any](
 		} else {
 			// Populate LLM response attributes for non-streaming responses
 			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
+				// Populate ExtraFields with provider/model/requestType before cost
+				// calculation, because the per-request worker only calls PopulateExtraFields
+				// after executeRequestWithRetries returns (line ~5802).  Without this,
+				// resp.GetExtraFields().Provider is empty and CalculateCost always returns 0.
+				// This is currently done for showing correct OTEL cost calculations. Will check if there is a better way to get this done
+				resolvedModelUsed := model
+				if req != nil {
+					if _, rm, _ := req.GetRequestFields(); rm != "" {
+						resolvedModelUsed = rm
+					}
+				}
+				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
 			}
 
@@ -5522,16 +5538,24 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		// Step 1: compute effective value for each flag (provider config ← per-request override).
 		effectiveSendBackReq := config.SendBackRawRequest
-		if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
-			effectiveSendBackReq = override
+		allowRawOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
+		if allowRawOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
+				effectiveSendBackReq = override
+			}
 		}
 		effectiveSendBackResp := config.SendBackRawResponse
-		if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
-			effectiveSendBackResp = override
+		if allowRawOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
+				effectiveSendBackResp = override
+			}
 		}
 		effectiveStore := config.StoreRawRequestResponse
-		if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
-			effectiveStore = override
+		allowStorageOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool)
+		if allowStorageOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
+				effectiveStore = override
+			}
 		}
 
 		// Step 2: derive per-side capture and strip flags.
@@ -5695,6 +5719,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
+				// Snapshot RequestType before the closure. After tryStreamRequest receives
+				// the stream channel it releases the *ChannelMessage back to the pool;
+				// a concurrent request can then reuse it and overwrite RequestType.
+				// Reading req.RequestType inside the closure would observe the new request's type.
+				attemptRequestType := req.RequestType
 				pipeline := bifrost.getPluginPipeline()
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
@@ -5702,20 +5731,20 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// Uses the per-attempt snapshot — capturing the outer resolvedModel by
 					// reference would let a later retry's alias bleed into this attempt's chunks.
 					if result != nil {
-						result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 					}
 					if err != nil {
-						err.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
 						drainAndAttachPluginLogs(ctx)
 					}
 					if bifrostErr != nil {
-						bifrostErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						return nil, bifrostErr
 					} else if resp != nil {
-						resp.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 					}
 					return resp, nil
 				}
