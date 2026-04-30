@@ -428,8 +428,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
 	}
 
-	// Update external base URL for OAuth callbacks/discovery (nil clears the override).
-	updatedConfig.MCPExternalBaseURL = payload.ClientConfig.MCPExternalBaseURL
+	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
+	updatedConfig.MCPExternalServerURL = payload.ClientConfig.MCPExternalServerURL
+	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {

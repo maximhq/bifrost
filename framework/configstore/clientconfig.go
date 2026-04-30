@@ -75,7 +75,8 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalBaseURL                    *schemas.EnvVar                  `json:"mcp_external_base_url,omitempty"`      // Public base URL for OAuth callbacks/discovery when behind a reverse proxy; supports env var syntax ("env.MY_VAR")
+	MCPExternalServerURL                  *schemas.EnvVar                  `json:"mcp_external_server_url,omitempty"`    // Public base URL advertised in OAuth server metadata (.well-known, WWW-Authenticate). Supports env var syntax ("env.MY_VAR")
+	MCPExternalClientURL                  *schemas.EnvVar                  `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
@@ -314,11 +315,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 	}
 
-	if c.MCPExternalBaseURL.IsSet() {
-		if c.MCPExternalBaseURL.IsFromEnv() {
-			hash.Write([]byte("externalBaseURL:env:" + c.MCPExternalBaseURL.EnvVar))
+	if c.MCPExternalServerURL.IsSet() {
+		if c.MCPExternalServerURL.IsFromEnv() {
+			hash.Write([]byte("externalServerURL:env:" + c.MCPExternalServerURL.EnvVar))
 		} else {
-			hash.Write([]byte("externalBaseURL:val:" + c.MCPExternalBaseURL.GetValue()))
+			hash.Write([]byte("externalServerURL:val:" + c.MCPExternalServerURL.GetValue()))
+		}
+	}
+
+	if c.MCPExternalClientURL.IsSet() {
+		if c.MCPExternalClientURL.IsFromEnv() {
+			hash.Write([]byte("externalClientURL:env:" + c.MCPExternalClientURL.EnvVar))
+		} else {
+			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
 	}
 
@@ -328,8 +337,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 // Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.
 func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
-	if c.MCPExternalBaseURL != nil && c.MCPExternalBaseURL.IsFromEnv() {
-		out.MCPExternalBaseURL = c.MCPExternalBaseURL.Redacted()
+	if c.MCPExternalServerURL != nil && c.MCPExternalServerURL.IsFromEnv() {
+		out.MCPExternalServerURL = c.MCPExternalServerURL.Redacted()
+	}
+	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromEnv() {
+		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
 	}
 	return out
 }

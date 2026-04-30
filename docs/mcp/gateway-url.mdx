@@ -303,6 +303,15 @@ The client then fetches the OAuth metadata and kicks off a consent flow where th
 
 See [Per-User OAuth →](./per-user-oauth) for the full flow and identity options.
 
+### Public URL configuration when behind a proxy
+
+The `WWW-Authenticate` URL above and the `redirect_uri` Bifrost hands to upstream OAuth providers (Notion, Jira, etc.) are both built from the request's `Host` header by default. Behind a reverse proxy that's the proxy's internal address, not its public one. Two settings override this:
+
+- `mcp_external_server_url` - what Bifrost advertises in `.well-known` metadata and `WWW-Authenticate` (read by downstream MCP clients).
+- `mcp_external_client_url` - what Bifrost registers as the `redirect_uri` with upstream OAuth providers.
+
+In most setups both are the same public URL. They can differ when the management/discovery surface and the OAuth callback surface live behind different proxies. See [Reverse Proxy configuration →](../deployment-guides/config-json/client#reverse-proxy) for the full reference and examples.
+
 ---
 
 ## Security Considerations

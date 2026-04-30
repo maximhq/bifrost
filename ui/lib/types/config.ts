@@ -494,7 +494,8 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
-	mcp_external_base_url?: EnvVar;
+	mcp_external_server_url?: EnvVar;
+	mcp_external_client_url?: EnvVar;
 }
 
 export const DefaultCoreConfig: CoreConfig = {

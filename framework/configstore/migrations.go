@@ -620,6 +620,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPExternalBaseURLColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationSplitMCPExternalBaseURL(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationMakeOAuthTokenExpiryNullable(ctx, db); err != nil {
 		return err
 	}
@@ -7157,8 +7160,11 @@ func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB) erro
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
+			// Use raw SQL — the Go field for this column has since been split into
+			// MCPExternalServerURL/MCPExternalClientURL by a follow-up migration, so
+			// we can no longer reference the original field name on the struct.
 			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
-				if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPExternalBaseURL"); err != nil {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_base_url VARCHAR(512)").Error; err != nil {
 					return fmt.Errorf("failed to add mcp_external_base_url column: %w", err)
 				}
 			}
@@ -7168,7 +7174,7 @@ func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB) erro
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
-				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_base_url"); err != nil {
+				if err := tx.Exec("ALTER TABLE config_client DROP COLUMN mcp_external_base_url").Error; err != nil {
 					return fmt.Errorf("failed to drop mcp_external_base_url column: %w", err)
 				}
 			}
@@ -7177,6 +7183,68 @@ func migrationAddMCPExternalBaseURLColumn(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_external_base_url_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "split_mcp_external_base_url_into_server_client",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_server_url") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPExternalServerURL"); err != nil {
+					return fmt.Errorf("failed to add mcp_external_server_url column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_client_url") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPExternalClientURL"); err != nil {
+					return fmt.Errorf("failed to add mcp_external_client_url column: %w", err)
+				}
+			}
+			// Backfill: existing deployments treated mcp_external_base_url as applying
+			// to both roles, so copy it into both new columns to preserve behavior.
+			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
+				if err := tx.Exec(
+					"UPDATE config_client SET mcp_external_server_url = mcp_external_base_url, mcp_external_client_url = mcp_external_base_url WHERE mcp_external_base_url IS NOT NULL AND mcp_external_base_url != ''",
+				).Error; err != nil {
+					return fmt.Errorf("failed to backfill mcp_external_*_url columns: %w", err)
+				}
+				if err := tx.Exec("ALTER TABLE config_client DROP COLUMN mcp_external_base_url").Error; err != nil {
+					return fmt.Errorf("failed to drop mcp_external_base_url column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_base_url") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_base_url VARCHAR(512)").Error; err != nil {
+					return fmt.Errorf("failed to recreate mcp_external_base_url column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_server_url") {
+				if err := tx.Exec(
+					"UPDATE config_client SET mcp_external_base_url = mcp_external_server_url WHERE mcp_external_server_url IS NOT NULL AND mcp_external_server_url != ''",
+				).Error; err != nil {
+					return fmt.Errorf("failed to backfill mcp_external_base_url from mcp_external_server_url: %w", err)
+				}
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_server_url"); err != nil {
+					return fmt.Errorf("failed to drop mcp_external_server_url column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_external_client_url") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "mcp_external_client_url"); err != nil {
+					return fmt.Errorf("failed to drop mcp_external_client_url column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running split_mcp_external_base_url_into_server_client migration: %s", err.Error())
 	}
 	return nil
 }

@@ -228,7 +228,7 @@
           "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
         },
-        "mcp_external_base_url": {
+        "mcp_external_server_url": {
           "anyOf": [
             {
               "type": "string"
@@ -243,7 +243,24 @@
               "additionalProperties": false
             }
           ],
-          "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy (e.g. \"https://api.example.com\"). Supports env var syntax: \"env.MY_VAR\"."
+          "description": "Public base URL Bifrost advertises when acting as an OAuth server/resource (well-known metadata, WWW-Authenticate). Set when Bifrost runs behind a reverse proxy. Supports env var syntax: \"env.MY_VAR\"."
+        },
+        "mcp_external_client_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": { "type": "string" },
+                "env_var": { "type": "string" },
+                "from_env": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         }
       },
       "additionalProperties": false

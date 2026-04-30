@@ -439,7 +439,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL()) + "/api/oauth/callback"
+		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
 
 		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
 			ClientID:        req.OauthConfig.ClientID,
@@ -527,7 +527,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Build redirect URI - use Bifrost's own callback endpoint
-		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL()) + "/api/oauth/callback"
+		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
 
 		// Initiate OAuth flow
 		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)

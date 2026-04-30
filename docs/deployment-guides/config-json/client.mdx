@@ -54,18 +54,31 @@ Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where m
 
 ## Reverse Proxy
 
+When Bifrost runs behind a reverse proxy, the OAuth URLs it advertises and uses are built from the incoming `Host` header by default - which is the proxy's internal address, not its public one. Two settings let you override this with the proxy's public URL.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mcp_external_base_url` | string or EnvVar | - | Public base URL advertised for OAuth callbacks and discovery metadata |
+| `mcp_external_server_url` | string or EnvVar | - | Public base URL Bifrost advertises in OAuth server metadata |
+| `mcp_external_client_url` | string or EnvVar | - | Public base URL Bifrost uses as the `redirect_uri` against upstream MCP servers |
 
-When Bifrost runs behind a reverse proxy, the OAuth callback URL and well-known discovery endpoints (`/.well-known/oauth-authorization-server`, etc.) are built from the incoming `Host` header - which is your proxy's internal address, not its public address. Set `mcp_external_base_url` to override this with the proxy's public URL.
+Both fields support env var syntax (`"env.MY_VAR"`). When unset, the field falls back to the incoming `Host` header.
 
-The field supports env var syntax so the URL can be injected at runtime:
+### The two roles
+
+Bifrost participates in OAuth in two directions, and each URL controls one direction:
+
+- **Server URL** is what *downstream MCP clients* read about Bifrost. It is the `issuer` in `/.well-known/oauth-authorization-server`, the `resource` in `/.well-known/oauth-protected-resource`, and the URL inside the `WWW-Authenticate` header on `/mcp`. Example: Claude Code connects to `https://bifrost.example.com/mcp` and discovers the authorize/token endpoints from this URL.
+- **Client URL** is what Bifrost hands to *upstream OAuth providers* as its own callback. It is the `redirect_uri` Bifrost registers with Notion, Jira, GitHub, etc. when it acts as an OAuth client to an MCP server. Upstream providers redirect the user's browser to `<client URL>/api/oauth/callback` after login.
+
+### Common case - one public URL
+
+Most deployments sit behind a single proxy and want both URLs to be the same. Set both to the same value:
 
 ```json
 {
   "client": {
-    "mcp_external_base_url": "env.BIFROST_EXTERNAL_URL"
+    "mcp_external_server_url": "env.BIFROST_EXTERNAL_URL",
+    "mcp_external_client_url": "env.BIFROST_EXTERNAL_URL"
   }
 }
 ```
@@ -75,12 +88,37 @@ Or as a plain URL:
 ```json
 {
   "client": {
-    "mcp_external_base_url": "https://api.yourcompany.com"
+    "mcp_external_server_url": "https://api.yourcompany.com",
+    "mcp_external_client_url": "https://api.yourcompany.com"
   }
 }
 ```
 
-This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) and the management API, with no restart required.
+### Asymmetric case - different URLs per role
+
+Set them independently when the management/discovery surface and the OAuth callback surface live behind different proxies. For example, when the management UI and `/.well-known` endpoints are exposed on an internal-auth-protected hostname, but upstream OAuth providers need to redirect to a publicly reachable hostname:
+
+```json
+{
+  "client": {
+    "mcp_external_server_url": "https://internal.yourcompany.com",
+    "mcp_external_client_url": "https://oauth.yourcompany.com"
+  }
+}
+```
+
+You can also set just one and leave the other empty - the unset side falls back to the request's `Host` header.
+
+### When to use which
+
+| Scenario | Server URL | Client URL |
+|----------|------------|------------|
+| Single public proxy fronting Bifrost (most common) | proxy URL | same proxy URL |
+| Management/discovery on one hostname, OAuth callbacks on another | discovery hostname | callback hostname |
+| Bifrost reachable internally but upstream providers need a public callback | leave empty | public callback URL |
+| No reverse proxy (development) | leave empty | leave empty |
+
+These settings are also configurable via the UI (**MCP Gateway → MCP Settings**) and the management API, with no restart required.
 
 ---
 
@@ -282,7 +320,8 @@ A top-level `auth_config` is also accepted for backwards compatibility, but `gov
     "log_retention_days": 90,
     "logging_headers": ["x-request-id", "x-user-id"],
 
-    "mcp_external_base_url": "env.BIFROST_EXTERNAL_URL",
+    "mcp_external_server_url": "env.BIFROST_EXTERNAL_URL",
+    "mcp_external_client_url": "env.BIFROST_EXTERNAL_URL",
 
     "allowed_origins": ["https://app.yourcompany.com"],
     "allow_direct_keys": false,

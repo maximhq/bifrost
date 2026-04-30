@@ -45,7 +45,7 @@ func (h *OAuthMetadataHandler) handleProtectedResourceMetadata(ctx *fasthttp.Req
 		sendStringError(ctx, fasthttp.StatusNotFound, "Not Found")
 		return
 	}
-	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL())
+	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalServerURL())
 
 	SendJSON(ctx, map[string]interface{}{
 		"resource":                 baseURL + "/mcp",
@@ -65,7 +65,7 @@ func (h *OAuthMetadataHandler) handleAuthorizationServerMetadata(ctx *fasthttp.R
 		sendStringError(ctx, fasthttp.StatusNotFound, "Not Found")
 		return
 	}
-	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL())
+	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalServerURL())
 
 	SendJSON(ctx, map[string]interface{}{
 		"issuer":                                baseURL,
