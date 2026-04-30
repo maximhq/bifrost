@@ -1,0 +1,83 @@
+---
+title: "v1.3.18"
+description: "Enterprise v1.3.18 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.18">
+
+## Changelog
+
+This release adds reliable cluster replication with routing-rule synchronization, expands OSS provider coverage with Mistral OCR, Azure passthrough, and OpenRouter embeddings, and tightens authentication to reject users without claims.
+
+## ✨ Features
+
+- **Reliable Replication Logic** — Reworked cluster replication for stronger consistency and recovery guarantees across nodes
+- **Routing Rule Cluster Sync** — Routing rules now synchronize across cluster nodes with dedicated message handling, keeping every node in agreement on traffic policies
+- **OCR Endpoint** — End-to-end support for the `/v1/ocr` endpoint backed by Mistral OCR
+- **Azure Passthrough** — Native Azure API passthrough support for direct Azure OpenAI calls
+- **OpenRouter Embeddings** — Embeddings support added for the OpenRouter provider
+- **Redis TLS & Cluster Mode** — TLS and cluster-mode Redis connections, plus a fix for valkey-search query syntax
+- **OAuth MCP Hints** — Next-step hints returned on OAuth MCP client creation responses
+- **272k Token Tier & Priority/Flex Pricing** — Added 272k token tier along with flex and priority tier pricing support
+- **Go 1.26.2 Upgrade** — Upgraded the build toolchain from Go 1.26.1 to Go 1.26.2
+
+## 🐞 Fixed
+
+- **Login Rejects Missing Claims** — Users without claims are now properly rejected at login instead of slipping through authentication
+- **Response Backfill** — Response parameter backfilling for chat completion and responses requests ensures `model`, object type, and `created` timestamp fields are always populated
+- **Pricing Sync Interval** — `pricing_sync_interval` is now correctly applied, and env variables are supported in `pricing_url`
+- **OAuth Transient Failures** — OAuth config is no longer marked expired on transient network failures
+- **Mistral Provider Cleanup** — Removed redundant provider key normalization and duplicate OCR validation from Mistral provider
+
+## 📀 Base OSS version
+
+`transports/v1.4.22`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.73.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.4.19
+	github.com/maximhq/bifrost/framework v1.2.38
+	github.com/maximhq/bifrost/plugins/governance v1.4.38
+	github.com/maximhq/bifrost/plugins/logging v1.4.38
+	github.com/maximhq/bifrost/transports v1.4.22
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.265.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

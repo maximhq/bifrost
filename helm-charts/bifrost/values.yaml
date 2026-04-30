@@ -566,6 +566,10 @@ bifrost:
         timeoutSeconds: 10
         successThreshold: 3
         failureThreshold: 3
+    # gRPC transport for cluster counter-sync (replaces gossip broadcast for governance counters)
+    grpc:
+      port: 10102
+      dialTimeoutSeconds: 5
     discovery:
       enabled: false
       # Discovery type: kubernetes, dns, udp, consul, etcd, mdns

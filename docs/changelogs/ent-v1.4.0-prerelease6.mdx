@@ -1,0 +1,147 @@
+---
+title: "v1.4.0--prerelease6"
+description: "Enterprise v1.4.0-prerelease6"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.0-prerelease6">
+
+## Changelog
+
+This release introduces username/password authentication for non-SSO deployments, end-to-end file/image handling and env-var support for guardrails, a token-driven SCIM group restriction model that removes platform-wide group enrichment, and a new React Flow cluster topology view — all on top of OSS base `transports/v1.5.0-prerelease7` which adds passthrough streaming accumulation, auto-resolve provider, and unified `x-bf-dim-*` dimension headers.
+
+## ✨ Features
+
+### Authentication & Identity
+
+- **Username/Password Authentication** — First-class password auth mode alongside SSO via `BIFROST_ADMIN_USERNAME`/`BIFROST_ADMIN_PASSWORD`; new `GET /api/auth/type` endpoint, session middleware, `EntityTypeAuthConfig` cluster gossip, and an `auth_mode` aware login UI. Enabling a SCIM provider wipes all password sessions and auth config.
+- **Token-Driven SCIM Group Restriction** — Removed platform-wide group enrichment across Entra, Okta, Google, Keycloak, SailPoint, and Zitadel; team attachment is now driven exclusively by claims present in the IdP token, eliminating cross-tenant group leakage and unnecessary directory API calls.
+- **Okta Issuer URL Hardening** — `IsOrgAuthServer` and `NormalizeIssuerURL` now properly parse issuer URLs and treat `/oauth2` (without an auth-server id) as a malformed Custom URL, promoting it to `/oauth2/default` instead of misclassifying as Org Authorization Server.
+- **Entra Cloud Default** — Entra SCIM provider defaults the `Cloud` field to `"commercial"` when omitted, preventing nil dereferences from incomplete configs.
+
+### Guardrails
+
+- **File & Image Block Support** — Added `GuardrailFileRequestBlock` and `Files` field to `GuardrailRequestBlock` so non-image attachments flow through the extraction pipeline; nil-pointer panics in `extractRequestBlocks`/`extractResponseBlocks` fixed; `data:image/...` base64 URIs decoded inline without HTTP fetch; SSRF-blocked URL test coverage added.
+- **Env Var Support for Guardrails** — Guardrail provider config fields (Azure, Bedrock, GraySwan, regex, etc.) now resolve from environment variables via `env.VAR_NAME` for secure secret injection.
+- **Bedrock ARN Auto-Derivation** — Region and guardrail ID can be inferred directly from the guardrail ARN when region is omitted, simplifying Bedrock guardrail configuration.
+- **Sheet Click-Outside Protection** — All guardrail configuration sheets now use `onInteractOutside={(e) => e.preventDefault()}` to avoid accidental dismissal on outside clicks.
+
+### Cluster & UX
+
+- **React Flow Cluster Graph** — Cluster Nodes page replaces the table with an interactive React Flow graph: nodes laid out in a circle with edges colored by reachability, leader badges, automatic background diagnostic on leader change, and draggable/zoomable canvas. Single-node clusters render the simplified card.
+- **Sticky Sheet Headers/Footers** — Sheet panels (cluster view, MCP tool group, access profile, etc.) now have sticky headers and footers with refactored layout.
+- **Combobox Filters** — Team and business unit filters use `ComboboxSelect` for searchable selection.
+- **Virtual Key UX in Team Detail** — Replaced infinite scroll with a load-more button and added copy-to-clipboard for virtual keys.
+
+### Routing & Loadbalancing
+
+- **Passthrough Bypass for LB & Governance** — Both load balancing and governance plugins now short-circuit `HTTPTransportPreHook` for passthrough paths so requests bypass governance enforcement and rebalancing as intended.
+
+### From OSS `transports/v1.5.0-prerelease7`
+
+- **Passthrough Streaming Accumulation** — Accumulator for passthrough streaming responses enables proper logging and cost tracking on raw provider streams.
+- **Auto-Resolve Provider** — Inference and integration routes auto-resolve the provider when no provider prefix is given on the model name.
+- **Per-Request Content Logging Overrides** — Opt-in per-request overrides for content logging and raw request/response visibility, with DB migrations and live-reload.
+- **Unified `x-bf-dim-*` Headers** — New unified dimension headers automatically forwarded to logs, traces, Prometheus, and Maxim tags.
+- **VK-Scoped Model Lists** — Model list endpoints now scoped to virtual-key-allowed providers and models via request headers.
+- **MCP Reverse Proxy OAuth** — External base URL support for reverse-proxy MCP OAuth flows.
+- **Routing Rules Scope Cache** — Routing rules cached per scope upfront; new model-catalog routing engine label and icon.
+- **`schemas.Duration` Type** — Go duration string support for MCP, Redis, Weaviate, and mocker duration fields.
+- **OpenAI Realtime Audio (Base64)** — Audio base64 encoding support for the OpenAI realtime provider.
+- **Local Cache Hit Rate Speedometer** — Dashboard speedometer showing local cache hit rate.
+- **OTEL Finish Reasons** — Finish reasons added to OTEL root spans, with correct model and provider names propagated.
+
+## 🐞 Fixed
+
+### Enterprise
+
+- **Team Details Sheet** — Members and virtual keys now render correctly in the team detail sheet.
+- **Access Profile Migrations** — Fixed migrations for enterprise access profiles.
+- **Zitadel `ProjectID`** — Use `GetValue()` for `ProjectID` in user grants query to avoid type mismatches.
+- **Bedrock Guardrail ID** — Corrected guardrail-id handling in the Bedrock guardrails plugin.
+- **Provider Config Normalization** — Provider config is now normalized after update to keep stored credentials and aliases consistent.
+- **GraySwan Form** — Added missing `enabled` field to GraySwan config form, removed duplicate form fields, and fixed the verify flow to send `policy_ids` as an array (split from CSV); `violation_threshold` defaults to `0.5` only when the key is absent, not when explicitly zero.
+- **Nil Pointer in New DB** — Fixed nil pointer dereference triggered when initializing a fresh database.
+- **Okta SCIM Enable Toggle** — Treat Okta informational warnings as non-blocking so the SCIM enable toggle no longer fails on benign warnings.
+- **Inline Credential Preserve Checks** — Replaced `shouldPreserveStoredCredential` with inline env-var and redaction checks across guardrail config handlers, with shared utility coverage.
+- **Loadbalancer Logging** — Cleaned up loadbalancer log levels and message clarity.
+- **Access Profile Field Styling** — Removed stray `mr-2` from icons and corrected access profile field labels.
+- **OSS Ref Branch Selection** — Removed `SKIP_TAG_CHECK` as a bypass for OSS tag validation; only `SKIP_OSS_TAG_CHECK` controls the bypass now, restoring distinct semantics for the two flags.
+
+### From OSS `transports/v1.5.0-prerelease7`
+
+- **OTEL Cost Info & I/O Messages** — Cost info in OTEL calls and response tools fixed; input/output messages propagated to root span.
+- **Migrations Conflict Resolution** — Fixed migration conflicts.
+- **WebSocket `/responses`** — Improved logging, cost tracking, and VK stripping for WebSocket responses.
+- **MarshalJSON Auto-Redaction Removed** — Explicit redaction now applied to env-backed fields in `ProxyConfig`, `ClientConfig`, and `AzureKeyConfig` instead of MarshalJSON-based auto-redaction.
+- **Vertex `google/` Prefix** — Strip `google/` prefix from Vertex model IDs across all request types.
+- **Vertex Multi-Region Routing** — Multi-region-only models route to multi-region endpoints when the provider key is configured for a single region only.
+- **OAuth Token `expires_at`** — `expires_at` now nullable; refresh/reconnect guarded on nil expiry.
+- **OpenAI Responses Tool Fields** — Tool fields preserved in OpenAI responses.
+- **Semantic Cache Determinism** — Deterministic request hashing and `CacheDebug` propagation in streaming.
+- **Streaming Pool-Reuse Corruption** — Snapshot `RequestType` before closure to prevent pool-reuse corruption in streaming requests.
+- **Self-Looping Chain Rules** — Chain rules with self-loops continue evaluating subsequent rules instead of halting.
+- **Default Routing Provider Filter** — Filter out unconfigured providers in default routing.
+- **Ollama/SGL Network Config Fallback** — Fall back to network config if key config URL is not set for Ollama and SGL; `base_url` added to `network_config` for backward compatibility.
+- **Streaming Pipeline `RawRequest`** — `RawRequest` propagated through the streaming pipeline; pool leak fixed.
+- **Logging Streaming Errors** — Improved streaming error handling in the logging plugin.
+- **`governance_budgets` Join** — Corrected join condition to use `virtual_key_id`.
+- **`resolvePeriod` UTC** — Fixed UTC handling in `resolvePeriod` time calculation.
+- **Semanticcache Provider Keys** — Inherit provider keys from the global client in the semanticcache plugin.
+
+## 📀 Base OSS version
+
+`transports/v1.5.0-prerelease7`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2 v1.41.5
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.6
+	github.com/maximhq/bifrost/framework v1.3.6
+	github.com/maximhq/bifrost/plugins/governance v1.5.6
+	github.com/maximhq/bifrost/plugins/prompts v1.0.6
+	github.com/maximhq/bifrost/transports v1.5.0-prerelease7
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/grpc v1.80.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

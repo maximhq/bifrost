@@ -537,6 +537,18 @@ false
 {{- end }}
 {{- $_ := set $cluster "gossip" $gossip }}
 {{- end }}
+{{- if .Values.bifrost.cluster.grpc }}
+{{- $grpc := dict }}
+{{- if .Values.bifrost.cluster.grpc.port }}
+{{- $_ := set $grpc "port" .Values.bifrost.cluster.grpc.port }}
+{{- end }}
+{{- if .Values.bifrost.cluster.grpc.dialTimeoutSeconds }}
+{{- $_ := set $grpc "dial_timeout_seconds" .Values.bifrost.cluster.grpc.dialTimeoutSeconds }}
+{{- end }}
+{{- if $grpc }}
+{{- $_ := set $cluster "grpc" $grpc }}
+{{- end }}
+{{- end }}
 {{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
 {{- $discovery := dict "enabled" true "type" .Values.bifrost.cluster.discovery.type }}
 {{- $serviceName := .Values.bifrost.cluster.discovery.serviceName }}

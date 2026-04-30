@@ -3269,6 +3269,26 @@
           "required": ["port", "config"],
           "additionalProperties": false
         },
+        "grpc": {
+          "type": "object",
+          "description": "gRPC transport settings for the cluster counter-sync layer. Replaces the memberlist gossip broadcast path for governance usage counters; memberlist continues to handle cluster membership and other entity sync.",
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "TCP port the gRPC server listens on",
+              "default": 10102
+            },
+            "dial_timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "How long to wait when dialing a peer, in seconds",
+              "default": 5
+            }
+          },
+          "additionalProperties": false
+        },
         "discovery": {
           "type": "object",
           "description": "Auto-discovery configuration for cluster nodes",

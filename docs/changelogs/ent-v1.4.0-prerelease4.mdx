@@ -1,0 +1,196 @@
+---
+title: "v1.4.0--prerelease4"
+description: "Enterprise v1.4.0-prerelease4"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.0-prerelease4">
+
+## Changelog
+
+v1.4.0 is a major release bringing full Realtime API support, Fireworks AI, deny-by-default access control, a dedicated Provider Keys API, Anthropic Structured Outputs, Claude Opus 4.7 compatibility, and broad SCIM/SSO hardening — plus cluster reliability improvements, adaptive routing enhancements, and a new Prompts plugin from across the 1.3.x and 1.4.x lines.
+
+## ⚠️ Breaking Changes (v1.5.0 OSS base)
+
+- **Deny-by-Default Access Control** — Empty `allowed_models`, `key_ids`, and `tools_to_execute` now deny access instead of allowing all. Use `["*"]` to allow all. Existing database records are automatically migrated on startup; new config must follow the new semantics. See the [migration guide](https://docs.bifrost.ai) for details.
+- **Provider Keys API Separated** — The `keys` field is removed from provider create/update payloads. Use the new `/api/providers/{provider}/keys` endpoints. Existing keys are unaffected.
+- **`allowed_keys` Renamed to `key_ids`** — Update any `config.json` or API calls using the old field name.
+- **Compat Plugin Options Changed** — `enable_litellm_fallbacks` is replaced by `compat.convert_text_to_chat`, `compat.convert_chat_to_responses`, and `compat.should_drop_params`.
+
+> **Upgrade is protected by automatic migration.** A **v1.4.x Allow-List Compatibility Mode** is also available to preserve the old semantics during transition.
+
+## ✨ Features
+
+### AI Provider Support
+
+- **Claude Opus 4.7** — Full support including adaptive thinking, task-budgets beta header, `display` parameter handling, and "xhigh" effort mapping
+- **Anthropic Structured Outputs** — `response_format` and JSON-schema/JSON-object support for Anthropic chat completions and Responses API
+- **Anthropic Server Tools** — End-to-end support for server-side tools: web search, code execution, and computer use containers
+- **Fireworks AI Provider** — First-class provider with native completions, responses, embeddings, and image generations
+- **StabilityAI on Bedrock** — StabilityAI provider support via AWS Bedrock
+- **Bedrock Embeddings & Image Gen** — Embeddings, image generation, edit, and variation support for Bedrock
+- **Azure Passthrough** — Native Azure passthrough support
+- **Mistral OCR Endpoint** — End-to-end `/v1/ocr` support powered by Mistral OCR
+- **OpenRouter Embeddings** — OpenRouter provider now supports embeddings
+
+### Realtime & Streaming
+
+- **Realtime Support** — WebSocket, WebRTC, and client secret handlers with session state management and transport context helpers
+- **Redis TLS & Cluster Mode** — Redis connections support TLS and cluster mode; fixes valkey-search query compatibility
+
+### MCP
+
+- **MCP Per-Tool Access Control via Virtual Key** — VK `mcp_configs` acts as an execution-time allow-list with per-tool granularity; tools not permitted by the VK are blocked at inference
+- **MCP Tool Annotations** — Preserve tool annotations (`title`, `readOnly`, `destructive`, `idempotent`, `openWorld`) in bidirectional conversion so agents can reason about tool behavior
+- **OAuth MCP Hints** — OAuth MCP client creation response now includes next-step hints for a smoother setup flow
+- **MCP Tool Injection Control** — Option to disable automatic MCP tool injection per request
+- **MCP All-VK Access** — Option to allow MCP clients to run on all virtual keys without explicit assignment
+- **MCP Request Filtering Headers** — `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers for filtering MCP tools and list responses when using Bifrost as an MCP gateway
+- **MCP Accumulated Usage** — Accumulated usage is sent back in MCP agent mode
+
+### Access Control & Security
+
+- **Deny-by-Default Access Control** — Virtual key provider configs, `allowed_models`, `key_ids`, and MCP `tools_to_execute` now use deny-by-default semantics; wildcard `["*"]` to allow all
+- **Dedicated Provider Keys API** — Keys managed via `/api/providers/{provider}/keys` with full CRUD; model-level key restrictions supported
+- **Access Profiles** — Fine-grained permission control via access profiles
+- **Path Whitelisting** — Allow path whitelisting from security config
+- **SSO Role Enforcement** — SSO login denied when user has no role claims and no matching group-to-role mapping; removed the Okta Org Auth Server special case that auto-granted Admin to the first user
+- **Okta Custom Provider + Group Mapping** — Okta custom provider support with group-to-role mapping
+- **v1.4.x Allow-List Compatibility Mode** — New version-1 compatibility mode preserves v1.4.x allow-list semantics for smoother upgrades
+
+### Governance & Virtual Keys
+
+- **Virtual Keys CSV Export** — Sorting and CSV export for the virtual keys table
+- **Pricing Overrides** — Support for per-request pricing override fields
+- **272k Token Tier Pricing** — Pricing support for the 272k token tier
+- **Flex & Priority Tier Pricing** — Pricing support for flex and priority service tiers, including override fields
+- **Per-User OAuth Consent** — Per-user OAuth consent flow with identity selection and MCP authentication
+- **SCIM Provider Fixes** — Broad fixes across SCIM controller, mapping, and Entra/Google/Keycloak/Okta/SailPoint/Zitadel providers; new SCIM tables, migrations, and config-store wiring
+
+### Plugins
+
+- **Prompts Plugin** — New prompts plugin with direct key header resolver and selective message inclusion when committing prompt sessions
+- **Plugin Trace Logging** — Plugins can now inject logs at trace level via `ctx.Log(schemas.LogLevelInfo, "…")`
+- **Logging Tracking Fields** — Support for tracking `userId`, `teamId`, `customerId`, and `businessUnitId` in logging
+- **Object Store Support for Logging** — Log payloads can be offloaded to object storage (S3/GCS/etc.), keeping the database lean under high log volume
+- **Compat Plugin Improvements** — Chat-to-responses fallback for models that only support the Responses API, and OpenAI-compatible parameter dropping for unsupported params
+
+### Cluster & Infrastructure
+
+- **Reliable Replication** — Improved state propagation logic across cluster nodes
+- **Routing Rule Cluster Sync** — Routing rules synchronize across the cluster via dedicated message handling
+- **Leader-Only Cluster Pricing Sync** — Only the cluster leader fetches pricing URLs, then broadcasts DB reloads to followers
+- **Leader Badge in Cluster View** — Leader badge display in the cluster node view
+- **Unique Node ID** — Auto-generated unique node IDs on config load for consistent cluster membership
+- **Parallel Model Catalog Sync** — Provider model catalogs sync in parallel for faster startup and refresh cycles
+
+### Routing & Load Balancing
+
+- **LB Blacklist Support** — Blacklist model and endpoint support in the load balancing plugin
+- **Deployments to Aliases** — Deployments refactored to aliases with implicit model grant removal for cleaner configuration
+- **Adaptive Routing UI Redesign** — Improved layout and Sankey chart visualization for adaptive routing
+
+### UI & Dashboard
+
+- **User Ranking Dashboard** — Per-user traffic ranking dashboard
+- **Dashboard CSV & PDF Export** — Dashboard now supports CSV and PDF export
+- **OpenAPI Security Schemes** — Security schemes added to the OpenAPI spec; API playground now only shows supported auth methods per endpoint
+- **Configurable API Docs Base URL** — Base URL for the hosted API documentation is now configurable
+- **Server Bootstrap Timer** — Startup diagnostic timer for observability
+- **UI: Create-Provider Shortcut** — Empty state now links directly to provider creation
+
+## 🐞 Fixed
+
+- **LB Routing for GenAI & Bedrock** — Load balancing routing fixes for GenAI and Bedrock integrations
+- **Streaming Post-Hook Race** — Fixed race where fasthttp `RequestCtx` could be recycled before transport post-hooks finished in streaming goroutines; request/response snapshots captured eagerly
+- **Streaming Blocker** — Fixed a streaming blocker in the transport layer
+- **Async User Values** — User values propagated through all async inference handlers and job submissions
+- **Trace Completer Safety** — Trace completer accepts transport logs as a parameter instead of reading from a potentially recycled context
+- **Async Log Store Exceptions** — Fixed exception handling in async log store jobs
+- **Model Alias Tracking** — Split `ModelRequested` into `OriginalModelRequested` and `ResolvedModelUsed` for accurate alias resolution tracking
+- **MCP Tool Discovery** — Added discovered tools and tool-name mapping columns to MCP clients
+- **MCP Tool Logs** — MCP tool logs now captured correctly
+- **OAuth Transient Failures** — OAuth configs no longer marked expired on transient network failures
+- **OAuth Session Cleanup** — OAuth sessions cleaned up on virtual key deletion with associated race condition fixed
+- **Pricing Sync Config** — `pricing_sync_interval` applied correctly; `pricing_url` supports env variables
+- **Provider Queue Shutdown Panic** — Eliminated `send on closed channel` panics in provider queue shutdown
+- **OpenAI Tool Result Output** — Flattened array-form `tool_result` output for the Responses API; non-text blocks preserved
+- **vLLM Token Usage** — `delta.content=""` treated same as `nil` in streaming; restores token usage attribution in logs and UI
+- **Bedrock Streaming** — Emit `message_stop` event for Anthropic invoke stream; case-insensitive `anthropic-beta` header merging
+- **Bedrock Streaming Retries** — Retry retryable AWS exceptions and stale/closed-connection errors in Bedrock streaming
+- **Bedrock Tool Images** — Preserve image content blocks in tool results when converting to Bedrock Converse API
+- **Bedrock Tool Choice** — Fixed Bedrock tool choice conversion to auto
+- **Bedrock SigV4 Service** — Corrected SigV4 service name for agent runtime rerank
+- **Gemini Tool Outputs** — Handle content block tool outputs in Responses API path for `function_call_output` messages
+- **Gemini Thinking Level** — Preserved `thinkingLevel` parameters across round-trip conversions; corrected finish reason mapping
+- **Anthropic WebSearch** — Removed Claude Code user agent restriction so WebSearch tool arguments flow for all clients
+- **Responses Streaming Errors** — Capture errors mid-stream in the Responses API so clients see failures instead of silent termination
+- **Anthropic Request Fallbacks** — Dropped fallback fields from outgoing Anthropic requests to avoid schema validation errors
+- **Async Context Propagation** — Preserve context values in async requests so downstream handlers retain request-scoped data
+- **Custom Providers** — Allow custom providers without a list-models endpoint to accept any model
+- **Routing Rule Targets** — Preserve routing rule targets for genai and bedrock paths
+- **DB Deadlock Prevention** — Replaced find-then-upsert with atomic `ON CONFLICT` to prevent deadlocks
+- **Key Validation Errors** — Improved key validation error handling and logging
+- **LiteLLM Compat** — LiteLLM compatibility fixes
+- **SQLite Migration Fix** — Migration connection handling, error handling, and foreign key checks during migration
+- **CVE Fixes** — Dependency updates addressing reported CVEs
+- **Guardrails Plugin** — Guardrail plugin cleanup and Bedrock guardrail adjustments
+- **Datadog LLM Spans** — LLM span type set correctly as `llm.call`
+- **Log Entry Broadcasting** — Fixed log entry broadcasting bug in cluster gossip
+
+## 📀 Base OSS version
+
+`transports/v1.5.0-prerelease4`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.1
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2 v1.41.5
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.2
+	github.com/maximhq/bifrost/framework v1.3.2
+	github.com/maximhq/bifrost/plugins/governance v1.5.2
+	github.com/maximhq/bifrost/plugins/logging v1.5.2
+	github.com/maximhq/bifrost/plugins/prompts v1.0.2
+	github.com/maximhq/bifrost/transports v1.5.0-prerelease3
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

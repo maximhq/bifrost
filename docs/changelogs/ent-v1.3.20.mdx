@@ -1,0 +1,84 @@
+---
+title: "v1.3.20"
+description: "Enterprise v1.3.20 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.20">
+
+## Changelog
+
+This release adds a dedicated streaming client that eliminates premature SSE termination on long-running responses, pprof profiling support, and a cluster broadcast improvement. It also fixes a concurrent map panic in the plugin pipeline, cluster message invalidation, and an adaptive UI crash.
+
+## ✨ Features
+
+- **Dedicated Streaming Client** — Each provider now uses a separate HTTP client for streaming requests with read-timeout cleared, eliminating premature SSE/EventStream termination on long-running responses; per-chunk idle detection is enforced via `NewIdleTimeoutReader`
+- **Routing Rules Auto-resolve Model** — Provider-only fallbacks now automatically inherit the incoming model, removing the need to repeat model names in fallback routing config
+- **pprof Support** — Added pprof profiling endpoint for production diagnostics and performance troubleshooting
+- **Cluster broadcastWithoutAck** — New cluster broadcast mode for fire-and-forget messaging, now used for load balancer metrics to reduce unnecessary overhead
+
+## 🐞 Fixed
+
+- **Anthropic Empty Thinking Blocks** — Strip `thinking`-typed content blocks with empty `"thinking"` fields before sending to Anthropic, preventing HTTP 400 errors from Claude Code requests
+- **Plugin Timer Concurrent Map Panic** — Added `streamingMu sync.Mutex` to `PluginPipeline` to guard `postHookTimings` across concurrent goroutines during streaming; also fixed a double-pool-release race on streaming errors
+- **Stream Cancellation Safety** — Guarded channel sends and finalizer protection prevent goroutine leaks when clients disconnect mid-stream
+- **Cluster Message Invalidation** — Fixed cluster message invalidation to use EntityType and entity ID instead of message ID, correcting stale-entry eviction under concurrent load
+- **Cluster Permission** — Fixed a cluster permission issue introduced with broadcastWithoutAck
+- **Logs UI** — Switched from WebSocket push to polling for log updates; fixed polling mechanism and defaults the time range to the last hour in logs and dashboard
+- **Adaptive UI Crash** — Fixed page crash caused by empty string passed to Radix Select in the adaptive UI
+
+## 🛠️ Build
+
+- **Go 1.26.2** — Build toolchain upgraded from Go 1.26.1 to Go 1.26.2
+
+## 📀 Base OSS version
+
+`transports/v1.4.24`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.4
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.4.23
+	github.com/maximhq/bifrost/framework v1.2.40
+	github.com/maximhq/bifrost/plugins/governance v1.4.40
+	github.com/maximhq/bifrost/plugins/logging v1.4.40
+	github.com/maximhq/bifrost/transports v1.4.24
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

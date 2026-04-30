@@ -1,0 +1,154 @@
+---
+title: "v1.4.0--prerelease5"
+description: "Enterprise v1.4.0-prerelease5"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.0-prerelease5">
+
+## Changelog
+
+This release delivers hash-based config.json reconciliation for MCP tool groups, business units, and access profiles; a full gRPC-based cluster rewrite for improved node-to-node communication; and broad SCIM/SSO hardening including Azure credential injection via env vars, Google Directory ADC inheritance, and strengthened SCIM provider verify checks — built on OSS base `transports/v1.5.0-prerelease6`.
+
+## ✨ Features
+
+### Config Reconciliation
+
+- **MCP Tool Group Reconciliation** — MCP tool groups are now reconcilable from `config.json` with hash-based sync, preventing unnecessary MCP client restarts on config reload; `tool_sync_interval` accepts Go duration strings
+- **Business Unit Reconciliation** — Business units can be seeded and reconciled declaratively from `config.json` with hash-based sync; added `business_units`, `team_id`, `calendar_aligned`, and `virtual_key_count` to governance schema and Helm
+- **Access Profile Reconciliation** — Access profiles are now reconcilable from `config.json` at deploy time, including provider restrictions, model allowlists, budgets, rate limits, and MCP server/tool controls
+- **Guardrail Rule Query Field** — Added `query` field support to guardrail rules config and reconciliation pipeline
+
+### Cluster & Infrastructure
+
+- **gRPC-based Custom Cluster** — Full gRPC-based cluster implementation for enterprise-grade node-to-node communication with improved reliability
+- **Governance Config Sync** — Model configs and provider governance bindings now sync from `config.json` to the database at startup
+- **Log Cluster Broadcasting Removed** — Removed log cluster broadcasting and `EntityTypeLog` message handling to reduce cluster gossip overhead
+
+### Security & SCIM
+
+- **SCIM Provider Verify Improvements** — Strengthened verify checks across SCIM providers for more reliable directory sync validation
+- **Azure Credentials via Env Vars** — Azure configuration fields now resolved from environment variables; TLS and proxy config fields (`url`, `username`, `password`, `ca_cert_pem`) also accept `env.VAR_NAME` for secure secret injection
+- **Deny-by-Default Virtual Keys** — Virtual key provider and MCP configs block all access when empty; automatic migration backfills existing keys to preserve existing behavior
+- **`provider_key_name` Alias** — Human-readable alias for routing targets and pricing overrides, resolved to `key_id` at config load time
+
+### Enterprise Helm
+
+- **Enterprise Helm Overlays** — Suite of composable Helm overlays for guardrails, org governance, access profiles, customer budgets, teams, multi-customer governance, and SCIM/SSO
+- **Semantic Cache Helm Layers** — Added `values-semantic-search-redis.yaml` and `values-semantic-search-weaviate.yaml` for Redis and Weaviate-backed semantic cache deployments
+- **Key IDs in Helm** — `key_ids` is now the preferred field for pinning provider keys in Helm virtual key configurations, aligning Helm with `config.json` schema
+
+### AI Provider Support
+
+- **Claude Opus 4.7** — Full support including adaptive thinking, task-budgets beta header, `display` parameter handling, and "xhigh" effort mapping
+- **Anthropic Structured Outputs** — `response_format` and JSON-schema/JSON-object support for Anthropic chat completions and Responses API
+- **Anthropic Server Tools** — End-to-end support for server-side tools: web search, code execution, and computer use containers
+- **MCP Tool Annotations** — Preserve tool annotations (`title`, `readOnly`, `destructive`, `idempotent`, `openWorld`) in bidirectional conversion so agents can reason about tool behavior
+
+### Routing & MCP
+
+- **Auto-fill Incoming Model for Fallbacks** — Routing rule fallback entries can omit the model; the incoming request model is substituted automatically at runtime
+- **Namespace Tool Type** — Namespace tool container type in Responses API; non-OpenAI providers receive automatically flattened tool lists
+- **MCP Tool Groups Governance Scoping** — `tool_groups` config supports governance scoping by virtual key, team, customer, user, provider, and API key
+
+### Pricing & Observability
+
+- **Cache Creation Pricing** — Cache creation details for Claude models with 5-minute and 1-hour TTL pricing tiers
+- **Period Parameter in Dashboard/Logs APIs** — Added `period` param to support relative time range queries on dashboard and logs endpoints
+- **Team Budgets** — New team budget system with per-team spending tracking and atomic ratelimit updates
+- **Single Log Export** — Export individual log entries from the logs view and MCP logs sheet
+
+### UI
+
+- **User Ranking Graph** — Updated user ranking graph layout and visualization
+
+## 🐞 Fixed
+
+### Enterprise
+
+- **Google Directory API Inherited ADC** — Support inherited Application Default Credentials for Google Directory API so deployments using Workload Identity / pod service accounts work without explicit key files
+- **Guardrail Output Rule Nil Check** — Early exit if response is nil for output rules in guardrails to prevent nil pointer panics
+- **Access Profile Live Limits** — Enforced live access profile limits and preserved usage on propagation to ensure rate limits are respected across reloads
+- **Access Profile UI Layout** — Fixed access profile sheet width and padding for better layout
+
+### OSS (prerelease5 + prerelease6)
+
+- **WebSocket /responses Reliability** — Fixed upstream handshake diagnostics, proper error capture, and WebSocket connection lifecycle in the native `/responses` path
+- **Routing Rule Query Normalization** — Normalized `query` field to valid `RuleGroupType` and tightened schema validation
+- **Budget and Team Co-creation** — Fixed creation of budgets and teams in the same request
+- **Provider Reload** — Fixed keyless provider status updates during config reload; provider runtime now reloads correctly after key creation
+- **OTel Metrics** — Fixed OpenTelemetry metrics pipeline not working (thanks [@tcx4c70](https://github.com/tcx4c70)!)
+- **OTel Export** — Fixed OTEL exporting to correctly show input and output messages; OTel plugin now defaults `insecure` to `true` when omitted for HTTP collectors
+- **Multipart File Uploads** — Write multipart metadata before file content to fix upload ordering
+- **Env Var Redacted Check** — Added missing redacted check for env var values
+- **PydanticAI Null Text Fields** — Normalized null text content in PydanticAI stream response chunks
+- **Provider Queue Shutdown Panic** — Eliminated `send on closed channel` panics in provider queue shutdown
+- **Bedrock Streaming** — Emit `message_stop` event for Anthropic invoke stream; case-insensitive `anthropic-beta` header merging
+- **Bedrock Tool Images** — Preserve image content blocks in tool results when converting to Bedrock Converse API
+- **Gemini Tool Outputs** — Handle content block tool outputs in Responses API path for `function_call_output` messages
+- **Gemini Thinking Level** — Preserved `thinkingLevel` parameters across round-trip conversions; corrected finish reason mapping
+- **vLLM Token Usage** — `delta.content=""` treated same as `nil` in streaming; restores token usage attribution in logs and UI
+- **Anthropic WebSearch** — Removed Claude Code user agent restriction so WebSearch tool arguments flow for all clients
+- **Responses Streaming Errors** — Capture errors mid-stream in the Responses API so clients see failures instead of silent termination
+- **Anthropic Request Fallbacks** — Dropped fallback fields from outgoing Anthropic requests to avoid schema validation errors
+- **Custom Providers** — Allow custom providers without a list-models endpoint to accept any model
+- **Async Context Propagation** — Preserve context values in async requests so downstream handlers retain request-scoped data
+- **Access Profile Rate Limits** — Rate limit counters for access profiles now persisted correctly to the database
+- **Fallback Stream State** — Clear `BifrostContextKeyStreamEndIndicator` before fallback requests so stale streaming state doesn't carry into retries
+
+## 📀 Base OSS version
+
+`transports/v1.5.0-prerelease6`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2 v1.41.5
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.5
+	github.com/maximhq/bifrost/framework v1.3.5
+	github.com/maximhq/bifrost/plugins/governance v1.5.5
+	github.com/maximhq/bifrost/plugins/prompts v1.0.5
+	github.com/maximhq/bifrost/transports v1.5.0-prerelease6
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/grpc v1.80.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

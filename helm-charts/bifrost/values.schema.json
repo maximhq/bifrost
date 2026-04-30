@@ -1463,6 +1463,23 @@
                 "config"
               ]
             },
+            "grpc": {
+              "type": "object",
+              "description": "gRPC transport settings for cluster counter-sync. Replaces gossip broadcast for governance counters; memberlist still handles membership.",
+              "properties": {
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "TCP port for the cluster gRPC server"
+                },
+                "dialTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Timeout when dialing peers, in seconds"
+                }
+              }
+            },
             "discovery": {
               "type": "object",
               "properties": {

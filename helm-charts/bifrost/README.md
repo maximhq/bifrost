@@ -4,9 +4,17 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.9
+**Latest Version:** 2.1.10
 
 ## Changelog
+
+### 2.1.10
+
+- Added `bifrost.cluster.grpc` block for the cluster gRPC counter-sync transport (enterprise):
+  - New values: `bifrost.cluster.grpc.port` (default `10102`) and `bifrost.cluster.grpc.dialTimeoutSeconds` (default `5`).
+  - Rendered into `cluster_config.grpc` (`port`, `dial_timeout_seconds`) by `templates/_helpers.tpl`.
+  - StatefulSet exposes the port as a named `grpc` container port; `service-headless` exposes it as a named service port so peers can dial each other.
+  - Both port additions are guarded by `if .Values.bifrost.cluster.grpc` so values overrides that omit the block render cleanly.
 
 ### 2.1.9
 

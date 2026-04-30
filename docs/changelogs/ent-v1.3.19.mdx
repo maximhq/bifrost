@@ -1,0 +1,90 @@
+---
+title: "v1.3.19"
+description: "Enterprise v1.3.19 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.19">
+
+## Changelog
+
+This release pulls in the OSS v1.4.23 wave: Claude Opus 4.7 support, Anthropic structured outputs, MCP tool annotations, and a large batch of provider-streaming and reliability fixes. The build toolchain reverts to Go 1.26.1.
+
+## ✨ Features
+
+- **Claude Opus 4.7 Support** — Full compatibility with Anthropic's Claude Opus 4.7, including adaptive thinking, the task-budgets beta header, `display` parameter handling, and `xhigh` effort mapping
+- **Anthropic Structured Outputs** — `response_format` and structured output support across chat completions and the Responses API, covering JSON-schema and JSON-object formats with order-preserving merge of additional model request fields
+- **MCP Tool Annotations** — Preserve MCP tool annotations (`title`, `readOnly`, `destructive`, `idempotent`, `openWorld`) in bidirectional MCP ↔ Bifrost chat tool conversion so agents can reason about tool behavior
+- **Anthropic Server Tools** — Anthropic chat schema and Responses converters now surface server-side tools (web search, code execution, computer use containers) end-to-end
+
+## 🐞 Fixed
+
+- **Provider Queue Shutdown Panic** — Eliminated `send on closed channel` panics during provider queue shutdown; stale producers transparently re-route to new queues during `UpdateProvider`, with rollback on failed updates
+- **OpenAI Responses Tool Output** — Flattened array-form `tool_result` output into a newline-joined string for the Responses API so strict upstreams (Ollama Cloud, typed openai-go models) no longer reject it with HTTP 400; non-text blocks preserved
+- **vLLM Token Usage** — Treats `delta.content=""` the same as `nil` in streaming so the synthesis chunk retains its `finish_reason`, restoring token usage attribution
+- **Bedrock Streaming & Tools** — Emits `message_stop` for Anthropic invoke stream, case-insensitive `anthropic-beta` header merging, and preserves image blocks in tool results when converting Anthropic Messages to Bedrock Converse
+- **Gemini Tool Outputs & Thinking Level** — Handles content-block tool outputs for `function_call_output` and preserves `thinkingLevel` parameters across round-trip conversions with corrected finish-reason mapping
+- **Responses Streaming Errors** — Mid-stream errors in the Responses API are now captured so transport clients see failures instead of silent termination
+- **Anthropic WebSearch & Fallbacks** — Removed the Claude Code user-agent restriction so WebSearch tool arguments flow for all clients; fallback fields are dropped from outgoing Anthropic requests to avoid schema validation errors
+- **Async Context Propagation** — Preserve context values in async requests so downstream handlers retain request-scoped data
+- **Custom Providers** — Allow custom providers without a list-models endpoint to accept any model rather than restricting on virtual key registration
+- **OTEL Plugin** — `insecure` defaults to `true` in config.json and emitted OTEL metrics now include fallbacks
+- **Config Schema Validator** — Corrected JSON-path lookups for concurrency and SCIM blocks, and reformatted `transports/config.schema.json` for readability
+- **Helm Chart** — Validation fixes, prerelease tag removed, and `mcpClientConfig` templating corrected
+- **CI Egress Hardening** — `step-security/harden-runner` switched from `audit` to `block` across all GitHub Actions workflows with explicit `allowed-endpoints` per job
+
+## 🛠️ Build
+
+- **Go 1.26.1** — Build toolchain reverted from Go 1.26.2 back to Go 1.26.1
+
+## 📀 Base OSS version
+
+`transports/v1.4.23`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.1
+
+require (
+	cloud.google.com/go/bigquery v1.73.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.4
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.4.22
+	github.com/maximhq/bifrost/framework v1.2.39
+	github.com/maximhq/bifrost/plugins/governance v1.4.39
+	github.com/maximhq/bifrost/plugins/logging v1.4.39
+	github.com/maximhq/bifrost/transports v1.4.23
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.265.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

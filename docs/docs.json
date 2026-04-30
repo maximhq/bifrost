@@ -674,6 +674,12 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.0-prerelease6",
+              "changelogs/ent-v1.4.0-prerelease5",
+              "changelogs/ent-v1.3.20",
+              "changelogs/ent-v1.4.0-prerelease4",
+              "changelogs/ent-v1.3.19",
+              "changelogs/ent-v1.3.18",
               "changelogs/ent-v1.4.0-prerelease2",
               "changelogs/ent-v1.3.17",
               "changelogs/ent-v1.4.0-prerelease1",
