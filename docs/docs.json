@@ -54,7 +54,7 @@
     },
     "tabs": [
       {
-        "tab": "Documentation",
+        "tab": "OSS",
         "icon": "book-open-cover",
         "groups": [
           {
@@ -231,28 +231,56 @@
                 ]
               }
             ]
+          }
+        ]
+      },
+      {
+        "tab": "Enterprise",
+        "icon": "building",
+        "groups": [
+          {
+            "group": "Overview",
+            "icon": "building",
+            "pages": [
+              "enterprise/overview"
+            ]
           },
           {
-            "group": "Enterprise Features",
-            "icon": "building",
+            "group": "Migration Guides",
+            "icon": "arrow-up-right-dots",
+            "pages": [
+              "enterprise/migration-guides/v1.4.0"
+            ]
+          },
+          {
+            "group": "Features",
+            "icon": "bolt",
             "pages": [
               "enterprise/guardrails",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
-              "enterprise/user-provisioning",
-              {
-                "group": "Advanced Governance",
-                "icon": "shield-check",
-                "pages": [
-                  "enterprise/advanced-governance",
-                  "enterprise/rbac"
-                ]
-              },
               "enterprise/mcp-with-fa",
               "enterprise/invpc-deployments",
               "enterprise/custom-plugins",
               "enterprise/audit-logs",
-              "enterprise/log-exports"
+              "enterprise/log-exports",
+              "enterprise/datadog-connector"
+            ]
+          },
+          {
+            "group": "Governance & Access Control",
+            "icon": "shield-check",
+            "pages": [
+              "enterprise/advanced-governance",
+              "enterprise/rbac",
+              "enterprise/user-provisioning"
+            ]
+          },
+          {
+            "group": "Security",
+            "icon": "shield",
+            "pages": [
+              "security"
             ]
           }
         ]
@@ -326,6 +354,7 @@
             "pages": [
               "enterprise/setting-up-okta",
               "enterprise/setting-up-entra",
+              "enterprise/setting-up-keycloak",
               "enterprise/setting-up-zitadel",
               "enterprise/setting-up-google-workspace"
             ]
@@ -347,8 +376,7 @@
               "features/observability/default",
               "features/observability/maxim",
               "features/observability/otel",
-              "features/observability/prometheus",
-              "enterprise/datadog-connector"
+              "features/observability/prometheus"
             ]
           },
           {
@@ -359,25 +387,6 @@
               "integrations/vector-databases/redis",
               "integrations/vector-databases/qdrant",
               "integrations/vector-databases/pinecone"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Developer Guides",
-        "icon": "wrench",
-        "groups": [
-          {
-            "group": "Contributing",
-            "icon": "code",
-            "pages": [
-              "contributing/setting-up-repo",
-              "contributing/raising-a-pr",
-              "contributing/code-conventions",
-              "contributing/adding-a-provider",
-              "contributing/adding-a-configstore",
-              "contributing/adding-a-logstore",
-              "contributing/adding-a-vectorstore"
             ]
           }
         ]
@@ -456,7 +465,7 @@
         ]
       },
       {
-        "tab": "API Reference",
+        "tab": "API",
         "icon": "code",
         "groups": [
           {
@@ -466,9 +475,22 @@
         ]
       },
       {
-        "tab": "Architecture",
-        "icon": "codepen",
-        "pages": [
+        "tab": "Contributing",
+        "icon": "code-pull-request",
+        "groups": [
+          {
+            "group": "Contributing",
+            "icon": "code",
+            "pages": [
+              "contributing/setting-up-repo",
+              "contributing/raising-a-pr",
+              "contributing/code-conventions",
+              "contributing/adding-a-provider",
+              "contributing/adding-a-configstore",
+              "contributing/adding-a-logstore",
+              "contributing/adding-a-vectorstore"
+            ]
+          },
           {
             "group": "Core Architecture",
             "icon": "sitemap",
@@ -491,13 +513,6 @@
               "architecture/framework/streaming"
             ]
           }
-        ]
-      },
-      {
-        "tab": "Security",
-        "icon": "shield",
-        "pages": [
-          "security"
         ]
       },
       {

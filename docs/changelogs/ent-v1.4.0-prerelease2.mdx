@@ -1,5 +1,5 @@
 ---
-title: "v1.4.0--prerelease2"
+title: "v1.4.0-prerelease2"
 description: "Enterprise v1.4.0-prerelease2"
 ---
 
@@ -11,43 +11,43 @@ This release introduces realtime (WebSocket/WebRTC) support, Fireworks AI as a n
 
 ## ✨ Features
 
-- **Realtime Support** — WebSocket, WebRTC, and client secret handlers with session state management and transport context helpers for real-time streaming use cases
-- **Fireworks AI Provider** — Fireworks AI added as a first-class provider with native completions, responses, embeddings, and image generations
-- **Access Profiles** — Fine-grained permission control with access profiles for managing model access at team and business unit levels, including propagation dialogs and full CRUD UI
-- **SCIM Provider Expansion** — Added support for Google Workspace, Keycloak, Zitadel, and SailPoint identity providers with full SCIM provisioning, attribute mapping, and sync workflows
-- **Okta Custom Provider + Group Mapping** — Custom Okta provider configurations with attribute-to-role, team, and business unit mapping support
-- **Business Units & Teams** — New organizational hierarchy for managing users with business units, teams, sync dialogs, and detail sheets
-- **User Ranking Dashboard** — Dashboard for tracking and visualizing user activity and rankings
-- **Guardrail Verify Flow** — Verify guardrail configurations against providers (Azure, Bedrock, GraySwan) before deployment
-- **Per-User OAuth Consent** — Per-user OAuth consent flow with identity selection and MCP authentication
-- **Prompts Plugin** — New prompts plugin with direct key header resolver and selective message inclusion when committing prompt sessions
-- **Bedrock Embeddings & Image Gen** — Embeddings, image generation, edit, and variation support added to Bedrock provider
-- **Logging Tracking Fields** — Support for tracking userId, teamId, customerId, and businessUnitId in logging plugin
-- **Virtual Keys Export** — Sorting and CSV export added to virtual keys table
-- **Path Whitelisting** — Allow path whitelisting from security config
-- **Model Blacklist in Load Balancing** — Blacklist model support in the load balancing plugin to exclude specific models from routing
-- **Cluster Leader Badge** — Leader badge display added to cluster node view
-- **Server Bootstrap Timer** — Startup diagnostics with server bootstrap timer
+- **Realtime Support** - WebSocket, WebRTC, and client secret handlers with session state management and transport context helpers for real-time streaming use cases
+- **Fireworks AI Provider** - Fireworks AI added as a first-class provider with native completions, responses, embeddings, and image generations
+- **Access Profiles** - Fine-grained permission control with access profiles for managing model access at team and business unit levels, including propagation dialogs and full CRUD UI
+- **SCIM Provider Expansion** - Added support for Google Workspace, Keycloak, Zitadel, and SailPoint identity providers with full SCIM provisioning, attribute mapping, and sync workflows
+- **Okta Custom Provider + Group Mapping** - Custom Okta provider configurations with attribute-to-role, team, and business unit mapping support
+- **Business Units & Teams** - New organizational hierarchy for managing users with business units, teams, sync dialogs, and detail sheets
+- **User Ranking Dashboard** - Dashboard for tracking and visualizing user activity and rankings
+- **Guardrail Verify Flow** - Verify guardrail configurations against providers (Azure, Bedrock, GraySwan) before deployment
+- **Per-User OAuth Consent** - Per-user OAuth consent flow with identity selection and MCP authentication
+- **Prompts Plugin** - New prompts plugin with direct key header resolver and selective message inclusion when committing prompt sessions
+- **Bedrock Embeddings & Image Gen** - Embeddings, image generation, edit, and variation support added to Bedrock provider
+- **Logging Tracking Fields** - Support for tracking userId, teamId, customerId, and businessUnitId in logging plugin
+- **Virtual Keys Export** - Sorting and CSV export added to virtual keys table
+- **Path Whitelisting** - Allow path whitelisting from security config
+- **Model Blacklist in Load Balancing** - Blacklist model support in the load balancing plugin to exclude specific models from routing
+- **Cluster Leader Badge** - Leader badge display added to cluster node view
+- **Server Bootstrap Timer** - Startup diagnostics with server bootstrap timer
 
 ## 🐞 Fixed
 
-- **Traffic Distribution Label** — Added "last 10s" label to Traffic Distribution Sankey chart for clarity
-- **Node ID Consistency** — Generate unique node ID on config load with minor consistency fixes
-- **Leader Election Stability** — Increased leader election check interval to 10 seconds for improved stability
-- **Bedrock Tool Choice** — Fix bedrock tool choice conversion to auto
-- **Bedrock Streaming Retries** — Retry retryable AWS exceptions and stale/closed-connection errors in bedrock streaming
-- **Bedrock SigV4 Service** — Correct SigV4 service name for agent runtime rerank
-- **MCP Tool Logs** — Fix MCP tool logs not being captured correctly
-- **Routing Rule Targets** — Preserve routing rule targets for genai and bedrock paths
-- **Provider Budget Duplication** — Fix provider level multiline budget duplication issue
-- **Vertex Endpoint** — Fix vertex endpoint correction
-- **Gemini Thinking Budget** — Fix thinking budget validation for gemini models
-- **SQLite Migrations** — Fix SQLite migration connections, error handling, and disable foreign key checks during migration
-- **Tool Parameter Schemas** — Preserve explicit empty tool parameter schemas for openai passthrough
-- **List Models Output** — Include raw model ID in list-models output alongside aliases
-- **Config Schema** — Fix config schema for bedrock key config
-- **Data Race Fix** — Fix race in data reading from fasthttp request for integrations
-- **Model Listing** — Unify /api/models and /api/models/details listing behavior
+- **Traffic Distribution Label** - Added "last 10s" label to Traffic Distribution Sankey chart for clarity
+- **Node ID Consistency** - Generate unique node ID on config load with minor consistency fixes
+- **Leader Election Stability** - Increased leader election check interval to 10 seconds for improved stability
+- **Bedrock Tool Choice** - Fix bedrock tool choice conversion to auto
+- **Bedrock Streaming Retries** - Retry retryable AWS exceptions and stale/closed-connection errors in bedrock streaming
+- **Bedrock SigV4 Service** - Correct SigV4 service name for agent runtime rerank
+- **MCP Tool Logs** - Fix MCP tool logs not being captured correctly
+- **Routing Rule Targets** - Preserve routing rule targets for genai and bedrock paths
+- **Provider Budget Duplication** - Fix provider level multiline budget duplication issue
+- **Vertex Endpoint** - Fix vertex endpoint correction
+- **Gemini Thinking Budget** - Fix thinking budget validation for gemini models
+- **SQLite Migrations** - Fix SQLite migration connections, error handling, and disable foreign key checks during migration
+- **Tool Parameter Schemas** - Preserve explicit empty tool parameter schemas for openai passthrough
+- **List Models Output** - Include raw model ID in list-models output alongside aliases
+- **Config Schema** - Fix config schema for bedrock key config
+- **Data Race Fix** - Fix race in data reading from fasthttp request for integrations
+- **Model Listing** - Unify /api/models and /api/models/details listing behavior
 
 ## 📀 Base OSS version
 

@@ -4,7 +4,7 @@ description: "Run Bifrost in a multi-replica cluster with gossip-based peer disc
 icon: "network-wired"
 ---
 
-Cluster mode enables multiple Bifrost replicas to share state — rate limits, budget counters, and governance data — across pods. When `bifrost.cluster.enabled` is `false` (the default), each replica operates independently and state is only shared via the database.
+Cluster mode enables multiple Bifrost replicas to share state - rate limits, budget counters, and governance data - across pods. When `bifrost.cluster.enabled` is `false` (the default), each replica operates independently and state is only shared via the database.
 
 <Note>
 Cluster mode requires **PostgreSQL** as the storage backend. SQLite is single-node only.
@@ -19,8 +19,8 @@ Cluster mode requires **PostgreSQL** as the storage backend. SQLite is single-no
 | Scenario | Recommendation |
 |----------|---------------|
 | Single replica | Not needed |
-| Multiple replicas, shared DB only | Optional — DB provides eventual consistency |
-| Multiple replicas with strict per-minute rate limiting | **Enable cluster mode** — in-memory counters are synced via gossip |
+| Multiple replicas, shared DB only | Optional - DB provides eventual consistency |
+| Multiple replicas with strict per-minute rate limiting | **Enable cluster mode** - in-memory counters are synced via gossip |
 | Geographic multi-region | Enable cluster mode with DNS or Consul discovery |
 
 ---
@@ -121,7 +121,7 @@ For `consul`, `etcd`, and `udp` discovery, set `bifrost.cluster.discovery.servic
 
 <Tab title="Kubernetes (Recommended)">
 
-Bifrost queries the Kubernetes API to find other Bifrost pods by label selector. No static peer list needed — works with HPA.
+Bifrost queries the Kubernetes API to find other Bifrost pods by label selector. No static peer list needed - works with HPA.
 
 ```yaml
 bifrost:
@@ -238,7 +238,7 @@ bifrost:
 ```
 
 <Note>
-Static peers require StatefulSet pod names to be stable. This approach doesn't adapt to HPA-driven scaling — use Kubernetes or DNS discovery for dynamic replica counts.
+Static peers require StatefulSet pod names to be stable. This approach doesn't adapt to HPA-driven scaling - use Kubernetes or DNS discovery for dynamic replica counts.
 </Note>
 
 </Tab>

@@ -1,0 +1,133 @@
+---
+title: "Bifrost Enterprise Gateway"
+description: "Production-grade AI gateway for organizations running mission-critical AI workloads. Built on top of open-source Bifrost with high-availability clustering, fine-grained governance, audit-grade compliance, and managed deployment options."
+icon: "building"
+---
+
+Bifrost Enterprise builds on the open-source [Bifrost AI Gateway](/overview) with the reliability, security, and governance capabilities required to run AI in production at organizational scale. Every OSS feature ships in Enterprise - plus high-availability clustering, predictive load balancing, identity federation, role-based access control, audit-grade compliance logging, and private-network deployment options.
+
+<Frame>
+<img src="/media/architecture.png" alt="Bifrost Enterprise architecture" width="100%" />
+</Frame>
+
+## Built on open source
+
+Bifrost Enterprise is a strict superset of the [open-source gateway](/overview). Every provider, integration, plugin, and SDK supported in OSS works identically in Enterprise - no migration, no re-integration, same `config.json` schema. Enterprise adds the capabilities organizations need at scale.
+
+<CardGroup cols={2}>
+  <Card title="Try Enterprise free" icon="rocket" href="https://www.getmaxim.ai/bifrost/enterprise">
+    Start a 14-day free trial of Bifrost Enterprise - no credit card required.
+  </Card>
+  <Card title="Book a demo" icon="calendar" href="https://www.getmaxim.ai/bifrost/book-a-demo">
+    Walk through Enterprise capabilities with a Bifrost engineer.
+  </Card>
+</CardGroup>
+
+---
+
+## Reliability & scale
+
+<CardGroup cols={2}>
+  <Card title="Clustering" icon="circle-nodes" href="/enterprise/clustering">
+    High-availability clustering with automatic service discovery, gossip-based state sync, gRPC counter sync, and zero-downtime rolling deployments.
+  </Card>
+  <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
+    Predictive scaling with real-time provider health monitoring; traffic shifts automatically to the fastest available upstream.
+  </Card>
+</CardGroup>
+
+---
+
+## Governance & access control
+
+<CardGroup cols={2}>
+  <Card title="Advanced Governance" icon="shield-check" href="/enterprise/advanced-governance">
+    Hierarchical policy enforcement across teams, customers, and business units with access profiles and budgets.
+  </Card>
+  <Card title="Role-Based Access Control" icon="user-shield" href="/enterprise/rbac">
+    Fine-grained permissions with custom roles controlling access across every Bifrost resource.
+  </Card>
+  <Card title="User Provisioning (SCIM)" icon="users" href="/enterprise/user-provisioning">
+    Directory-based user and group sync for automated lifecycle management with token-driven group restriction.
+  </Card>
+</CardGroup>
+
+### Identity providers (SSO)
+
+<CardGroup cols={3}>
+  <Card title="Okta" icon="key" href="/enterprise/setting-up-okta">
+    OIDC + SCIM integration with Okta as your identity provider.
+  </Card>
+  <Card title="Microsoft Entra" icon="microsoft" href="/enterprise/setting-up-entra">
+    Azure AD / Entra ID with GCC High and DoD cloud support.
+  </Card>
+  <Card title="Keycloak" icon="lock" href="/enterprise/setting-up-keycloak">
+    Self-hosted identity with full SCIM and OIDC support.
+  </Card>
+  <Card title="Zitadel" icon="z" href="/enterprise/setting-up-zitadel">
+    Cloud-native identity with first-class user grants and project mapping.
+  </Card>
+  <Card title="Google Workspace" icon="google" href="/enterprise/setting-up-google-workspace">
+    Workspace directory federation with Application Default Credentials inheritance.
+  </Card>
+</CardGroup>
+
+---
+
+## Security & compliance
+
+<CardGroup cols={2}>
+  <Card title="Guardrails" icon="road-barrier" href="/enterprise/guardrails">
+    Content safety with AWS Bedrock Guardrails, Azure Content Safety, GraySwan, and Patronus AI for runtime protection.
+  </Card>
+  <Card title="Audit Logs" icon="scroll" href="/enterprise/audit-logs">
+    Immutable audit trails for SOC 2, GDPR, HIPAA, and ISO 27001 compliance.
+  </Card>
+  <Card title="Security Posture" icon="shield" href="/security">
+    Encryption at rest and in transit, vulnerability scanning, dependency management, and secure defaults.
+  </Card>
+</CardGroup>
+
+---
+
+## Operations & extensibility
+
+<CardGroup cols={2}>
+  <Card title="MCP with Federated Auth" icon="screwdriver-wrench" href="/enterprise/mcp-with-fa">
+    Transform existing enterprise APIs into MCP tools using federated authentication - no glue code required.
+  </Card>
+  <Card title="Custom Plugins" icon="puzzle-piece" href="/enterprise/custom-plugins">
+    Tailored plugin development for organization-specific AI workflows and business logic.
+  </Card>
+  <Card title="Log Exports" icon="download" href="/enterprise/log-exports">
+    Automated export of request logs and telemetry to S3, GCS, BigQuery, and other data lakes.
+  </Card>
+  <Card title="Datadog Connector" icon="dog" href="/enterprise/datadog-connector">
+    Native Datadog APM, LLM Observability, and metrics integration with full request tracing.
+  </Card>
+</CardGroup>
+
+---
+
+## Deployment options
+
+<CardGroup cols={2}>
+  <Card title="In-VPC Deployments" icon="cloud" href="/enterprise/invpc-deployments">
+    Deploy entirely within your private cloud with no traffic crossing public network boundaries.
+  </Card>
+  <Card title="Deployment Overview" icon="map" href="/deployment-guides/enterprise/overview">
+    Compare deployment options, authentication methods, and security trade-offs across clouds.
+  </Card>
+  <Card title="AWS" icon="aws" href="/deployment-guides/enterprise/aws">
+    Deploy on EKS or ECS with IRSA / IAM Task Roles for cloud-native authentication.
+  </Card>
+  <Card title="GCP" icon="google" href="/deployment-guides/enterprise/gcp">
+    Deploy on GKE with Workload Identity for keyless service account access.
+  </Card>
+  <Card title="Azure" icon="microsoft" href="/deployment-guides/enterprise/azure">
+    Deploy on AKS with Azure Workload Identity Federation.
+  </Card>
+  <Card title="On-Premise" icon="server" href="/deployment-guides/enterprise/on-premise">
+    Air-gapped or self-hosted deployments with Docker credentials.
+  </Card>
+</CardGroup>

@@ -44,7 +44,7 @@ When you configure provider restrictions on a Virtual Key, Bifrost validates tha
 
 ## Weighted Load Balancing
 
-When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider can be assigned a weight, and requests are distributed proportionally. The `weight` field is optional — omitting it (or setting it to `null`) excludes the provider from weighted selection while still allowing it to be used for direct `provider/model` requests or as a fallback.
+When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider can be assigned a weight, and requests are distributed proportionally. The `weight` field is optional - omitting it (or setting it to `null`) excludes the provider from weighted selection while still allowing it to be used for direct `provider/model` requests or as a fallback.
 
 **Example Configuration:**
 ```
@@ -87,12 +87,12 @@ Weights are automatically normalized to a sum 1.0 based on the weights of all pr
   "provider_configs": [
     {
       "provider": "openai",
-      "allowed_models": ["*"],  // Allow all — uses Model Catalog for validation
+      "allowed_models": ["*"],  // Allow all - uses Model Catalog for validation
       "weight": 0.5
     },
     {
       "provider": "anthropic",
-      "allowed_models": ["*"],  // Allow all — uses Model Catalog for validation
+      "allowed_models": ["*"],  // Allow all - uses Model Catalog for validation
       "weight": 0.5
     }
   ]

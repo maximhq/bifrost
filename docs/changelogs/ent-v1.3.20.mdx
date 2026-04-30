@@ -11,24 +11,24 @@ This release adds a dedicated streaming client that eliminates premature SSE ter
 
 ## ✨ Features
 
-- **Dedicated Streaming Client** — Each provider now uses a separate HTTP client for streaming requests with read-timeout cleared, eliminating premature SSE/EventStream termination on long-running responses; per-chunk idle detection is enforced via `NewIdleTimeoutReader`
-- **Routing Rules Auto-resolve Model** — Provider-only fallbacks now automatically inherit the incoming model, removing the need to repeat model names in fallback routing config
-- **pprof Support** — Added pprof profiling endpoint for production diagnostics and performance troubleshooting
-- **Cluster broadcastWithoutAck** — New cluster broadcast mode for fire-and-forget messaging, now used for load balancer metrics to reduce unnecessary overhead
+- **Dedicated Streaming Client** - Each provider now uses a separate HTTP client for streaming requests with read-timeout cleared, eliminating premature SSE/EventStream termination on long-running responses; per-chunk idle detection is enforced via `NewIdleTimeoutReader`
+- **Routing Rules Auto-resolve Model** - Provider-only fallbacks now automatically inherit the incoming model, removing the need to repeat model names in fallback routing config
+- **pprof Support** - Added pprof profiling endpoint for production diagnostics and performance troubleshooting
+- **Cluster broadcastWithoutAck** - New cluster broadcast mode for fire-and-forget messaging, now used for load balancer metrics to reduce unnecessary overhead
 
 ## 🐞 Fixed
 
-- **Anthropic Empty Thinking Blocks** — Strip `thinking`-typed content blocks with empty `"thinking"` fields before sending to Anthropic, preventing HTTP 400 errors from Claude Code requests
-- **Plugin Timer Concurrent Map Panic** — Added `streamingMu sync.Mutex` to `PluginPipeline` to guard `postHookTimings` across concurrent goroutines during streaming; also fixed a double-pool-release race on streaming errors
-- **Stream Cancellation Safety** — Guarded channel sends and finalizer protection prevent goroutine leaks when clients disconnect mid-stream
-- **Cluster Message Invalidation** — Fixed cluster message invalidation to use EntityType and entity ID instead of message ID, correcting stale-entry eviction under concurrent load
-- **Cluster Permission** — Fixed a cluster permission issue introduced with broadcastWithoutAck
-- **Logs UI** — Switched from WebSocket push to polling for log updates; fixed polling mechanism and defaults the time range to the last hour in logs and dashboard
-- **Adaptive UI Crash** — Fixed page crash caused by empty string passed to Radix Select in the adaptive UI
+- **Anthropic Empty Thinking Blocks** - Strip `thinking`-typed content blocks with empty `"thinking"` fields before sending to Anthropic, preventing HTTP 400 errors from Claude Code requests
+- **Plugin Timer Concurrent Map Panic** - Added `streamingMu sync.Mutex` to `PluginPipeline` to guard `postHookTimings` across concurrent goroutines during streaming; also fixed a double-pool-release race on streaming errors
+- **Stream Cancellation Safety** - Guarded channel sends and finalizer protection prevent goroutine leaks when clients disconnect mid-stream
+- **Cluster Message Invalidation** - Fixed cluster message invalidation to use EntityType and entity ID instead of message ID, correcting stale-entry eviction under concurrent load
+- **Cluster Permission** - Fixed a cluster permission issue introduced with broadcastWithoutAck
+- **Logs UI** - Switched from WebSocket push to polling for log updates; fixed polling mechanism and defaults the time range to the last hour in logs and dashboard
+- **Adaptive UI Crash** - Fixed page crash caused by empty string passed to Radix Select in the adaptive UI
 
 ## 🛠️ Build
 
-- **Go 1.26.2** — Build toolchain upgraded from Go 1.26.1 to Go 1.26.2
+- **Go 1.26.2** - Build toolchain upgraded from Go 1.26.1 to Go 1.26.2
 
 ## 📀 Base OSS version
 

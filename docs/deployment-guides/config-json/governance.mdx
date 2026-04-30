@@ -7,7 +7,7 @@ icon: "shield-check"
 The `governance` block lets you seed all governance resources directly in `config.json`. On startup, Bifrost loads these into the configuration store. This is the recommended approach for GitOps workflows where governance state is managed as code.
 
 <Note>
-**Governance enforcement is always active** in OSS — you do not need a plugin entry to enable it. To require a virtual key on every inference request, set `client.enforce_auth_on_inference: true`. This is the global default, but a more specific inference-auth flag such as `governance.auth_config.disable_auth_on_inference` overrides it; if no specific override is set, `client.enforce_auth_on_inference` applies.
+**Governance enforcement is always active** in OSS - you do not need a plugin entry to enable it. To require a virtual key on every inference request, set `client.enforce_auth_on_inference: true`. This is the global default, but a more specific inference-auth flag such as `governance.auth_config.disable_auth_on_inference` overrides it; if no specific override is set, `client.enforce_auth_on_inference` applies.
 </Note>
 
 ---
@@ -32,8 +32,8 @@ Protect the Bifrost dashboard and management API with username/password auth:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `is_enabled` | `false` | Enable admin username/password auth |
-| `admin_username` | — | Admin username (supports `env.` prefix) |
-| `admin_password` | — | Admin password (supports `env.` prefix) |
+| `admin_username` | - | Admin username (supports `env.` prefix) |
+| `admin_password` | - | Admin password (supports `env.` prefix) |
 | `disable_auth_on_inference` | `false` | Skip auth check on `/v1/*` inference routes |
 
 ---
@@ -197,7 +197,7 @@ Routing rules dynamically select the provider and model for each request based o
 | `cel_expression` | No | CEL expression. `"true"` matches every request |
 | `targets` | Yes | Weighted target list (weights must sum to `1.0`) |
 | `enabled` | No | Default `true` |
-| `priority` | No | Evaluation order within scope — lower numbers run first |
+| `priority` | No | Evaluation order within scope - lower numbers run first |
 | `scope` | No | `"global"` (default), `"team"`, `"customer"`, `"virtual_key"` |
 | `scope_id` | Conditional | Required when `scope` is not `"global"` |
 | `chain_rule` | No | If `true`, re-evaluates the chain after this rule matches |

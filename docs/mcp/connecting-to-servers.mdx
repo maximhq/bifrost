@@ -114,7 +114,7 @@ Use OAuth 2.0 for secure, user-based authentication with automatic token refresh
 
 #### Per-User OAuth
 
-Use per-user OAuth when each end-user should access the upstream service under their own account (e.g., each user's personal Notion workspace or GitHub repos). Bifrost acts as an OAuth 2.1 Authorization Server — users authenticate through a consent flow and their tokens are stored per-identity.
+Use per-user OAuth when each end-user should access the upstream service under their own account (e.g., each user's personal Notion workspace or GitHub repos). Bifrost acts as an OAuth 2.1 Authorization Server - users authenticate through a consent flow and their tokens are stored per-identity.
 
 Per-user OAuth is configured through the Web UI only (Bifrost runs a test OAuth flow and pre-fetches tools at setup time).
 
@@ -176,7 +176,7 @@ Server-Sent Events (SSE) connections provide real-time, persistent connections t
 
 #### Per-User OAuth
 
-Same as HTTP — each user authenticates under their own account. Configured through the Web UI only.
+Same as HTTP - each user authenticates under their own account. Configured through the Web UI only.
 
 [→ Learn more about Per-User OAuth →](./per-user-oauth)
 
@@ -493,10 +493,10 @@ This is separate from the static `headers` field used for authentication:
 
 1. An incoming request carries one or more headers matching a client's `allowed_extra_headers` pattern
 2. Bifrost captures those headers from the request (using the union of all clients' allowlists)
-3. At tool execution time, each client **re-checks** the header against its own allowlist — so the same header can be forwarded to one MCP server but not another
+3. At tool execution time, each client **re-checks** the header against its own allowlist - so the same header can be forwarded to one MCP server but not another
 
 <Note>
-Headers are matched case-insensitively. The only wildcard supported is a standalone `"*"` (allow all headers) — partial patterns like `x-tenant-*` are not supported. If `"*"` is used, it must be the only entry in the list.
+Headers are matched case-insensitively. The only wildcard supported is a standalone `"*"` (allow all headers) - partial patterns like `x-tenant-*` are not supported. If `"*"` is used, it must be the only entry in the list.
 </Note>
 
 <Tabs>

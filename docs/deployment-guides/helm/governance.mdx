@@ -1,6 +1,6 @@
 ---
 title: "Governance"
-description: "Configure Bifrost governance in Helm — budgets, rate limits, virtual keys, routing rules, and admin authentication"
+description: "Configure Bifrost governance in Helm - budgets, rate limits, virtual keys, routing rules, and admin authentication"
 icon: "shield"
 ---
 
@@ -162,7 +162,7 @@ Virtual keys are the primary access tokens issued to callers. They scope which p
 bifrost:
   governance:
     virtualKeys:
-      # 1. Unrestricted dev key — access to every provider
+      # 1. Unrestricted dev key - access to every provider
       - id: "vk-dev-all"
         name: "Dev: all providers"
         value: "vk-dev-all-secret-token"
@@ -171,7 +171,7 @@ bifrost:
         rate_limit_id: "rate-limit-standard"
         # No provider_configs → all providers allowed
 
-      # 2. OpenAI only — restricted to two models
+      # 2. OpenAI only - restricted to two models
       - id: "vk-openai-prod"
         name: "OpenAI Production"
         value: "vk-openai-prod-secret-token"

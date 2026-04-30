@@ -16,7 +16,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 
 | Key | Type | Description | Guide |
 |-----|------|-------------|-------|
-| `$schema` | string | Schema URL for IDE validation. Set to `"https://www.getbifrost.ai/schema"` | — |
+| `$schema` | string | Schema URL for IDE validation. Set to `"https://www.getbifrost.ai/schema"` | - |
 | `encryption_key` | string | Optional AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix and is also read from `BIFROST_ENCRYPTION_KEY`. If omitted, data is stored in plaintext. | [Client](/deployment-guides/config-json/client#encryption-key) |
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
@@ -24,14 +24,14 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
-| `config_store` | object | Configuration database backend — SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
-| `logs_store` | object | Request/response log database — SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
-| `vector_store` | object | Vector database for semantic cache — Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
+| `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
+| `logs_store` | object | Request/response log database - SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
+| `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
-| `mcp` | object | MCP server and tool configuration | — |
+| `mcp` | object | MCP server and tool configuration | - |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
-| `auth_config` | object | **Deprecated** — use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
+| `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
 
 ---
 
@@ -67,9 +67,9 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `whitelisted_routes` | array | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array | `[]` | Additional headers permitted for CORS/WebSocket |
 | `required_headers` | array | `[]` | Headers that must be present on every request |
-| `header_filter_config` | object | — | `allowlist` / `denylist` for `x-bf-eh-*` forwarded headers |
+| `header_filter_config` | object | - | `allowlist` / `denylist` for `x-bf-eh-*` forwarded headers |
 | `prometheus_labels` | array | `[]` | Custom labels for all Prometheus metrics |
-| `compat` | object | — | SDK compatibility shims (`should_drop_params`, `convert_text_to_chat`, etc.) |
+| `compat` | object | - | SDK compatibility shims (`should_drop_params`, `convert_text_to_chat`, etc.) |
 | `mcp_agent_depth` | integer | `10` | Max tool-call recursion depth |
 | `mcp_tool_execution_timeout` | integer | `30` | Per-tool execution timeout in seconds |
 | `mcp_tool_sync_interval` | integer | `10` | Tool sync interval in minutes (`0` = disabled) |
@@ -77,7 +77,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
-| `mcp_external_base_url` | string \| EnvVar | — | Public base URL for OAuth callbacks/discovery when behind a reverse proxy; supports `"env.MY_VAR"` |
+| `mcp_external_base_url` | string \| EnvVar | - | Public base URL for OAuth callbacks/discovery when behind a reverse proxy; supports `"env.MY_VAR"` |
 
 Full documentation: [Client Configuration](/deployment-guides/config-json/client).
 

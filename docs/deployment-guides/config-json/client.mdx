@@ -1,6 +1,6 @@
 ---
 title: "Client Configuration"
-description: "Configure the Bifrost client in config.json — connection pool, logging, CORS, header filtering, compat shims, and MCP settings"
+description: "Configure the Bifrost client in config.json - connection pool, logging, CORS, header filtering, compat shims, and MCP settings"
 icon: "gear"
 ---
 
@@ -32,7 +32,7 @@ A larger pool reduces latency spikes under burst load at the cost of higher base
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enable_logging` | boolean | — | Log all LLM requests and responses |
+| `enable_logging` | boolean | - | Log all LLM requests and responses |
 | `disable_content_logging` | boolean | `false` | Strip message content from logs (keeps metadata only) |
 | `log_retention_days` | integer | `365` | Days to retain log entries in the store |
 | `logging_headers` | array of strings | `[]` | HTTP request headers to capture in log metadata |
@@ -56,9 +56,9 @@ Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where m
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mcp_external_base_url` | string or EnvVar | — | Public base URL advertised for OAuth callbacks and discovery metadata |
+| `mcp_external_base_url` | string or EnvVar | - | Public base URL advertised for OAuth callbacks and discovery metadata |
 
-When Bifrost runs behind a reverse proxy, the OAuth callback URL and well-known discovery endpoints (`/.well-known/oauth-authorization-server`, etc.) are built from the incoming `Host` header — which is your proxy's internal address, not its public address. Set `mcp_external_base_url` to override this with the proxy's public URL.
+When Bifrost runs behind a reverse proxy, the OAuth callback URL and well-known discovery endpoints (`/.well-known/oauth-authorization-server`, etc.) are built from the incoming `Host` header - which is your proxy's internal address, not its public address. Set `mcp_external_base_url` to override this with the proxy's public URL.
 
 The field supports env var syntax so the URL can be injected at runtime:
 
@@ -122,7 +122,7 @@ Controls which `x-bf-eh-*` extra headers are forwarded to upstream LLM providers
 | `header_filter_config.denylist` | array of strings | `[]` | These headers are always blocked |
 | `required_headers` | array of strings | `[]` | Headers that must be present on every request (rejected with 400 if missing) |
 
-When both `allowlist` and `denylist` are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode — only listed headers are forwarded.
+When both `allowlist` and `denylist` are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode - only listed headers are forwarded.
 
 ```json
 {
@@ -171,7 +171,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 |-------|------|---------|-------------|
 | `mcp_agent_depth` | integer | `10` | Maximum tool-call recursion depth for MCP agent mode |
 | `mcp_tool_execution_timeout` | integer | `30` | Timeout per MCP tool execution in seconds |
-| `mcp_code_mode_binding_level` | string | — | Code mode binding level: `"server"` or `"tool"` |
+| `mcp_code_mode_binding_level` | string | - | Code mode binding level: `"server"` or `"tool"` |
 | `mcp_tool_sync_interval` | integer | `10` | Global tool sync interval in minutes (`0` = disabled) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | When `true`, MCP tools are not automatically injected into requests |
 
@@ -217,8 +217,8 @@ Add custom labels to every Prometheus metric emitted by Bifrost:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `is_enabled` | boolean | `false` | Enable username/password auth |
-| `admin_username` | string | — | Admin username |
-| `admin_password` | string | — | Admin password (use `env.` reference) |
+| `admin_username` | string | - | Admin username |
+| `admin_password` | string | - | Admin password (use `env.` reference) |
 | `disable_auth_on_inference` | boolean | `false` | Skip auth check on `/v1/*` inference routes |
 
 ```json
@@ -253,7 +253,7 @@ A top-level `auth_config` is also accepted for backwards compatibility, but `gov
 | Accepts any string; Bifrost derives a 32-byte AES-256 key using Argon2id |
 | Can also be set via the `BIFROST_ENCRYPTION_KEY` environment variable |
 | Once set and the database is populated, the key cannot be changed without clearing the database |
-| Omitting the key stores data in plain text — not recommended for production |
+| Omitting the key stores data in plain text - not recommended for production |
 
 ---
 

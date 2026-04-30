@@ -1,6 +1,6 @@
 ---
 title: "Provider Setup"
-description: "Configure LLM providers in the Bifrost Helm chart — API keys, cloud-native auth, and self-hosted endpoints"
+description: "Configure LLM providers in the Bifrost Helm chart - API keys, cloud-native auth, and self-hosted endpoints"
 icon: "plug"
 ---
 
@@ -8,8 +8,8 @@ All providers are configured under `bifrost.providers` in your values file. Each
 
 **Two ways to supply credentials:**
 
-- **Direct value** — `value: "sk-..."` (fine for dev; avoid in production)
-- **Kubernetes Secret + env var** — store the key in a Secret, inject as an env var, and reference it with `value: "env.VAR_NAME"`
+- **Direct value** - `value: "sk-..."` (fine for dev; avoid in production)
+- **Kubernetes Secret + env var** - store the key in a Secret, inject as an env var, and reference it with `value: "env.VAR_NAME"`
 
 The `providerSecrets` block handles the Secret → env var injection automatically:
 
@@ -39,7 +39,7 @@ bifrost:
 
 Supports multiple keys with weighted load balancing. The key with `use_for_batch_api: true` is eligible for the Batch API.
 
-**Step 1 — Create secret**
+**Step 1 - Create secret**
 
 ```bash
 kubectl create secret generic openai-credentials \
@@ -48,7 +48,7 @@ kubectl create secret generic openai-credentials \
   --from-literal=api-key-batch='sk-your-batch-key'
 ```
 
-**Step 2 — Values file**
+**Step 2 - Values file**
 
 ```yaml
 # openai-values.yaml
@@ -88,13 +88,13 @@ bifrost:
       envVar: "OPENAI_KEY_BATCH"
 ```
 
-**Step 3 — Install**
+**Step 3 - Install**
 
 ```bash
 helm install bifrost bifrost/bifrost -f openai-values.yaml
 ```
 
-**Optional — per-provider network config**
+**Optional - per-provider network config**
 
 ```yaml
 bifrost:
@@ -185,7 +185,7 @@ Two auth modes are supported:
 <Tabs>
 <Tab title="API Key">
 
-**Step 1 — Create secret**
+**Step 1 - Create secret**
 
 ```bash
 kubectl create secret generic azure-credentials \
@@ -193,7 +193,7 @@ kubectl create secret generic azure-credentials \
   --from-literal=endpoint='https://your-resource.openai.azure.com'
 ```
 
-**Step 2 — Values file**
+**Step 2 - Values file**
 
 ```yaml
 # azure-apikey-values.yaml
@@ -227,7 +227,7 @@ bifrost:
       envVar: "AZURE_ENDPOINT"
 ```
 
-**Step 3 — Install**
+**Step 3 - Install**
 
 ```bash
 helm install bifrost bifrost/bifrost -f azure-apikey-values.yaml
@@ -236,12 +236,12 @@ helm install bifrost bifrost/bifrost -f azure-apikey-values.yaml
 </Tab>
 <Tab title="Managed Identity / Workload Identity">
 
-When `value` is empty, Bifrost uses `DefaultAzureCredential` — which automatically resolves credentials from:
+When `value` is empty, Bifrost uses `DefaultAzureCredential` - which automatically resolves credentials from:
 - AKS Workload Identity (recommended for production)
 - Azure VM managed identity
 - `az login` (developer machines)
 
-**Step 1 — Annotate the service account** (AKS Workload Identity)
+**Step 1 - Annotate the service account** (AKS Workload Identity)
 
 ```bash
 # Associate the Kubernetes service account with your Azure managed identity
@@ -255,7 +255,7 @@ serviceAccount:
     azure.workload.identity/client-id: "<MANAGED_IDENTITY_CLIENT_ID>"
 ```
 
-**Step 2 — Values file**
+**Step 2 - Values file**
 
 ```bash
 kubectl create secret generic azure-config \
@@ -292,7 +292,7 @@ bifrost:
       envVar: "AZURE_ENDPOINT"
 ```
 
-**Step 3 — Install**
+**Step 3 - Install**
 
 ```bash
 helm install bifrost bifrost/bifrost -f azure-msi-values.yaml
@@ -382,9 +382,9 @@ helm install bifrost bifrost/bifrost -f bedrock-static-values.yaml
 </Tab>
 <Tab title="IRSA / EKS Pod Identity">
 
-When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain — IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
+When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain - IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
 
-**Step 1 — Annotate the service account with the IAM role**
+**Step 1 - Annotate the service account with the IAM role**
 
 ```bash
 kubectl annotate serviceaccount bifrost \
@@ -397,7 +397,7 @@ serviceAccount:
     eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/BifrostBedrockRole"
 ```
 
-**Step 2 — Values file**
+**Step 2 - Values file**
 
 ```yaml
 # bedrock-irsa-values.yaml
@@ -418,7 +418,7 @@ bifrost:
           models: ["*"]
           bedrock_key_config:
             region: "us-east-1"
-            # No access_key / secret_key — SDK uses IRSA token automatically
+            # No access_key / secret_key - SDK uses IRSA token automatically
 ```
 
 ```bash
@@ -476,7 +476,7 @@ helm install bifrost bifrost/bifrost -f bedrock-assumerole-values.yaml
 </Tab>
 </Tabs>
 
-**Batch API — S3 configuration**
+**Batch API - S3 configuration**
 
 ```yaml
 bedrock_key_config:
@@ -545,13 +545,13 @@ helm install bifrost bifrost/bifrost -f vertex-sa-values.yaml
 </Tab>
 <Tab title="GKE Workload Identity / ADC">
 
-When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` — which resolves to:
+When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` - which resolves to:
 - GKE Workload Identity (recommended)
 - GCE metadata server (on Compute Engine / Cloud Run)
 - `GOOGLE_APPLICATION_CREDENTIALS` path
 - `gcloud auth application-default login` (developer machines)
 
-**Step 1 — Annotate the service account** (GKE Workload Identity)
+**Step 1 - Annotate the service account** (GKE Workload Identity)
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding \
@@ -566,7 +566,7 @@ serviceAccount:
     iam.gke.io/gcp-service-account: "bifrost-sa@my-project.iam.gserviceaccount.com"
 ```
 
-**Step 2 — Values file**
+**Step 2 - Values file**
 
 ```yaml
 # vertex-wli-values.yaml
@@ -604,7 +604,7 @@ helm install bifrost bifrost/bifrost -f vertex-wli-values.yaml
 
 ### Standard API-Key Providers
 
-These providers follow the same simple pattern — one or more keys with weights.
+These providers follow the same simple pattern - one or more keys with weights.
 
 <Tabs>
 <Tab title="Groq">
@@ -785,7 +785,7 @@ kubectl create secret generic ollama-config \
 </Tab>
 <Tab title="vLLM">
 
-vLLM instances are model-specific — one key per served model.
+vLLM instances are model-specific - one key per served model.
 
 ```yaml
 # vllm-values.yaml

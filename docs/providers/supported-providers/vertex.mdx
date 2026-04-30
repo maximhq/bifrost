@@ -50,7 +50,7 @@ Vertex AI requires Google Cloud project configuration and authentication credent
 <Note>
   The `aliases` field (mapping model names to fine-tuned model IDs or endpoint
   identifiers) requires **v1.5.0-prerelease2 or later**. On v1.4.x, use
-  `deployments` inside `vertex_key_config` instead — see the [v1.5.0 Migration
+  `deployments` inside `vertex_key_config` instead - see the [v1.5.0 Migration
   Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases)
   for details.
 </Note>
@@ -108,7 +108,7 @@ curl -X POST http://localhost:8080/api/providers/vertex/keys \
 
 <Note>
   **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
-  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  /api/providers` body - there is no separate `/api/providers/{provider}/keys`
   endpoint. - Use `deployments` inside `vertex_key_config` instead of the
   top-level `aliases` field for fine-tuned model mappings.
 </Note>
@@ -175,7 +175,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 ### 2. Application Default Credentials
 
-Leave `auth_credentials` empty. Bifrost calls `google.FindDefaultCredentials()` — Google's ADC library — which resolves credentials in this order:
+Leave `auth_credentials` empty. Bifrost calls `google.FindDefaultCredentials()` - Google's ADC library - which resolves credentials in this order:
 
 1. `GOOGLE_APPLICATION_CREDENTIALS` env var (path to a JSON credential file)
 2. Application default credential file (`~/.config/gcloud/application_default_credentials.json`, written by `gcloud auth application-default login`)
@@ -230,7 +230,7 @@ curl -X POST http://localhost:8080/api/providers/vertex/keys \
 ```
 
 <Note>
-  **On v1.4.x**, pass `keys` directly in the `POST /api/providers` body — there
+  **On v1.4.x**, pass `keys` directly in the `POST /api/providers` body - there
   is no separate `/api/providers/{provider}/keys` endpoint.
 </Note>
 
@@ -276,7 +276,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                 VertexKeyConfig: &schemas.VertexKeyConfig{
                     ProjectID: *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
                     Region:    *schemas.NewEnvVar("us-central1"),
-                    // Leave AuthCredentials empty — uses Application Default Credentials
+                    // Leave AuthCredentials empty - uses Application Default Credentials
                 },
             },
         }, nil
@@ -324,7 +324,7 @@ curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "vertex"}'
 
-# Step 2: Create a key (API Key — Gemini + fine-tuned models)
+# Step 2: Create a key (API Key - Gemini + fine-tuned models)
 curl -X POST http://localhost:8080/api/providers/vertex/keys \
   -H "Content-Type: application/json" \
   -d '{
@@ -345,7 +345,7 @@ curl -X POST http://localhost:8080/api/providers/vertex/keys \
 
 <Note>
 **On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Pass `keys` directly in the `POST /api/providers` body - there is no separate `/api/providers/{provider}/keys` endpoint.
 - Replace the top-level `aliases` with `"deployments"` inside `vertex_key_config`:
 ```json
 "vertex_key_config": {
@@ -455,7 +455,7 @@ When running Bifrost on GKE, [Workload Identity Federation](https://cloud.google
 **What you need:**
 
 1. The GCP-side prerequisites below (API enabled, IAM service account, WIF binding)
-2. A Bifrost Vertex key using **"Service Account (Attached)"** auth — see [Application Default Credentials](#2-application-default-credentials) for Web UI, API, config.json, and Go SDK setup. For Helm, see [Helm — Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai).
+2. A Bifrost Vertex key using **"Service Account (Attached)"** auth - see [Application Default Credentials](#2-application-default-credentials) for Web UI, API, config.json, and Go SDK setup. For Helm, see [Helm - Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai).
 3. The Kubernetes ServiceAccount annotated for WIF:
 
 ```bash
@@ -553,7 +553,7 @@ kubectl annotate serviceaccount KSA_NAME \
   iam.gke.io/gcp-service-account=IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com
 ```
 
-If deploying with the Bifrost Helm chart, set the annotation via `serviceAccount.annotations` in your values file — see [Helm — Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai) for the full example.
+If deploying with the Bifrost Helm chart, set the annotation via `serviceAccount.annotations` in your values file - see [Helm - Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai) for the full example.
 
 </Accordion>
 

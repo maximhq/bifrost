@@ -122,7 +122,7 @@ per-user-oauth-register:
       This endpoint is only available when at least one MCP client is configured with
       `auth_type: per_user_oauth`. Returns `404` otherwise.
 
-      Authentication is not required — this is part of the unauthenticated OAuth bootstrap flow.
+      Authentication is not required - this is part of the unauthenticated OAuth bootstrap flow.
     tags:
       - OAuth
       - Per-User OAuth
@@ -175,13 +175,13 @@ per-user-oauth-authorize:
       browser-bound `PendingFlow` record (15-minute TTL), and redirects the user to
       the Bifrost consent screen at `/oauth/consent?flow_id=xxx`.
 
-      **PKCE is required** — `code_challenge` and `code_challenge_method=S256` must
+      **PKCE is required** - `code_challenge` and `code_challenge_method=S256` must
       be provided. Plain code challenges are not supported.
 
       A `__bifrost_flow_secret` HttpOnly SameSite=Lax cookie is set on redirect to
       bind the consent flow to the initiating browser session (CSRF protection).
 
-      Authentication is not required — this is part of the unauthenticated OAuth bootstrap flow.
+      Authentication is not required - this is part of the unauthenticated OAuth bootstrap flow.
     tags:
       - OAuth
       - Per-User OAuth
@@ -265,7 +265,7 @@ per-user-oauth-token:
       It carries the user's upstream service tokens (Notion, GitHub, etc.) linked to their
       identity (Virtual Key or User ID) from the consent flow.
 
-      Authentication is not required — this is part of the unauthenticated OAuth bootstrap flow.
+      Authentication is not required - this is part of the unauthenticated OAuth bootstrap flow.
     tags:
       - OAuth
       - Per-User OAuth
@@ -292,10 +292,10 @@ per-user-oauth-token:
                 description: Must match the redirect_uri used in the authorize request (if provided)
               client_id:
                 type: string
-                description: Client ID (optional — code is already bound to the client)
+                description: Client ID (optional - code is already bound to the client)
               code_verifier:
                 type: string
-                description: PKCE code verifier — the raw secret whose SHA-256 matches the code_challenge
+                description: PKCE code verifier - the raw secret whose SHA-256 matches the code_challenge
     responses:
       '200':
         description: Token issued successfully
@@ -342,16 +342,16 @@ per-user-oauth-token:
 per-user-oauth-upstream-authorize:
   get:
     operationId: authorizeUpstreamPerUserOAuth
-    summary: Upstream OAuth proxy — authorize with upstream service
+    summary: Upstream OAuth proxy - authorize with upstream service
     description: |
       Initiates an OAuth flow with an upstream MCP service (Notion, GitHub, etc.)
       on behalf of the current user. Used during the consent flow (via "Connect" buttons
       on the MCPs page) and at runtime when a tool call is made to an unauthenticated service.
 
-      **Consent flow** — provide `flow_id` (from the pending consent flow). The browser-binding
+      **Consent flow** - provide `flow_id` (from the pending consent flow). The browser-binding
       cookie (`__bifrost_flow_secret`) is validated.
 
-      **Runtime flow** — provide `session` (the Bifrost session ID from the token endpoint).
+      **Runtime flow** - provide `session` (the Bifrost session ID from the token endpoint).
       Used when a service was skipped during consent and needs to be connected later.
 
       On success, redirects the user to the upstream provider's authorize URL. After the user
@@ -359,7 +359,7 @@ per-user-oauth-upstream-authorize:
       token against the user's identity, and redirects back to the consent screen (consent flow)
       or returns an authorization success page (runtime flow).
 
-      Authentication is not required — cookie/session validation is performed instead.
+      Authentication is not required - cookie/session validation is performed instead.
     tags:
       - OAuth
       - Per-User OAuth
@@ -435,7 +435,7 @@ consent-identity-page:
       themselves for the session: Virtual Key, User ID, or Skip (session-only auth).
 
       The `__bifrost_flow_secret` HttpOnly cookie set during `/api/oauth/per-user/authorize`
-      must be present — it binds the consent flow to the initiating browser.
+      must be present - it binds the consent flow to the initiating browser.
 
       The Skip option is only shown when `enforce_auth_on_inference` is `false` in config.
     tags:
@@ -559,7 +559,7 @@ consent-submit-user-id:
       Links a self-declared User ID to the pending flow as the user's identity.
       On success, redirects to the MCPs page.
 
-      The User ID is self-declared with no server-side verification — it matches
+      The User ID is self-declared with no server-side verification - it matches
       the trust model of the `X-Bf-User-Id` header in the LLM Gateway path.
 
       Request body is `application/x-www-form-urlencoded` (browser form submission).

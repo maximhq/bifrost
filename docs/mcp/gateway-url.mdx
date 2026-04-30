@@ -291,7 +291,7 @@ The MCP Server dynamically updates its tool registry from the tool manager.
 
 ## Per-User OAuth for MCP Clients
 
-When at least one MCP server is configured with `per_user_oauth`, the `/mcp` endpoint automatically advertises OAuth support via standard discovery headers. OAuth-capable MCP clients (Claude Code, Cursor, and others) detect this automatically — no manual configuration is needed on the client side.
+When at least one MCP server is configured with `per_user_oauth`, the `/mcp` endpoint automatically advertises OAuth support via standard discovery headers. OAuth-capable MCP clients (Claude Code, Cursor, and others) detect this automatically - no manual configuration is needed on the client side.
 
 When an unauthenticated client connects, Bifrost responds with a `401` that points to the discovery endpoints:
 

@@ -1,10 +1,10 @@
 ---
 title: "Storage"
-description: "Configure Bifrost storage backends in Helm — SQLite, PostgreSQL (embedded and external), per-store overrides, and S3/GCS object storage for logs"
+description: "Configure Bifrost storage backends in Helm - SQLite, PostgreSQL (embedded and external), per-store overrides, and S3/GCS object storage for logs"
 icon: "database"
 ---
 
-Bifrost persists two types of data — **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store, both defaulting to the top-level `storage.mode`.
+Bifrost persists two types of data - **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store, both defaulting to the top-level `storage.mode`.
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -24,7 +24,7 @@ When any store uses SQLite the chart deploys a **StatefulSet** with a PVC. With 
 
 ### SQLite (Default)
 
-Simplest setup — no external database required. Bifrost runs as a StatefulSet with a persistent volume for the SQLite files.
+Simplest setup - no external database required. Bifrost runs as a StatefulSet with a persistent volume for the SQLite files.
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -63,7 +63,7 @@ storage:
 ```
 
 <Warning>
-Upgrading from SQLite to PostgreSQL requires a data migration — the two stores are not compatible. Plan accordingly before switching `storage.mode` on a running deployment.
+Upgrading from SQLite to PostgreSQL requires a data migration - the two stores are not compatible. Plan accordingly before switching `storage.mode` on a running deployment.
 </Warning>
 
 #### StatefulSet Migration (chart v2.0.0+)
@@ -156,7 +156,7 @@ kubectl exec -it deployment/bifrost -- nc -zv bifrost-postgresql 5432
 
 ### External PostgreSQL
 
-Point Bifrost at an existing PostgreSQL instance — RDS, Cloud SQL, Azure Database, or self-managed.
+Point Bifrost at an existing PostgreSQL instance - RDS, Cloud SQL, Azure Database, or self-managed.
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -333,7 +333,7 @@ storage:
       type: s3
       bucket: "bifrost-logs"
       region: us-east-1
-      # No accessKeyId / secretAccessKey — uses SDK default chain
+      # No accessKeyId / secretAccessKey - uses SDK default chain
       roleArn: "arn:aws:iam::123456789012:role/BifrostS3Role"
 ```
 

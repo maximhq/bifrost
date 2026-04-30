@@ -38,20 +38,49 @@ Modern AI gateway deployments require robust infrastructure to handle production
 ### Peer-to-Peer Network Design
 
 Bifrost clustering uses a **peer-to-peer (P2P) network** where all nodes are equal participants. Each node:
-- Discovers peers automatically using configured discovery method
-- Synchronizes state via gossip protocol
-- Shares traffic patterns and rate limits
+- Discovers peers automatically using the configured discovery method
+- Receives application state and counter updates over gRPC
+- Tracks cluster membership and node liveness over a memberlist gossip layer
 - Handles failover automatically
 
-### Gossip Protocol
+### Cluster Communication
 
-The gossip protocol ensures all nodes maintain consistent views of:
-- **Traffic Patterns**: Request volume, latency metrics, error rates
-- **Rate Limit States**: Current usage counters for each provider/model
-- **Node Health**: CPU, memory, network status of all peers
-- **Configuration Changes**: Provider updates, routing rules, policies
+Bifrost uses two transports for different responsibilities. Membership and node-liveness signals run over a memberlist gossip layer; everything else (configuration changes, governance counters, routing rules, all replicated entity types) travels over a dedicated gRPC channel.
+
+| Transport | Default port | Carries |
+|-----------|--------------|---------|
+| **Memberlist gossip** | `10101` (TCP + UDP) | Cluster membership, node join/leave, liveness probes, region metadata |
+| **gRPC counter sync** | `10102` (TCP) | Application messages: governance usage counters, config sync, routing rules, virtual keys, providers, RBAC, MCP tools, pricing, auth config, and 25+ other replicated entity types |
+
+This split lets membership churn (joins, leaves, failure detection) stay isolated from the higher-volume application message stream, and lets each transport be tuned, scaled, and observed independently. The gRPC layer was introduced in v1.4.0; before then, all traffic ran over gossip.
+
+#### Application messages and entity types
+
+Each replicated message carries an `EntityType` identifying the kind of state being broadcast. Bifrost replicates 30+ entity types across the cluster, including: model catalog, virtual keys, providers, governance counters, routing rules, RBAC, MCP tools and tool groups, pricing and pricing overrides, access profiles, prompt deployments, auth configuration, and cluster diagnostics. See the [Replicated Entity Types](#replicated-entity-types) reference for the complete list.
+
+#### Message dedup and invalidation
+
+Each broadcast carries a unique message ID and a `SentAt` timestamp. Receivers run a deduper (default 5-minute TTL) keyed by message ID, so a node that has already processed a given message ignores re-broadcasts of the same ID. When a newer message with the same ID arrives, the existing entry is invalidated and replaced.
 
 **Convergence**: All nodes converge to the same state within seconds with eventual consistency guarantees.
+
+### Node Identity and Region
+
+Each node in the cluster has two pieces of identity metadata:
+
+- **`node_id`** - configured via `cluster_config.node_id` and surfaced in cluster status output, the React Flow topology view, and diagnostics. The actual memberlist node name is derived from this value combined with the gossip port. If you omit `node_id`, set one explicitly per pod or instance to make cluster status readable; UUID-style IDs are fine.
+- **`region`** - free-form region label (e.g. `"us-east-1"`, `"eu-west"`) read from `cluster_config.region` and propagated in node metadata. Defaults to `"unknown"` when omitted. Region is used for [regional leader election](#leader-election) and for region-aware operations; it does not gate gossip scope or membership.
+
+### Leader Election
+
+Bifrost runs two leader elections in parallel: one cluster-wide and one per region.
+
+| Election | Scope | What it does |
+|----------|-------|--------------|
+| **Cluster leader** | All `StateAlive` nodes in the cluster | Coordinates cluster-wide singleton tasks (e.g. pricing URL fetch and broadcast) so only one node hits the upstream and other nodes receive the result via gRPC |
+| **Regional leader** | Nodes within the same `region` value | Coordinates region-scoped operations |
+
+Election is deterministic: the lexicographically-first healthy member wins. The election loop re-evaluates membership every 30 seconds, so leadership transfers automatically when nodes join, leave, or fail. There is nothing to configure - leader election runs whenever clustering is enabled.
 
 ### Minimum Node Requirements
 
@@ -77,6 +106,8 @@ The new clustering configuration uses a `cluster_config` object with integrated 
 {
   "cluster_config": {
     "enabled": true,
+    "node_id": "bifrost-1",
+    "region": "us-east-1",
     "discovery": {
       "enabled": true,
       "type": "kubernetes",
@@ -89,16 +120,24 @@ The new clustering configuration uses a `cluster_config` object with integrated 
         "success_threshold": 3,
         "failure_threshold": 3
       }
+    },
+    "grpc": {
+      "port": 10102,
+      "dial_timeout_seconds": 5
     }
   }
 }
 ```
 
 <Note>
-For version 1.4.x - you will need to expose 10102 TCP port and 10101 UDP port for cluster discovery.
+**Required ports for v1.4.x and later:**
+- `10101/TCP` and `10101/UDP` for memberlist gossip (membership and liveness)
+- `10102/TCP` for the gRPC counter sync transport (application messages)
+
+Both ports must be reachable peer-to-peer between cluster nodes. NetworkPolicies, security groups, and firewall rules need to allow traffic on both.
 </Note>
 
-Discovery-specific fields (e.g. `k8s_label_selector`, `consul_address`, `etcd_endpoints`) slot into the `discovery` object alongside `type` — see each method's section below.
+Discovery-specific fields (e.g. `k8s_label_selector`, `consul_address`, `etcd_endpoints`) slot into the `discovery` object alongside `type` - see each method's section below.
 
 <Note>
 At startup, cluster mode requires either a non-empty `peers` list or `discovery.enabled: true`.
@@ -121,10 +160,33 @@ All discovery methods support these common fields:
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `port` | Gossip protocol port | 10101 |
+| `port` | Memberlist gossip port (used for both TCP and UDP) | 10101 |
 | `timeout_seconds` | Health check timeout | 10 |
 | `success_threshold` | Successful checks to mark healthy | 3 |
 | `failure_threshold` | Failed checks to mark unhealthy | 3 |
+
+### gRPC Configuration
+
+The gRPC transport carries all application messages and counter sync between nodes. It is enabled automatically whenever `cluster_config.enabled` is `true`; configuration is optional.
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `port` | TCP port for the cluster gRPC server | 10102 |
+| `dial_timeout_seconds` | Timeout when dialing a peer for gRPC | 5 |
+
+If you omit the `grpc` block entirely, both defaults apply. Override only when the defaults conflict with your environment (e.g. another service already binding `10102`).
+
+### Top-level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | boolean | Yes | Master switch for cluster mode |
+| `node_id` | string | Recommended | Logical identifier for this node, used in cluster status and topology views |
+| `region` | string | No | Region label (e.g. `us-east-1`); defaults to `unknown` and gates regional leader election |
+| `peers` | array | Conditional | Static peer list (`host:port` per entry). Required if `discovery.enabled` is `false` |
+| `gossip` | object | No | Memberlist gossip settings (see above) |
+| `grpc` | object | No | gRPC counter sync settings (see above) |
+| `discovery` | object | Conditional | Auto-discovery settings. Required if `peers` is empty |
 
 ---
 
@@ -230,6 +292,8 @@ spec:
           name: http
         - containerPort: 10101
           name: gossip
+        - containerPort: 10102
+          name: grpc
         volumeMounts:
         - name: config
           mountPath: /etc/bifrost
@@ -295,6 +359,8 @@ spec:
           name: http
         - containerPort: 10101
           name: gossip
+        - containerPort: 10102
+          name: grpc
         volumeMounts:
         - name: config
           mountPath: /etc/bifrost
@@ -315,6 +381,8 @@ spec:
   ports:
   - port: 10101
     name: gossip
+  - port: 10102
+    name: grpc
 ```
   </Tab>
 </Tabs>
@@ -328,7 +396,7 @@ spec:
 - Verify ServiceAccount has RBAC permissions to list pods
 - Check label selector matches pod labels exactly
 - Ensure namespace is correct (defaults to "default")
-- Verify gossip port (10101) is not blocked by NetworkPolicies
+- Verify gossip port (10101) and gRPC port (10102) are not blocked by NetworkPolicies
 - Check logs for "error listing pods" messages
 </Accordion>
 
@@ -346,7 +414,7 @@ spec:
 **Symptoms**: Nodes discovered but marked as "suspect" or "dead"
 
 **Solutions**:
-- Verify gossip port (10101) is accessible between pods
+- Verify gossip port (10101) and gRPC port (10102) are accessible between pods
 - Check for NetworkPolicies blocking pod-to-pod communication
 - Increase `timeout_seconds` in gossip config if network is slow
 - Verify pods are in Running state with `kubectl get pods`
@@ -488,7 +556,7 @@ networks:
 **Symptoms**: Services show as critical in Consul UI
 
 **Solutions**:
-- Verify gossip port (10101) is accessible
+- Verify gossip port (10101) and gRPC port (10102) are accessible
 - Check Consul agent can reach node's gossip port
 - Increase health check timeout in Consul if needed
 - Review Bifrost logs for startup errors
@@ -794,7 +862,7 @@ echo "192.168.1.12 node3.bifrost.local" >> /etc/hosts
 **Symptoms**: IPs discovered but gossip connection fails
 
 **Solutions**:
-- Verify gossip port (10101) is open on all nodes
+- Verify gossip port (10101) and gRPC port (10102) are open on all nodes
 - Check firewall rules between nodes
 - Ensure nodes are listening on correct network interface
 - Verify IP addresses match node's actual network addresses
@@ -875,6 +943,7 @@ services:
       - "8080:8080"
       - "9999:9999/udp"
       - "10101:10101"
+      - "10102:10102"
 
   bifrost-2:
     image: <enterprise_repo_base_url>/bifrost:latest
@@ -887,6 +956,7 @@ services:
       - "8081:8080"
       - "9999:9999/udp"
       - "10101:10101"
+      - "10102:10102"
 
   bifrost-3:
     image: <enterprise_repo_base_url>/bifrost:latest
@@ -899,6 +969,7 @@ services:
       - "8082:8080"
       - "9999:9999/udp"
       - "10101:10101"
+      - "10102:10102"
 ```
 
 <Note>
@@ -997,17 +1068,17 @@ mDNS is designed for development and testing. For production, use Kubernetes, Co
 
 ```bash
 # Start first node
-docker run -p 8080:8080 -p 10101:10101 \
+docker run -p 8080:8080 -p 10101:10101 -p 10201:10102 \
   -v $(pwd)/config-mdns.json:/etc/bifrost/config.json \
   <enterprise_repo_base_url>/bifrost:latest
 
 # Start second node (discovers first automatically)
-docker run -p 8081:8080 -p 10102:10101 \
+docker run -p 8081:8080 -p 10111:10101 -p 10211:10102 \
   -v $(pwd)/config-mdns.json:/etc/bifrost/config.json \
   <enterprise_repo_base_url>/bifrost:latest
 
 # Start third node (discovers both automatically)
-docker run -p 8082:8080 -p 10103:10101 \
+docker run -p 8082:8080 -p 10121:10101 -p 10221:10102 \
   -v $(pwd)/config-mdns.json:/etc/bifrost/config.json \
   <enterprise_repo_base_url>/bifrost:latest
 ```
@@ -1290,6 +1361,9 @@ spec:
         - containerPort: 10101
           name: gossip
           protocol: TCP
+        - containerPort: 10102
+          name: grpc
+          protocol: TCP
         env:
         - name: BIFROST_CONFIG
           value: /etc/bifrost/config.json
@@ -1333,6 +1407,9 @@ spec:
   ports:
   - port: 10101
     name: gossip
+    protocol: TCP
+  - port: 10102
+    name: grpc
     protocol: TCP
 ---
 apiVersion: v1
@@ -1479,6 +1556,54 @@ sudo journalctl -u bifrost -f
 # "successfully joined X peers on startup"
 # "cluster health: HEALTHY"
 ```
+
+---
+
+## Cluster Operations
+
+### Cluster Topology View
+
+The admin UI ships an interactive cluster graph (React Flow) that renders the live cluster as a circle of nodes with edges colored by reachability. Each node card shows its `node_id`, region, current state (alive / suspect / dead / left), and a leader badge if it currently holds either the cluster-wide or regional leadership. The view updates in the background and triggers an automatic diagnostic on leader transitions. Single-node clusters render the simplified single-card view.
+
+### Cluster Diagnostics
+
+A diagnostic flow lets administrators verify in-cluster reachability end-to-end. When triggered, the local node broadcasts a no-op diagnostic ping to every peer that advertises the `ack:v1` capability and streams ACK status back to the caller as each peer responds. Use it to:
+
+- Confirm that a newly added node is receiving and acknowledging cluster messages
+- Surface peers that are partitioned or silently dropping traffic
+- Validate that NetworkPolicies / firewall rules permit gRPC after a config change
+
+The diagnostic does not mutate state on any node - the message is purely a round-trip probe. It is admin-only and is invoked from the cluster topology view or the equivalent admin endpoint.
+
+### Mixed-Version Rollouts
+
+Bifrost negotiates per-peer capabilities so newer and older cluster members can run side-by-side during rolling upgrades. Peers advertise the `ack:v1` capability in their gossip metadata; a node only tracks ACKs from peers that advertise it. Older peers still receive broadcasts but are excluded from the pending-ACK set so they don't trigger false "unacked" metrics or unnecessary retries.
+
+In practice this means: you can roll out a new Bifrost version one pod at a time, and the cluster will degrade ACK tracking gracefully for the older pods until they're replaced. Rolling-update strategies (Kubernetes `RollingUpdate`, Nomad canaries, etc.) are supported without quorum loss.
+
+### Leader-Coordinated Tasks
+
+A small number of cluster-wide tasks run only on the elected leader, with results broadcast over gRPC so followers stay in sync without each one independently doing the work. The clearest example is **pricing sync**: only the leader fetches the upstream pricing URL on the configured interval and then broadcasts a database reload message; followers reload from the local store rather than each making the upstream HTTP call. Region-scoped variants of this pattern run on the regional leader.
+
+There is no configuration to enable this - leader-coordinated tasks engage automatically when clustering is enabled. If the leader fails, the next election (within ~30 seconds) hands the responsibility to a new node.
+
+### Replicated Entity Types
+
+Every replicated message carries an `EntityType` identifying the kind of state being broadcast. The cluster replicates the following entity types over gRPC:
+
+| Category | Entity Types |
+|----------|--------------|
+| **Catalog & Providers** | `model_catalog`, `provider`, `model_config`, `pricing`, `pricing_override` |
+| **Governance** | `governance`, `virtual_key`, `team`, `customer`, `business_unit_governance`, `user_governance`, `access_profile`, `api_key` |
+| **Security & Auth** | `auth_config`, `rbac`, `proxy_config`, `client_config` |
+| **Routing & Load Balancing** | `routing_rule`, `load_balancing`, `load_balancing_log` |
+| **MCP** | `mcp_tool`, `mcp_tool_group` |
+| **Guardrails** | `guardrail`, `guardrail_config`, `guardrail_sampling` |
+| **Plugins & Connectors** | `plugin`, `observability_connector` |
+| **Prompts & Storage** | `prompt_deployment`, `kv_store` |
+| **Cluster** | `cluster_diagnostic` (no-op probe used by the diagnostic flow) |
+
+Each entity type follows the same broadcast and dedup rules: a unique message ID, a `SentAt` timestamp, and a deduper TTL on the receiver side. Newer messages with the same ID invalidate older ones, so a late-arriving stale message will not overwrite fresh state.
 
 ---
 

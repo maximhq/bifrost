@@ -54,7 +54,7 @@ virtual-keys-quota:
     summary: Get virtual key quota
     description: |
       Returns the budget and rate limit quota for the authenticated virtual key.
-      This is a self-service endpoint — no admin authentication required.
+      This is a self-service endpoint - no admin authentication required.
       The virtual key value itself (provided via header) is the credential.
     tags:
       - Governance
