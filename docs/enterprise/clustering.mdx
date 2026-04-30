@@ -94,6 +94,10 @@ The new clustering configuration uses a `cluster_config` object with integrated 
 }
 ```
 
+<Note>
+For version 1.4.x - you will need to expose 10102 TCP port and 10101 UDP port for cluster discovery.
+</Note>
+
 Discovery-specific fields (e.g. `k8s_label_selector`, `consul_address`, `etcd_endpoints`) slot into the `discovery` object alongside `type` — see each method's section below.
 
 <Note>

@@ -56,7 +56,7 @@ bifrost:
   cluster:
     enabled: true
     gossip:
-      port: 7946
+      port: 10101
       config:
         timeoutSeconds: 10
         successThreshold: 3
@@ -92,6 +92,10 @@ lifecycle:
     exec:
       command: ["sh", "-c", "sleep 20"]
 ```
+
+<Note>
+For version 1.4.x - you will need to expose 10102 TCP port and 10101 UDP port for cluster discovery.
+</Note>
 
 ```bash
 kubectl create secret generic postgres-credentials \
