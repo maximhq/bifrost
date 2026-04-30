@@ -490,8 +490,7 @@
               "properties": {
                 "pricingUrl": {
                   "type": "string",
-                  "description": "Custom pricing URL (optional, can be empty)",
-                  "format": "uri"
+                  "description": "Custom pricing URL (optional, can be empty)"
                 },
                 "pricingSyncInterval": {
                   "type": "integer",
@@ -2335,6 +2334,12 @@
             "maxOpenConns": {
               "type": "integer",
               "minimum": 2
+            },
+            "objectStorageExcludeFields": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "objectStorage": {
               "type": "object",

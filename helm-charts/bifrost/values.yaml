@@ -233,7 +233,7 @@ bifrost:
   framework:
     pricing:
       # Custom pricing URL for model cost data
-      pricingUrl: ""
+      pricingUrl: "https://getbifrost.ai/datasheet"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
 
@@ -726,6 +726,9 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # Keep selected payload fields in DB instead of offloading to object storage.
+    # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
+    objectStorageExcludeFields: []
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS

@@ -766,6 +766,9 @@ false
 {{- end }}
 {{- $_ := set (index $config "logs_store") "object_storage" $osConfig }}
 {{- end }}
+{{- if .Values.storage.logsStore.objectStorageExcludeFields }}
+{{- $_ := set (index $config "logs_store") "object_storage_exclude_fields" .Values.storage.logsStore.objectStorageExcludeFields }}
+{{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
