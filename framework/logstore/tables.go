@@ -53,6 +53,7 @@ type SearchFilters struct {
 	MinCost           *float64          `json:"min_cost,omitempty"`
 	MaxCost           *float64          `json:"max_cost,omitempty"`
 	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
+	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
 	ContentSearch     string            `json:"content_search,omitempty"`
 	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 }

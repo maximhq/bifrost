@@ -529,12 +529,14 @@ export const DefaultCoreConfig: CoreConfig = {
 
 // Semantic cache configuration types
 interface BaseCacheConfig {
-	ttl_seconds: number;
+	ttl: number;
 	threshold: number;
 	conversation_history_threshold?: number;
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	vector_store_namespace?: string;
+	default_cache_key?: string;
 	created_at?: string;
 	updated_at?: string;
 }

@@ -95,6 +95,7 @@ export default function LogsPage() {
 			polling: parseAsBoolean.withDefault(true).withOptions({ clearOnDefault: false }),
 			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
 			missing_cost_only: parseAsBoolean.withDefault(false),
+			cache_hit_types: parseAsArrayOf(parseAsString).withDefault([]),
 			metadata_filters: parseAsString.withDefault(""),
 			selected_log: parseAsString.withDefault(""),
 		},
@@ -129,6 +130,7 @@ export default function LogsPage() {
 			business_unit_ids: urlState.business_unit_ids,
 			content_search: urlState.content_search,
 			missing_cost_only: urlState.missing_cost_only,
+			cache_hit_types: urlState.cache_hit_types,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
 					try {
@@ -163,6 +165,7 @@ export default function LogsPage() {
 			urlState.content_search,
 			urlState.parent_request_id,
 			urlState.missing_cost_only,
+			urlState.cache_hit_types,
 			urlState.metadata_filters,
 			urlState.start_time,
 			urlState.end_time,
@@ -213,6 +216,7 @@ export default function LogsPage() {
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
 				missing_cost_only: newFilters.missing_cost_only ?? false,
+				cache_hit_types: newFilters.cache_hit_types || [],
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
 				offset: 0,
 			});

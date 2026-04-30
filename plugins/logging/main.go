@@ -829,10 +829,16 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
-	// Apply common output fields
+	// Apply common output fields. For cache hits, prefer the cache-serve
+	// latency stamped by the semantic cache plugin over the original provider
+	// latency preserved in the cached response.
 	var latency int64
 	if result != nil {
-		latency = result.GetExtraFields().Latency
+		ef := result.GetExtraFields()
+		latency = ef.Latency
+		if ef.CacheDebug != nil && ef.CacheDebug.CacheHit && ef.CacheDebug.CacheHitLatency != nil {
+			latency = *ef.CacheDebug.CacheHitLatency
+		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
 	entry.MetadataParsed = pending.InitialData.Metadata

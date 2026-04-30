@@ -14,7 +14,7 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	setup := CreateTestSetupWithConversationThreshold(t, 2)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-conversation-threshold-basic")
+	ctx := CreateContextWithCacheKey(t, "test-conversation-threshold-basic")
 
 	// Test 1: Conversation with exactly 2 messages (should cache)
 	conversation1 := BuildConversationHistory("",
@@ -25,7 +25,7 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	t.Log("Testing conversation with exactly 2 messages (at threshold)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request
 
@@ -53,7 +53,7 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	t.Log("Testing conversation with 5 messages (exceeds threshold)...")
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx, request2)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}) // Should not cache
 
@@ -63,7 +63,7 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	t.Log("Verifying conversation exceeding threshold was not cached...")
 	response4, err4 := setup.Client.ChatCompletionRequest(ctx, request2)
 	if err4 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err4)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response4}) // Should still be fresh (not cached)
 
@@ -76,7 +76,7 @@ func TestConversationHistoryThresholdWithSystemPrompt(t *testing.T) {
 	setup := CreateTestSetupWithConversationThreshold(t, 3)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-threshold-system-prompt")
+	ctx := CreateContextWithCacheKey(t, "test-threshold-system-prompt")
 
 	// System prompt + 2 user/assistant pairs = 5 messages total > 3
 	conversation := BuildConversationHistory(
@@ -89,7 +89,7 @@ func TestConversationHistoryThresholdWithSystemPrompt(t *testing.T) {
 	t.Log("Testing conversation with system prompt (5 total messages > 3 threshold)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Should not cache (exceeds threshold)
 
@@ -98,7 +98,7 @@ func TestConversationHistoryThresholdWithSystemPrompt(t *testing.T) {
 	// Verify not cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err2 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err2)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // Should not be cached
 
@@ -111,7 +111,7 @@ func TestConversationHistoryThresholdWithExcludeSystemPrompt(t *testing.T) {
 	setup := CreateTestSetupWithThresholdAndExcludeSystem(t, 3, true)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-threshold-exclude-system")
+	ctx := CreateContextWithCacheKey(t, "test-threshold-exclude-system")
 
 	// Create conversation with exactly 3 non-system messages to test threshold boundary
 	// System + 1.5 user/assistant pairs = 4 messages total
@@ -133,7 +133,7 @@ func TestConversationHistoryThresholdWithExcludeSystemPrompt(t *testing.T) {
 
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request, should not hit cache
 
@@ -172,7 +172,7 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 			setup := CreateTestSetupWithConversationThreshold(t, tc.threshold)
 			defer setup.Cleanup()
 
-			ctx := CreateContextWithCacheKey("test-threshold-" + tc.name)
+			ctx := CreateContextWithCacheKey(t, "test-threshold-" + tc.name)
 
 			// Build conversation with specified number of messages
 			var conversation []schemas.ChatMessage
@@ -194,7 +194,7 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 
 			response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
 			if err1 != nil {
-				return // Test will be skipped by retry function
+				t.Skipf("upstream request error, skipping test: %v", err1)
 			}
 			AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Always fresh first time
 
@@ -202,7 +202,7 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
 			if err2 != nil {
-				return // Test will be skipped by retry function
+				t.Skipf("upstream request error, skipping test: %v", err2)
 			}
 
 			if tc.shouldCache {
@@ -222,7 +222,7 @@ func TestExcludeSystemPromptBasic(t *testing.T) {
 	setup := CreateTestSetupWithExcludeSystemPrompt(t, true)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-exclude-system-basic")
+	ctx := CreateContextWithCacheKey(t, "test-exclude-system-basic")
 
 	// Create two conversations with different system prompts but same user/assistant messages
 	conversation1 := BuildConversationHistory(
@@ -241,7 +241,7 @@ func TestExcludeSystemPromptBasic(t *testing.T) {
 	t.Log("Caching conversation with system prompt 1...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -268,7 +268,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	setup1 := CreateTestSetupWithExcludeSystemPrompt(t, false)
 	defer setup1.Cleanup()
 
-	ctx1 := CreateContextWithCacheKey("test-exclude-system-false")
+	ctx1 := CreateContextWithCacheKey(t, "test-exclude-system-false")
 
 	conversation1 := BuildConversationHistory(
 		"You are helpful",
@@ -286,7 +286,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	t.Log("Testing ExcludeSystemPrompt=false...")
 	response1, err1 := setup1.Client.ChatCompletionRequest(ctx1, request1)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -315,12 +315,12 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	setup2 := CreateTestSetupWithExcludeSystemPrompt(t, true)
 	defer setup2.Cleanup()
 
-	ctx2 := CreateContextWithCacheKey("test-exclude-system-true")
+	ctx2 := CreateContextWithCacheKey(t, "test-exclude-system-true")
 
 	t.Log("Testing ExcludeSystemPrompt=true...")
 	response3, err3 := setup2.Client.ChatCompletionRequest(ctx2, request1)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
@@ -341,7 +341,7 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 	setup := CreateTestSetupWithExcludeSystemPrompt(t, true)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-multiple-system-messages")
+	ctx := CreateContextWithCacheKey(t, "test-multiple-system-messages")
 
 	// Manually create conversation with multiple system messages
 	conversation1 := []schemas.ChatMessage{
@@ -388,7 +388,7 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 	t.Log("Caching conversation with multiple system messages...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
@@ -414,7 +414,7 @@ func TestExcludeSystemPromptWithNoSystemMessages(t *testing.T) {
 	setup := CreateTestSetupWithExcludeSystemPrompt(t, true)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-no-system-messages")
+	ctx := CreateContextWithCacheKey(t, "test-no-system-messages")
 
 	// Conversation with no system messages
 	conversation := []schemas.ChatMessage{
@@ -433,7 +433,7 @@ func TestExcludeSystemPromptWithNoSystemMessages(t *testing.T) {
 	t.Log("Testing conversation with no system messages...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, request)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 

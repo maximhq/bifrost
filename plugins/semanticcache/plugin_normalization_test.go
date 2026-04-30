@@ -9,6 +9,7 @@ import (
 // TestTextNormalizationDirectCache tests that text normalization works correctly
 // for direct cache (hash-based) matching across all input types
 func TestTextNormalizationDirectCache(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -22,7 +23,7 @@ func TestTextNormalizationDirectCache(t *testing.T) {
 }
 
 func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
-	ctx := CreateContextWithCacheKey("test-chat-normalization")
+	ctx := CreateContextWithCacheKey(t, "test-chat-normalization")
 
 	// Test cases with different case and whitespace variations
 	testCases := []struct {
@@ -93,7 +94,7 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 	t.Logf("Making first request with user: '%s', system: '%s'", testCases[0].userMsg, testCases[0].systemMsg)
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, requests[0])
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 {
@@ -124,7 +125,7 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 }
 
 func testSpeechNormalization(t *testing.T, setup *TestSetup) {
-	ctx := CreateContextWithCacheKey("test-speech-normalization")
+	ctx := CreateContextWithCacheKey(t, "test-speech-normalization")
 
 	// Test cases with different case and whitespace variations for speech input
 	testCases := []struct {
@@ -151,7 +152,7 @@ func testSpeechNormalization(t *testing.T, setup *TestSetup) {
 	t.Logf("Making first speech request with: '%s'", testCases[0].input)
 	response1, err1 := setup.Client.SpeechRequest(ctx, requests[0])
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil {
@@ -183,10 +184,11 @@ func testSpeechNormalization(t *testing.T, setup *TestSetup) {
 
 // TestChatCompletionContentBlocksNormalization tests normalization for content blocks
 func TestChatCompletionContentBlocksNormalization(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-content-blocks-normalization")
+	ctx := CreateContextWithCacheKey(t, "test-content-blocks-normalization")
 
 	// Test cases with content blocks having different text normalization
 	testCases := []struct {
@@ -245,7 +247,7 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 	t.Logf("Making first request with content blocks: %v", testCases[0].textBlocks)
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, requests[0])
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 {
@@ -277,17 +279,18 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 
 // TestNormalizationWithSemanticCache tests that normalization works with semantic cache as well
 func TestNormalizationWithSemanticCache(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-normalization-semantic")
+	ctx := CreateContextWithCacheKey(t, "test-normalization-semantic")
 
 	// Make first request with original text
 	originalRequest := CreateBasicChatRequest("What is Machine Learning?", 0.5, 50)
 	t.Log("Making first request with original text...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, originalRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})

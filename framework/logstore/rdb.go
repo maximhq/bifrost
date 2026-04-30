@@ -192,6 +192,29 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// cost is null and status is not error
 		baseQuery = baseQuery.Where("(cost IS NULL OR cost <= 0) AND status NOT IN ('error')")
 	}
+	if len(filters.CacheHitTypes) > 0 {
+		// Only keep allowed values to avoid passing arbitrary input into the JSON path expression.
+		valid := make([]string, 0, len(filters.CacheHitTypes))
+		for _, t := range filters.CacheHitTypes {
+			if t == "direct" || t == "semantic" {
+				valid = append(valid, t)
+			}
+		}
+		if len(valid) > 0 {
+			if s.db.Dialector.Name() == "postgres" {
+				// Match the same loose-JSON guard used by aggregateCacheHits so the regex extract is safe.
+				baseQuery = baseQuery.Where(
+					"cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$' AND substring(cache_debug from '\"hit_type\"[[:space:]]*:[[:space:]]*\"([^\"]+)\"') IN ?",
+					valid,
+				)
+			} else {
+				baseQuery = baseQuery.Where(
+					"cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug) AND json_extract(cache_debug, '$.hit_type') IN ?",
+					valid,
+				)
+			}
+		}
+	}
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
@@ -637,7 +660,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"business_unit_id", "business_unit_name",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		"latency", "token_usage", "cost", "status", "error_details", "stream",
-		"content_summary", "metadata",
+		"content_summary", "metadata", "cache_debug",
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"created_at",

@@ -127,6 +127,41 @@ func (bc *BifrostContext) WithValue(key any, value any) *BifrostContext {
 	return bc
 }
 
+// Root returns the underlying root BifrostContext. For root contexts this is
+// the receiver itself; for plugin-scoped contexts it is the underlying root
+// that scoped Value/SetValue calls delegate to.
+//
+// PLUGIN AUTHORS: capture Root() synchronously inside Pre/PostLLMHook (or
+// any other hook) when you need to write to the context from a goroutine
+// that outlives the hook. The plugin-scoped *BifrostContext passed into your
+// hook is reclaimed by an internal sync.Pool the moment the hook returns —
+// any later SetValue/Value call on it lands in detached storage that nobody
+// downstream can read (and can leak into a future pool reuse). The root,
+// in contrast, lives for the entire request, so a pointer captured here is
+// safe to use for the lifetime of the request even after your hook returns.
+//
+// Example:
+//
+//	func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req ...) (...) {
+//	    rootCtx := ctx.Root() // capture before the scope is released
+//	    go func() {
+//	        // ... long-running work that produces stream chunks ...
+//	        rootCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+//	    }()
+//	    return req, &schemas.LLMPluginShortCircuit{Stream: ch}, nil
+//	}
+func (bc *BifrostContext) Root() *BifrostContext {
+	// Unwrap the full delegation chain. A scoped context can in principle be
+	// derived from another scoped context (e.g. nested plugin scopes), and
+	// stopping at the first valueDelegate would return an intermediate pooled
+	// scope — which loses the async-safety guarantee as soon as that
+	// intermediate scope is released.
+	for bc != nil && bc.valueDelegate != nil {
+		bc = bc.valueDelegate
+	}
+	return bc
+}
+
 // BlockRestrictedWrites returns true if restricted writes are blocked.
 func (bc *BifrostContext) BlockRestrictedWrites() {
 	bc.blockRestrictedWrites.Store(true)

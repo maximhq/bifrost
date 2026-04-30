@@ -41769,20 +41769,20 @@
         }
       }
     },
-    "/api/cache/clear/{requestId}": {
+    "/api/cache/clear/{cacheId}": {
       "delete": {
-        "operationId": "clearCacheByRequestId",
-        "summary": "Clear cache by request ID",
-        "description": "Clears cache entries associated with a specific request ID.",
+        "operationId": "clearCacheByCacheId",
+        "summary": "Clear cache entry by cache ID",
+        "description": "Deletes a single cache entry by its storage ID. Read the cache ID from\n`extra_fields.cache_debug.cache_id` on a prior response — it is populated\non both cache hits and cache misses.\n",
         "tags": [
           "Cache"
         ],
         "parameters": [
           {
-            "name": "requestId",
+            "name": "cacheId",
             "in": "path",
             "required": true,
-            "description": "Request ID to clear cache for",
+            "description": "Storage ID of the cache entry to delete",
             "schema": {
               "type": "string"
             }
