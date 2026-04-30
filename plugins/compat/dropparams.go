@@ -116,6 +116,13 @@ func dropUnsupportedParams(req *schemas.BifrostRequest, supportedParams []string
 		}
 	}
 
+	if req.ChatRequest != nil && req.ChatRequest.Input != nil {
+		if req.ChatRequest.Provider != schemas.Bedrock || !isSupported["cachePoint"] {
+			droppedKeys := dropCachePoint(req.ChatRequest)
+			dropped = append(dropped, droppedKeys...)
+		}
+	}
+
 	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 		params := req.ResponsesRequest.Params
 
@@ -173,6 +180,15 @@ func dropUnsupportedParams(req *schemas.BifrostRequest, supportedParams []string
 		}
 		if !isSupported["web_search"] {
 			droppedKeys := dropWebsearchToolCalls(req)
+			dropped = append(dropped, droppedKeys...)
+		}
+	}
+
+	if req.ResponsesRequest != nil {
+		// all anthropic models support cache_control
+		// for bedrock models cache_control is converted to cachePoint
+		if req.ResponsesRequest.Provider == schemas.Bedrock && !isSupported["cache_control"] {
+			droppedKeys := dropCacheControlFromResponsesMessages(req.ResponsesRequest)
 			dropped = append(dropped, droppedKeys...)
 		}
 	}
@@ -237,5 +253,59 @@ func dropWebsearchToolCalls(req *schemas.BifrostRequest) []string {
 		}
 	}
 	req.ResponsesRequest.Params.Tools = kept
+	return dropped
+}
+
+// dropCachePoint drops cache point (only supported by bedrock) from the request
+func dropCachePoint(req *schemas.BifrostChatRequest) []string {
+	dropped := []string{}
+	for i := range req.Input {
+		if req.Input[i].Content != nil && req.Input[i].Content.ContentBlocks != nil {
+			blocks := req.Input[i].Content.ContentBlocks
+			kept := blocks[:0]
+			for j, block := range blocks {
+				if block.CachePoint != nil {
+					dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d].cache_point", i, j))
+				} else {
+					kept = append(kept, block)
+				}
+			}
+			req.Input[i].Content.ContentBlocks = kept
+		}
+	}
+	return dropped
+}
+
+// dropCacheControlFromResponsesMessages clears cache_control from all content blocks.
+func dropCacheControlFromResponsesMessages(req *schemas.BifrostResponsesRequest) []string {
+	var dropped []string
+
+	if req.Input != nil {
+		for i := range req.Input {
+			msg := &req.Input[i]
+			if msg.CacheControl != nil {
+				msg.CacheControl = nil
+				dropped = append(dropped, fmt.Sprintf("input[%d].cache_control", i))
+			}
+			if msg.Content == nil || msg.Content.ContentBlocks == nil {
+				continue
+			}
+			for j := range msg.Content.ContentBlocks {
+				if msg.Content.ContentBlocks[j].CacheControl != nil {
+					msg.Content.ContentBlocks[j].CacheControl = nil
+					dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d].cache_control", i, j))
+				}
+			}
+		}
+	}
+
+	if req.Params != nil {
+		for i := range req.Params.Tools {
+			if req.Params.Tools[i].CacheControl != nil {
+				req.Params.Tools[i].CacheControl = nil
+				dropped = append(dropped, fmt.Sprintf("tools[%d].cache_control", i))
+			}
+		}
+	}
 	return dropped
 }
