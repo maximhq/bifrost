@@ -1328,7 +1328,7 @@ export default function AppSidebar() {
 										</div>
 									</PopoverContent>
 								</Popover>
-							) : isAuthEnabled && !IS_ENTERPRISE ? (
+							) : isAuthEnabled ? (
 								<div>
 									<button
 										className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
