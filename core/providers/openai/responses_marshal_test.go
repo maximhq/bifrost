@@ -870,3 +870,40 @@ func TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported(t *testing.
 		t.Errorf("expected 3 tools preserved, got %d", len(decoded.Tools))
 	}
 }
+
+// TestResponsesToolMessage_NamespaceRoundTrip verifies that the namespace field
+// on function_call items (returned by OpenAI when namespace tools are used) is
+// preserved through unmarshal → marshal without being dropped.
+func TestResponsesToolMessage_NamespaceRoundTrip(t *testing.T) {
+	raw := `{
+		"type": "function_call",
+		"id": "fc_abc123",
+		"call_id": "call_abc123",
+		"name": "get_app_state",
+		"namespace": "mcp__computer_use__",
+		"arguments": "{\"app\":\"Google Chrome\"}",
+		"status": "completed"
+	}`
+
+	var msg schemas.ResponsesMessage
+	if err := sonic.UnmarshalString(raw, &msg); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil {
+		t.Fatal("ResponsesToolMessage is nil after unmarshal")
+	}
+	if msg.ResponsesToolMessage.Namespace == nil {
+		t.Fatal("namespace field was dropped during unmarshal")
+	}
+	if *msg.ResponsesToolMessage.Namespace != "mcp__computer_use__" {
+		t.Fatalf("namespace mismatch: want %q, got %q", "mcp__computer_use__", *msg.ResponsesToolMessage.Namespace)
+	}
+
+	out, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"namespace":"mcp__computer_use__"`) {
+		t.Fatalf("namespace not in marshaled output: %s", string(out))
+	}
+}
