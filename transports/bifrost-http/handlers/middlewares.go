@@ -759,9 +759,20 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/session/login",
 		"/api/oauth/callback",
 		"/health",
+		"/login",
+		"/favicon.ico",
+		"/assets/*",
+		"/api/scim/oauth/config",
+		"/api/scim/oauth/callback",
+		"/api/scim/oauth/refresh",
+		"/api/scim/oauth/logout",
+		"/health",
+		"/api/version",
 	}
 	whitelistedPrefixes := []string{
 		"/api/oauth/callback",
+		"/api/oauth",
+		"/api/dev",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||
@@ -789,6 +800,12 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// We will first check if its API key auth
+			// If yes; we will skip this middleware
+			if isAPIKeyAuth, ok := ctx.UserValue(schemas.IsAPIKeyAuthContextKey).(bool); ok && isAPIKeyAuth {
+				next(ctx)
+				return
+			}
 			authConfig := m.authConfig.Load()
 			if authConfig == nil || !authConfig.IsEnabled {
 				logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
@@ -857,6 +874,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				cookieToken := string(ctx.Request.Header.Cookie("token"))
 				if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
 					ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
+					ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 					next(ctx)
 					return
 				}
@@ -907,6 +925,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			}
 			// Checking bearer auth for dashboard calls
 			if scheme == "Bearer" {
+				// We are checking for API keys first; it it seems like a valid Bifrost API key
+
 				// Verify the session
 				if !validateSession(ctx, m.store, token) {
 					// Here we will check if its the base64 of username:password
@@ -939,12 +959,15 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 						return
 					}
+					// Mark as local admin for RBAC bypass
+					ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 					// Continue with the next handler
 					next(ctx)
 					return
 				}
 				// setting up session in the request
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
+				ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 				// Continue with the next handler
 				next(ctx)
 				return
