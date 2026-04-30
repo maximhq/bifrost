@@ -378,16 +378,6 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.StopReason = streamResponse.Data.FinishReason
 	}
 
-	// Cache
-	if streamResponse.Data.CacheDebug != nil {
-		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
-	}
-
-	// Finish/stop reason - always persist regardless of content logging settings
-	if streamResponse.Data.FinishReason != nil {
-		entry.StopReason = streamResponse.Data.FinishReason
-	}
-
 	// Passthrough status code
 	if streamResponse.Data.PassthroughOutput != nil {
 		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
