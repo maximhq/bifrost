@@ -931,6 +931,24 @@
                     "type": "string",
                     "description": "Database SSL mode"
                   },
+                  "schema": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 0
+                      },
+                      {
+                        "type": "string",
+                        "maxLength": 63,
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+                      }
+                    ],
+                    "description": "Optional Postgres schema (supports `env.` prefix, or empty/unset for the connection default). Auto-created on startup if missing (DB user needs CREATE on the database). If it already exists, schema-level USAGE and CREATE are enough. Defaults to the connection's search_path (typically `public`)."
+                  },
                   "max_idle_conns": {
                     "type": "integer",
                     "description": "Maximum number of idle connections in the pool (default: 5)",
@@ -1028,6 +1046,24 @@
                   "ssl_mode": {
                     "type": "string",
                     "description": "Database SSL mode"
+                  },
+                  "schema": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 0
+                      },
+                      {
+                        "type": "string",
+                        "maxLength": 63,
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+                      }
+                    ],
+                    "description": "Optional Postgres schema (supports `env.` prefix, or empty/unset for the connection default). Auto-created on startup if missing (DB user needs CREATE on the database). If it already exists, schema-level USAGE and CREATE are enough. Defaults to the connection's search_path (typically `public`)."
                   },
                   "max_idle_conns": {
                     "type": "integer",

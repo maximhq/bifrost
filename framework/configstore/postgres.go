@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/pgsetup"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -17,15 +18,9 @@ type PostgresConfig struct {
 	Password     *schemas.EnvVar `json:"password"`
 	DBName       *schemas.EnvVar `json:"db_name"`
 	SSLMode      *schemas.EnvVar `json:"ssl_mode"`
+	Schema       *schemas.EnvVar `json:"schema,omitempty"`
 	MaxIdleConns int             `json:"max_idle_conns"`
 	MaxOpenConns int             `json:"max_open_conns"`
-}
-
-// buildPostgresDSN assembles a libpq-style DSN from the validated config.
-func buildPostgresDSN(config *PostgresConfig) string {
-	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		config.Host.GetValue(), config.Port.GetValue(), config.User.GetValue(),
-		config.Password.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 }
 
 // openPostresConnection opens a *gorm.DB against the configured Postgres instance
@@ -100,7 +95,19 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	if config.SSLMode == nil || config.SSLMode.GetValue() == "" {
 		return nil, fmt.Errorf("postgres ssl mode is required")
 	}
-	dsn := buildPostgresDSN(config)
+	schema, err := pgsetup.ResolveSchema(config.Schema)
+	if err != nil {
+		return nil, err
+	}
+	dsn := pgsetup.BuildDSN(pgsetup.DSN{
+		Host:     config.Host.GetValue(),
+		Port:     config.Port.GetValue(),
+		User:     config.User.GetValue(),
+		Password: config.Password.GetValue(),
+		DBName:   config.DBName.GetValue(),
+		SSLMode:  config.SSLMode.GetValue(),
+		Schema:   schema,
+	})
 
 	// Throwaway pool for schema migrations. Closing it before the runtime pool
 	// opens guarantees no cached prepared-plan survives the DDL.
@@ -108,11 +115,23 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	if err != nil {
 		return nil, err
 	}
+	if err := pgsetup.EnsureSchema(mDb, schema); err != nil {
+		closeDbConn(mDb, logger)
+		return nil, err
+	}
 	if err := triggerMigrations(ctx, mDb); err != nil {
 		closeDbConn(mDb, logger)
 		return nil, err
 	}
-	closeDbConn(mDb, logger)
+	// Strict close: a half-closed migration pool weakens the guarantee that no
+	// cached prepared-plan survives the DDL. Treat close failure as fatal.
+	mSqlDb, err := mDb.DB()
+	if err != nil {
+		return nil, fmt.Errorf("resolve migration db pool: %w", err)
+	}
+	if err := mSqlDb.Close(); err != nil {
+		return nil, fmt.Errorf("close migration db connection: %w", err)
+	}
 
 	// Runtime pool. Opens against post-migration schema.
 	db, err := openPostresConnection(dsn, logger)

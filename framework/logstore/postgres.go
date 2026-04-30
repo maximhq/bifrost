@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/pgsetup"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -19,6 +20,7 @@ type PostgresConfig struct {
 	Password     *schemas.EnvVar `json:"password"`
 	DBName       *schemas.EnvVar `json:"db_name"`
 	SSLMode      *schemas.EnvVar `json:"ssl_mode"`
+	Schema       *schemas.EnvVar `json:"schema,omitempty"`
 	MaxIdleConns int             `json:"max_idle_conns"`
 	MaxOpenConns int             `json:"max_open_conns"`
 }
@@ -54,7 +56,19 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	if config.SSLMode == nil || config.SSLMode.GetValue() == "" {
 		return nil, fmt.Errorf("postgres ssl mode is required")
 	}
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host.GetValue(), config.Port.GetValue(), config.User.GetValue(), config.Password.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
+	schema, err := pgsetup.ResolveSchema(config.Schema)
+	if err != nil {
+		return nil, err
+	}
+	dsn := pgsetup.BuildDSN(pgsetup.DSN{
+		Host:     config.Host.GetValue(),
+		Port:     config.Port.GetValue(),
+		User:     config.User.GetValue(),
+		Password: config.Password.GetValue(),
+		DBName:   config.DBName.GetValue(),
+		SSLMode:  config.SSLMode.GetValue(),
+		Schema:   schema,
+	})
 
 	openPool := func() (*gorm.DB, error) {
 		return gorm.Open(postgres.New(postgres.Config{DSN: dsn}), &gorm.Config{
@@ -93,6 +107,11 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	if pgVersionNum < 160000 {
 		_ = closePool(mDb)
 		return nil, fmt.Errorf("postgres version is lower than 16, please upgrade to 16 or higher")
+	}
+
+	if err := pgsetup.EnsureSchema(mDb, schema); err != nil {
+		_ = closePool(mDb)
+		return nil, err
 	}
 
 	if err := triggerMigrations(ctx, mDb); err != nil {
