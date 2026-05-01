@@ -2098,3 +2098,215 @@ func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 		})
 	}
 }
+
+// TestComputerUseGeneration verifies the (model -> generation) classifier
+// covers every Claude model that Anthropic explicitly maps to a computer-use
+// beta header version, plus the fallback for unknown / non-Claude models.
+func TestComputerUseGeneration(t *testing.T) {
+	cases := []struct {
+		model string
+		want  string
+	}{
+		{"claude-opus-4-7", ComputerUseGen20251124},
+		{"claude-opus-4.7", ComputerUseGen20251124},
+		{"Claude-Opus-4-7", ComputerUseGen20251124},
+		{"claude-opus-4-7-20260321", ComputerUseGen20251124},
+		{"claude-opus-4-6", ComputerUseGen20251124},
+		{"claude-sonnet-4-6", ComputerUseGen20251124},
+		{"claude-sonnet-4.6", ComputerUseGen20251124},
+		{"claude-opus-4-5", ComputerUseGen20251124},
+		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
+		{"claude-sonnet-4-5", ComputerUseGen20250124},
+		{"claude-sonnet-4-5-20250929", ComputerUseGen20250124},
+		{"claude-haiku-4-5", ComputerUseGen20250124},
+		{"claude-haiku-4-5-20251001", ComputerUseGen20250124},
+		{"claude-opus-4-1", ComputerUseGen20250124},
+		{"claude-opus-4-1-20250805", ComputerUseGen20250124},
+		{"claude-sonnet-4", ComputerUseGen20250124},
+		{"claude-sonnet-4-20250514", ComputerUseGen20250124},
+		{"claude-opus-4", ComputerUseGen20250124},
+		{"claude-opus-4-20250514", ComputerUseGen20250124},
+		{"claude-3-7-sonnet-20250219", ComputerUseGen20250124},
+		{"claude-3-5-sonnet-20241022", ComputerUseGen20250124},
+		{"", ComputerUseGen20250124},
+		{"some-unknown-model", ComputerUseGen20250124},
+		{"global.anthropic.claude-opus-4-7", ComputerUseGen20251124},
+		{"global.anthropic.claude-sonnet-4-6", ComputerUseGen20251124},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", ComputerUseGen20250124},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			got := ComputerUseGeneration(tc.model)
+			if got != tc.want {
+				t.Errorf("ComputerUseGeneration(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormalizedToolSpec verifies the canonical {type, name} pair returned per
+// (generation, base-tool) pair matches Anthropic's strict Pydantic validators.
+func TestNormalizedToolSpec(t *testing.T) {
+	cases := []struct {
+		generation string
+		baseTool   string
+		wantType   string
+		wantName   string
+	}{
+		{ComputerUseGen20251124, "computer", "computer_20251124", "computer"},
+		{ComputerUseGen20251124, "text_editor", "text_editor_20250728", "str_replace_based_edit_tool"},
+		{ComputerUseGen20251124, "bash", "bash_20250124", "bash"},
+		{ComputerUseGen20250124, "computer", "computer_20250124", "computer"},
+		{ComputerUseGen20250124, "text_editor", "text_editor_20250124", "str_replace_editor"},
+		{ComputerUseGen20250124, "bash", "bash_20250124", "bash"},
+		{ComputerUseGen20251124, "web_search", "", ""},
+		{ComputerUseGen20250124, "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.generation+"/"+tc.baseTool, func(t *testing.T) {
+			gotType, gotName := NormalizedToolSpec(tc.generation, tc.baseTool)
+			if gotType != tc.wantType {
+				t.Errorf("NormalizedToolSpec(%q, %q) type = %q, want %q", tc.generation, tc.baseTool, gotType, tc.wantType)
+			}
+			if gotName != tc.wantName {
+				t.Errorf("NormalizedToolSpec(%q, %q) name = %q, want %q", tc.generation, tc.baseTool, gotName, tc.wantName)
+			}
+		})
+	}
+}
+
+// TestRemapRawToolVersionsForProvider_NormalizesComputerUse covers the four
+// permutations of (model generation, supplied tool generation):
+//   - matched (no-op)
+//   - mismatched (auto-corrects type AND name)
+//
+// for both directions, plus mixed-tool requests where only some tools need
+// normalization.
+func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
+	type expectedTool struct {
+		toolType string
+		toolName string
+	}
+	cases := []struct {
+		name      string
+		model     string
+		inputBody string
+		expected  []expectedTool
+	}{
+		{
+			name:  "sonnet-4-6 with new-gen tools (no-op)",
+			model: "claude-sonnet-4-6",
+			inputBody: `{"model":"claude-sonnet-4-6","tools":[
+				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20251124", "computer"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "sonnet-4-5 with old-gen tools (no-op)",
+			model: "claude-sonnet-4-5",
+			inputBody: `{"model":"claude-sonnet-4-5","tools":[
+				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250124","name":"str_replace_editor"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20250124", "computer"},
+				{"text_editor_20250124", "str_replace_editor"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "sonnet-4-6 with old-gen tools auto-upgrades",
+			model: "claude-sonnet-4-6",
+			inputBody: `{"model":"claude-sonnet-4-6","tools":[
+				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250124","name":"str_replace_editor"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20251124", "computer"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "sonnet-4-5 with new-gen tools auto-downgrades",
+			model: "claude-sonnet-4-5",
+			inputBody: `{"model":"claude-sonnet-4-5","tools":[
+				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20250124", "computer"},
+				{"text_editor_20250124", "str_replace_editor"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "opus-4-7 with old-gen text_editor mid-list (only that tool changes)",
+			model: "claude-opus-4-7",
+			inputBody: `{"model":"claude-opus-4-7","tools":[
+				{"type":"web_search_20250305","name":"web_search","max_uses":3},
+				{"type":"text_editor_20250124","name":"str_replace_editor"},
+				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768}
+			]}`,
+			expected: []expectedTool{
+				{"web_search_20250305", "web_search"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+				{"computer_20251124", "computer"},
+			},
+		},
+		{
+			name:      "no tools array is a clean no-op",
+			model:     "claude-sonnet-4-6",
+			inputBody: `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`,
+			expected:  nil,
+		},
+		{
+			name:  "bedrock-style global. prefix model classifies correctly",
+			model: "global.anthropic.claude-opus-4-7",
+			inputBody: `{"model":"global.anthropic.claude-opus-4-7","tools":[
+				{"type":"text_editor_20250124","name":"str_replace_editor"}
+			]}`,
+			expected: []expectedTool{
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := RemapRawToolVersionsForProvider([]byte(tc.inputBody), schemas.Anthropic, tc.model)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			toolsResult := providerUtils.GetJSONField(out, "tools")
+			if tc.expected == nil {
+				if toolsResult.Exists() && toolsResult.IsArray() && len(toolsResult.Array()) > 0 {
+					t.Fatalf("expected no tools array, got %s", toolsResult.Raw)
+				}
+				return
+			}
+			tools := toolsResult.Array()
+			if len(tools) != len(tc.expected) {
+				t.Fatalf("got %d tools, want %d (body=%s)", len(tools), len(tc.expected), out)
+			}
+			for i, want := range tc.expected {
+				gotType := tools[i].Get("type").String()
+				gotName := tools[i].Get("name").String()
+				if gotType != want.toolType {
+					t.Errorf("tool[%d].type = %q, want %q (body=%s)", i, gotType, want.toolType, out)
+				}
+				if gotName != want.toolName {
+					t.Errorf("tool[%d].name = %q, want %q (body=%s)", i, gotName, want.toolName, out)
+				}
+			}
+		})
+	}
+}

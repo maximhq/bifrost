@@ -100,7 +100,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 //
 // bash_*, memory_*, code_execution_*, and tool_search_* carry no variant
 // config — their Type + Name alone are enough, handled in the default branch.
-func convertServerToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, bool) {
+func convertServerToolToAnthropic(tool schemas.ChatTool, model string) (AnthropicTool, bool) {
 	typeStr := string(tool.Type)
 	if typeStr == "" {
 		return AnthropicTool{}, false
@@ -125,13 +125,25 @@ func convertServerToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, bool) {
 
 	// Remaining server tools (web_search, web_fetch, computer, text_editor, etc.)
 	// identify themselves via Name.
-	if tool.Name == "" {
+	toolName := tool.Name
+	// Normalize computer-use family (computer / text_editor / bash) to the
+	// canonical {type, name} pair for the model's generation. Keeps callers
+	// from having to memorize Anthropic's per-generation tool naming matrix.
+	if baseTool := computerUseBaseTool(typeStr); baseTool != "" {
+		if wantType, wantName := NormalizedToolSpec(ComputerUseGeneration(model), baseTool); wantType != "" {
+			typeStr = wantType
+			if toolName == "" || toolName != wantName {
+				toolName = wantName
+			}
+		}
+	}
+	if toolName == "" {
 		return AnthropicTool{}, false
 	}
 
 	atype := AnthropicToolType(typeStr)
 	anthropicTool := AnthropicTool{
-		Name:                tool.Name,
+		Name:                toolName,
 		Type:                &atype,
 		CacheControl:        tool.CacheControl,
 		DeferLoading:        tool.DeferLoading,
@@ -425,7 +437,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
-				if converted, ok := convertServerToolToAnthropic(tool); ok {
+				if converted, ok := convertServerToolToAnthropic(tool, bifrostReq.Model); ok {
 					tools = append(tools, converted)
 				}
 			}

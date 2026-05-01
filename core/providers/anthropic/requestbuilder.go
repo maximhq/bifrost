@@ -177,7 +177,10 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 
 		if cfg.RemapToolVersions {
-			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider)
+			// request.Model is the alias-resolved model id; pass it so
+			// computer-use / text-editor / bash tools get normalized to the
+			// canonical {type, name} pair Anthropic expects for the model's generation.
+			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, request.Model)
 			if err != nil {
 				return nil, newErr(err.Error(), nil, jsonBody)
 			}

@@ -654,6 +654,86 @@ func SupportsAdaptiveThinking(model string) bool {
 	return strings.Contains(model, "opus") || strings.Contains(model, "sonnet")
 }
 
+// Computer-use tool generations.
+//   - "20251124" — Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5
+//   - "20250124" — everything else (Sonnet 4.5, Haiku 4.5, Opus 4.1, Sonnet 4, Opus 4, Sonnet 3.7)
+//
+// The bash tool is generation-invariant (always bash_20250124).
+const (
+	ComputerUseGen20251124 = "20251124"
+	ComputerUseGen20250124 = "20250124"
+)
+
+// ComputerUseGeneration returns the tool-version generation a Claude model
+// uses for computer-use / text-editor tools. This drives:
+//   - Which beta header to inject (computer-use-2025-11-24 vs 2025-01-24).
+//   - Which computer_*/text_editor_* type the upstream API will accept.
+//   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
+func ComputerUseGeneration(model string) string {
+	m := strings.ToLower(model)
+	// Opus 4.7+ falls into the new generation.
+	if IsOpus47(m) {
+		return ComputerUseGen20251124
+	}
+	// Opus 4.6 / Sonnet 4.6 / Opus 4.5 also use the new generation.
+	if strings.Contains(m, "opus") {
+		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	if strings.Contains(m, "sonnet") {
+		if strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	return ComputerUseGen20250124
+}
+
+// NormalizedToolSpec returns the canonical {type, name} pair Anthropic's API
+// expects for a server tool, given the model's computer-use generation.
+// baseTool is the family name with no version suffix: "computer", "text_editor", or "bash".
+// Returns ("", "") if baseTool is unknown.
+func NormalizedToolSpec(generation, baseTool string) (toolType, toolName string) {
+	switch baseTool {
+	case "computer":
+		if generation == ComputerUseGen20251124 {
+			return string(AnthropicToolTypeComputer20251124), "computer"
+		}
+		return string(AnthropicToolTypeComputer20250124), "computer"
+	case "bash":
+		// bash_20250124 is generation-invariant per Anthropic's docs.
+		return string(AnthropicToolTypeBash20250124), "bash"
+	case "text_editor":
+		if generation == ComputerUseGen20251124 {
+			return string(AnthropicToolTypeTextEditor20250728), "str_replace_based_edit_tool"
+		}
+		return string(AnthropicToolTypeTextEditor20250124), "str_replace_editor"
+	}
+	return "", ""
+}
+
+// computerUseBaseTool extracts the family name from a versioned tool type.
+// Returns "" for tool types that are not part of the computer-use family.
+//
+// Examples:
+//
+//	computer_20251124       -> "computer"
+//	text_editor_20250728    -> "text_editor"
+//	bash_20250124           -> "bash"
+//	web_search_20250305     -> ""
+func computerUseBaseTool(toolType string) string {
+	switch {
+	case strings.HasPrefix(toolType, "computer_"):
+		return "computer"
+	case strings.HasPrefix(toolType, "text_editor_"):
+		return "text_editor"
+	case strings.HasPrefix(toolType, "bash_"):
+		return "bash"
+	}
+	return ""
+}
+
 // MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.
 // Anthropic supports "low", "medium", "high", "max"; Bifrost also has "minimal" which maps to "low".
 func MapBifrostEffortToAnthropic(effort string) string {
@@ -1080,9 +1160,16 @@ func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
 }
 
 // RemapRawToolVersionsForProvider inspects tools in a raw JSON body and remaps
-// unsupported tool versions to supported ones for the target provider.
-// Returns an error if a tool type is fundamentally unsupported (no remap possible).
-func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProvider) ([]byte, error) {
+// unsupported tool versions to supported ones for the target provider, and
+// normalizes computer-use / text-editor / bash tool {type, name} pairs to match
+// the model's required generation. Returns an error if a tool type is
+// fundamentally unsupported (no remap possible).
+//
+// model is the request's "model" field; it drives ComputerUseGeneration so that
+// (e.g.) a request pairing claude-sonnet-4-6 with text_editor_20250124 gets
+// rewritten to text_editor_20250728 + str_replace_based_edit_tool before
+// hitting Anthropic's strict Pydantic validator.
+func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
 	toolsResult := providerUtils.GetJSONField(jsonBody, "tools")
 	if !toolsResult.Exists() || !toolsResult.IsArray() {
 		return jsonBody, nil
@@ -1103,12 +1190,46 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		}
 	}
 
-	// Apply version remaps
+	// Normalize computer-use / text-editor / bash tools to the canonical
+	// (type, name) pair for the model's generation. Runs before
+	// providerToolVersionRemaps so downgrades still work for non-Anthropic
+	// providers that share the schema.
+	generation := ComputerUseGeneration(model)
+	for i, tool := range tools {
+		toolType := tool.Get("type").String()
+		baseTool := computerUseBaseTool(toolType)
+		if baseTool == "" {
+			continue
+		}
+		wantType, wantName := NormalizedToolSpec(generation, baseTool)
+		if wantType == "" {
+			continue
+		}
+		if toolType != wantType {
+			path := fmt.Sprintf("tools.%d.type", i)
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, path, wantType)
+			if err != nil {
+				return nil, fmt.Errorf("failed to normalize tool type: %w", err)
+			}
+		}
+		// Only set name if the tool has one (custom tools use input_schema; computer-use family always has a name).
+		if existingName := tool.Get("name").String(); existingName != "" && existingName != wantName {
+			path := fmt.Sprintf("tools.%d.name", i)
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, path, wantName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to normalize tool name: %w", err)
+			}
+		}
+	}
+
+	// Apply provider-specific version remaps (e.g. web_search downgrades for non-Anthropic providers)
 	remaps, ok := providerToolVersionRemaps[provider]
 	if !ok {
 		return jsonBody, nil
 	}
 
+	// Re-fetch tools array since paths may have changed via SetJSONField above
+	tools = providerUtils.GetJSONField(jsonBody, "tools").Array()
 	for i, tool := range tools {
 		toolType := tool.Get("type").String()
 		for _, remap := range remaps {

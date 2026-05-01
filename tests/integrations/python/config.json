@@ -1,348 +1,345 @@
 {
-    "$schema": "https://www.getbifrost.ai/schema",
-    "mcp": {
-        "client_configs": [
-            {
-                "name": "sse_mcp",
-                "connection_type": "sse",
-                "connection_string": "env.MCP_SSE_URL",
-                "auth_type": "headers",
-                "headers": {
-                    "Authorization": "env.MCP_SSE_AUTHORIZATION",
-                    "ENV_EXA_API_KEY": "env.MCP_SSE_API_KEY"
-                },
-                "tools_to_execute": ["*"],
-                "tools_to_auto_execute": ["*"]
-            }
-        ]
-    },
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "OpenAI API Key",
-                    "value": "env.OPENAI_API_KEY",
-                    "weight": 1,
-                    "models": ["*"],
-                    "use_for_batch_api": true
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
+  "$schema": "https://www.getbifrost.ai/schema",
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "sse_mcp",
+        "connection_type": "sse",
+        "connection_string": "env.MCP_SSE_URL",
+        "auth_type": "headers",
+        "headers": {
+          "Authorization": "env.MCP_SSE_AUTHORIZATION",
+          "ENV_EXA_API_KEY": "env.MCP_SSE_API_KEY"
         },
-        "elevenlabs": {
-            "keys": [
-                {
-                    "name": "ElevenLabs API Key",
-                    "value": "env.ELEVENLABS_API_KEY",
-                    "weight": 1,
-                    "models": ["*"],
-                    "use_for_batch_api": false
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "xai": {
-            "keys": [
-                {
-                    "name": "Xai API Key",
-                    "value": "env.XAI_API_KEY",
-                    "weight": 1,
-                    "models": ["*"],
-                    "use_for_batch_api": false
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "huggingface": {
-            "keys": [
-                {
-                    "name": "Hugging Face API Key",
-                    "value": "env.HUGGING_FACE_API_KEY",
-                    "weight": 1,
-                    "models": ["*"],
-                    "use_for_batch_api": false
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "anthropic": {
-            "keys": [
-                {
-                    "name": "Anthropic API Key",
-                    "value": "env.ANTHROPIC_API_KEY",
-                    "weight": 1,
-                    "models": ["*"],
-                    "use_for_batch_api": true
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "gemini": {
-            "keys": [
-                {
-                    "name": "Gemini API Key",
-                    "value": "env.GEMINI_API_KEY",
-                    "weight": 1,
-                    "models": ["*"],
-                    "use_for_batch_api": true
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "vertex": {
-            "keys": [
-                {
-                    "name": "Vertex API Key",
-                    "vertex_key_config": {
-                        "project_id": "env.VERTEX_PROJECT_ID",
-                        "region": "env.GOOGLE_LOCATION",
-                        "auth_credentials": "env.VERTEX_CREDENTIALS"
-                    },
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "mistral": {
-            "keys": [
-                {
-                    "name": "Mistral API Key",
-                    "value": "env.MISTRAL_API_KEY",
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "cohere": {
-            "keys": [
-                {
-                    "name": "Cohere API Key",
-                    "value": "env.COHERE_API_KEY",
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "parasail": {
-            "keys": [
-                {
-                    "name": "Parasail API Key",
-                    "value": "env.PARASAIL_API_KEY",
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "groq": {
-            "keys": [
-                {
-                    "name": "Groq API Key",
-                    "value": "env.GROQ_API_KEY",
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "perplexity": {
-            "keys": [
-                {
-                    "name": "Perplexity API Key",
-                    "value": "env.PERPLEXITY_API_KEY",
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "cerebras": {
-            "keys": [
-                {
-                    "name": "Cerebras API Key",
-                    "value": "env.CEREBRAS_API_KEY",
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "openrouter": {
-            "keys": [
-                {
-                    "name": "OpenRouter API Key",
-                    "value": "env.OPENROUTER_API_KEY",
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "azure": {
-            "keys": [
-                {
-                    "name": "Azure API Key",
-                    "value": "env.AZURE_API_KEY",
-                    "azure_key_config": {
-                        "endpoint": "env.AZURE_ENDPOINT",
-                        "api_version": "env.AZURE_API_VERSION",
-                        "deployments": {
-                            "gpt-4o": "gpt-4o",
-                            "gpt-4o-mini": "gpt-4o-mini",
-                            "gpt-4o-mini-tts": "gpt-4o-mini-tts",
-                            "o1": "o1",
-                            "gpt-4o-batch": "gpt-4o-batch",
-                            "whisper": "whisper",
-                            "text-embedding-3-small": "text-embedding-3-small",
-                            "gpt-image-1": "gpt-image-1"
-                        }
-                    },
-                    "weight": 1,
-                    "models": ["*"]
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "bedrock": {
-            "keys": [
-                {
-                    "name": "Bedrock API Key",
-                    "bedrock_key_config": {
-                        "access_key": "env.AWS_ACCESS_KEY_ID",
-                        "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-                        "region": "env.AWS_REGION",
-                        "arn": "env.AWS_ARN"
-                    },
-                    "weight": 1,
-                    "models": ["*"],
-                    "use_for_batch_api": true
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "replicate": {
-            "keys": [
-                {
-                    "name": "Replicate API Key",
-                    "value": "env.REPLICATE_API_KEY",
-                    "weight": 1
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "runway": {
-            "keys": [
-                {
-                    "name": "Runway API Key",
-                    "value": "env.RUNWAY_API_KEY",
-                    "weight": 1
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
-        },
-        "nebius": {
-            "keys": [
-                {
-                    "name": "Nebius API Key",
-                    "value": "env.NEBIUS_API_KEY",
-                    "weight": 1
-                }
-            ],
-            "network_config": {
-                "default_request_timeout_in_seconds": 300
-            }
+        "tools_to_execute": ["*"],
+        "tools_to_auto_execute": ["*"]
+      }
+    ]
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
         }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     },
-    "config_store": {
-        "enabled": true,
-        "type": "sqlite",
-        "config": {
-            "path": "./config.db"
+    "elevenlabs": {
+      "keys": [
+        {
+          "name": "ElevenLabs API Key",
+          "value": "env.ELEVENLABS_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
         }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     },
-    "logs_store": {
-        "enabled": true,
-        "type": "sqlite",
-        "config": {
-            "path": "./logs.db"
+    "xai": {
+      "keys": [
+        {
+          "name": "Xai API Key",
+          "value": "env.XAI_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
         }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     },
-    "governance": {
-        "virtual_keys": [
-            {
-                "name": "Test Key",
-                "id": "vk-test",
-                "value": "sk-bf-test-key",
-                "is_active": true,
-                "provider_configs": [
-                    { "provider": "openai",      "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "elevenlabs",  "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "xai",         "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "huggingface", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "anthropic",   "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "gemini",      "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "vertex",      "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "mistral",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "cohere",      "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "parasail",    "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "groq",        "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "perplexity",  "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "cerebras",    "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "openrouter",  "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "azure",       "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-                    { "provider": "bedrock",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
-                ]
+    "huggingface": {
+      "keys": [
+        {
+          "name": "Hugging Face API Key",
+          "value": "env.HUGGING_FACE_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "gemini": {
+      "keys": [
+        {
+          "name": "Gemini API Key",
+          "value": "env.GEMINI_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "vertex": {
+      "keys": [
+        {
+          "name": "Vertex API Key",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "env.GOOGLE_LOCATION",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "mistral": {
+      "keys": [
+        {
+          "name": "Mistral API Key",
+          "value": "env.MISTRAL_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "cohere": {
+      "keys": [
+        {
+          "name": "Cohere API Key",
+          "value": "env.COHERE_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "parasail": {
+      "keys": [
+        {
+          "name": "Parasail API Key",
+          "value": "env.PARASAIL_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "groq": {
+      "keys": [
+        {
+          "name": "Groq API Key",
+          "value": "env.GROQ_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "perplexity": {
+      "keys": [
+        {
+          "name": "Perplexity API Key",
+          "value": "env.PERPLEXITY_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "cerebras": {
+      "keys": [
+        {
+          "name": "Cerebras API Key",
+          "value": "env.CEREBRAS_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "openrouter": {
+      "keys": [
+        {
+          "name": "OpenRouter API Key",
+          "value": "env.OPENROUTER_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "azure": {
+      "keys": [
+        {
+          "name": "Azure API Key",
+          "value": "env.AZURE_API_KEY",
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "api_version": "env.AZURE_API_VERSION",
+            "deployments": {
+              "gpt-4o": "gpt-4o",
+              "gpt-4o-mini": "gpt-4o-mini",
+              "gpt-4o-mini-tts": "gpt-4o-mini-tts",
+              "o1": "o1",
+              "gpt-4o-batch": "gpt-4o-batch",
+              "whisper": "whisper",
+              "text-embedding-3-small": "text-embedding-3-small",
+              "gpt-image-1": "gpt-image-1"
             }
-        ]
+          },
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     },
-    "client": {
-        "drop_excess_requests": false,
-        "initial_pool_size": 300,
-        "allowed_origins": [
-            "*"
-        ],
-        "enable_logging": true,
-        "enforce_auth_on_inference": false,
-        "allow_direct_keys": false,
-        "max_request_body_size_mb": 100
+    "bedrock": {
+      "keys": [
+        {
+          "name": "Bedrock API Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "replicate": {
+      "keys": [
+        {
+          "name": "Replicate API Key",
+          "value": "env.REPLICATE_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "runway": {
+      "keys": [
+        {
+          "name": "Runway API Key",
+          "value": "env.RUNWAY_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "nebius": {
+      "keys": [
+        {
+          "name": "Nebius API Key",
+          "value": "env.NEBIUS_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./logs.db"
+    }
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "name": "Test Key",
+        "id": "vk-test",
+        "value": "sk-bf-test-key",
+        "is_active": true,
+        "provider_configs": [
+          { "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "elevenlabs", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "xai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "huggingface", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "anthropic", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "gemini", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "vertex", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "mistral", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "cohere", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "parasail", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "groq", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "perplexity", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "cerebras", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "openrouter", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "azure", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "bedrock", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
+        ]
+      }
+    ]
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 300,
+    "allowed_origins": ["*"],
+    "enable_logging": true,
+    "enforce_auth_on_inference": false,
+    "allow_direct_keys": false,
+    "max_request_body_size_mb": 100
+  }
 }
