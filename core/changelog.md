@@ -1,1 +1,10 @@
-
+- feat: add `IsAPIKeyAuthContextKey` and `IsLocalAdminContextKey` context keys for middleware to short-circuit on API-key auth and bypass RBAC when auth is fully disabled
+- feat: add `NormalizeSchemaForAnthropicRaw` (gjson/sjson) so JSON schema normalization avoids a `map[string]interface{}` round-trip
+- feat: add `extractJSONSchemaObject` helper in Bedrock utils to unify composite and decomposed JSON schema fields for OpenAI-compat structured output
+- fix: skip model catalog routing if loadbalancer or governance routing has already set the provider in anthropic integration
+- fix: set extra params passthrough for SGL provider so SGLang vLLM-style extra-body parameters are no longer dropped (thanks [@hensapir](https://github.com/hensapir)!)
+- fix: suppress non-tool content events in Bedrock structured-output streaming so prose/preamble no longer corrupts the assembled JSON
+- fix: enrich `NewUnsupportedOperationError` with provider and request type in `ExtraFields`
+- fix: allow zero-millisecond streaming latency values (was previously rejected as invalid)
+- fix: add `String()` method on `BifrostError` so logged errors no longer dump raw bytes as decimal
+- chore: re-enable Vertex `ContextEditing` and `ContextManagementField`; disable Azure `TaskBudgets` in the feature-support matrix; add `claude-4.6-sonnet` mapping for the Bedrock test account
