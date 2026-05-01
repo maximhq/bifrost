@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -236,6 +237,120 @@ func TestBedrock(t *testing.T) {
 
 	t.Run("BedrockTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+
+	// BedrockOpus47Tests subtree: live end-to-end repro of the user-reported
+	// regression on Claude Opus 4.7. GA structured outputs (output_config.format
+	// with json_schema) against Opus 4.7 on Bedrock currently fails with
+	// `output_config.format: Extra inputs are not permitted` after PR #3053
+	// (commit 7df13ab45) tunneled `anthropic_beta: ["structured-outputs-2025-11-13"]`
+	// into additionalModelRequestFields.
+	//
+	// This subtree reuses the existing structured-output scenarios from
+	// core/internal/llmtests (RunStructuredOutputChatTest +
+	// RunStructuredOutputResponsesTest) so we exercise the SAME wire path the
+	// user's snippet (`client.messages.create(... output_config={"format":...})`)
+	// takes: Anthropic SDK -> /v1/messages -> ToBifrostResponsesRequest ->
+	// ToBedrockResponsesRequest.
+	//
+	// Naming places the leaf test at
+	//   TestBedrock/BedrockOpus47Tests/TestBedrockOpus47StructuredOutputRegression
+	// so the Makefile's TESTCASE convention works:
+	//   make test-core PROVIDER=bedrock TESTCASE=TestBedrockOpus47StructuredOutputRegression
+	//
+	// Skipped unless BEDROCK_OPUS_47_MODEL_ID is set to the exact Bedrock model
+	// id (or alias) for Claude Opus 4.7. We don't default this because per
+	// Anthropic's docs
+	// (cite: https://platform.claude.com/docs/en/docs/build-with-claude/structured-outputs)
+	// "Claude Opus 4.7 ... [is] available through Claude in Amazon Bedrock
+	// (the Messages-API Bedrock endpoint)" - i.e. not Converse - and the exact
+	// inference-profile id depends on the caller's Bedrock entitlements.
+	t.Run("BedrockOpus47Tests", func(t *testing.T) {
+		t.Run("TestBedrockOpus47StructuredOutputRegression", func(t *testing.T) {
+			modelID := strings.TrimSpace(os.Getenv("BEDROCK_OPUS_47_MODEL_ID"))
+			if modelID == "" {
+				t.Skip("Skipping Bedrock Opus 4.7 repro because BEDROCK_OPUS_47_MODEL_ID is not set (e.g. 'anthropic.claude-opus-4-7' or the inference-profile id you have entitlements for)")
+			}
+			t.Logf("Running Opus 4.7 structured-output repro against Bedrock model id: %s", modelID)
+
+			// Mirror the user's failing Python snippet exactly:
+			//   - Anthropic SDK call with system as a structured array (text block
+			//     + cache_control: ephemeral)
+			//   - user content as an array of text blocks
+			//   - max_tokens: 4096
+			//   - output_config.format with json_schema and anyOf-style nullable
+			//     fields (`{"anyOf":[{"type":"string"},{"type":"null"}]}`)
+			//   - NO outer `anthropic-beta` HTTP header (the SDK does not auto-set
+			//     it for GA output_config; the existing llmtests scenarios DO set
+			//     it, which is why those scenarios pass on Opus 4.7 even today)
+			outputFormatJSON := json.RawMessage(`{
+				"type": "json_schema",
+				"schema": {
+					"type": "object",
+					"properties": {
+						"isNewTopic": {"type": "boolean"},
+						"title":      {"anyOf": [{"type": "string"}, {"type": "null"}]},
+						"result":     {"anyOf": [{"type": "number"}, {"type": "null"}]}
+					},
+					"required": ["isNewTopic", "title", "result"],
+					"additionalProperties": false
+				}
+			}`)
+
+			anthropicReq := &anthropic.AnthropicMessageRequest{
+				Model:     modelID,
+				MaxTokens: 4096,
+				System: &anthropic.AnthropicContent{
+					ContentBlocks: []anthropic.AnthropicContentBlock{
+						{
+							Type:         anthropic.AnthropicContentBlockTypeText,
+							Text:         schemas.Ptr("You are an AI assistant. Analyze the user's message and respond with structured JSON."),
+							CacheControl: &schemas.CacheControl{Type: "ephemeral"},
+						},
+					},
+				},
+				Messages: []anthropic.AnthropicMessage{
+					{
+						Role: anthropic.AnthropicMessageRoleUser,
+						Content: anthropic.AnthropicContent{
+							ContentBlocks: []anthropic.AnthropicContentBlock{
+								{
+									Type: anthropic.AnthropicContentBlockTypeText,
+									Text: schemas.Ptr("Hello, what's the result of 678*132?"),
+								},
+							},
+						},
+					},
+				},
+				OutputConfig: &anthropic.AnthropicOutputConfig{
+					Format: outputFormatJSON,
+				},
+			}
+
+			// Convert via the SAME entry point the HTTP integration uses
+			// (transports/bifrost-http/integrations/anthropic.go RequestConverter
+			// at lines 92-100 calls anthropicReq.ToBifrostResponsesRequest(ctx)).
+			reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bifrostReq := anthropicReq.ToBifrostResponsesRequest(reqCtx)
+			require.NotNil(t, bifrostReq, "ToBifrostResponsesRequest returned nil")
+			bifrostReq.Provider = schemas.Bedrock
+			bifrostReq.Model = modelID
+
+			// Send. NO BifrostContextKeyExtraHeaders — this is the key delta
+			// from llmtests.RunStructuredOutputResponsesTest (which sets
+			// `anthropic-beta: structured-outputs-2025-11-13` outer header
+			// at structured_outputs.go:411-418, masking the regression).
+			resp, bifrostErr := client.ResponsesRequest(reqCtx, bifrostReq)
+
+			if bifrostErr != nil {
+				// Repro hit. Surface the full error for the user to confirm
+				// it matches the reported "output_config.format: Extra inputs
+				// are not permitted" Bedrock validator response.
+				t.Fatalf("Bedrock Opus 4.7 structured-output request failed (this is the regression repro): %s", llmtests.GetErrorMessage(bifrostErr))
+			}
+			require.NotNil(t, resp, "expected non-nil response when error is nil")
+			t.Logf("Bedrock Opus 4.7 structured-output request SUCCEEDED. Response id=%v", resp.ID)
+		})
 	})
 }
 
@@ -3290,6 +3405,163 @@ func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
 	require.True(t, ok, "expected output_config.format.schema")
 	_, ok = schemaRaw.(*schemas.OrderedMap)
 	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+}
+
+// betaListContains reports whether the OrderedMap's anthropic_beta entry
+// (regardless of slice element type) contains the given header value.
+// Mirrors the multiple shapes appendAnthropicBetaToFields can leave behind
+// (string, []string, []interface{}) so each test covers all three.
+func betaListContains(t *testing.T, fields *schemas.OrderedMap, header string) bool {
+	t.Helper()
+	if fields == nil {
+		return false
+	}
+	raw, ok := fields.Get("anthropic_beta")
+	if !ok {
+		return false
+	}
+	switch v := raw.(type) {
+	case string:
+		return v == header
+	case []string:
+		for _, s := range v {
+			if s == header {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s == header {
+				return true
+			}
+		}
+	default:
+		t.Logf("unexpected anthropic_beta type %T: %#v", v, v)
+	}
+	return false
+}
+
+// TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool locks in Route A:
+// Bedrock + Anthropic + json_schema response_format routes through the
+// synthetic `bf_so_*` tool path (same as non-Anthropic Bedrock providers),
+// not Bedrock's native `output_config.format`. Bedrock Converse's support for
+// `output_config.format` is inconsistent across Claude variants (Opus 4.7
+// rejects with "output_config.format: Extra inputs are not permitted"); the
+// synthetic-tool path is a regular Converse tool call that all variants
+// accept reliably.
+func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "classification",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"isNewTopic": map[string]any{"type": "boolean"},
+					"title":      map[string]any{"type": "string"},
+					"result":     map[string]any{"type": "number"},
+				},
+				"required": []any{"isNewTopic", "title", "result"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-opus-4-7-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Hello, what's the result of 678*132?"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Negative: no `output_config` and no structured-outputs beta tunnel
+	// in additionalModelRequestFields. PR #3053 added both; Route A removes them.
+	if result.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
+		assert.False(
+			t,
+			betaListContains(t, result.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
+			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
+		)
+	}
+
+	// Positive: synthetic bf_so_* tool present and forced via tool_choice —
+	// this is the contract that replaces output_config.format on Bedrock.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, result.ToolConfig.ToolChoice, "expected forced tool_choice")
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
+	assert.Contains(t, result.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
+	assert.Equal(t, "bf_so_classification", result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+// TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool
+// is the responses-path twin of TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool.
+// The user's failing request comes through the Anthropic Messages SDK
+// (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
+// -> ToBedrockResponsesRequest with Params.Text.Format set.
+func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
+			schemas.KV("title", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
+		)),
+		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "anthropic.claude-opus-4-7-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Negative: no output_config, no structured-outputs beta tunnel.
+	if bedrockReq.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
+		assert.False(
+			t,
+			betaListContains(t, bedrockReq.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
+			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
+		)
+	}
+
+	// Positive: synthetic bf_so_* tool injected and forced.
+	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected forced tool_choice")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
+	assert.Contains(t, bedrockReq.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
+	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
 }
 
 // TestNonAnthropicStructuredOutputStillUsesToolConversion ensures Bedrock models

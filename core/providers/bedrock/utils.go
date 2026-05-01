@@ -76,20 +76,13 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Handle structured output conversion:
-	// - Anthropic models on Bedrock use native output_config.format
-	// - Other models keep the response_format->tool conversion.
-	responseFormatTool, anthropicOutputFormat := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
-	if anthropicOutputFormat != nil {
-		if bedrockReq.AdditionalModelRequestFields == nil {
-			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
-		}
-		setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
-		// The outer HTTP anthropic-beta header is consumed by Bedrock's edge and not forwarded
-		// to the underlying Claude model, so the beta value must also live in
-		// additionalModelRequestFields for the model to recognise output_config.format.
-		appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicStructuredOutputsBetaHeader)
-	}
+	// Handle structured output conversion through the synthetic `bf_so_*` tool
+	// path for all Bedrock models, including Anthropic. We avoid native
+	// `output_config.format` because Bedrock Converse rejects it on some Claude
+	// variants (e.g. Opus 4.7 returns "output_config.format: Extra inputs are not
+	// permitted"), whereas the synthetic-tool path is a regular Converse tool
+	// call accepted by all variants.
+	responseFormatTool, _ := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
 
 	// Filter provider-unsupported server tools once; both convertToolConfig and
 	// collectBedrockServerTools consume the same filtered set, and
@@ -1060,11 +1053,9 @@ func convertResponseFormatToTool(
 		return nil, nil
 	}
 
-	// Anthropic Bedrock supports native output_config.format. Keep this provider-specific
-	// conversion encapsulated here, and let caller just apply returned values.
-	if schemas.IsAnthropicModel(model) {
-		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
-	}
+	// All Bedrock models (including Anthropic) use the synthetic `bf_so_*` tool
+	// path; native `output_config.format` is intentionally avoided due to
+	// Converse's inconsistent support across Claude variants.
 
 	// Extract name and schema
 	toolNameRaw, hasName := jsonSchemaObj.Get("name")
@@ -1224,9 +1215,8 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 		description = *format.JSONSchema.Description
 	}
 
-	if schemas.IsAnthropicModel(model) {
-		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
-	}
+	// All Bedrock models use the synthetic `bf_so_*` tool path here as well.
+	// See convertResponseFormatToTool for the rationale.
 
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
