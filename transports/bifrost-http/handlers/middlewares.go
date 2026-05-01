@@ -810,6 +810,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			if authConfig == nil || !authConfig.IsEnabled {
 				logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
+				// Mark as local admin so downstream RBAC bypasses cleanly when
+				// auth is fully disabled; otherwise RBAC 401s and the UI enters
+				// a logout/login redirect loop.
+				ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 				next(ctx)
 				return
 			}

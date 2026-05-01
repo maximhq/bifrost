@@ -1,0 +1,2 @@
+- fix: skip model catalog routing if loadbalancer or governance routing has already set the provider in anthropic integration
+- chore: adjust API key auth schema field for the middleware

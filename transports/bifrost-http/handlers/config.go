@@ -157,7 +157,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"is_enabled":                false,
-				"disable_auth_on_inference": false,
+				"disable_auth_on_inference": true,
 			}
 		}
 	} else {
@@ -165,7 +165,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"is_enabled":                false,
-			"disable_auth_on_inference": false,
+			"disable_auth_on_inference": true,
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil

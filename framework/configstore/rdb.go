@@ -3741,6 +3741,10 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	if username == nil || password == nil {
 		return nil, nil
 	}
+	// We are no longer keeping this option in the database
+	if !isEnabled {
+		disableAuthOnInference = true
+	}
 	return &AuthConfig{
 		AdminUserName:          schemas.NewEnvVar(*username),
 		AdminPassword:          schemas.NewEnvVar(*password),

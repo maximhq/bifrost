@@ -1210,6 +1210,21 @@ func (e *BifrostError) PopulateExtraFields(requestType RequestType, provider Mod
 	}
 }
 
+// String renders the error as JSON for logging and test diagnostics.
+// Without this, fmt's reflection printer walks ExtraFields.RawRequest /
+// RawResponse (which typically hold json.RawMessage = []byte) and dumps
+// every byte as a decimal, producing unreadable output.
+func (e *BifrostError) String() string {
+	if e == nil {
+		return "<nil>"
+	}
+	b, err := MarshalSorted(e)
+	if err != nil {
+		return fmt.Sprintf("BifrostError{marshal_err=%v}", err)
+	}
+	return string(b)
+}
+
 // StreamControl represents stream control options.
 type StreamControl struct {
 	LogError   *bool `json:"log_error,omitempty"`   // Optional: Controls logging of error

@@ -529,7 +529,6 @@ export default function AppSidebar() {
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
-	const hasPromptDeploymentStrategyAccess = useRbac(RbacResource.PromptDeploymentStrategy, RbacOperation.View);
 	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
@@ -650,13 +649,6 @@ export default function AppSidebar() {
 						url: "/workspace/mcp-tool-groups",
 						icon: ToolCase,
 						description: "Tool Groups",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "Auth Config",
-						url: "/workspace/mcp-auth-config",
-						icon: ShieldUser,
-						description: "MCP auth config",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
@@ -888,7 +880,6 @@ export default function AppSidebar() {
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,
 			hasPromptRepositoryAccess,
-			hasPromptDeploymentStrategyAccess,
 			hasAccessProfilesAccess,
 			isDbConnected,
 		],

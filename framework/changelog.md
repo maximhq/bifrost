@@ -1,0 +1,5 @@
+- feat: add `objectStorageExcludeFields` to keep selected log payload fields in DB instead of offloading to object storage
+- feat: split MCP external base URL into separate server and client URL fields
+- refactor: move raw request extraction to final chunk processing in streaming accumulator
+- fix: update context when auth config is disabled
+- chore: upgraded core to v1.5.7
