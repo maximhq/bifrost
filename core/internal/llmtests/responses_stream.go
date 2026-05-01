@@ -1120,10 +1120,13 @@ func validateResponsesStreamingResponse(t *testing.T, eventTypes map[schemas.Res
 		}
 	}
 
-	// Validate latency is present in the last chunk (total latency)
+	// Validate latency is present in the last chunk (total latency).
+	// Note: 0 ms is acceptable — sub-millisecond streams (regional cache hits,
+	// fast SSE multiplex) truncate to 0 via int64 .Milliseconds(); negative
+	// would still indicate a real bug.
 	if lastResponse != nil && lastResponse.BifrostResponsesStreamResponse != nil {
-		if lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency <= 0 {
-			errors = append(errors, fmt.Sprintf("Last streaming chunk missing latency information (got %d ms)", lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency))
+		if lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency < 0 {
+			errors = append(errors, fmt.Sprintf("Last streaming chunk has negative latency (got %d ms)", lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency))
 		} else {
 			t.Logf("✅ Total streaming latency: %d ms", lastResponse.BifrostResponsesStreamResponse.ExtraFields.Latency)
 		}

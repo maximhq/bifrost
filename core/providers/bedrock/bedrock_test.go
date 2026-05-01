@@ -175,8 +175,8 @@ func TestBedrock(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:    schemas.Bedrock,
-		ChatModel:   "claude-4-sonnet",
-		VisionModel: "claude-4-sonnet",
+		ChatModel:   "claude-4.6-sonnet",
+		VisionModel: "claude-4.6-sonnet",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},

@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -1962,6 +1964,171 @@ func filterEnumValuesByType(enumValues []interface{}, schemaType string) []inter
 // used by providers (e.g. Bedrock) that share Anthropic's schema validation rules.
 func NormalizeSchemaForAnthropic(schema map[string]interface{}) map[string]interface{} {
 	return normalizeSchemaForAnthropic(schema)
+}
+
+// sjsonEscapeKey escapes characters that have special meaning in sjson path
+// syntax. Necessary for property names that include such characters; for the
+// common JSON Schema case (alphanumeric + underscore + $ + -) this is a no-op.
+func sjsonEscapeKey(k string) string {
+	if !strings.ContainsAny(k, `.*?#\`) {
+		return k
+	}
+	var b strings.Builder
+	b.Grow(len(k) + 2)
+	for _, r := range k {
+		switch r {
+		case '.', '*', '?', '#', '\\':
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// filterEnumValuesByTypeRaw is the gjson equivalent of filterEnumValuesByType.
+// Object/array enum values pass through to all branches (matches the map
+// version's default-case behavior).
+func filterEnumValuesByTypeRaw(values []gjson.Result, schemaType string) []gjson.Result {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]gjson.Result, 0, len(values))
+	for _, v := range values {
+		var actual string
+		switch v.Type {
+		case gjson.String:
+			actual = "string"
+		case gjson.Number:
+			f := v.Float()
+			if f == float64(int64(f)) {
+				actual = "integer"
+			} else {
+				actual = "number"
+			}
+		case gjson.True, gjson.False:
+			actual = "boolean"
+		case gjson.Null:
+			actual = "null"
+		case gjson.JSON:
+			out = append(out, v)
+			continue
+		default:
+			continue
+		}
+		if actual == schemaType || (schemaType == "number" && actual == "integer") {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// NormalizeSchemaForAnthropicRaw is the json.RawMessage equivalent of
+// NormalizeSchemaForAnthropic. Operates on raw JSON bytes throughout via
+// sjson/gjson; produces functionally identical output to the map-based
+// version. Use this when the caller already has the schema as raw bytes
+// and wants to avoid a map round-trip.
+func NormalizeSchemaForAnthropicRaw(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 {
+		return schema
+	}
+	if !gjson.ParseBytes(schema).IsObject() {
+		return schema
+	}
+
+	body := append([]byte(nil), schema...)
+
+	if typeVal := gjson.GetBytes(body, "type"); typeVal.IsArray() {
+		var types []string
+		for _, t := range typeVal.Array() {
+			types = append(types, t.String())
+		}
+		nonNullTypes := make([]string, 0, len(types))
+		for _, t := range types {
+			if t != "null" {
+				nonNullTypes = append(nonNullTypes, t)
+			}
+		}
+
+		switch {
+		case len(nonNullTypes) == 0:
+			body, _ = sjson.SetBytes(body, "type", "null")
+		case len(nonNullTypes) == 1 && len(types) == 1:
+			body, _ = sjson.SetBytes(body, "type", nonNullTypes[0])
+		default:
+			body, _ = sjson.DeleteBytes(body, "type")
+
+			enumVal := gjson.GetBytes(body, "enum")
+			hasEnum := enumVal.Exists() && enumVal.IsArray()
+			var enumArr []gjson.Result
+			if hasEnum {
+				enumArr = enumVal.Array()
+			}
+
+			anyOf := []byte("[]")
+			i := 0
+			for _, t := range nonNullTypes {
+				branch := []byte(`{}`)
+				branch, _ = sjson.SetBytes(branch, "type", t)
+				if hasEnum {
+					filtered := filterEnumValuesByTypeRaw(enumArr, t)
+					if len(filtered) > 0 {
+						enumOut := []byte("[]")
+						for j, v := range filtered {
+							enumOut, _ = sjson.SetRawBytes(enumOut, fmt.Sprintf("%d", j), []byte(v.Raw))
+						}
+						branch, _ = sjson.SetRawBytes(branch, "enum", enumOut)
+					}
+				}
+				anyOf, _ = sjson.SetRawBytes(anyOf, fmt.Sprintf("%d", i), branch)
+				i++
+			}
+			if len(nonNullTypes) < len(types) {
+				nullBranch, _ := sjson.SetBytes([]byte(`{}`), "type", "null")
+				anyOf, _ = sjson.SetRawBytes(anyOf, fmt.Sprintf("%d", i), nullBranch)
+			}
+			body, _ = sjson.SetRawBytes(body, "anyOf", anyOf)
+			body, _ = sjson.DeleteBytes(body, "enum")
+		}
+	}
+
+	for _, key := range []string{"properties", "definitions", "$defs"} {
+		val := gjson.GetBytes(body, key)
+		if !val.IsObject() {
+			continue
+		}
+		newObj := []byte("{}")
+		val.ForEach(func(k, v gjson.Result) bool {
+			child := []byte(v.Raw)
+			if v.IsObject() {
+				child = NormalizeSchemaForAnthropicRaw(child)
+			}
+			newObj, _ = sjson.SetRawBytes(newObj, sjsonEscapeKey(k.String()), child)
+			return true
+		})
+		body, _ = sjson.SetRawBytes(body, sjsonEscapeKey(key), newObj)
+	}
+
+	if items := gjson.GetBytes(body, "items"); items.IsObject() {
+		body, _ = sjson.SetRawBytes(body, "items", NormalizeSchemaForAnthropicRaw([]byte(items.Raw)))
+	}
+
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		arr := gjson.GetBytes(body, key)
+		if !arr.IsArray() {
+			continue
+		}
+		newArr := []byte("[]")
+		for i, item := range arr.Array() {
+			child := []byte(item.Raw)
+			if item.IsObject() {
+				child = NormalizeSchemaForAnthropicRaw(child)
+			}
+			newArr, _ = sjson.SetRawBytes(newArr, fmt.Sprintf("%d", i), child)
+		}
+		body, _ = sjson.SetRawBytes(body, key, newArr)
+	}
+
+	return body
 }
 
 // normalizeSchemaForAnthropic recursively normalizes a JSON schema to be compatible with Anthropic's API.

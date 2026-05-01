@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/tidwall/sjson"
+
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -484,10 +486,16 @@ func mergeOrderedMapInto(dst, src *schemas.OrderedMap) {
 
 func newAnthropicOutputFormatOrderedMap(schemaObj any) *schemas.OrderedMap {
 	// Normalize multi-type arrays (["string","null"], ["string","integer"]) into anyOf branches
-	// so Bedrock's schema validator accepts them. Pure in-memory map ops; no JSON round-trips.
+	// so Bedrock's schema validator accepts them. Map inputs use the in-memory normalizer;
+	// json.RawMessage / []byte inputs use the sjson-based normalizer to avoid map round-trips.
 	// OrderedMap schemas are passed through unchanged.
-	if m, ok := schemaObj.(map[string]interface{}); ok {
-		schemaObj = anthropic.NormalizeSchemaForAnthropic(m)
+	switch v := schemaObj.(type) {
+	case map[string]interface{}:
+		schemaObj = anthropic.NormalizeSchemaForAnthropic(v)
+	case json.RawMessage:
+		schemaObj = anthropic.NormalizeSchemaForAnthropicRaw(v)
+	case []byte:
+		schemaObj = anthropic.NormalizeSchemaForAnthropicRaw(json.RawMessage(v))
 	}
 	return schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "json_schema"),
@@ -1099,6 +1107,94 @@ func convertResponseFormatToTool(
 	}, nil
 }
 
+// extractJSONSchemaObject returns a JSON Schema object from either the composite
+// Schema field or the decomposed Type/Properties/Required/AdditionalProperties
+// fields at the JSONSchema struct level. OpenAI-compat callers typically use the
+// decomposed shape (matches OpenAI's flat `format.schema.{type, properties, ...}`
+// wire format); explicit-composite callers use the Schema field.
+//
+// Returns json.RawMessage so downstream Anthropic normalization can operate on
+// bytes (via NormalizeSchemaForAnthropicRaw) without a map round-trip, and so
+// MarshalSorted on the result is a passthrough.
+func extractJSONSchemaObject(s *schemas.ResponsesTextConfigFormatJSONSchema) json.RawMessage {
+	if s == nil {
+		return nil
+	}
+	if s.Schema != nil {
+		b, err := providerUtils.MarshalSorted(*s.Schema)
+		if err != nil {
+			return nil
+		}
+		return json.RawMessage(b)
+	}
+
+	body := []byte(`{}`)
+	var err error
+
+	if s.Type != nil {
+		body, err = sjson.SetBytes(body, "type", *s.Type)
+		if err != nil {
+			return nil
+		}
+	}
+	if s.Properties != nil {
+		propsB, mErr := providerUtils.MarshalSorted(*s.Properties)
+		if mErr != nil {
+			return nil
+		}
+		body, err = sjson.SetRawBytes(body, "properties", propsB)
+		if err != nil {
+			return nil
+		}
+	}
+	if len(s.Required) > 0 {
+		body, err = sjson.SetBytes(body, "required", s.Required)
+		if err != nil {
+			return nil
+		}
+	}
+	if s.AdditionalProperties != nil {
+		b, mErr := providerUtils.MarshalSorted(s.AdditionalProperties)
+		if mErr != nil {
+			return nil
+		}
+		body, err = sjson.SetRawBytes(body, "additionalProperties", b)
+		if err != nil {
+			return nil
+		}
+	}
+	if s.Defs != nil {
+		defsB, mErr := providerUtils.MarshalSorted(*s.Defs)
+		if mErr != nil {
+			return nil
+		}
+		body, err = sjson.SetRawBytes(body, "$defs", defsB)
+		if err != nil {
+			return nil
+		}
+	}
+	if s.Definitions != nil {
+		defsB, mErr := providerUtils.MarshalSorted(*s.Definitions)
+		if mErr != nil {
+			return nil
+		}
+		body, err = sjson.SetRawBytes(body, "definitions", defsB)
+		if err != nil {
+			return nil
+		}
+	}
+	if s.Ref != nil {
+		body, err = sjson.SetBytes(body, "$ref", *s.Ref)
+		if err != nil {
+			return nil
+		}
+	}
+	if string(body) == `{}` {
+		return nil
+	}
+	return json.RawMessage(body)
+}
+
 // convertTextFormatToTool converts a Responses text.format config to either a
 // synthetic Bedrock tool or an Anthropic-native output_config.format value.
 func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConfig *schemas.ResponsesTextConfig) (*BedrockTool, any) {
@@ -1117,13 +1213,16 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	}
 
 	description := "Returns structured JSON output"
-	if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
-		return nil, nil // Schema is required for structured output
+	if format.JSONSchema == nil {
+		return nil, nil
+	}
+	schemaObj := extractJSONSchemaObject(format.JSONSchema)
+	if schemaObj == nil {
+		return nil, nil // No schema info — neither composite Schema nor decomposed fields set
 	}
 	if format.JSONSchema.Description != nil {
 		description = *format.JSONSchema.Description
 	}
-	schemaObj := *format.JSONSchema.Schema
 
 	if schemas.IsAnthropicModel(model) {
 		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)

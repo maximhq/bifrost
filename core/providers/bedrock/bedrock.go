@@ -1352,6 +1352,15 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 						continue
 					}
+
+					// Suppress non-tool content events that would leak into the
+					// assembled structured output (mirrors ResponsesStreamRequest).
+					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+						continue
+					}
+					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
+						continue // non-tool content-block start (text block) — drop
+					}
 				}
 
 				response, bifrostErr, _ := streamEvent.ToBifrostChatCompletionStream(streamState)
@@ -1714,6 +1723,18 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 						continue
+					}
+
+					// Suppress non-tool content events that would leak into the
+					// assembled structured output. Bedrock Claude can emit prose
+					// alongside the forced tool call (markdown, preambles, reasoning
+					// blocks); forwarding those as text deltas corrupts the JSON
+					// the client assembles from the structured-output stream.
+					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+						continue
+					}
+					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
+						continue // non-tool content-block start (text block) — drop
 					}
 				}
 
