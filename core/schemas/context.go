@@ -77,6 +77,9 @@ func NewBifrostContext(parent context.Context, deadline time.Time) *BifrostConte
 	if parent == nil {
 		parent = context.Background()
 	}
+	if parentCtx, ok := parent.(*BifrostContext); ok && parentCtx.valueDelegate != nil {
+		parent = parentCtx.valueDelegate
+	}
 	ctx := &BifrostContext{
 		parent:                parent,
 		deadline:              deadline,
@@ -197,8 +200,17 @@ func (bc *BifrostContext) cancel(err error) {
 // For scoped contexts, delegates to the root context.
 // If both this context and the parent have deadlines, the earlier one is returned.
 func (bc *BifrostContext) Deadline() (time.Time, bool) {
+	if bc == nil {
+		return time.Time{}, false
+	}
 	if bc.valueDelegate != nil {
 		return bc.valueDelegate.Deadline()
+	}
+	if bc.parent == nil {
+		if bc.hasDeadline {
+			return bc.deadline, true
+		}
+		return time.Time{}, false
 	}
 	parentDeadline, parentHasDeadline := bc.parent.Deadline()
 

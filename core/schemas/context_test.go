@@ -208,6 +208,70 @@ func TestNewBifrostContext_NilParent(t *testing.T) {
 	}
 }
 
+func TestBifrostContext_DeadlineWithClearedParent(t *testing.T) {
+	deadline, ok := (&BifrostContext{}).Deadline()
+	if ok {
+		t.Errorf("Context with cleared parent should not have deadline, got %v", deadline)
+	}
+}
+
+func TestBifrostContext_DeadlineWithClearedParentAndOwnDeadline(t *testing.T) {
+	expected := time.Now().Add(time.Hour)
+	ctx := &BifrostContext{
+		deadline:    expected,
+		hasDeadline: true,
+	}
+
+	actual, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("Context with own deadline should report a deadline")
+	}
+	if !actual.Equal(expected) {
+		t.Errorf("Expected deadline %v, got %v", expected, actual)
+	}
+}
+
+func TestNewBifrostContext_ReleasedPluginScopeParent(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	defer root.Cancel()
+
+	name := "released-scope"
+	released := root.WithPluginScope(&name)
+	released.ReleasePluginScope()
+
+	ctx := NewBifrostContext(released, NoDeadline)
+	defer ctx.Cancel()
+
+	if _, ok := ctx.Deadline(); ok {
+		t.Error("Context with released plugin scope parent should not have deadline")
+	}
+}
+
+func TestNewBifrostContext_ScopedParentSurvivesScopeRelease(t *testing.T) {
+	expectedDeadline := time.Now().Add(time.Hour)
+	root := NewBifrostContext(context.Background(), expectedDeadline)
+	defer root.Cancel()
+	root.SetValue(BifrostContextKeyTraceID, "trace-123")
+
+	name := "scoped-parent"
+	scoped := root.WithPluginScope(&name)
+	ctx := NewBifrostContext(scoped, NoDeadline)
+	defer ctx.Cancel()
+
+	scoped.ReleasePluginScope()
+
+	actualDeadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("Context with scoped parent should retain root deadline")
+	}
+	if !actualDeadline.Equal(expectedDeadline) {
+		t.Errorf("Expected deadline %v, got %v", expectedDeadline, actualDeadline)
+	}
+	if traceID := ctx.Value(BifrostContextKeyTraceID); traceID != "trace-123" {
+		t.Errorf("Expected trace ID from root context, got %v", traceID)
+	}
+}
+
 // Plugin logging tests
 
 func TestPluginLog_NoScopeIsNoop(t *testing.T) {
