@@ -414,9 +414,6 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 			data.Cost = lastChunk.Cost
 		}
 		data.FinishReason = lastChunk.FinishReason
-		if lastChunk.RawRequest != nil {
-			data.RawRequest = lastChunk.RawRequest
-		}
 	}
 	// Merge LogProbs from all chunks
 	if len(accumulator.ChatStreamChunks) > 0 {
@@ -508,9 +505,6 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
-			if result.TextCompletionResponse.ExtraFields.RawRequest != nil {
-				chunk.RawRequest = bifrost.Ptr(fmt.Sprintf("%v", result.TextCompletionResponse.ExtraFields.RawRequest))
-			}
 		}
 	} else if result != nil && result.ChatResponse != nil {
 		// Extract delta and other information
@@ -537,10 +531,6 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
-			// Set RawRequest on final chunk so it's available in processAccumulatedChatStreamingChunks
-			if result.ChatResponse.ExtraFields.RawRequest != nil {
-				chunk.RawRequest = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawRequest))
-			}
 		}
 	}
 	if addErr := a.addChatStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
@@ -564,20 +554,22 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 			return nil, processErr
 		}
+		var rawRequest interface{}
+		if result != nil {
+			if result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ChatResponse.ExtraFields.RawRequest
+			} else if result.TextCompletionResponse != nil && result.TextCompletionResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.TextCompletionResponse.ExtraFields.RawRequest
+			}
+		}
 		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: streamType,
-			Provider:   provider,
+			RequestID:      requestID,
+			StreamType:     streamType,
+			Provider:       provider,
 			RequestedModel: model,
 			ResolvedModel:  resolvedModel,
-			Data:       data,
-			RawRequest: func() *interface{} {
-				if data.RawRequest == nil {
-					return nil
-				}
-				var raw any = *data.RawRequest
-				return &raw
-			}(),
+			Data:           data,
+			RawRequest:     &rawRequest,
 		}, nil
 	}
 	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.

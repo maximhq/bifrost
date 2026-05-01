@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	defaultUploadWorkers         = 10
-	defaultUploadQueueSize       = 5000
-	maxContentSummaryBytes       = 2048
-	defaultMaxUploadQueueBytes   = 1 << 30 // 1 GiB
+	defaultUploadWorkers       = 10
+	defaultUploadQueueSize     = 5000
+	maxContentSummaryBytes     = 2048
+	defaultMaxUploadQueueBytes = 1 << 30 // 1 GiB
 )
 
 // uploadWork represents an async S3 upload job.
@@ -37,25 +37,35 @@ type uploadWork struct {
 //   - Intercepted: Create, CreateIfNotExists, BatchCreateIfNotExists, FindByID,
 //     Update, DeleteLog, DeleteLogs, DeleteLogsBatch, Close
 type HybridLogStore struct {
-	inner         LogStore
-	objects       objectstore.ObjectStore
-	prefix        string
-	logger        schemas.Logger
-	uploadQueue   chan *uploadWork
-	wg            sync.WaitGroup
-	closed        atomic.Bool
+	inner          LogStore
+	objects        objectstore.ObjectStore
+	prefix         string
+	logger         schemas.Logger
+	uploadQueue    chan *uploadWork
+	wg             sync.WaitGroup
+	closed         atomic.Bool
 	droppedUploads atomic.Int64
 	pendingBytes   atomic.Int64
+	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
+	excludedPayloadFields map[string]struct{}
 }
 
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
-func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger) *HybridLogStore {
+// excludeFields lists payload field DB column names that should be kept in the
+// database rather than offloaded to object storage. Pass nil for the default
+// behaviour of offloading all payload fields.
+func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string) *HybridLogStore {
+	excluded := make(map[string]struct{}, len(excludeFields))
+	for _, f := range excludeFields {
+		excluded[f] = struct{}{}
+	}
 	h := &HybridLogStore{
-		inner:       inner,
-		objects:     objects,
-		prefix:      prefix,
-		logger:      logger,
-		uploadQueue: make(chan *uploadWork, defaultUploadQueueSize),
+		inner:                 inner,
+		objects:               objects,
+		prefix:                prefix,
+		logger:                logger,
+		uploadQueue:           make(chan *uploadWork, defaultUploadQueueSize),
+		excludedPayloadFields: excluded,
 	}
 	// Start upload workers.
 	for i := 0; i < defaultUploadWorkers; i++ {
@@ -173,9 +183,10 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 
 // prepareDBEntry builds the lightweight DB entry by extracting the content
 // summary, trimming input history to the last user message, and clearing
-// payload fields. Must be called after SerializeFields() populates the
-// Parsed fields.
-func prepareDBEntry(dbEntry *Log) {
+// payload fields that will be offloaded to object storage. Fields in the
+// excluded set are kept intact in the DB row.
+// Must be called after SerializeFields() populates the Parsed fields.
+func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
 
 	// Content summary: extract text from the found user message.
@@ -195,21 +206,22 @@ func prepareDBEntry(dbEntry *Log) {
 		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
 	}
 
-	ClearPayload(dbEntry)
+	ClearPayloadFiltered(dbEntry, excluded)
 
-	// Restore last user message so list queries can display it without S3.
-	dbEntry.InputHistory = lastUserMessage
+	if _, hasInputHistoryExclusion := excluded["input_history"]; !hasInputHistoryExclusion {
+		dbEntry.InputHistory = lastUserMessage
+	}
 }
 
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayload(entry)
+	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
-	prepareDBEntry(&dbEntry)
+	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
 	if err := h.inner.Create(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -222,11 +234,11 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayload(entry)
+	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
-	prepareDBEntry(&dbEntry)
+	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
 	if err := h.inner.CreateIfNotExists(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -249,11 +261,11 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		if err := entry.SerializeFields(); err != nil {
 			return fmt.Errorf("logstore: serialize before extract: %w", err)
 		}
-		payload := ExtractPayload(entry)
+		payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 		tags := BuildTags(entry)
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
-		prepareDBEntry(&dbEntry)
+		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
 		dbEntries[i] = &dbEntry
 		uploads = append(uploads, pendingUpload{
 			logID:     entry.ID,

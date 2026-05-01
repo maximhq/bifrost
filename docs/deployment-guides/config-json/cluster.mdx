@@ -52,11 +52,7 @@ If neither is set, cluster initialization fails.
 {
   "cluster_config": {
     "enabled": true,
-    "region": "us-east-1",
-    "peers": [
-      "10.0.1.10:10101",
-      "10.0.1.11:10101"
-    ],
+    "region": "us-east-1",    
     "gossip": {
       "port": 10101,
       "config": {
@@ -68,6 +64,10 @@ If neither is set, cluster initialization fails.
   }
 }
 ```
+
+<Note>
+For version 1.4.x - you will need to expose 10102 TCP port and 10101 UDP port for cluster discovery.
+</Note>
 
 ---
 

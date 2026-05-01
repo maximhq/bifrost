@@ -91,7 +91,7 @@ Keycloak does not include realm roles or full group paths in tokens by default. 
 | **Add to userinfo** | **On** |
 
 <Note>
-  Bifrost uses full group paths for consistent matching across SSO and bulk provisioning flows — keep **Full group path** enabled.
+  Bifrost uses full group paths for consistent matching across SSO and bulk provisioning flows - keep **Full group path** enabled.
 </Note>
 
 ### Realm Roles mapper
@@ -148,10 +148,10 @@ Create the roles and groups you plan to map into Bifrost.
 | **Realm** | Your realm name (e.g. `master`, `bifrost-prod`) |
 | **Client ID** | Client ID from Step 1 |
 | **Client Secret** | Client Secret from Step 2 |
-| **Audience** | Optional — defaults to Client ID |
+| **Audience** | Optional - defaults to Client ID |
 | **Team IDs Field** | Leave as `groups` (default) or change if you used a different mapper name |
 
-4. Click **Verify** — Bifrost connects to Keycloak's JWKS and Admin REST API to confirm the client and service-account roles.
+4. Click **Verify** - Bifrost connects to Keycloak's JWKS and Admin REST API to confirm the client and service-account roles.
 5. Configure **Attribute → Role / Team / Business Unit** mappings if needed.
 6. Toggle **Enabled** and click **Save Configuration**.
 
@@ -184,7 +184,7 @@ Create the roles and groups you plan to map into Bifrost.
 | `serverUrl` | Yes | Base URL of the Keycloak server. Must be a valid URL (e.g. `https://keycloak.company.com`) and must **not** include `/realms/...`. |
 | `realm` | Yes | Realm name. |
 | `clientId` | Yes | Client ID created in Step 1. |
-| `clientSecret` | Yes | Client secret — required because the client is confidential. |
+| `clientSecret` | Yes | Client secret - required because the client is confidential. |
 | `audience` | No | Expected JWT audience. Defaults to `clientId`. |
 | `teamIdsField` | No | JWT claim for group IDs. Defaults to `groups`. |
 | `attributeRoleMappings` | No | Ordered list of attribute→role mappings. |
@@ -207,7 +207,7 @@ Create the roles and groups you plan to map into Bifrost.
 
 ### `serverUrl must not include /realms/{realm}`
 
-The `serverUrl` field is the base Keycloak URL. Set the realm in the separate **Realm** field. Example: `https://keycloak.company.com` + realm `bifrost-prod` — **not** `https://keycloak.company.com/realms/bifrost-prod`.
+The `serverUrl` field is the base Keycloak URL. Set the realm in the separate **Realm** field. Example: `https://keycloak.company.com` + realm `bifrost-prod` - **not** `https://keycloak.company.com/realms/bifrost-prod`.
 
 ### Users redirected back to login
 
@@ -222,7 +222,7 @@ The `serverUrl` field is the base Keycloak URL. Set the realm in the separate **
 ### Service account cannot list users
 
 - Confirm `realm-management → view-users` is assigned under **Service accounts roles**.
-- If you enabled **Authorization** on the client, service account tokens may not work — disable Authorization (fine-grained authz) for this client.
+- If you enabled **Authorization** on the client, service account tokens may not work - disable Authorization (fine-grained authz) for this client.
 
 ### `jwks keys not found`
 
@@ -232,6 +232,6 @@ The `serverUrl` field is the base Keycloak URL. Set the realm in the separate **
 
 ## Next Steps
 
-- [User Provisioning overview](./user-provisioning) — capabilities, attribute mappings, bulk import
-- [Role-Based Access Control](./rbac) — configure custom roles before mapping
-- [Audit Logs](./audit-logs) — track authentication events
+- [User Provisioning overview](./user-provisioning) - capabilities, attribute mappings, bulk import
+- [Role-Based Access Control](./rbac) - configure custom roles before mapping
+- [Audit Logs](./audit-logs) - track authentication events

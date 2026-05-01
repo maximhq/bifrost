@@ -35,7 +35,8 @@ type TableClientConfig struct {
 	LoggingHeadersJSON                    string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	HideDeletedVirtualKeysInFilters       bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`       // Hide deleted virtual keys in logs filter dropdowns
 	RoutingChainMaxDepth                  int    `gorm:"default:10" json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalBaseURL                    string `gorm:"type:varchar(512)" json:"mcp_external_base_url,omitempty"`        // Public base URL for OAuth callbacks/discovery when behind a reverse proxy
+	MCPExternalServerURL                  string `gorm:"type:varchar(512)" json:"mcp_external_server_url,omitempty"`      // Public base URL advertised in OAuth server metadata (.well-known, WWW-Authenticate)
+	MCPExternalClientURL                  string `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`      // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
 	WhitelistedRoutesJSON                 string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	AllowPerRequestContentStorageOverride bool   `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
 	AllowPerRequestRawOverride            bool   `gorm:"default:false" json:"allow_per_request_raw_override"`             // Allow per-request override for raw request/response storage

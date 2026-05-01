@@ -10,7 +10,7 @@ The bundler uses openapi.yaml#/components/* as a registry. All $refs that
 resolve to a registered component are replaced with #/components/{type}/{Name}
 pointers. Only genuinely unregistered sub-schemas are inlined.
 
-This is fully generic — adding new component types (securitySchemes, headers,
+This is fully generic - adding new component types (securitySchemes, headers,
 requestBodies, links, callbacks, etc.) to openapi.yaml requires no changes here.
 
 Usage:
@@ -53,7 +53,7 @@ class OpenAPIBundler:
       Phase 4 - Assemble output: emit the full bundled spec.
 
     Adding a new component type (e.g. securitySchemes, headers, requestBodies)
-    only requires registering it in openapi.yaml components section — no changes
+    only requires registering it in openapi.yaml components section - no changes
     needed in this file.
 
     Circular reference handling:
@@ -160,7 +160,7 @@ class OpenAPIBundler:
             if "$ref" in obj:
                 ref = obj["$ref"]
 
-                # Already an internal component ref — keep it as-is
+                # Already an internal component ref - keep it as-is
                 if ref.startswith("#/components/"):
                     if len(obj) > 1:
                         result = {"$ref": ref}
@@ -183,7 +183,7 @@ class OpenAPIBundler:
                                 result[k] = self._resolve_value(v, current_file)
                     return result
 
-                # Detect circular reference — the target is currently being resolved
+                # Detect circular reference - the target is currently being resolved
                 # and is NOT in the registry (so the registry can't break the cycle).
                 #
                 # This happens when a schema file has an internal self-ref (e.g.
@@ -254,7 +254,7 @@ class OpenAPIBundler:
         resolve_key = (str(abs_file), frag_key)
 
         if resolve_key in self.resolving:
-            return  # Circular — the registry will emit a component ref to break the cycle
+            return  # Circular - the registry will emit a component ref to break the cycle
 
         self.resolving.add(resolve_key)
         try:
@@ -305,7 +305,7 @@ class OpenAPIBundler:
             elif key == "components":
                 output["components"] = self.resolved_components
             else:
-                # info, servers, tags, security, etc. — resolve defensively
+                # info, servers, tags, security, etc. - resolve defensively
                 output[key] = (
                     self._resolve_value(copy.deepcopy(value), entry_path)
                     if isinstance(value, (dict, list))

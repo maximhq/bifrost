@@ -1,1 +1,1 @@
-- fix: set passthrough for SGL extra params so OpenAI-style fields (`chat_template_kwargs`, `guided_json`, `guided_regex`, `separate_reasoning`, etc.) are forwarded to SGLang backends instead of silently stripped (thanks [@hensapir](https://github.com/hensapir)!)
+

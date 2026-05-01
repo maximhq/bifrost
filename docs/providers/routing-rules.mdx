@@ -39,7 +39,7 @@ Global Scope (Lowest Priority, applies to all)
 **How it works:**
 1. When a request arrives with a Virtual Key, Bifrost builds a scope chain
 2. Rules are evaluated in scope order (highest to lowest)
-3. The **first matching rule** wins — no further rules are evaluated in that iteration
+3. The **first matching rule** wins - no further rules are evaluated in that iteration
 4. Within each scope, rules are sorted by **priority** (ascending: 0 evaluates before 10)
 5. If the matched rule has `chain_rule: true`, the resolved provider/model becomes the new context and the full scope chain is re-evaluated from the top
 6. If no rule matches (or the matched rule is terminal), the current decision is applied
@@ -122,14 +122,14 @@ Each variable reflects **current usage as a percentage of the configured limit**
 
 Bifrost resolves which limits to read in this order (most specific first):
 
-1. **Model + provider config** — a budget or rate limit set on a specific `provider/model` pair (e.g., `openai/gpt-4o`)
-2. **Model-only config** — a budget or rate limit set on a model name without a provider (matched across all providers)
-3. **Global provider config** — a budget or rate limit attached to the provider itself (e.g., all `openai` traffic)
-4. **Virtual Key provider config** — a rate limit or budget attached to a provider entry inside the Virtual Key's provider configs
+1. **Model + provider config** - a budget or rate limit set on a specific `provider/model` pair (e.g., `openai/gpt-4o`)
+2. **Model-only config** - a budget or rate limit set on a model name without a provider (matched across all providers)
+3. **Global provider config** - a budget or rate limit attached to the provider itself (e.g., all `openai` traffic)
+4. **Virtual Key provider config** - a rate limit or budget attached to a provider entry inside the Virtual Key's provider configs
 
 When multiple levels are configured for the same request, **the highest percentage across all matched levels is used**. For example, if the model-only budget is 95% consumed and the global provider budget is 60% consumed, `budget_used` will be `95`.
 
-**If no limit is configured** for the current provider/model, the variable is `0.0` — a rule like `budget_used > 80` will never match.
+**If no limit is configured** for the current provider/model, the variable is `0.0` - a rule like `budget_used > 80` will never match.
 
 In [chained rules](#rule-chaining), capacity values are **re-read at every chain step** against the resolved provider/model, so downstream rules always see fresh data.
 
@@ -258,7 +258,7 @@ Access routing rules from the dashboard:
 - **Enabled**: Toggle rule on/off
 - **Chain Rule**: When enabled, the routing engine re-evaluates all rules after this one matches, using the resolved provider/model as the new context. See [Rule Chaining](#rule-chaining).
 - **CEL Expression**: Visual or manual expression builder
-- **Targets** (required): One or more weighted routing targets — each has Provider (optional), Model (optional), API Key (optional, requires Provider to be set), and Weight (%). Weights must sum to 1. When multiple targets are defined, one is selected probabilistically at request time.
+- **Targets** (required): One or more weighted routing targets - each has Provider (optional), Model (optional), API Key (optional, requires Provider to be set), and Weight (%). Weights must sum to 1. When multiple targets are defined, one is selected probabilistically at request time.
 - **Fallbacks** (optional): Array of fallback providers
 - **Scope**: Where rule applies (global, customer, team, virtual_key)
 - **Scope ID**: Required if scope is not global
@@ -432,10 +432,10 @@ Define routing rules in your `config.json` file under the governance configurati
 - **chain_rule** (boolean, default: `false`): When `true`, re-evaluates the full routing chain after this rule matches, using the resolved provider/model as the new context. See [Rule Chaining](#rule-chaining).
 - **cel_expression** (string): CEL expression for rule matching
 - **targets** (array, required): One or more routing targets. Each target has:
-  - `provider` (string, optional): Target provider — omit to use the incoming request provider
-  - `model` (string, optional): Target model — omit to use the incoming request model
-  - `key_id` (string, optional): UUID of the API key to pin — requires `provider` to be present; omit for load-balanced key selection
-  - `weight` (number, required): Probability weight — all weights in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0)
+  - `provider` (string, optional): Target provider - omit to use the incoming request provider
+  - `model` (string, optional): Target model - omit to use the incoming request model
+  - `key_id` (string, optional): UUID of the API key to pin - requires `provider` to be present; omit for load-balanced key selection
+  - `weight` (number, required): Probability weight - all weights in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0)
 - **fallbacks** (array[string]): Fallback providers in "provider/model" format
 - **scope** (string): Scope level - "global", "customer", "team", or "virtual_key"
 - **scope_id** (string, optional): ID of scoped entity (null for global scope)
@@ -616,7 +616,7 @@ Route based on region headers:
 
 <Info>Rule chaining is available in **Bifrost v1.5.0-prerelease2 and above**.</Info>
 
-Rule chaining allows routing rules to be composed together. When a rule has `chain_rule: true`, the routing engine does not stop after it matches — instead, it updates the request context with the resolved provider/model and re-evaluates the full rule set from the top.
+Rule chaining allows routing rules to be composed together. When a rule has `chain_rule: true`, the routing engine does not stop after it matches - instead, it updates the request context with the resolved provider/model and re-evaluates the full rule set from the top.
 
 ### How Chaining Works
 
@@ -640,11 +640,11 @@ The chain stops when any of the following occurs:
 |---|---|
 | **No match** | Current iteration finds no matching rule |
 | **Terminal rule** | Matched rule has `chain_rule: false` (the default) |
-| **Convergence** | Provider and model are unchanged after a chain step — continuing would loop forever |
+| **Convergence** | Provider and model are unchanged after a chain step - continuing would loop forever |
 
 ### Decision Accumulation
 
-Each chain step overwrites the previous decision — the last matched rule wins for all fields:
+Each chain step overwrites the previous decision - the last matched rule wins for all fields:
 
 | Field | Strategy |
 |---|---|
@@ -697,9 +697,9 @@ Every chain step is logged in the routing engine audit trail for full observabil
 
 ### Best Practices
 
-- Keep chains short (2–3 steps) — long chains are harder to reason about
+- Keep chains short (2–3 steps) - long chains are harder to reason about
 - Ensure the last rule in every intended chain path is terminal (`chain_rule: false`) to prevent unintended continuation
-- Use convergence detection as a safety net, not a primary termination strategy — if you rely on it, your rules likely have a logic gap
+- Use convergence detection as a safety net, not a primary termination strategy - if you rely on it, your rules likely have a logic gap
 - Name chain rules clearly to reflect their role: "Normalize X", "Enrich context", etc.
 
 ---

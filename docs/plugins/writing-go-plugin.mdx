@@ -375,7 +375,7 @@ Returns a unique identifier for your plugin. This name appears in logs and statu
 
 #### `ctx.Log(level, msg)` <sup>v1.5.x+</sup>
 
-Emits a structured log entry scoped to the current plugin. Use this instead of `fmt.Println` for production logging — entries are collected per-request and can be retrieved programmatically.
+Emits a structured log entry scoped to the current plugin. Use this instead of `fmt.Println` for production logging - entries are collected per-request and can be retrieved programmatically.
 
 ```go
 ctx.Log(schemas.LogLevelInfo, "processing request")
@@ -393,10 +393,10 @@ ctx.Log(schemas.LogLevelError, "failed to parse response body")
 | `schemas.LogLevelError` | `"error"` |
 
 Key points:
-- **Thread-safe** — safe to call from concurrent goroutines
-- **Scoped** — each entry is automatically tagged with your plugin's name
-- **Timestamped** — entries include Unix millisecond timestamps
-- **No-op when unscoped** — safe to call in any context; silently ignored outside plugin hooks
+- **Thread-safe** - safe to call from concurrent goroutines
+- **Scoped** - each entry is automatically tagged with your plugin's name
+- **Timestamped** - entries include Unix millisecond timestamps
+- **No-op when unscoped** - safe to call in any context; silently ignored outside plugin hooks
 - Logs are retrievable via `ctx.GetPluginLogs()` (read copy) or `ctx.DrainPluginLogs()` (transfer ownership)
 
 <Tabs>
@@ -900,7 +900,7 @@ bifrost-http: go1.26.1
   dep  github.com/valyala/fasthttp      v1.55.0   # <-- MISMATCH!
 ```
 
-Notice that even though the Go version matches (`go1.26.1`), the **package versions** are different — this causes the error.
+Notice that even though the Go version matches (`go1.26.1`), the **package versions** are different - this causes the error.
 
 **Step 2: Update your plugin dependencies**
 

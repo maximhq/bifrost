@@ -62,7 +62,11 @@ func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
 	return false
 }
 
-func (m *mockHandlerStore) GetMCPExternalBaseURL() string {
+func (m *mockHandlerStore) GetMCPExternalServerURL() string {
+	return ""
+}
+
+func (m *mockHandlerStore) GetMCPExternalClientURL() string {
 	return ""
 }
 

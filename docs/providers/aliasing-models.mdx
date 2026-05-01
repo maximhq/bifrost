@@ -8,7 +8,7 @@ icon: "tag"
 
 Model aliasing lets you decouple the model name your application sends from the identifier Bifrost actually uses when calling a provider. You can:
 
-- Send `"best-model"` and have Bifrost resolve it to whatever model you've decided is best — without touching your application code
+- Send `"best-model"` and have Bifrost resolve it to whatever model you've decided is best - without touching your application code
 - Map a single logical name like `"gpt-4o"` to a provider-specific deployment name, inference profile ARN, or fine-tuned model ID
 - Give different teams different underlying models behind the same name
 
@@ -19,7 +19,7 @@ There are two aliasing mechanisms, and they operate at different layers:
 | **Where configured** | On a provider key | On routing rules, scoped to VK / Team / Customer / Global |
 | **When applied** | After key selection, before the provider API call | At request time, before key selection |
 | **Scope** | Per-key | Per-VK, per-team, per-customer, or global |
-| **Condition-based** | No — always resolves | Yes — CEL expression controls when it fires |
+| **Condition-based** | No - always resolves | Yes - CEL expression controls when it fires |
 
 ---
 
@@ -34,7 +34,7 @@ Static aliases are configured directly on a provider key. Every request that is 
 1. Your application sends a request with `model: "best-model"`
 2. Bifrost selects a key that supports `"best-model"` (alias names are treated as model identifiers for key selection and allowlists)
 3. Before calling the provider, Bifrost resolves `"best-model"` → `"gpt-4o-2024-11-20"` using that key's `aliases` map
-4. The provider receives `"gpt-4o-2024-11-20"` — your application never needs to know
+4. The provider receives `"gpt-4o-2024-11-20"` - your application never needs to know
 
 ### Configuration
 
@@ -75,15 +75,15 @@ curl -X POST http://localhost:8080/api/providers/openai/keys \
   }'
 ```
 
-The `aliases` field is a flat `string → string` map. The key is what your application sends; the value is what gets forwarded to the provider. There are no restrictions on what either side can be — deployments, ARNs, model IDs, version hashes, fine-tune IDs, anything.
+The `aliases` field is a flat `string → string` map. The key is what your application sends; the value is what gets forwarded to the provider. There are no restrictions on what either side can be - deployments, ARNs, model IDs, version hashes, fine-tune IDs, anything.
 
 ### Validation rules
 
 Bifrost rejects an aliases map that violates any of these:
 
-- **No empty strings** — both the alias name and its target must be non-empty
+- **No empty strings** - both the alias name and its target must be non-empty
 - **No leading or trailing whitespace** on either side
-- **No duplicate alias names** (checked case-insensitively) — `"GPT-4o"` and `"gpt-4o"` cannot both be keys in the same map
+- **No duplicate alias names** (checked case-insensitively) - `"GPT-4o"` and `"gpt-4o"` cannot both be keys in the same map
 
 ### Case-insensitive matching
 
@@ -109,7 +109,7 @@ If no alias matches, `resolved_model_used` equals `original_model_requested`.
 
 ## Dynamic Aliasing
 
-Dynamic aliasing uses [Routing Rules](/providers/routing-rules) to rewrite the model at request time based on a CEL expression. Unlike static aliases (which are fixed to a key), dynamic aliases fire conditionally and are scoped — so the same model name can resolve differently depending on who is making the request.
+Dynamic aliasing uses [Routing Rules](/providers/routing-rules) to rewrite the model at request time based on a CEL expression. Unlike static aliases (which are fixed to a key), dynamic aliases fire conditionally and are scoped - so the same model name can resolve differently depending on who is making the request.
 
 ### How scopes make it dynamic
 
@@ -163,7 +163,7 @@ Setting `chain_rule: true` on a rule causes Bifrost to re-evaluate the full scop
 
 **Scenario:** All clients send `model: "best-model"`. Premium VKs should get `gpt-5` via a high-tier key; standard VKs should get `gpt-4.1` via a lower-tier key.
 
-**Rule 1 — Global scope (`chain_rule: true`):**
+**Rule 1 - Global scope (`chain_rule: true`):**
 ```json
 {
   "name": "resolve-best-model-provider",
@@ -178,7 +178,7 @@ Setting `chain_rule: true` on a rule causes Bifrost to re-evaluate the full scop
 
 This establishes that `best-model` resolves to OpenAI and re-evaluates the scope chain with `provider="openai", model="best-model"`.
 
-**Rule 2a — VK scope on `premium-vk` (`chain_rule: false`):**
+**Rule 2a - VK scope on `premium-vk` (`chain_rule: false`):**
 ```json
 {
   "name": "premium-model-selection",
@@ -191,7 +191,7 @@ This establishes that `best-model` resolves to OpenAI and re-evaluates the scope
 }
 ```
 
-**Rule 2b — VK scope on `standard-vk` (`chain_rule: false`):**
+**Rule 2b - VK scope on `standard-vk` (`chain_rule: false`):**
 ```json
 {
   "name": "standard-model-selection",
@@ -208,9 +208,9 @@ This establishes that `best-model` resolves to OpenAI and re-evaluates the scope
 ```
 model="best-model" via premium-vk
   ↓ Rule 1 (global, chain_rule: true)
-provider="openai", model="best-model" — re-evaluate scope chain
+provider="openai", model="best-model" - re-evaluate scope chain
   ↓ Rule 2a (premium-vk scope, chain_rule: false)
-provider="openai", model="gpt-5" — done
+provider="openai", model="gpt-5" - done
 OpenAI receives model="gpt-5"
 ```
 
@@ -218,9 +218,9 @@ OpenAI receives model="gpt-5"
 ```
 model="best-model" via standard-vk
   ↓ Rule 1 (global, chain_rule: true)
-provider="openai", model="best-model" — re-evaluate scope chain
+provider="openai", model="best-model" - re-evaluate scope chain
   ↓ Rule 2b (standard-vk scope, chain_rule: false)
-provider="openai", model="gpt-4.1" — done
+provider="openai", model="gpt-4.1" - done
 OpenAI receives model="gpt-4.1"
 ```
 
@@ -232,7 +232,7 @@ See the [Routing Rules](/providers/routing-rules) documentation for the full CEL
 
 ## Advanced: Combining Both Layers
 
-Static and dynamic aliasing compose naturally — routing rules fire first (at the HTTP layer), then key-level aliases resolve second (inside the inference worker, after key selection). This lets you separate concerns across two distinct layers:
+Static and dynamic aliasing compose naturally - routing rules fire first (at the HTTP layer), then key-level aliases resolve second (inside the inference worker, after key selection). This lets you separate concerns across two distinct layers:
 
 - **Routing rules** decide *which provider* and *which key tier* to use, based on who is making the request
 - **Key aliases** handle *the final model identifier* forwarded to the provider
@@ -328,7 +328,7 @@ tech-team + standard-vk → model="best-model"
 
 ml-team → model="best-model"
   ↓ Team rule: provider="anthropic", model="best-model" (chain)
-  ↓ No VK rule matches anthropic — chain terminates
+  ↓ No VK rule matches anthropic - chain terminates
   ↓ Alias: "best-model" → "claude-3-5-sonnet-20241022"
   → Anthropic receives model="claude-3-5-sonnet-20241022"
 ```
@@ -342,4 +342,4 @@ ml-team → model="best-model"
 }
 ```
 
-`original_model_requested` is always what the client originally sent. `resolved_model_used` is the final identifier that reached the provider API — after both routing and alias resolution.
+`original_model_requested` is always what the client originally sent. `resolved_model_used` is the final identifier that reached the provider API - after both routing and alias resolution.

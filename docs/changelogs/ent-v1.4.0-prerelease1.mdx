@@ -1,5 +1,5 @@
 ---
-title: "v1.4.0--prerelease1"
+title: "v1.4.0-prerelease1"
 description: "Enterprise v1.4.0-prerelease1"
 ---
 
@@ -7,11 +7,11 @@ description: "Enterprise v1.4.0-prerelease1"
 
 ## Changelog
 
-This is a major release that introduces deny-by-default semantics across all allow-list fields (models, keys, tools, providers), a dedicated Provider Keys API, blacklist support in load balancing, redesigned adaptive routing UI, and scoped pricing overrides. **This release contains multiple breaking changes — please review the breaking changes section and migration checklist carefully before upgrading.**
+This is a major release that introduces deny-by-default semantics across all allow-list fields (models, keys, tools, providers), a dedicated Provider Keys API, blacklist support in load balancing, redesigned adaptive routing UI, and scoped pricing overrides. **This release contains multiple breaking changes - please review the breaking changes section and migration checklist carefully before upgrading.**
 
 ## ⚠️ Breaking Changes
 
-> **v1.5.0 OSS base flips the meaning of empty arrays across all allow-list fields.** Existing deployments with a database are protected by automatic migrations on startup, but any new configuration created after upgrading must follow the new semantics. **Back up your config store database before upgrading — this migration is not revertible.**
+> **v1.5.0 OSS base flips the meaning of empty arrays across all allow-list fields.** Existing deployments with a database are protected by automatic migrations on startup, but any new configuration created after upgrading must follow the new semantics. **Back up your config store database before upgrading - this migration is not revertible.**
 
 | What you write | v1.4.x meaning | v1.5.0 meaning |
 |---|---|---|
@@ -27,17 +27,17 @@ Empty `models` array now means "allow none" instead of "allow all". Use `["*"]` 
 
 Missing or empty `allowed_models` on a VK provider config now blocks all models from that provider. Use `["*"]` to allow all.
 
-### 3. Virtual Key Provider Configs — Deny-by-Default
+### 3. Virtual Key Provider Configs - Deny-by-Default
 
 Virtual Keys with empty or missing `provider_configs` now block all providers. Every VK must explicitly list its permitted providers.
 
 ### 4. `allowed_keys` Renamed to `key_ids`
 
-Field renamed in VK provider configs. Same deny-by-default semantics — omitted or empty `key_ids` now blocks all keys. Use `["*"]` to allow all. **Note:** Unlike `allowed_models`, there is no automatic migration for `key_ids`.
+Field renamed in VK provider configs. Same deny-by-default semantics - omitted or empty `key_ids` now blocks all keys. Use `["*"]` to allow all. **Note:** Unlike `allowed_models`, there is no automatic migration for `key_ids`.
 
 ### 5. Virtual Key MCP `tools_to_execute` Field
 
-Empty `tools_to_execute` now blocks all tools. The `mcp_configs` list itself acts as a strict allow-list — no `mcp_configs` means all MCP tools are blocked for that VK.
+Empty `tools_to_execute` now blocks all tools. The `mcp_configs` list itself acts as a strict allow-list - no `mcp_configs` means all MCP tools are blocked for that VK.
 
 ### 6. `weight` Field is Now Optional
 
@@ -68,39 +68,39 @@ Empty `tools_to_execute` now blocks all tools. The `mcp_configs` list itself act
 
 ### Quick Migration Checklist
 
-1. Update provider key `models` in config.json — change `[]` to `["*"]`
+1. Update provider key `models` in config.json - change `[]` to `["*"]`
 2. Add `allowed_models: ["*"]` to every VK provider config
 3. Ensure every VK has at least one provider config entry
 4. Rename `allowed_keys` to `key_ids` and set `["*"]` where needed
-5. Update `tools_to_execute` for MCP configs — change `[]` to `["*"]`
+5. Update `tools_to_execute` for MCP configs - change `[]` to `["*"]`
 6. Handle nullable `weight` in API consumers
 7. Fix any invalid WhiteList values (no mixing wildcards, no duplicates)
 8. Migrate key management to dedicated `/api/providers/{provider}/keys` endpoints
 
 ## ✨ Features
 
-- **Dedicated Provider Keys API** — Keys are now managed via `/api/providers/{provider}/keys` endpoints instead of being embedded in provider create/update payloads
-- **Deny-by-Default Access Control** — Standardized empty array conventions across all allow-list fields; `[]` means deny all, `["*"]` means allow all
-- **VK Provider Config Key Wildcards** — `key_ids` now supports `["*"]` wildcard to allow all keys; handler resolves wildcard to AllowAllKeys flag without DB key lookups
-- **VK MCP Allow-List** — Virtual key MCP configs now act as an execution-time allow-list — tools not permitted by the VK are blocked at inference and MCP tool execution
-- **MCP Virtual Key Assignment** — MCP configuration now supports assigning virtual keys with per-tool access control, with an option to allow MCP clients to run on all virtual keys
-- **Disable Auto MCP Tool Injection** — Add option to disable automatic MCP tool injection per request
-- **MCP Request-Level Extra Headers** — Support for request-level extra headers in MCP tool execution
-- **MCP Gateway Filtering** — Support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response
-- **Scoped Pricing Overrides** — Support for pricing overrides at a scoped level
-- **StabilityAI on Bedrock** — Added StabilityAI provider support to Bedrock
-- **Plugin Trace Logging** — Plugins can now inject logs at trace level using `ctx.Log(schemas.LogLevelInfo, "Test log")`
-- **Blacklist Support in Load Balancing** — Added model blacklist support to the load balancing plugin
-- **Adaptive Routing UI Redesign** — Redesigned adaptive routing UI with improved layout and Sankey chart visualization
-- **Governance Refactor** — Governance module changes for improved structure
-- **Compat Plugin New Modes** — Chat-to-responses fallback and OpenAI-compatible parameter dropping modes added to compat plugin
+- **Dedicated Provider Keys API** - Keys are now managed via `/api/providers/{provider}/keys` endpoints instead of being embedded in provider create/update payloads
+- **Deny-by-Default Access Control** - Standardized empty array conventions across all allow-list fields; `[]` means deny all, `["*"]` means allow all
+- **VK Provider Config Key Wildcards** - `key_ids` now supports `["*"]` wildcard to allow all keys; handler resolves wildcard to AllowAllKeys flag without DB key lookups
+- **VK MCP Allow-List** - Virtual key MCP configs now act as an execution-time allow-list - tools not permitted by the VK are blocked at inference and MCP tool execution
+- **MCP Virtual Key Assignment** - MCP configuration now supports assigning virtual keys with per-tool access control, with an option to allow MCP clients to run on all virtual keys
+- **Disable Auto MCP Tool Injection** - Add option to disable automatic MCP tool injection per request
+- **MCP Request-Level Extra Headers** - Support for request-level extra headers in MCP tool execution
+- **MCP Gateway Filtering** - Support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response
+- **Scoped Pricing Overrides** - Support for pricing overrides at a scoped level
+- **StabilityAI on Bedrock** - Added StabilityAI provider support to Bedrock
+- **Plugin Trace Logging** - Plugins can now inject logs at trace level using `ctx.Log(schemas.LogLevelInfo, "Test log")`
+- **Blacklist Support in Load Balancing** - Added model blacklist support to the load balancing plugin
+- **Adaptive Routing UI Redesign** - Redesigned adaptive routing UI with improved layout and Sankey chart visualization
+- **Governance Refactor** - Governance module changes for improved structure
+- **Compat Plugin New Modes** - Chat-to-responses fallback and OpenAI-compatible parameter dropping modes added to compat plugin
 
 ## 🐞 Fixed
 
-- **MCP Agent Usage Accumulation** — Fixed accumulated usage not being sent back in MCP agent mode
-- **OpenAI Transcription Formats** — Handle text, vtt, srt response formats in OpenAI transcription response
-- **HuggingFace Load Balancing** — Removed HuggingFace deployment handling from load balancing plugin
-- **Parallelized Model Listing** — Parallelized model listing for providers to speed up startup time
+- **MCP Agent Usage Accumulation** - Fixed accumulated usage not being sent back in MCP agent mode
+- **OpenAI Transcription Formats** - Handle text, vtt, srt response formats in OpenAI transcription response
+- **HuggingFace Load Balancing** - Removed HuggingFace deployment handling from load balancing plugin
+- **Parallelized Model Listing** - Parallelized model listing for providers to speed up startup time
 
 ## 📀 Base OSS version
 

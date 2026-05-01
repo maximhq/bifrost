@@ -1,13 +1,13 @@
 ---
 title: "Plugins"
-description: "Configure Bifrost plugins in config.json — semantic cache, OpenTelemetry, Maxim, Datadog, and custom plugins"
+description: "Configure Bifrost plugins in config.json - semantic cache, OpenTelemetry, Maxim, Datadog, and custom plugins"
 icon: "puzzle-piece"
 ---
 
 <Note>
 **The `plugins` array only controls explicitly opt-in plugins**: `semantic_cache`, `otel`, `maxim`, `datadog` (enterprise), and custom plugins.
 
-**Telemetry, logging, and governance are auto-loaded built-ins** — they are always active and configured via the `client` block and dedicated top-level keys, not the `plugins` array.
+**Telemetry, logging, and governance are auto-loaded built-ins** - they are always active and configured via the `client` block and dedicated top-level keys, not the `plugins` array.
 </Note>
 
 ---
@@ -58,16 +58,16 @@ Requires a [vector store](/deployment-guides/config-json/storage#vector_store) t
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `config.dimension` | Yes | — | Embedding dimension. Use `1` for hash-based (exact) caching without an embedding provider |
-| `config.provider` | No | — | Provider for generating embeddings (required for semantic mode) |
-| `config.embedding_model` | No | — | Model for embeddings (required when `provider` is set) |
+| `config.dimension` | Yes | - | Embedding dimension. Use `1` for hash-based (exact) caching without an embedding provider |
+| `config.provider` | No | - | Provider for generating embeddings (required for semantic mode) |
+| `config.embedding_model` | No | - | Model for embeddings (required when `provider` is set) |
 | `config.threshold` | No | `0.8` | Cosine similarity threshold for a cache hit (0.0–1.0) |
 | `config.ttl` | No | `300` | Cache entry TTL in seconds (or a duration string like `"1h"`) |
 | `config.cache_by_model` | No | `true` | Include model in cache key |
 | `config.cache_by_provider` | No | `true` | Include provider in cache key |
 | `config.exclude_system_prompt` | No | `false` | Exclude system prompt from cache key |
 | `config.conversation_history_threshold` | No | `3` | Skip caching for requests with more messages than this |
-| `config.default_cache_key` | No | — | Default cache key when no `x-bf-cache-key` header is sent |
+| `config.default_cache_key` | No | - | Default cache key when no `x-bf-cache-key` header is sent |
 
 **Semantic mode** (embedding-based similarity search):
 
@@ -109,7 +109,7 @@ Requires a [vector store](/deployment-guides/config-json/storage#vector_store) t
 ```
 
 <Note>
-You must also configure a `vector_store` in `config.json`. See [Storage — vector_store](/deployment-guides/config-json/storage#vector_store).
+You must also configure a `vector_store` in `config.json`. See [Storage - vector_store](/deployment-guides/config-json/storage#vector_store).
 </Note>
 
 </Tab>
@@ -122,16 +122,16 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `config.collector_url` | Yes | — | OTLP collector endpoint |
-| `config.trace_type` | Yes | — | Trace format: `"genai_extension"`, `"vercel"`, or `"open_inference"` |
-| `config.protocol` | Yes | — | `"http"` or `"grpc"` |
+| `config.collector_url` | Yes | - | OTLP collector endpoint |
+| `config.trace_type` | Yes | - | Trace format: `"genai_extension"`, `"vercel"`, or `"open_inference"` |
+| `config.protocol` | Yes | - | `"http"` or `"grpc"` |
 | `config.service_name` | No | `"bifrost"` | Service name reported to the collector |
 | `config.metrics_enabled` | No | `false` | Enable push-based OTLP metrics export |
-| `config.metrics_endpoint` | No | — | OTLP metrics endpoint URL |
+| `config.metrics_endpoint` | No | - | OTLP metrics endpoint URL |
 | `config.metrics_push_interval` | No | `15` | Metrics push interval in seconds |
-| `config.headers` | No | — | Custom headers for the collector (supports `env.` prefix) |
+| `config.headers` | No | - | Custom headers for the collector (supports `env.` prefix) |
 | `config.insecure` | No | `false` | Skip TLS verification |
-| `config.tls_ca_cert` | No | — | Path to TLS CA certificate |
+| `config.tls_ca_cert` | No | - | Path to TLS CA certificate |
 
 ```json
 {
@@ -237,8 +237,8 @@ Sends APM traces and metrics to a Datadog Agent.
 |-------|---------|-------------|
 | `config.agent_addr` | `"localhost:8126"` | Datadog Agent address for APM traces |
 | `config.service_name` | `"bifrost"` | Service name in Datadog |
-| `config.env` | — | Environment tag (e.g. `"production"`, `"staging"`) |
-| `config.version` | — | Service version tag |
+| `config.env` | - | Environment tag (e.g. `"production"`, `"staging"`) |
+| `config.version` | - | Service version tag |
 | `config.enable_traces` | `true` | Enable APM trace collection |
 | `config.custom_tags` | `{}` | Additional key/value tags for all traces and metrics |
 

@@ -1043,7 +1043,7 @@ When enabled, the raw provider request appears in `extra_fields.raw_request`:
 
 ### Store Raw Request/Response
 
-Persist the raw provider request and response in the log record. This is orthogonal to `send_back_raw_request` and `send_back_raw_response` — enabling this does not affect whether raw data appears in the API response, and enabling send-back does not automatically store raw data in logs. Enable both to do both.
+Persist the raw provider request and response in the log record. This is orthogonal to `send_back_raw_request` and `send_back_raw_response` - enabling this does not affect whether raw data appears in the API response, and enabling send-back does not automatically store raw data in logs. Enable both to do both.
 
 <Tabs group="store-raw">
 
@@ -1101,7 +1101,7 @@ curl --location 'http://localhost:8080/api/providers' \
 </Tabs>
 
 <Note>
-`store_raw_request_response` only has effect when the logging plugin is active — raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
+`store_raw_request_response` only has effect when the logging plugin is active - raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
 
 You can override this per request using the `x-bf-store-raw-request-response` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#store-raw-requestresponse) for details.
 

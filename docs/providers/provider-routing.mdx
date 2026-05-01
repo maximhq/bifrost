@@ -357,7 +357,7 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "claude-3-5-sonnet"}'
 - No manual model list maintenance required
 
 <Warning>
-  Using `"allowed_models": []` (empty array) means **deny all models** — no
+  Using `"allowed_models": []` (empty array) means **deny all models** - no
   requests will be served. Use `["*"]` to allow all models via the catalog.
 </Warning>
 
@@ -1011,7 +1011,7 @@ When a Virtual Key has `provider_configs` defined:
 <Note>
 **`allowed_models: ["*"]`**: Allows all models supported by the provider, validated via the Model Catalog (populated from pricing data and the provider's list models API). See the [Model Catalog section](#the-model-catalog) above for how syncing works. For configuration instructions, see [Governance Routing](/features/governance/routing).
 
-**`allowed_models: []` (empty array)**: Denies **all** models — no requests will be served for this provider config. This is deny-by-default behavior introduced in v1.5.0.
+**`allowed_models: []` (empty array)**: Denies **all** models - no requests will be served for this provider config. This is deny-by-default behavior introduced in v1.5.0.
 
 **Empty `provider_configs`**: When `provider_configs` is empty (no providers configured), **all providers are blocked** (deny-by-default). You must explicitly add provider configurations to allow traffic through a Virtual Key.
 

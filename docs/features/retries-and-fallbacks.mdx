@@ -8,10 +8,10 @@ icon: "list-check"
 
 Bifrost provides two complementary layers of resilience:
 
-- **Retries** — When a provider returns a transient error (network issue, rate limit, 5xx), Bifrost automatically retries the same request against the same provider with exponential backoff. On rate-limit errors, it can also rotate to a different API key from your pool.
-- **Fallbacks** — When the primary provider fails after exhausting all retries, Bifrost moves on to the next provider in your fallback chain. Each fallback provider gets its own full retry budget.
+- **Retries** - When a provider returns a transient error (network issue, rate limit, 5xx), Bifrost automatically retries the same request against the same provider with exponential backoff. On rate-limit errors, it can also rotate to a different API key from your pool.
+- **Fallbacks** - When the primary provider fails after exhausting all retries, Bifrost moves on to the next provider in your fallback chain. Each fallback provider gets its own full retry budget.
 
-Together, they let you build LLM-powered applications that stay up through rate limits, transient outages, and even full provider failures — with no changes required in your application code.
+Together, they let you build LLM-powered applications that stay up through rate limits, transient outages, and even full provider failures - with no changes required in your application code.
 
 ---
 
@@ -24,7 +24,7 @@ When a request fails with a retryable error, Bifrost:
 1. Waits using **exponential backoff with jitter** before the next attempt
 2. Retries the request against the same provider
 3. On **rate-limit errors** (`429`): rotates to a different API key from the pool (if multiple keys are configured) so fresh capacity is used
-4. On **network/server errors** (`5xx`, DNS, connection refused): reuses the same key — these are transient server issues, not per-key capacity problems
+4. On **network/server errors** (`5xx`, DNS, connection refused): reuses the same key - these are transient server issues, not per-key capacity problems
 5. Continues until the request succeeds or `max_retries` is exhausted
 
 ### Backoff formula
@@ -47,12 +47,12 @@ With the defaults of `retry_backoff_initial = 500ms` and `retry_backoff_max = 50
 
 | Condition | Retried? | Key rotation? |
 |-----------|----------|---------------|
-| Network error (DNS, connection refused) | Yes | No — same key reused |
-| `5xx` server errors (500, 502, 503, 504) | Yes | No — same key reused |
-| Rate limit (`429` or rate-limit message pattern) | Yes | Yes — next key from pool |
-| Request validation error | No | — |
-| Plugin-enforced block | No | — |
-| Cancelled request | No | — |
+| Network error (DNS, connection refused) | Yes | No - same key reused |
+| `5xx` server errors (500, 502, 503, 504) | Yes | No - same key reused |
+| Rate limit (`429` or rate-limit message pattern) | Yes | Yes - next key from pool |
+| Request validation error | No | - |
+| Plugin-enforced block | No | - |
+| Cancelled request | No | - |
 
 ### Configuring retries
 
@@ -68,9 +68,9 @@ Retries are configured per-provider in `network_config`. The defaults are `max_r
 Navigate to **Providers**, select a provider, and open the **Network Config** section.
 
 Set:
-- **Max Retries** — number of additional attempts after the first failure (e.g. `3`)
-- **Retry Backoff Initial** — starting backoff in milliseconds (e.g. `500`)
-- **Retry Backoff Max** — maximum backoff cap in milliseconds (e.g. `5000`)
+- **Max Retries** - number of additional attempts after the first failure (e.g. `3`)
+- **Retry Backoff Initial** - starting backoff in milliseconds (e.g. `500`)
+- **Retry Backoff Max** - maximum backoff cap in milliseconds (e.g. `5000`)
 
 </Tab>
 <Tab title="API">
@@ -153,7 +153,7 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 Key rotation on retries requires **v1.5.0-prerelease4 or later**.
 </Note>
 
-When you configure multiple API keys for a provider, Bifrost automatically rotates to a fresh key when a rate-limit error is encountered — so retries are not wasted repeating a request with a key that has already hit its limit.
+When you configure multiple API keys for a provider, Bifrost automatically rotates to a fresh key when a rate-limit error is encountered - so retries are not wasted repeating a request with a key that has already hit its limit.
 
 ```json
 {
@@ -192,7 +192,7 @@ Fallbacks provide automatic failover to a different provider when the primary fa
 4. **First success wins**: Returns the response from the first provider that succeeds
 5. **All fail**: Returns the original error from the primary provider. Exception: if a plugin on a fallback provider sets `AllowFallbacks = false` on the error (e.g. a security or compliance plugin that should halt the chain regardless of remaining fallbacks), Bifrost stops immediately and returns that fallback's error rather than continuing to the next provider or returning the primary error.
 
-Each fallback is treated as a completely fresh request — all configured plugins (semantic caching, governance, logging) run again for the fallback provider.
+Each fallback is treated as a completely fresh request - all configured plugins (semantic caching, governance, logging) run again for the fallback provider.
 
 ### Implementation
 
@@ -345,7 +345,7 @@ sequenceDiagram
     Bifrost-->>App: Response (from Fallback 1)
 ```
 
-**Key point:** each provider in the chain — primary and every fallback — gets its own full `max_retries` budget. A primary configured with `max_retries: 3` and two fallbacks each also configured with `max_retries: 3` means up to 12 total attempts before giving up.
+**Key point:** each provider in the chain - primary and every fallback - gets its own full `max_retries` budget. A primary configured with `max_retries: 3` and two fallbacks each also configured with `max_retries: 3` means up to 12 total attempts before giving up.
 
 <Info>
 The retry budget is set per-provider in `network_config`. If your fallback providers have different retry configurations, each will use their own settings.
@@ -357,7 +357,7 @@ The retry budget is set per-provider in `network_config`. If your fallback provi
 
 **Scenario 1: Rate limiting with key rotation**
 
-OpenAI key 1 hits its rate limit. Bifrost rotates to key 2 on the next retry — no fallback needed, the request succeeds within the same provider.
+OpenAI key 1 hits its rate limit. Bifrost rotates to key 2 on the next retry - no fallback needed, the request succeeds within the same provider.
 
 **Scenario 2: Provider outage**
 
@@ -388,6 +388,6 @@ When a fallback is triggered, the fallback request is treated as completely new:
 
 ## Next steps
 
-- **[Keys Management](./keys-management)** — Configure multiple API keys per provider to enable key rotation on retries
-- **[Governance](./governance/virtual-keys)** — Use virtual keys and routing rules to control which providers are used
-- **[Observability](./observability/default)** — Track retry counts and fallback usage in your logs
+- **[Keys Management](./keys-management)** - Configure multiple API keys per provider to enable key rotation on retries
+- **[Governance](./governance/virtual-keys)** - Use virtual keys and routing rules to control which providers are used
+- **[Observability](./observability/default)** - Track retry counts and fallback usage in your logs

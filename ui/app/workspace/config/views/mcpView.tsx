@@ -20,6 +20,11 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+const envVarEquals = (a?: EnvVar, b?: EnvVar) =>
+  (a?.value ?? "") === (b?.value ?? "") &&
+  (a?.env_var ?? "") === (b?.env_var ?? "") &&
+  (a?.from_env ?? false) === (b?.from_env ?? false);
+
 export default function MCPView() {
   const hasSettingsUpdateAccess = useRbac(
     RbacResource.Settings,
@@ -59,10 +64,14 @@ export default function MCPView() {
 
   const hasChanges = useMemo(() => {
     if (!config) return false;
-    const externalBaseURLChanged =
-      (localConfig.mcp_external_base_url?.value ?? "") !== (config.mcp_external_base_url?.value ?? "") ||
-      (localConfig.mcp_external_base_url?.env_var ?? "") !== (config.mcp_external_base_url?.env_var ?? "") ||
-      (localConfig.mcp_external_base_url?.from_env ?? false) !== (config.mcp_external_base_url?.from_env ?? false);
+    const serverURLChanged = !envVarEquals(
+      localConfig.mcp_external_server_url,
+      config.mcp_external_server_url,
+    );
+    const clientURLChanged = !envVarEquals(
+      localConfig.mcp_external_client_url,
+      config.mcp_external_client_url,
+    );
     return (
       localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
       localConfig.mcp_tool_execution_timeout !==
@@ -73,7 +82,8 @@ export default function MCPView() {
         (config.mcp_tool_sync_interval ?? 10) ||
       localConfig.mcp_disable_auto_tool_inject !==
         (config.mcp_disable_auto_tool_inject ?? false) ||
-      externalBaseURLChanged
+      serverURLChanged ||
+      clientURLChanged
     );
   }, [config, localConfig]);
 
@@ -119,6 +129,14 @@ export default function MCPView() {
       ...prev,
       mcp_disable_auto_tool_inject: checked,
     }));
+  }, []);
+
+  const handleServerURLChange = useCallback((value: EnvVar) => {
+    setLocalConfig((prev) => ({ ...prev, mcp_external_server_url: value }));
+  }, []);
+
+  const handleClientURLChange = useCallback((value: EnvVar) => {
+    setLocalConfig((prev) => ({ ...prev, mcp_external_client_url: value }));
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -326,28 +344,64 @@ export default function MCPView() {
             )}
           </div>
         </div>
-        {/* External Base URL */}
-        <div className="space-y-2 rounded-sm border p-4">
+        {/* External Base URLs */}
+        <div className="space-y-4 rounded-sm border p-4">
           <div className="space-y-0.5">
-            <label htmlFor="external-base-url" className="text-sm font-medium">
-              External Base URL
-            </label>
+            <h3 className="text-sm font-medium">External Base URLs</h3>
             <p className="text-muted-foreground text-sm">
-              Override the base URL used for OAuth callbacks and discovery metadata (
-              <code className="text-xs">/.well-known/oauth-authorization-server</code>, etc.) when Bifrost runs behind a reverse proxy.
-              Supports env var syntax (e.g. <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
+              Override Bifrost's public base URL when it runs behind a reverse proxy. In most setups
+              both URLs are the same — leave them blank to derive the URL from the incoming{" "}
+              <code className="text-xs">Host</code> header. Both fields support env var syntax (e.g.{" "}
+              <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
             </p>
           </div>
-          <EnvVarInput
-            id="external-base-url"
-            data-testid="mcp-external-base-url-input"
-            placeholder="https://api.example.com or env.BIFROST_EXTERNAL_URL"
-            value={localConfig.mcp_external_base_url}
-            onChange={(value: EnvVar) =>
-              setLocalConfig((prev) => ({ ...prev, mcp_external_base_url: value }))
-            }
-            disabled={!hasSettingsUpdateAccess}
-          />
+
+          <div className="space-y-2">
+            <div className="space-y-0.5">
+              <label htmlFor="external-server-url" className="text-sm font-medium">
+                Server URL
+              </label>
+              <p className="text-muted-foreground text-sm">
+                Advertised in OAuth server metadata that <strong>downstream clients</strong> read about
+                Bifrost — e.g. <code className="text-xs">/.well-known/oauth-authorization-server</code>{" "}
+                and the <code className="text-xs">WWW-Authenticate</code> header on{" "}
+                <code className="text-xs">/mcp</code>. Example: Claude Code connects to{" "}
+                <code className="text-xs">https://bifrost.example.com/mcp</code> and discovers the
+                authorize/token endpoints from this URL.
+              </p>
+            </div>
+            <EnvVarInput
+              id="external-server-url"
+              data-testid="mcp-external-server-url-input"
+              placeholder="https://bifrost.example.com or env.BIFROST_EXTERNAL_URL"
+              value={localConfig.mcp_external_server_url}
+              onChange={handleServerURLChange}
+              disabled={!hasSettingsUpdateAccess}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="space-y-0.5">
+              <label htmlFor="external-client-url" className="text-sm font-medium">
+                Client URL
+              </label>
+              <p className="text-muted-foreground text-sm">
+                Used as the <code className="text-xs">redirect_uri</code> Bifrost registers with{" "}
+                <strong>upstream OAuth providers</strong> when it acts as a client to an MCP server.
+                Example: when a user connects an MCP server like Notion or Jira, this is the URL
+                Notion/Jira will redirect the browser to after login (
+                <code className="text-xs">{"<URL>/api/oauth/callback"}</code>).
+              </p>
+            </div>
+            <EnvVarInput
+              id="external-client-url"
+              data-testid="mcp-external-client-url-input"
+              placeholder="https://bifrost.example.com or env.BIFROST_OAUTH_REDIRECT_URL"
+              value={localConfig.mcp_external_client_url}
+              onChange={handleClientURLChange}
+              disabled={!hasSettingsUpdateAccess}
+            />
+          </div>
         </div>
       </div>
       <div className="flex justify-end pt-2">

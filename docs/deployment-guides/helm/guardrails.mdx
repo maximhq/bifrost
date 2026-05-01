@@ -14,8 +14,8 @@ Credential and endpoint fields in guardrail provider `config` blocks support `en
 
 Guardrails are configured under `bifrost.guardrails` in your values file. The configuration has two parts:
 
-- **`providers`** — the backend that performs the check. Rules link to providers by `id`.
-- **`rules`** — CEL expressions that control when and where providers are invoked.
+- **`providers`** - the backend that performs the check. Rules link to providers by `id`.
+- **`rules`** - CEL expressions that control when and where providers are invoked.
 
 ---
 
@@ -50,7 +50,7 @@ bifrost:
 </Tab>
 <Tab title="AWS Bedrock">
 
-Supports three auth modes: `keys` (static credentials), `api_key` (Bedrock API key), and `iam_role` (ambient IAM/IRSA — no explicit credentials required).
+Supports three auth modes: `keys` (static credentials), `api_key` (Bedrock API key), and `iam_role` (ambient IAM/IRSA - no explicit credentials required).
 
 ```yaml
 bifrost:
@@ -77,7 +77,7 @@ bifrost:
           # auth_type: "api_key"
           # bedrock_api_key: "env.BEDROCK_API_KEY"
 
-          # Auth: iam_role (ambient — no credentials needed)
+          # Auth: iam_role (ambient - no credentials needed)
           # auth_type: "iam_role"
           # role_arn: "env.AWS_ROLE_ARN"          # optional: assume specific role
           # external_id: "env.AWS_EXTERNAL_ID"    # optional
@@ -108,7 +108,7 @@ bifrost:
           auth_type: "api_key"
           api_key: "env.AZURE_CONTENT_SAFETY_KEY"
 
-          # Auth: default_credential (managed identity / Azure CLI — no credentials needed)
+          # Auth: default_credential (managed identity / Azure CLI - no credentials needed)
           # auth_type: "default_credential"
 
           # Auth: entra_id (service principal)
@@ -117,7 +117,7 @@ bifrost:
           # client_secret: "env.AZURE_CLIENT_SECRET"
           # tenant_id: "env.AZURE_TENANT_ID"
 
-          # Feature toggles (plain booleans — no env.* support)
+          # Feature toggles (plain booleans - no env.* support)
           analyze_enabled: true
           analyze_severity_threshold: "medium"   # low | medium | high  (env.* supported)
           jailbreak_shield_enabled: true

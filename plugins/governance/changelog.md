@@ -1,0 +1,2 @@
+- fix: skip model catalog routing if loadbalancer or governance routing has already set the provider in anthropic integration
+- chore: upgraded core to v1.5.7 and framework to v1.3.7

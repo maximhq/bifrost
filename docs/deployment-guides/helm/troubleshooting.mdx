@@ -1,6 +1,6 @@
 ---
 title: "Troubleshooting"
-description: "Diagnose and fix common issues with Bifrost Helm deployments — pods, database, ingress, secrets, PVCs, and performance"
+description: "Diagnose and fix common issues with Bifrost Helm deployments - pods, database, ingress, secrets, PVCs, and performance"
 icon: "wrench"
 ---
 
@@ -38,7 +38,7 @@ kubectl get secret <pull-secret-name> -o jsonpath='{.data.\.dockerconfigjson}' |
 ```
 
 Common causes:
-- `image.tag` not set — the chart requires it; the pod will not start without it
+- `image.tag` not set - the chart requires it; the pod will not start without it
 - Pull secret missing or expired (ECR tokens expire after 12 hours)
 - Incorrect `image.repository` for enterprise registry
 
@@ -132,7 +132,7 @@ kubectl exec -it deployment/bifrost -- nc -zv your-db-host 5432
 ```
 
 Common causes:
-- `sslMode: disable` when the database requires SSL — set `sslMode: require`
+- `sslMode: disable` when the database requires SSL - set `sslMode: require`
 - Password in secret doesn't match the database user
 - Network policy blocking pod → database traffic
 - Database not UTF8 encoded (see [PostgreSQL UTF8 Requirement](/quickstart/gateway/setting-up#postgresql-utf8-requirement))
@@ -171,7 +171,7 @@ curl -v http://bifrost.yourdomain.com/health
 Common causes:
 - `ingress.className` not set or set to a class not installed in the cluster
 - TLS certificate not issued yet (cert-manager can take up to 60 seconds)
-- Service port mismatch — Bifrost listens on `8080` by default
+- Service port mismatch - Bifrost listens on `8080` by default
 
 ```bash
 # Check cert-manager certificate status
@@ -205,7 +205,7 @@ kubectl get configmap bifrost-config -o yaml | grep -A5 providers
 kubectl get secret bifrost-encryption -o yaml
 
 # Check the exact key name matches encryptionKeySecret.key in values
-# Default key name is "encryption-key" — if you used "key", set:
+# Default key name is "encryption-key" - if you used "key", set:
 #   bifrost.encryptionKeySecret.key: "key"
 ```
 
@@ -258,8 +258,8 @@ kubectl describe hpa bifrost
 ```
 
 Common causes:
-- `initialPoolSize` too small — goroutines queuing up; increase to `500`–`1000`
-- `dropExcessRequests: false` with a small pool — queue depth growing unboundedly
+- `initialPoolSize` too small - goroutines queuing up; increase to `500`–`1000`
+- `dropExcessRequests: false` with a small pool - queue depth growing unboundedly
 
 ```bash
 helm upgrade bifrost bifrost/bifrost \
@@ -397,5 +397,5 @@ helm history bifrost
 
 ## Still Stuck?
 
-- [GitHub Issues](https://github.com/maximhq/bifrost/issues) — search existing issues or open a new one
-- [Enterprise Support](mailto:support@getmaxim.ai) — for enterprise customers with SLA
+- [GitHub Issues](https://github.com/maximhq/bifrost/issues) - search existing issues or open a new one
+- [Enterprise Support](mailto:support@getmaxim.ai) - for enterprise customers with SLA

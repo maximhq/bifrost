@@ -1,6 +1,6 @@
 ---
 title: "Values Reference"
-description: "Complete reference for Bifrost Helm chart values — key parameters, how to supply them, and links to example files"
+description: "Complete reference for Bifrost Helm chart values - key parameters, how to supply them, and links to example files"
 icon: "sliders"
 ---
 
@@ -56,7 +56,7 @@ helm upgrade bifrost bifrost/bifrost \
 
 ### Multiple values files
 
-Later files override earlier ones — useful for a base + environment-specific overlay:
+Later files override earlier ones - useful for a base + environment-specific overlay:
 
 ```bash
 helm install bifrost bifrost/bifrost \
@@ -78,7 +78,7 @@ helm install bifrost bifrost/bifrost \
 | `imagePullSecrets` | List of pull secret names for private registries | `[]` |
 
 ```bash
-# Always specify the tag — the chart will not start without it
+# Always specify the tag - the chart will not start without it
 helm install bifrost bifrost/bifrost --set image.tag=v1.4.11
 ```
 
@@ -513,7 +513,7 @@ helm install bifrost bifrost/bifrost -f multi-provider.yaml
 </Tab>
 <Tab title="External Database">
 
-Use an existing PostgreSQL instance — RDS, Cloud SQL, Azure Database, or self-managed.
+Use an existing PostgreSQL instance - RDS, Cloud SQL, Azure Database, or self-managed.
 
 ```bash
 kubectl create secret generic postgres-credentials \
@@ -633,7 +633,7 @@ helm install bifrost bifrost/bifrost -f ai-workload.yaml
 </Tab>
 <Tab title="Kubernetes Secrets Only">
 
-Zero credentials in values files — all sensitive data in Kubernetes Secrets.
+Zero credentials in values files - all sensitive data in Kubernetes Secrets.
 
 ```bash
 kubectl create secret generic postgres-credentials \

@@ -6,7 +6,7 @@ icon: "arrow-down-1-9"
 
 ## Overview
 
-When you have multiple plugins — both built-in and custom — the order in which they execute matters. A logging plugin should capture the final request, an auth plugin should validate before anything else runs, and a response transformer should run after the provider returns data.
+When you have multiple plugins - both built-in and custom - the order in which they execute matters. A logging plugin should capture the final request, an auth plugin should validate before anything else runs, and a response transformer should run after the provider returns data.
 
 Plugin sequencing lets you control **where** your custom plugins execute relative to Bifrost's built-in plugins (telemetry, logging, governance, etc.) and **in what order** they execute relative to each other.
 
@@ -29,7 +29,7 @@ graph LR
 | `post_builtin` | Runs **third** | Runs **first** |
 
 <Info>
-Post-hooks execute in **reverse order** of pre-hooks (LIFO pattern). This means a `pre_builtin` plugin's `PreLLMHook` runs first, but its `PostLLMHook` runs last — ensuring proper cleanup and state unwinding.
+Post-hooks execute in **reverse order** of pre-hooks (LIFO pattern). This means a `pre_builtin` plugin's `PreLLMHook` runs first, but its `PostLLMHook` runs last - ensuring proper cleanup and state unwinding.
 </Info>
 
 ### Ordering within a group
@@ -42,7 +42,7 @@ Within each placement group, plugins are sorted by their `order` value (lower ex
 |--------|-----------|-------|---------------|----------------|
 | auth-validator | `pre_builtin` | 0 | 1st | 5th (last) |
 | request-enricher | `pre_builtin` | 1 | 2nd | 4th |
-| *Built-in plugins* | — | — | 3rd | 3rd |
+| *Built-in plugins* | - | - | 3rd | 3rd |
 | response-logger | `post_builtin` | 0 | 4th | 2nd |
 | analytics | `post_builtin` | 1 | 5th (last) | 1st |
 
@@ -161,7 +161,7 @@ Set `placement` and `order` on each plugin in the `plugins` array:
 
 ## When to use each placement
 
-### `pre_builtin` — run before built-in plugins
+### `pre_builtin` - run before built-in plugins
 
 Use this when your plugin needs to:
 
@@ -169,7 +169,7 @@ Use this when your plugin needs to:
 - **Enrich requests** with data that built-in plugins should see (e.g., injecting headers or metadata)
 - **Short-circuit** requests before they reach governance checks or telemetry
 
-### `post_builtin` (default) — run after built-in plugins
+### `post_builtin` (default) - run after built-in plugins
 
 Use this when your plugin needs to:
 
@@ -178,13 +178,13 @@ Use this when your plugin needs to:
 - **Add custom headers** or modify the response before it reaches the client
 
 <Tip>
-When in doubt, use the default `post_builtin` placement. Most custom plugins — logging, analytics, response transformations — work best after built-in plugins have finished their processing.
+When in doubt, use the default `post_builtin` placement. Most custom plugins - logging, analytics, response transformations - work best after built-in plugins have finished their processing.
 </Tip>
 
 ---
 
 ## Next steps
 
-- **[Writing a Go plugin](./writing-go-plugin)** — Build your first custom plugin with `PreLLMHook` and `PostLLMHook`
-- **[Writing a WASM plugin](./writing-wasm-plugin)** — Build a portable WASM plugin
-- **[Plugin architecture](../architecture/core/plugins)** — Deep dive into the plugin lifecycle and hook execution model
+- **[Writing a Go plugin](./writing-go-plugin)** - Build your first custom plugin with `PreLLMHook` and `PostLLMHook`
+- **[Writing a WASM plugin](./writing-wasm-plugin)** - Build a portable WASM plugin
+- **[Plugin architecture](../architecture/core/plugins)** - Deep dive into the plugin lifecycle and hook execution model

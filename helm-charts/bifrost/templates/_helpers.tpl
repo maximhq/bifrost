@@ -249,6 +249,12 @@ false
 {{- if hasKey .Values.bifrost.client "disableContentLogging" }}
 {{- $_ := set $client "disable_content_logging" .Values.bifrost.client.disableContentLogging }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "allowPerRequestContentStorageOverride" }}
+{{- $_ := set $client "allow_per_request_content_storage_override" .Values.bifrost.client.allowPerRequestContentStorageOverride }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "allowPerRequestRawOverride" }}
+{{- $_ := set $client "allow_per_request_raw_override" .Values.bifrost.client.allowPerRequestRawOverride }}
+{{- end }}
 {{- if .Values.bifrost.client.logRetentionDays }}
 {{- $_ := set $client "log_retention_days" .Values.bifrost.client.logRetentionDays }}
 {{- end }}
@@ -302,6 +308,24 @@ false
 {{- end }}
 {{- if .Values.bifrost.client.routingChainMaxDepth }}
 {{- $_ := set $client "routing_chain_max_depth" .Values.bifrost.client.routingChainMaxDepth }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "mcpExternalBaseUrl" }}
+{{- $mcpExternalBaseUrl := .Values.bifrost.client.mcpExternalBaseUrl }}
+{{- if kindIs "map" $mcpExternalBaseUrl }}
+{{- $envVar := dict }}
+{{- if hasKey $mcpExternalBaseUrl "value" }}
+{{- $_ := set $envVar "value" $mcpExternalBaseUrl.value }}
+{{- end }}
+{{- if hasKey $mcpExternalBaseUrl "envVar" }}
+{{- $_ := set $envVar "env_var" $mcpExternalBaseUrl.envVar }}
+{{- end }}
+{{- if hasKey $mcpExternalBaseUrl "fromEnv" }}
+{{- $_ := set $envVar "from_env" $mcpExternalBaseUrl.fromEnv }}
+{{- end }}
+{{- $_ := set $client "mcp_external_base_url" $envVar }}
+{{- else }}
+{{- $_ := set $client "mcp_external_base_url" $mcpExternalBaseUrl }}
+{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
@@ -537,6 +561,18 @@ false
 {{- end }}
 {{- $_ := set $cluster "gossip" $gossip }}
 {{- end }}
+{{- if .Values.bifrost.cluster.grpc }}
+{{- $grpc := dict }}
+{{- if .Values.bifrost.cluster.grpc.port }}
+{{- $_ := set $grpc "port" .Values.bifrost.cluster.grpc.port }}
+{{- end }}
+{{- if .Values.bifrost.cluster.grpc.dialTimeoutSeconds }}
+{{- $_ := set $grpc "dial_timeout_seconds" .Values.bifrost.cluster.grpc.dialTimeoutSeconds }}
+{{- end }}
+{{- if $grpc }}
+{{- $_ := set $cluster "grpc" $grpc }}
+{{- end }}
+{{- end }}
 {{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
 {{- $discovery := dict "enabled" true "type" .Values.bifrost.cluster.discovery.type }}
 {{- $serviceName := .Values.bifrost.cluster.discovery.serviceName }}
@@ -545,6 +581,12 @@ false
 {{- end }}
 {{- if $serviceName }}
 {{- $_ := set $discovery "service_name" $serviceName }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.bindPort }}
+{{- $_ := set $discovery "bind_port" .Values.bifrost.cluster.discovery.bindPort }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.dialTimeout }}
+{{- $_ := set $discovery "dial_timeout" .Values.bifrost.cluster.discovery.dialTimeout }}
 {{- end }}
 {{- if .Values.bifrost.cluster.discovery.allowedAddressSpace }}
 {{- $_ := set $discovery "allowed_address_space" .Values.bifrost.cluster.discovery.allowedAddressSpace }}
@@ -723,6 +765,9 @@ false
 {{- end }}
 {{- end }}
 {{- $_ := set (index $config "logs_store") "object_storage" $osConfig }}
+{{- end }}
+{{- if .Values.storage.logsStore.objectStorageExcludeFields }}
+{{- $_ := set (index $config "logs_store") "object_storage_exclude_fields" .Values.storage.logsStore.objectStorageExcludeFields }}
 {{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
@@ -940,7 +985,7 @@ false
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
 {{- end }}
 {{- end }}
-{{- if .Values.bifrost.mcp.toolSyncInterval }}
+{{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
 {{- end }}
 {{- if .Values.bifrost.mcp.toolGroups }}

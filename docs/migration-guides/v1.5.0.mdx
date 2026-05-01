@@ -23,7 +23,7 @@ The following automatic migrations run on upgrade:
 - Virtual Keys with no `mcp_configs` are backfilled with all currently connected MCP clients (`tools_to_execute: ["*"]`)
 - Per-provider `deployments` maps (Azure, Bedrock, Vertex, Replicate) are migrated into the unified `aliases` field
 
-**The automatic migration only protects your existing data.** Any new configuration created after upgrading — via `config.json` or the REST API — must follow the new semantics described below.
+**The automatic migration only protects your existing data.** Any new configuration created after upgrading - via `config.json` or the REST API - must follow the new semantics described below.
 
 ---
 
@@ -88,7 +88,7 @@ Missing `allowed_models` → all models allowed
 
 ## Breaking Change 2: `allowed_keys` Renamed to `key_ids`
 
-The field used to restrict which provider API keys a Virtual Key can use has been renamed from `allowed_keys` to `key_ids`. The deny-by-default rule also applies — omitting the field or setting it to `[]` now blocks all keys.
+The field used to restrict which provider API keys a Virtual Key can use has been renamed from `allowed_keys` to `key_ids`. The deny-by-default rule also applies - omitting the field or setting it to `[]` now blocks all keys.
 
 <Note>
 Unlike `allowed_models`, there is no automatic database migration for `key_ids`. An empty or omitted `key_ids` disables all key selection. You must explicitly use `["*"]` to restore allow-all behavior.
@@ -160,8 +160,8 @@ Applies to: `models`, `allowed_models`, `key_ids`, `tools_to_execute`, `tools_to
 
 The `weight` field on a Virtual Key provider config was previously a required `float64`. It is now an optional `*float64`.
 
-- `weight: 0.5` — provider participates in weighted load balancing
-- `weight: null` / omitted — provider is accessible for direct routing but excluded from weighted selection
+- `weight: 0.5` - provider participates in weighted load balancing
+- `weight: null` / omitted - provider is accessible for direct routing but excluded from weighted selection
 
 **API response change:** `weight` may now be `null`. Update any client code that assumes it is always a number.
 
@@ -176,8 +176,8 @@ Provider key management now has dedicated endpoints. The `keys` field has been r
 | Before (v1.4.x) | After (v1.5.0) |
 |---|---|
 | `GET /api/providers/{p}` returns `keys` | `keys` field removed from provider response |
-| `POST /api/providers` accepts `keys` | `keys` field ignored — create keys separately |
-| `PUT /api/providers/{p}` accepts `keys` | `keys` field ignored — update keys via dedicated endpoints |
+| `POST /api/providers` accepts `keys` | `keys` field ignored - create keys separately |
+| `PUT /api/providers/{p}` accepts `keys` | `keys` field ignored - update keys via dedicated endpoints |
 
 ### New endpoints
 
@@ -259,8 +259,8 @@ The `enable_litellm_fallbacks` option has been removed and replaced with three g
 | Field | Change |
 |---|---|
 | `extra_fields.litellm_compat` | **Removed** |
-| `extra_fields.dropped_compat_plugin_params` | **Added** — lists params dropped by this plugin |
-| `extra_fields.converted_request_type` | **Added** — the request type it was converted to |
+| `extra_fields.dropped_compat_plugin_params` | **Added** - lists params dropped by this plugin |
+| `extra_fields.converted_request_type` | **Added** - the request type it was converted to |
 
 ---
 
@@ -276,7 +276,7 @@ Support for image editing via `/v1/images/edits` on Replicate is also being remo
 
 ---
 
-## Breaking Change 9: Provider `deployments` removed — migrate to `aliases`
+## Breaking Change 9: Provider `deployments` removed - migrate to `aliases`
 
 Provider deployment mappings should now live in the top-level `aliases` field on each key. Aliases work across all providers and map any model name to a provider-specific identifier (deployment name, inference profile ARN, fine-tuned model ID, etc.).
 
@@ -327,7 +327,7 @@ The database migration runs automatically on startup, migrating existing deploym
 ### Bedrock
 
 <Warning>
-`bedrock_key_config.deployments` is a legacy field and is **removed** in v1.5.0 config semantics. Some setups/builds may still accept it for backward compatibility, but do not rely on it — migrate to `aliases` to avoid silent breakage and future removal.
+`bedrock_key_config.deployments` is a legacy field and is **removed** in v1.5.0 config semantics. Some setups/builds may still accept it for backward compatibility, but do not rely on it - migrate to `aliases` to avoid silent breakage and future removal.
 </Warning>
 
 **Before:**
@@ -420,7 +420,7 @@ The Replicate key config is also restructured. The `deployments` map is gone. A 
 
 ---
 
-## Breaking Change 10: Go SDK — `ExtraFields` Model Fields Renamed
+## Breaking Change 10: Go SDK - `ExtraFields` Model Fields Renamed
 
 `ModelRequested string` has been replaced by two fields on `BifrostResponseExtraFields` and `BifrostErrorExtraFields`.
 
@@ -449,7 +449,7 @@ The same rename applies to `BifrostErrorExtraFields`.
 
 ---
 
-## Breaking Change 11: Go SDK — `StreamAccumulatorResult` Field Renamed
+## Breaking Change 11: Go SDK - `StreamAccumulatorResult` Field Renamed
 
 `Model string` has been replaced by two fields on `StreamAccumulatorResult` (returned by tracer streaming accumulation methods).
 
@@ -516,7 +516,7 @@ if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyA
 The `selected_key_id` field on a `LogEntry` may now be an empty string when the request failed after exhausting all retries. Use `attempt_trail` for the full per-attempt key history.
 
 <Note>
-Single-key, pinned (`x-bf-key-id` / `x-bf-key-name`), and session-sticky requests are unaffected — they never rotate keys, so `selected_key_id` remains populated on failure for those flows.
+Single-key, pinned (`x-bf-key-id` / `x-bf-key-name`), and session-sticky requests are unaffected - they never rotate keys, so `selected_key_id` remains populated on failure for those flows.
 </Note>
 
 ---
@@ -534,8 +534,8 @@ If you are not ready to adopt the new deny-by-default semantics, you can add a s
 
 | Value | Behavior |
 |---|---|
-| `2` (default, omitted) | v1.5.0 semantics — empty = deny all, `["*"]` = allow all |
-| `1` | v1.4.x semantics — empty = allow all |
+| `2` (default, omitted) | v1.5.0 semantics - empty = deny all, `["*"]` = allow all |
+| `1` | v1.4.x semantics - empty = allow all |
 
 **What `version: 1` normalizes at startup** (before any other processing):
 
@@ -619,7 +619,7 @@ If your code reads `selected_key_id` / `selected_key_name` from the request cont
 
 **All requests returning 403/blocked after upgrade**
 
-A provider key has `models: []`, a Virtual Key has no `provider_configs`, or a provider config has `allowed_models: []`. Check Bifrost logs — a blocked request logs which rule denied it. Fix: add `"models": ["*"]` on provider keys, `"allowed_models": ["*"]` on VK provider configs.
+A provider key has `models: []`, a Virtual Key has no `provider_configs`, or a provider config has `allowed_models: []`. Check Bifrost logs - a blocked request logs which rule denied it. Fix: add `"models": ["*"]` on provider keys, `"allowed_models": ["*"]` on VK provider configs.
 
 **MCP tools not being injected / tool calls blocked**
 
@@ -627,7 +627,7 @@ The VK needs an `mcp_configs` entry for the MCP client with `"tools_to_execute":
 
 **API returning 400 on VK create/update**
 
-A whitelist validation failure — either mixing `"*"` with specific values, or duplicate values in a list.
+A whitelist validation failure - either mixing `"*"` with specific values, or duplicate values in a list.
 
 **"No keys available" or key selection errors**
 
