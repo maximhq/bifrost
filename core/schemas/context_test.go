@@ -209,6 +209,11 @@ func TestNewBifrostContext_NilParent(t *testing.T) {
 }
 
 func TestBifrostContext_DeadlineWithClearedParent(t *testing.T) {
+	var nilCtx *BifrostContext
+	if _, ok := nilCtx.Deadline(); ok {
+		t.Fatal("nil BifrostContext should not report a deadline")
+	}
+
 	deadline, ok := (&BifrostContext{}).Deadline()
 	if ok {
 		t.Errorf("Context with cleared parent should not have deadline, got %v", deadline)
