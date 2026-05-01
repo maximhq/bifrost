@@ -272,6 +272,34 @@ func TestNewBifrostContext_ScopedParentSurvivesScopeRelease(t *testing.T) {
 	}
 }
 
+func TestNewBifrostContext_NestedScopedParentSurvivesScopeRelease(t *testing.T) {
+	expectedDeadline := time.Now().Add(time.Hour)
+	root := NewBifrostContext(context.Background(), expectedDeadline)
+	defer root.Cancel()
+	root.SetValue(BifrostContextKeyTraceID, "trace-123")
+
+	nameA := "scoped-parent-a"
+	nameB := "scoped-parent-b"
+	scopedA := root.WithPluginScope(&nameA)
+	scopedB := scopedA.WithPluginScope(&nameB)
+	ctx := NewBifrostContext(scopedB, NoDeadline)
+	defer ctx.Cancel()
+
+	scopedB.ReleasePluginScope()
+	scopedA.ReleasePluginScope()
+
+	actualDeadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("Context with nested scoped parent should retain root deadline")
+	}
+	if !actualDeadline.Equal(expectedDeadline) {
+		t.Errorf("Expected deadline %v, got %v", expectedDeadline, actualDeadline)
+	}
+	if traceID := ctx.Value(BifrostContextKeyTraceID); traceID != "trace-123" {
+		t.Errorf("Expected trace ID from root context, got %v", traceID)
+	}
+}
+
 // Plugin logging tests
 
 func TestPluginLog_NoScopeIsNoop(t *testing.T) {
