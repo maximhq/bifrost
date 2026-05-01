@@ -13,6 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNewOpenAIRouterEnablesOpenAICompatibilityPassthrough(t *testing.T) {
+	router := NewOpenAIRouter(nil, &mockHandlerStore{allowDirectKeys: true}, nil)
+
+	require.NotNil(t, router.GenericRouter)
+	require.NotNil(t, router.passthroughCfg)
+	assert.Equal(t, schemas.OpenAI, router.passthroughCfg.Provider)
+	assert.Equal(t, []string{"/openai"}, router.passthroughCfg.StripPrefix)
+}
+
 func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
