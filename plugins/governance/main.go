@@ -656,7 +656,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		}
 	}
 
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Loading balance provider for model %s", modelStr))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing provider for model %s", modelStr))
 
 	// Get provider configs for this virtual key
 	providerConfigs := virtualKey.ProviderConfigs
@@ -758,7 +758,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		return body, nil
 	}
 
-	p.logger.Debug("[Governance] Selected provider: %s", selectedProvider)
+	p.logger.Debug("[governance] Selected provider: %s", selectedProvider)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))
 
 	// For genai integration, model is present in URL path instead of the request body

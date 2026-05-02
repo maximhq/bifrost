@@ -49,7 +49,7 @@ Azure requires an endpoint URL, deployment mappings, and authentication configur
 <Note>
   The `aliases` field (mapping model names to Azure deployment IDs) requires
   **v1.5.0-prerelease2 or later**. On v1.4.x, use `deployments` inside
-  `azure_key_config` instead — see the [v1.5.0 Migration
+  `azure_key_config` instead - see the [v1.5.0 Migration
   Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases)
   for details.
 </Note>
@@ -85,7 +85,7 @@ This covers managed identity on Azure infrastructure, workload identity in AKS, 
 6. Configure **Aliases**: Map model names to deployment IDs (e.g., `gpt-4o` → `my-gpt4o-deployment`)
 7. Save
 
-Ensure the appropriate credential source is available — a managed identity attached to the Azure resource, `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`/`AZURE_TENANT_ID` env vars, or `az login` for local development.
+Ensure the appropriate credential source is available - a managed identity attached to the Azure resource, `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`/`AZURE_TENANT_ID` env vars, or `az login` for local development.
 
 </Tab>
 
@@ -97,7 +97,7 @@ curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "azure"}'
 
-# Step 2: Create a key (Default Credential — leave value empty)
+# Step 2: Create a key (Default Credential - leave value empty)
 curl -X POST http://localhost:8080/api/providers/azure/keys \
   -H "Content-Type: application/json" \
   -d '{
@@ -118,7 +118,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 
 <Note>
 **On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Pass `keys` directly in the `POST /api/providers` body - there is no separate `/api/providers/{provider}/keys` endpoint.
 - Replace the top-level `aliases` with `"deployments"` inside `azure_key_config`:
 ```json
 "azure_key_config": {
@@ -175,7 +175,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Azure:
         return []schemas.Key{
             {
-                Value:  schemas.EnvVar{}, // Leave empty — Bifrost uses DefaultAzureCredential
+                Value:  schemas.EnvVar{}, // Leave empty - Bifrost uses DefaultAzureCredential
                 Models: []string{"*"},
                 Weight: 1.0,
                 Aliases: schemas.KeyAliases{
@@ -220,7 +220,7 @@ Set `client_id`, `client_secret`, and `tenant_id` to authenticate with a Service
 6. Set **Tenant ID**: Your Azure Entra ID tenant ID
 7. Set **Endpoint**: Your Azure OpenAI resource URL
 8. Set **API Version** (Optional): e.g., `2024-08-01-preview`
-9. Set **Scopes** (Optional): Override the default OAuth scope (`https://cognitiveservices.azure.com/.default`). Any configured scopes **replace** the default entirely — if you customize this field, you must include all required scopes (the default is not automatically added)
+9. Set **Scopes** (Optional): Override the default OAuth scope (`https://cognitiveservices.azure.com/.default`). Any configured scopes **replace** the default entirely - if you customize this field, you must include all required scopes (the default is not automatically added)
 10. Configure **Aliases**: Map model names to deployment IDs
 11. Save
 
@@ -260,7 +260,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 
 <Note>
   **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
-  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  /api/providers` body - there is no separate `/api/providers/{provider}/keys`
   endpoint. - Move the model mappings from `aliases` into
   `azure_key_config.deployments`.
 </Note>
@@ -401,7 +401,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 
 <Note>
   **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
-  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  /api/providers` body - there is no separate `/api/providers/{provider}/keys`
   endpoint. - Move the model mappings from `aliases` into
   `azure_key_config.deployments`.
 </Note>
@@ -482,11 +482,11 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 | Field           | Required | Default                                            | Description                                     |
 | --------------- | -------- | -------------------------------------------------- | ----------------------------------------------- |
-| `endpoint`      | Yes      | —                                                  | Azure OpenAI resource endpoint URL              |
+| `endpoint`      | Yes      | -                                                  | Azure OpenAI resource endpoint URL              |
 | `api_version`   | No       | `2024-10-21`                                       | Azure API version                               |
-| `client_id`     | No       | —                                                  | Entra ID client ID (Service Principal auth)     |
-| `client_secret` | No       | —                                                  | Entra ID client secret (Service Principal auth) |
-| `tenant_id`     | No       | —                                                  | Entra ID tenant ID (Service Principal auth)     |
+| `client_id`     | No       | -                                                  | Entra ID client ID (Service Principal auth)     |
+| `client_secret` | No       | -                                                  | Entra ID client secret (Service Principal auth) |
+| `tenant_id`     | No       | -                                                  | Entra ID tenant ID (Service Principal auth)     |
 | `scopes`        | No       | `["https://cognitiveservices.azure.com/.default"]` | OAuth scopes for token requests                 |
 
 **Key-level fields:**

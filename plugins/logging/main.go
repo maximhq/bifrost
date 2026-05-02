@@ -487,8 +487,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
 
 	// If request type is streaming we create a stream accumulator via the tracer
-	// Skip for passthrough streams — they carry raw bytes, not LLM response chunks
-	if bifrost.IsStreamRequestType(req.RequestType) && req.RequestType != schemas.PassthroughStreamRequest {
+	if bifrost.IsStreamRequestType(req.RequestType) {
 		tracer, traceID, err := bifrost.GetTracerFromContext(ctx)
 		if err == nil && tracer != nil && traceID != "" {
 			tracer.CreateStreamAccumulator(traceID, createdTimestamp)
@@ -805,7 +804,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	var tracer schemas.Tracer
 	var traceID string
-	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest && requestType != schemas.RealtimeRequest {
+	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest {
 		var err error
 		tracer, traceID, err = bifrost.GetTracerFromContext(ctx)
 		if err != nil {
@@ -819,7 +818,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// and skip the write queue entirely. The accumulator work (ProcessStreamingChunk)
 	// is fast (mutex + append). Only final chunks, errors, and non-streaming
 	// responses need a DB write.
-	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest && requestType != schemas.RealtimeRequest && !isFinalChunk && result != nil && bifrostErr == nil {
+	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest && !isFinalChunk && result != nil && bifrostErr == nil {
 		if tracer != nil && traceID != "" {
 			tracer.ProcessStreamingChunk(traceID, false, result, bifrostErr)
 		}
@@ -852,7 +851,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 		// For streaming errors, finalize and read accumulated chunks so logs retain pre-error stream metadata
 		if bifrost.IsStreamRequestType(requestType) &&
-			requestType != schemas.PassthroughStreamRequest &&
 			requestType != schemas.RealtimeRequest &&
 			tracer != nil &&
 			traceID != "" {
@@ -895,7 +893,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path B: Streaming final chunk
 	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest {
 		var streamResponse *streaming.ProcessedStreamResponse
-		if requestType != schemas.PassthroughStreamRequest && tracer != nil && traceID != "" {
+		if tracer != nil && traceID != "" {
 			accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
 			if accResult != nil {
 				streamResponse = convertToProcessedStreamResponse(accResult, requestType)
@@ -930,9 +928,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			if contentLoggingEnabled && len(result.PassthroughResponse.Body) > 0 {
 				entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
-				if shouldStoreRaw {
-					entry.RawResponse = string(result.PassthroughResponse.Body)
-				}
 			}
 			// Flip status for passthrough error responses (4xx/5xx from provider)
 			if isPassthroughErrorResponse(result) {
@@ -941,7 +936,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 
-		if requestType != schemas.PassthroughStreamRequest && tracer != nil && traceID != "" {
+		if tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
 		}
 

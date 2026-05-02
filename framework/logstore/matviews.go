@@ -297,15 +297,39 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 	// (>100 GB) can take minutes, so the matview path uses the per-attempt success rate
 	// as a fast approximation. Accurate chain-level computation runs in the raw-table path.
 
-	return &SearchStats{
-		TotalRequests:           result.TotalCount,
-		SuccessRate:             successRate,
-		UserFacingSuccessRate:   successRate,
-		UserFacingTotalRequests: result.TotalCount, // matview approximation; no per-chain data available
-		AverageLatency:          result.AvgLatency,
-		TotalTokens:             result.TotalTokens,
-		TotalCost:               result.TotalCost,
-	}, nil
+	cacheHitRateTotalRequests := result.TotalCount
+	stats := &SearchStats{
+		TotalRequests:             result.TotalCount,
+		SuccessRate:               successRate,
+		UserFacingSuccessRate:     successRate,
+		UserFacingTotalRequests:   result.TotalCount, // matview approximation; no per-chain data available
+		AverageLatency:            result.AvgLatency,
+		TotalTokens:               result.TotalTokens,
+		TotalCost:                 result.TotalCost,
+		CacheHitRateTotalRequests: &cacheHitRateTotalRequests,
+	}
+
+	// cache_debug is not stored in the matview — query the raw logs table directly.
+	// Align the time window to hour boundaries to match the matview denominator (TotalRequests).
+	alignedFilters := filters
+	if filters.StartTime != nil {
+		aligned := filters.StartTime.Truncate(time.Hour)
+		alignedFilters.StartTime = &aligned
+	}
+	if filters.EndTime != nil {
+		alignedEnd := filters.EndTime.Truncate(time.Hour).Add(time.Hour - time.Nanosecond)
+		alignedFilters.EndTime = &alignedEnd
+	}
+	cacheBase := s.db.WithContext(ctx).Model(&Log{}).Where("status IN ?", []string{"success", "error"})
+	direct, semantic, err := s.aggregateCacheHits(ctx, cacheBase, alignedFilters)
+	if err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: failed to aggregate cache-hit stats, skipping: %s", err))
+	} else if direct != nil || semantic != nil {
+		stats.DirectCacheHits = direct
+		stats.SemanticCacheHits = semantic
+	}
+
+	return stats, nil
 }
 
 // getHistogramFromMatView returns time-bucketed request counts (total,

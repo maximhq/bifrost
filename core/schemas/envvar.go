@@ -158,34 +158,6 @@ func (e *EnvVar) Redacted() *EnvVar {
 	}
 }
 
-// MarshalJSON serializes the EnvVar to JSON.
-// SECURITY: When the value was sourced from an environment variable, the resolved
-// value is automatically redacted before being serialized. This ensures that secrets
-// injected via env vars are never leaked through any JSON API response, regardless
-// of whether the surrounding code remembered to call Redacted() explicitly.
-//
-// Plain (non-env) values are still emitted as-is — callers that want to mask those
-// must continue using Redacted() at the field level (this matches the existing
-// per-provider redaction logic).
-//
-// This does NOT affect:
-//   - GORM persistence (uses the Value() driver method, not JSON)
-//   - Encryption (operates on the Val field directly)
-//   - Internal LLM request paths (use GetValue() directly)
-func (e EnvVar) MarshalJSON() ([]byte, error) {
-	type envVarAlias EnvVar
-	out := envVarAlias(e)
-	if e.FromEnv {
-		// Redact the resolved value but keep the env var reference and from_env flag
-		// so the UI still knows which env var backs this field.
-		redacted := e.Redacted()
-		if redacted != nil {
-			out = envVarAlias(*redacted)
-		}
-	}
-	return sonic.Marshal(out)
-}
-
 // UnmarshalJSON unmarshals the value from JSON.
 func (e *EnvVar) UnmarshalJSON(data []byte) error {
 	// This is always going to be value

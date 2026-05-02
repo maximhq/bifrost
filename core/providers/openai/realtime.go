@@ -217,7 +217,7 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 		return nil, err
 	}
 
-	normalizedBody, requestedModel, bifrostErr := normalizeRealtimeClientSecretRequest(rawRequest, provider.GetProviderKey(), endpointType)
+	normalizedBody, _, bifrostErr := normalizeRealtimeClientSecretRequest(rawRequest, provider.GetProviderKey(), endpointType)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -251,21 +251,16 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
-	for k := range headers {
-		if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
-			delete(headers, k)
-		}
-	}
 
 	out := &schemas.BifrostPassthroughResponse{
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
 		Body:       body,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: headers,
+		},
 	}
-	out.ExtraFields.Provider = provider.GetProviderKey()
-	out.ExtraFields.OriginalModelRequested = requestedModel
-	out.ExtraFields.RequestType = schemas.RealtimeRequest
-	out.ExtraFields.Latency = latency.Milliseconds()
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequestIfJSON(req, &out.ExtraFields)
 	}

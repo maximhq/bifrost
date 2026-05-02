@@ -1,6 +1,6 @@
 ---
 title: "Quick Start"
-description: "Configure Bifrost using a config.json file — GitOps-friendly, no-UI deployments, and multinode OSS setups"
+description: "Configure Bifrost using a config.json file - GitOps-friendly, no-UI deployments, and multinode OSS setups"
 icon: "file-code"
 ---
 
@@ -103,7 +103,7 @@ Never put secrets directly in `config.json`. Use the `env.` prefix to reference 
 }
 ```
 
-Set the actual values through your deployment platform — shell environment, Docker `-e`, Kubernetes Secrets mounted as env vars, or a `.env` file.
+Set the actual values through your deployment platform - shell environment, Docker `-e`, Kubernetes Secrets mounted as env vars, or a `.env` file.
 
 ---
 
@@ -306,7 +306,7 @@ Ready-to-use reference configurations from the [examples/configs](https://github
 
 | Example | Description |
 |---------|-------------|
-| [noconfigstorenologstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/noconfigstorenologstore/config.json) | Bare-minimum file-only mode — no database, no UI, providers loaded from file |
+| [noconfigstorenologstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/noconfigstorenologstore/config.json) | Bare-minimum file-only mode - no database, no UI, providers loaded from file |
 | [partial](https://github.com/maximhq/bifrost/blob/main/examples/configs/partial/config.json) | SQLite config store with a minimal provider setup |
 | [v1compat](https://github.com/maximhq/bifrost/blob/main/examples/configs/v1compat/config.json) | `"version": 1` for v1.4.x array semantics (empty = allow all) |
 
@@ -389,7 +389,7 @@ Ready-to-use reference configurations from the [examples/configs](https://github
     OpenAI, Anthropic, Azure, Bedrock, Vertex, Groq, self-hosted
   </Card>
   <Card title="Storage" icon="database" href="/deployment-guides/config-json/storage">
-    config_store, logs_store, vector_store — SQLite, PostgreSQL, object storage
+    config_store, logs_store, vector_store - SQLite, PostgreSQL, object storage
   </Card>
   <Card title="Plugins" icon="puzzle-piece" href="/deployment-guides/config-json/plugins">
     Semantic cache, OTel, Maxim, Datadog, custom plugins

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"strings"
@@ -139,9 +140,10 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			if ws.IsUnexpectedCloseError(err, ws.CloseGoingAway, ws.CloseNormalClosure) {
-				logger.Warn("websocket read error: %v", err)
+			if isExpectedResponsesClientClose(err, session) {
+				return
 			}
+			logger.Warn("websocket read error: %v", err)
 			return
 		}
 
@@ -210,9 +212,21 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		writeWSError(session, 500, "server_error", "failed to create request context")
 		return
 	}
+	if parentRequestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); parentRequestID == "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, session.ID())
+	}
+
+	// Rewrite the raw event for upstream: strip provider/ prefix from model,
+	// apply store override. The original bytes contain the bifrost-format model
+	// (e.g. "openai/gpt-5.5") which upstream providers don't understand.
+	upstreamEvent, rewriteErr := rewriteUpstreamEvent(message, bifrostReq.Model, event.Store)
+	if rewriteErr != nil {
+		logger.Warn("failed to rewrite upstream event: %v, using original", rewriteErr)
+		upstreamEvent = message
+	}
 
 	// Try native WS upstream first
-	if h.tryNativeWSUpstream(session, bifrostCtx, bifrostReq, message) {
+	if h.tryNativeWSUpstream(session, bifrostCtx, bifrostReq, upstreamEvent) {
 		cancel()
 		return
 	}
@@ -392,6 +406,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		forwardedAny = true
 
 		if isTerminal {
+			session.MarkResponsesTurnCompleted()
 			h.trackResponseID(session, data)
 			return true
 		}
@@ -418,6 +433,27 @@ func isWSReadTimeout(err error) bool {
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func isExpectedResponsesClientClose(err error, session *bfws.Session) bool {
+	if err == nil {
+		return true
+	}
+	if !ws.IsUnexpectedCloseError(err, ws.CloseGoingAway, ws.CloseNormalClosure) {
+		return true
+	}
+	if session != nil && session.HasCompletedResponsesTurn() && isResponsesEOFClose(err) {
+		return true
+	}
+	return false
+}
+
+func isResponsesEOFClose(err error) bool {
+	var closeErr *ws.CloseError
+	if !errors.As(err, &closeErr) {
+		return false
+	}
+	return closeErr.Code == ws.CloseAbnormalClosure || closeErr.Code == ws.CloseNoStatusReceived
 }
 
 func newBifrostError(statusCode int, errType, message string) *schemas.BifrostError {
@@ -466,6 +502,11 @@ func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model str
 	streamResp.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 	streamResp.ExtraFields.Provider = provider
 	streamResp.ExtraFields.OriginalModelRequested = model
+	// Use SequenceNumber as ChunkIndex so each event gets a unique index.
+	// Without this, all chunks default to ChunkIndex=0 and the accumulator's
+	// dedup (ResponsesChunksSeen) drops every chunk after the first — losing
+	// output text, token usage, and cost data from the logs.
+	streamResp.ExtraFields.ChunkIndex = streamResp.SequenceNumber
 	return &streamResp
 }
 
@@ -668,6 +709,10 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 	req *schemas.BifrostResponsesRequest,
 ) {
 	defer cancel()
+	// Flush the trace after the stream completes so the log entry is persisted
+	// to the log store. Without this, the trace is created by tryStreamRequest
+	// but never flushed — logs won't appear in the dashboard.
+	defer completeTrace(ctx)
 
 	stream, bifrostErr := h.client.ResponsesStreamRequest(ctx, req)
 	if bifrostErr != nil {
@@ -691,12 +736,15 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 			return
 		}
 
-		// Track last response ID for session chaining
+		// Track terminal responses for session chaining and close classification.
 		if chunk.BifrostResponsesStreamResponse != nil &&
-			chunk.BifrostResponsesStreamResponse.Response != nil &&
-			chunk.BifrostResponsesStreamResponse.Response.ID != nil &&
-			*chunk.BifrostResponsesStreamResponse.Response.ID != "" {
-			session.SetLastResponseID(*chunk.BifrostResponsesStreamResponse.Response.ID)
+			isTerminalStreamType(chunk.BifrostResponsesStreamResponse.Type) {
+			session.MarkResponsesTurnCompleted()
+			if chunk.BifrostResponsesStreamResponse.Response != nil &&
+				chunk.BifrostResponsesStreamResponse.Response.ID != nil &&
+				*chunk.BifrostResponsesStreamResponse.Response.ID != "" {
+				session.SetLastResponseID(*chunk.BifrostResponsesStreamResponse.Response.ID)
+			}
 		}
 	}
 }
@@ -758,6 +806,51 @@ var wsResponsesKnownFields = map[string]bool{
 	"metadata":             true,
 	"text":                 true,
 	"truncation":           true,
+}
+
+// rewriteUpstreamEvent modifies the raw JSON event for upstream consumption:
+// - Replaces "model" with provider-native name (strips provider/ prefix)
+// - Applies store override if modified
+// Uses json.RawMessage to preserve all other field values exactly as-is.
+// Re-marshaling via a map may reorder object fields; Responses JSON is
+// order-insensitive, and this path only preserves semantics, not byte order.
+func rewriteUpstreamEvent(rawEvent []byte, nativeModel string, store *bool) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := sonic.Unmarshal(rawEvent, &m); err != nil {
+		return nil, err
+	}
+
+	modelBytes, err := sonic.Marshal(nativeModel)
+	if err != nil {
+		return nil, err
+	}
+	m["model"] = json.RawMessage(modelBytes)
+
+	if store != nil {
+		storeBytes, err := sonic.Marshal(*store)
+		if err != nil {
+			return nil, err
+		}
+		m["store"] = json.RawMessage(storeBytes)
+	}
+
+	return sonic.Marshal(m)
+}
+
+// completeTrace flushes the trace so the log entry is persisted to the log store.
+func completeTrace(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || tracer == nil {
+		return
+	}
+	traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if !ok || traceID == "" {
+		return
+	}
+	tracer.CompleteAndFlushTrace(traceID)
 }
 
 var (

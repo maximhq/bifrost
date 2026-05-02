@@ -8,8 +8,8 @@ icon: "google"
 
 This guide walks you through configuring **Google Workspace** as your identity provider for Bifrost Enterprise. The integration has two pieces:
 
-1. **OAuth 2.0 login** — users sign in to Bifrost with their Google Workspace accounts via a Google OAuth Client ID.
-2. **Directory API provisioning (optional)** — a Google **service account** with domain-wide delegation lets Bifrost list users and groups from the Workspace directory for bulk import and team sync.
+1. **OAuth 2.0 login** - users sign in to Bifrost with their Google Workspace accounts via a Google OAuth Client ID.
+2. **Directory API provisioning (optional)** - a Google **service account** with domain-wide delegation lets Bifrost list users and groups from the Workspace directory for bulk import and team sync.
 
 You can run login-only (no service account) or full provisioning (with service account + domain-wide delegation).
 
@@ -69,7 +69,7 @@ Skip this section if you only want SSO login without directory-based user import
   <img src="/media/user-provisioning/gws-service-account-id.png" alt="Creating a Google service account" />
 </Frame>
 
-2. Give it a name (e.g. `bifrost-provisioning`). You can skip the "Grant this service account access to project" step — no GCP IAM roles are required; access is granted via domain-wide delegation in Step 5.
+2. Give it a name (e.g. `bifrost-provisioning`). You can skip the "Grant this service account access to project" step - no GCP IAM roles are required; access is granted via domain-wide delegation in Step 5.
 3. Open the service account → **Keys → Add Key → Create new key → JSON**. Download and store the JSON file securely.
 4. From the service account **Details** tab, copy the **Unique ID** (a numeric value, **not** the email or OAuth Client ID).
 
@@ -105,7 +105,7 @@ https://www.googleapis.com/auth/admin.directory.group.member.readonly
 5. **Authorize**.
 
 <Note>
-  Domain-wide delegation requires impersonating an admin user. Pick an admin email that will persist (e.g. a dedicated `sso-admin@company.com`) — Bifrost uses this as the **Admin Email** in configuration.
+  Domain-wide delegation requires impersonating an admin user. Pick an admin email that will persist (e.g. a dedicated `sso-admin@company.com`) - Bifrost uses this as the **Admin Email** in configuration.
 </Note>
 
 ---
@@ -132,7 +132,7 @@ https://www.googleapis.com/auth/admin.directory.group.member.readonly
   <img src="/media/user-provisioning/gws-form.png" alt="Bifrost Google Workspace configuration form" />
 </Frame>
 
-4. Click **Verify** — Bifrost validates the OAuth client and, if a service account is provided, attempts a Directory API impersonation to confirm delegation is working.
+4. Click **Verify** - Bifrost validates the OAuth client and, if a service account is provided, attempts a Directory API impersonation to confirm delegation is working.
 5. Configure **Attribute → Role / Team / Business Unit** mappings to map groups or organizational units to Bifrost roles and teams.
 6. Toggle **Enabled** and click **Save Configuration**.
 
@@ -175,7 +175,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 | --- | --- | --- |
 | `domain` | Yes | Google Workspace primary domain (e.g. `company.com`). |
 | `clientId` | Yes | OAuth 2.0 Web Client ID from Step 2. |
-| `clientSecret` | Yes | Client Secret — required for token revocation and for confidential server-side flows. |
+| `clientSecret` | Yes | Client Secret - required for token revocation and for confidential server-side flows. |
 | `audience` | No | Expected JWT audience. Defaults to `clientId`. |
 | `adminEmail` | Yes  | Workspace admin to impersonate via domain-wide delegation. Required when any service-account field is set. |
 | `serviceAccountJson` | One of 3 | Raw JSON string of the service account key. |
@@ -186,7 +186,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 | `attributeBusinessUnitMappings` | No | Attribute→business-unit mappings (all matches apply). |
 
 <Warning>
-  Bifrost rejects configs that set a service-account credential source without `adminEmail` — domain-wide delegation cannot work without an impersonation subject.
+  Bifrost rejects configs that set a service-account credential source without `adminEmail` - domain-wide delegation cannot work without an impersonation subject.
 </Warning>
 
 ---
@@ -227,6 +227,6 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ## Next Steps
 
-- [User Provisioning overview](./user-provisioning) — capabilities, attribute mappings, bulk import
-- [Role-Based Access Control](./rbac) — configure custom roles before mapping
-- [Audit Logs](./audit-logs) — track authentication events
+- [User Provisioning overview](./user-provisioning) - capabilities, attribute mappings, bulk import
+- [Role-Based Access Control](./rbac) - configure custom roles before mapping
+- [Audit Logs](./audit-logs) - track authentication events

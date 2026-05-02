@@ -263,22 +263,31 @@ type ProxyConfig struct {
 
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
-	// Create redacted config with same structure but redacted values
-	redactedConfig := ProxyConfig{
-		Type:     pc.Type,
-		URL:      pc.URL,
-		Username: pc.Username,
+	redactedConfig := ProxyConfig{Type: pc.Type}
+	if pc.URL != nil {
+		if pc.URL.IsFromEnv() {
+			redactedConfig.URL = pc.URL.Redacted()
+		} else {
+			redactedConfig.URL = pc.URL
+		}
+	}
+	if pc.Username != nil {
+		if pc.Username.IsFromEnv() {
+			redactedConfig.Username = pc.Username.Redacted()
+		} else {
+			redactedConfig.Username = pc.Username
+		}
 	}
 	if pc.Password != nil && pc.Password.IsSet() {
 		if pc.Password.IsFromEnv() {
-			redactedConfig.Password = pc.Password
+			redactedConfig.Password = pc.Password.Redacted()
 		} else {
 			redactedConfig.Password = NewEnvVar("<REDACTED>")
 		}
 	}
 	if pc.CACertPEM != nil && pc.CACertPEM.IsSet() {
 		if pc.CACertPEM.IsFromEnv() {
-			redactedConfig.CACertPEM = pc.CACertPEM
+			redactedConfig.CACertPEM = pc.CACertPEM.Redacted()
 		} else {
 			redactedConfig.CACertPEM = NewEnvVar("<REDACTED>")
 		}

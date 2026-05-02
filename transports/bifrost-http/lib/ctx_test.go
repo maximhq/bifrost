@@ -30,7 +30,8 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testHandlerStore) GetMCPExternalBaseURL() string              { return "" }
+func (s testHandlerStore) GetMCPExternalServerURL() string            { return "" }
+func (s testHandlerStore) GetMCPExternalClientURL() string            { return "" }
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {

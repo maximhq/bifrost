@@ -1482,6 +1482,10 @@ func NewUnsupportedOperationError(requestType schemas.RequestType, providerName 
 			Message: fmt.Sprintf("%s is not supported by %s provider", requestType, providerName),
 			Code:    schemas.Ptr("unsupported_operation"),
 		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider:    providerName,
+			RequestType: requestType,
+		},
 	}
 }
 
@@ -1833,6 +1837,7 @@ func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.Bifr
 		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
 		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
 		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
+		streamResponse.BifrostPassthroughResponse = processedResponse.PassthroughResponse
 		// Strip raw fields from client-facing copies without mutating the shared objects
 		// that PostLLMHook goroutines may still be reading.
 		if drop {
@@ -1895,6 +1900,16 @@ func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.Bifr
 					cp.ExtraFields.RawResponse = nil
 				}
 				streamResponse.BifrostImageGenerationStreamResponse = &cp
+			}
+			if streamResponse.BifrostPassthroughResponse != nil {
+				cp := *streamResponse.BifrostPassthroughResponse
+				if dropReq {
+					cp.ExtraFields.RawRequest = nil
+				}
+				if dropResp {
+					cp.ExtraFields.RawResponse = nil
+				}
+				streamResponse.BifrostPassthroughResponse = &cp
 			}
 		}
 	}

@@ -1839,16 +1839,12 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		if bifrostReq.Params.Text != nil {
 			if bifrostReq.Params.Text.Format != nil {
-				responseFormatTool, anthropicOutputFormat := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
-				if anthropicOutputFormat != nil {
-					if bedrockReq.AdditionalModelRequestFields == nil {
-						bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
-					}
-					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
-					appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicStructuredOutputsBetaHeader)
-				}
-				// Defer synthetic tool injection until after normal tool/tool_choice conversion
-				// so the structured-output tool is not overwritten by the later pass.
+				// Bedrock structured output goes through the synthetic `bf_so_*`
+				// tool path for all models, including Anthropic. We capture the
+				// tool here and defer injection until after normal tool/tool_choice
+				// conversion so the forced structured-output tool choice is not
+				// overwritten.
+				responseFormatTool, _ := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
 				if responseFormatTool != nil {
 					responsesStructuredOutputTool = responseFormatTool
 				}

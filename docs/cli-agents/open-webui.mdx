@@ -52,7 +52,7 @@ Select your Bifrost connection's model from the chat model selector and start ch
 
 When Bifrost has [virtual key authentication](/features/governance/virtual-keys) enabled, set **API Key** in the connection to your virtual key. This lets you enforce usage limits, budgets, and access control per user or team.
 
-For team deployments, create separate Open WebUI connections (or use different API keys per connection) — each virtual key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
+For team deployments, create separate Open WebUI connections (or use different API keys per connection) - each virtual key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
 
 ## Model Selection
 
@@ -79,7 +79,7 @@ Bifrost supports the following providers with the `provider/model-name` format:
 `openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
 
 <Note>
-Open WebUI connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name — no per-provider configuration needed in Open WebUI.
+Open WebUI connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name - no per-provider configuration needed in Open WebUI.
 </Note>
 
 ## Multimodality
@@ -103,7 +103,7 @@ Bifrost routes image generation requests to the configured provider. Use any ima
 
 ### Vision (Image Understanding)
 
-Chat models that support vision (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-5`) work through your main Bifrost connection. When you select a vision-capable model in the chat selector, you can attach images to your messages — Open WebUI sends them to Bifrost, which routes to the correct provider.
+Chat models that support vision (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-5`) work through your main Bifrost connection. When you select a vision-capable model in the chat selector, you can attach images to your messages - Open WebUI sends them to Bifrost, which routes to the correct provider.
 
 ## Docker Networking
 
@@ -131,9 +131,9 @@ OPENAI_API_KEYS="key1;key2"
 
 ## Observability
 
-All Open WebUI traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage across your team.
+All Open WebUI traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` - filter by provider, model, or search through conversation content to track usage across your team.
 
 ## Next Steps
 
-- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
-- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control
+- [Provider Configuration](/quickstart/gateway/provider-configuration) - Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) - Set up usage limits and access control

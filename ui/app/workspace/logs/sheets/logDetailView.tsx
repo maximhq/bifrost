@@ -104,6 +104,91 @@ const extractResponsesText = (msg: ResponsesMessage): string => {
   return "";
 };
 
+type ReasoningParts = {
+  summaries: string[];
+  encrypted?: string;
+  signatures: string[];
+  contentText?: string;
+};
+
+const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: string[] } => {
+  const texts: string[] = [];
+  const signatures: string[] = [];
+  for (const b of blocks) {
+    if (!b || typeof b !== "object") continue;
+    const isReasoningish =
+      b.type === "input_text" ||
+      b.type === "output_text" ||
+      b.type === "reasoning_text" ||
+      b.type === "refusal" ||
+      !b.type;
+    if (isReasoningish && typeof b.text === "string" && b.text.trim()) {
+      texts.push(b.text);
+    }
+    if (typeof b.signature === "string" && b.signature.trim()) {
+      signatures.push(b.signature.trim());
+    }
+  }
+  return { text: texts.join("\n"), signatures };
+};
+
+const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
+  const summaries = (msg.summary ?? [])
+    .map((s) => (s?.text ?? "").trim())
+    .filter(Boolean);
+  const encryptedRaw = (msg as any).encrypted_content?.trim?.();
+  const encrypted = encryptedRaw ? encryptedRaw : undefined;
+  const signatures: string[] = [];
+  let contentText = "";
+  if (typeof msg.content === "string") {
+    contentText = msg.content;
+  } else if (Array.isArray(msg.content)) {
+    const fromContent = collectReasoningFromBlocks(msg.content as any[]);
+    contentText = fromContent.text;
+    signatures.push(...fromContent.signatures);
+  }
+  // Some providers stash reasoning under `output` instead of `content`
+  const out = (msg as any).output;
+  if (out !== undefined) {
+    if (typeof out === "string" && out.trim() && !contentText) {
+      contentText = out;
+    } else if (Array.isArray(out)) {
+      const fromOutput = collectReasoningFromBlocks(out as any[]);
+      if (!contentText && fromOutput.text) contentText = fromOutput.text;
+      signatures.push(...fromOutput.signatures);
+    }
+  }
+  // Defensive: top-level text-bearing fields some variants use
+  if (!contentText) {
+    const topText =
+      (typeof (msg as any).text === "string" && (msg as any).text) ||
+      (typeof (msg as any).thinking === "string" && (msg as any).thinking) ||
+      "";
+    if (topText.trim()) contentText = topText;
+  }
+  return {
+    summaries,
+    encrypted,
+    signatures,
+    contentText: contentText || undefined,
+  };
+};
+
+const extractChatReasoning = (message: any): string => {
+  if (!message) return "";
+  if (typeof message.reasoning === "string" && message.reasoning.trim()) {
+    return message.reasoning;
+  }
+  if (Array.isArray(message.reasoning_details)) {
+    const parts = (message.reasoning_details as any[])
+      .map((d) => (typeof d?.text === "string" ? d.text : d?.summary ?? ""))
+      .map((t: string) => (typeof t === "string" ? t.trim() : ""))
+      .filter(Boolean);
+    if (parts.length > 0) return parts.join("\n");
+  }
+  return "";
+};
+
 const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
   if (msg.type === "reasoning") return "reasoning";
   if (
@@ -351,6 +436,43 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
             );
           })}
       </div>
+    </div>
+  );
+}
+
+function EncryptedReveal({
+  text,
+  label,
+}: {
+  text: string;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[10.5px] font-semibold tracking-wider uppercase"
+      >
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 transition-transform",
+            open ? "rotate-180" : "-rotate-90",
+          )}
+        />
+        {label}
+        {!open ? (
+          <span className="text-muted-foreground/70 ml-1 font-mono text-[10px] normal-case tracking-normal">
+            {text.length} chars
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <pre className="font-mono text-[12.5px] leading-[1.6] break-all whitespace-pre-wrap">
+          {text}
+        </pre>
+      ) : null}
     </div>
   );
 }
@@ -1695,24 +1817,37 @@ export function LogDetailView({
             (log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety")) && (
               <div className="bg-card rounded-sm border p-5">
                 {(visibleRoles.size < allRoles.length
-                  ? log.input_history?.filter((m) =>
-                    visibleRoles.has(((m.role as string) || "user") as MessageRole)
-                  )
+                  ? log.input_history?.filter((m) => {
+                    const mainRole = ((m.role as string) || "user") as MessageRole;
+                    const hasReasoning = !!extractChatReasoning(m);
+                    return (
+                      visibleRoles.has(mainRole) ||
+                      (hasReasoning && visibleRoles.has("reasoning"))
+                    );
+                  })
                   : log.input_history
-                )?.map((message, index) => {
+                )?.flatMap((message, index) => {
                   const role = ((message.role as string) ||
                     "user") as MessageRole;
                   const text = extractMessageText(message);
+                  const reasoningText = extractChatReasoning(message);
+                  const showAll = visibleRoles.size === allRoles.length;
+                  const showMain = showAll || visibleRoles.has(role);
+                  const showReasoning =
+                    !!reasoningText && (showAll || visibleRoles.has("reasoning"));
                   const hasToolCalls =
                     Array.isArray(message.tool_calls) &&
                     message.tool_calls.length > 0;
-                  const isLast =
+                  const isOverallLast =
                     index === (log.input_history?.length ?? 0) - 1 &&
                     !log.output_message &&
                     !log.error_details?.error.message;
                   const lineCount = text ? text.split("\n").length : 0;
                   const approxTokens = text
                     ? Math.max(1, Math.round(text.length / 4))
+                    : 0;
+                  const reasoningTokens = reasoningText
+                    ? Math.max(1, Math.round(reasoningText.length / 4))
                     : 0;
                   const meta = text
                     ? role === "system" || role === "tool"
@@ -1722,56 +1857,87 @@ export function LogDetailView({
                       ? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
                       : undefined;
                   const usePlainText = role === "user" || role === "assistant";
-                  return (
-                    <MessageRow key={index} role={role} meta={meta} last={isLast}>
-                      {text ? (
-                        usePlainText ? (
-                          <CollapsibleCode text={text} preview={3} mono={false} />
-                        ) : (
-                          <CollapsibleCode
-                            text={text}
-                            preview={3}
-                            lang={role === "system" ? "xml" : undefined}
-                          />
-                        )
-                      ) : (
-                        <LogChatMessageView
-                          message={message}
-                          audioFormat={audioFormat}
+                  const rows: ReactNode[] = [];
+                  if (showReasoning) {
+                    rows.push(
+                      <MessageRow
+                        key={`${index}-reasoning`}
+                        role="reasoning"
+                        meta={`~${reasoningTokens} tokens`}
+                        last={isOverallLast && !showMain}
+                      >
+                        <CollapsibleCode
+                          text={reasoningText}
+                          preview={3}
+                          mono={false}
                         />
-                      )}
-                      {text &&
-                        Array.isArray(message.content) &&
-                        (message.content as ContentBlock[])
-                          .filter((b) => b.type === "image_url")
-                          .map((b, i) => {
-                            const src = b.image_url?.url;
-                            if (!src) return null;
-                            return (
-                              <img
-                                key={`${i}-${src}`}
-                                src={src}
-                                alt="Attached image"
-                                className="mt-2 max-w-full rounded border"
-                              />
-                            );
-                          })}
-                      {hasToolCalls && text ? (
-                        <div className="text-muted-foreground mt-2 text-[11px]">
-                          {message.tool_calls!
-                            .map((tc) => tc.function?.name)
-                            .filter(Boolean)
-                            .join(", ") ||
-                            `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
-                        </div>
-                      ) : null}
-                    </MessageRow>
-                  );
+                      </MessageRow>
+                    );
+                  }
+                  if (showMain) {
+                    rows.push(
+                      <MessageRow
+                        key={index}
+                        role={role}
+                        meta={meta}
+                        last={isOverallLast}
+                      >
+                        {text ? (
+                          usePlainText ? (
+                            <CollapsibleCode text={text} preview={3} mono={false} />
+                          ) : (
+                            <CollapsibleCode
+                              text={text}
+                              preview={3}
+                              lang={role === "system" ? "xml" : undefined}
+                            />
+                          )
+                        ) : (
+                          <LogChatMessageView
+                            message={message}
+                            audioFormat={audioFormat}
+                          />
+                        )}
+                        {text &&
+                          Array.isArray(message.content) &&
+                          (message.content as ContentBlock[])
+                            .filter((b) => b.type === "image_url")
+                            .map((b, i) => {
+                              const src = b.image_url?.url;
+                              if (!src) return null;
+                              return (
+                                <img
+                                  key={`${i}-${src}`}
+                                  src={src}
+                                  alt="Attached image"
+                                  className="mt-2 max-w-full rounded border"
+                                />
+                              );
+                            })}
+                        {hasToolCalls && text ? (
+                          <div className="text-muted-foreground mt-2 text-[11px]">
+                            {message.tool_calls!
+                              .map((tc) => tc.function?.name)
+                              .filter(Boolean)
+                              .join(", ") ||
+                              `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+                          </div>
+                        ) : null}
+                      </MessageRow>
+                    );
+                  }
+                  return rows;
                 })}
                 {log.output_message &&
                   !log.error_details?.error.message &&
-                  visibleRoles.has("assistant") &&
                   (() => {
+                    const reasoningText = extractChatReasoning(log.output_message);
+                    const showReasoning =
+                      !!reasoningText &&
+                      (visibleRoles.size === allRoles.length ||
+                        visibleRoles.has("reasoning"));
+                    const showAssistant = visibleRoles.has("assistant");
+                    if (!showReasoning && !showAssistant) return null;
                     const text = extractMessageText(log.output_message);
                     const refusalText = log.output_message.refusal;
                     const isStopReasonRefusal =
@@ -1790,31 +1956,53 @@ export function LogDetailView({
                       : showRefusal
                         ? "refusal"
                         : tokenMeta;
+                    const reasoningTokens = reasoningText
+                      ? log.token_usage?.completion_tokens_details
+                          ?.reasoning_tokens ||
+                        Math.max(1, Math.round(reasoningText.length / 4))
+                      : 0;
                     return (
-                      <MessageRow role="assistant" meta={meta} last>
-                        {showRefusal ? (
-                          <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
-                            <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                              <AlertCircle className="h-4 w-4 shrink-0" />
-                              <span className="text-[12.5px] font-semibold">
-                                Refusal
-                              </span>
-                            </div>
-                            {refusalText && (
-                              <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-                                {refusalText}
+                      <>
+                        {showReasoning ? (
+                          <MessageRow
+                            role="reasoning"
+                            meta={`~${reasoningTokens} tokens`}
+                            last={!showAssistant}
+                          >
+                            <CollapsibleCode
+                              text={reasoningText}
+                              preview={3}
+                              mono={false}
+                            />
+                          </MessageRow>
+                        ) : null}
+                        {showAssistant ? (
+                          <MessageRow role="assistant" meta={meta} last>
+                            {showRefusal ? (
+                              <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                                  <AlertCircle className="h-4 w-4 shrink-0" />
+                                  <span className="text-[12.5px] font-semibold">
+                                    Refusal
+                                  </span>
+                                </div>
+                                {refusalText && (
+                                  <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+                                    {refusalText}
+                                  </div>
+                                )}
                               </div>
+                            ) : text ? (
+                              <CollapsibleCode text={text} preview={3} mono={false} />
+                            ) : (
+                              <LogChatMessageView
+                                message={log.output_message}
+                                audioFormat={audioFormat}
+                              />
                             )}
-                          </div>
-                        ) : text ? (
-                          <CollapsibleCode text={text} preview={3} mono={false} />
-                        ) : (
-                          <LogChatMessageView
-                            message={log.output_message}
-                            audioFormat={audioFormat}
-                          />
-                        )}
-                      </MessageRow>
+                          </MessageRow>
+                        ) : null}
+                      </>
                     );
                   })()}
                 {!log.output_message &&
@@ -1854,27 +2042,56 @@ export function LogDetailView({
               <div className="bg-card rounded-sm border p-5">
                 {all.map((msg, index) => {
                   const role = getResponsesRole(msg);
-                  const text = extractResponsesText(msg);
                   const isLast = index === all.length - 1;
+                  const reasoningParts =
+                    role === "reasoning" ? extractReasoningParts(msg) : null;
+                  const reasoningHasAny =
+                    !!reasoningParts &&
+                    (reasoningParts.summaries.length > 0 ||
+                      !!reasoningParts.encrypted ||
+                      !!reasoningParts.contentText ||
+                      reasoningParts.signatures.length > 0);
+                  const text =
+                    role === "reasoning" ? "" : extractResponsesText(msg);
                   const lineCount = text ? text.split("\n").length : 0;
                   const approxTokens = text
                     ? Math.max(1, Math.round(text.length / 4))
                     : 0;
-                  const isEncrypted =
-                    msg.type === "reasoning" && !!msg.encrypted_content;
-                  const meta = text
-                    ? role === "system" || role === "tool"
-                      ? msg.name
-                        ? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-                        : `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-                      : role === "reasoning"
-                        ? `~${approxTokens} tokens${isEncrypted ? " · encrypted" : ""}`
+                  let meta: string | undefined;
+                  if (role === "reasoning" && reasoningParts) {
+                    const totalLen =
+                      reasoningParts.summaries.reduce(
+                        (acc, s) => acc + s.length,
+                        0,
+                      ) +
+                      (reasoningParts.contentText?.length ?? 0) +
+                      (reasoningParts.encrypted?.length ?? 0);
+                    const totalApprox = totalLen
+                      ? Math.max(1, Math.round(totalLen / 4))
+                      : 0;
+                    const hasOpaqueOnly =
+                      (!!reasoningParts.encrypted ||
+                        reasoningParts.signatures.length > 0) &&
+                      reasoningParts.summaries.length === 0 &&
+                      !reasoningParts.contentText;
+                    meta = totalApprox
+                      ? `~${totalApprox} tokens${hasOpaqueOnly ? " · encrypted" : ""}`
+                      : hasOpaqueOnly
+                        ? "encrypted"
+                        : undefined;
+                  } else {
+                    meta = text
+                      ? role === "system" || role === "tool"
+                        ? msg.name
+                          ? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+                          : `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
                         : `${lineCount} line${lineCount === 1 ? "" : "s"}`
-                    : msg.name
-                      ? msg.name
-                      : msg.type === "function_call_output" && msg.call_id
-                        ? msg.call_id
-                        : msg.type || undefined;
+                      : msg.name
+                        ? msg.name
+                        : msg.type === "function_call_output" && msg.call_id
+                          ? msg.call_id
+                          : msg.type || undefined;
+                  }
                   const usePlainText = role === "user" || role === "assistant";
                   return (
                     <MessageRow
@@ -1883,7 +2100,58 @@ export function LogDetailView({
                       meta={meta}
                       last={isLast}
                     >
-                      {text ? (
+                      {role === "reasoning" ? (
+                        reasoningHasAny && reasoningParts ? (
+                          <div className="space-y-3">
+                            {reasoningParts.contentText ? (
+                              <CollapsibleCode
+                                text={reasoningParts.contentText}
+                                preview={3}
+                                mono={false}
+                              />
+                            ) : null}
+                            {reasoningParts.summaries.map((s, i) => (
+                              <div key={`s-${i}`} className="space-y-1">
+                                {reasoningParts.summaries.length > 1 ? (
+                                  <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
+                                    Summary {i + 1}
+                                  </div>
+                                ) : null}
+                                <CollapsibleCode
+                                  text={s}
+                                  preview={3}
+                                  mono={false}
+                                />
+                              </div>
+                            ))}
+                            {reasoningParts.encrypted ? (
+                              <div className="space-y-1">
+                                <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
+                                  Encrypted
+                                </div>
+                                <CollapsibleCode
+                                  text={reasoningParts.encrypted}
+                                  preview={2}
+                                />
+                              </div>
+                            ) : null}
+                            {reasoningParts.signatures.length > 0 ? (
+                              <EncryptedReveal
+                                text={reasoningParts.signatures.join("\n\n")}
+                                label={
+                                  reasoningParts.signatures.length > 1
+                                    ? "Encrypted signatures"
+                                    : "Encrypted signature"
+                                }
+                              />
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="text-muted-foreground text-[12px] italic">
+                            No reasoning content available
+                          </div>
+                        )
+                      ) : text ? (
                         usePlainText ? (
                           <CollapsibleCode
                             text={text}
@@ -1903,8 +2171,8 @@ export function LogDetailView({
                           preview={3}
                         />
                       ) : (
-                        <div className="text-muted-foreground text-[12px]">
-                          {msg.type || "—"}
+                        <div className="text-muted-foreground text-[12px] italic">
+                          No content
                         </div>
                       )}
                       {Array.isArray(msg.content) &&

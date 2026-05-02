@@ -11,6 +11,7 @@ import {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
+	useLazyGetLogsStatsQuery,
 	useLazyGetLogsTokenHistogramQuery,
 	useLazyGetMCPCostHistogramQuery,
 	useLazyGetMCPHistogramQuery,
@@ -21,6 +22,7 @@ import type {
 	CostHistogramResponse,
 	LatencyHistogramResponse,
 	LogFilters,
+	LogStats,
 	LogsHistogramResponse,
 	MCPCostHistogramResponse,
 	MCPHistogramResponse,
@@ -65,6 +67,8 @@ export default function DashboardPage() {
 	const [costData, setCostData] = useState<CostHistogramResponse | null>(null);
 	const [modelData, setModelData] = useState<ModelHistogramResponse | null>(null);
 	const [latencyData, setLatencyData] = useState<LatencyHistogramResponse | null>(null);
+	const [logsStats, setLogsStats] = useState<LogStats | null>(null);
+	const [loadingStats, setLoadingStats] = useState(true);
 	const [providerCostData, setProviderCostData] = useState<ProviderCostHistogramResponse | null>(null);
 	const [providerTokenData, setProviderTokenData] = useState<ProviderTokenHistogramResponse | null>(null);
 	const [providerLatencyData, setProviderLatencyData] = useState<ProviderLatencyHistogramResponse | null>(null);
@@ -101,6 +105,7 @@ export default function DashboardPage() {
 	const [triggerCost] = useLazyGetLogsCostHistogramQuery();
 	const [triggerModels] = useLazyGetLogsModelHistogramQuery();
 	const [triggerLatency] = useLazyGetLogsLatencyHistogramQuery();
+	const [triggerStats] = useLazyGetLogsStatsQuery();
 	const [triggerProviderCost] = useLazyGetLogsProviderCostHistogramQuery();
 	const [triggerProviderTokens] = useLazyGetLogsProviderTokenHistogramQuery();
 	const [triggerProviderLatency] = useLazyGetLogsProviderLatencyHistogramQuery();
@@ -196,9 +201,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedProviders.length > 0 && { providers: selectedProviders }),
 			...(selectedModels.length > 0 && { models: selectedModels }),
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
@@ -217,8 +222,8 @@ export default function DashboardPage() {
 			...(missingCostOnly && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
-				metadata_filters: metadataFilters,
-			}),
+					metadata_filters: metadataFilters,
+				}),
 		}),
 		[
 			urlState.period,
@@ -244,9 +249,9 @@ export default function DashboardPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 			...(selectedMcpToolNames.length > 0 && {
 				tool_names: selectedMcpToolNames,
 			}),
@@ -287,28 +292,35 @@ export default function DashboardPage() {
 		setLoadingCost(true);
 		setLoadingModels(true);
 		setLoadingLatency(true);
+		setLoadingStats(true);
 
 		const fetchFilters = { filters };
 
-		const [histogramResult, tokenResult, costResult, modelResult, latencyResult] = await Promise.all([
+		const overviewPromise = Promise.all([
 			triggerHistogram(fetchFilters, false),
 			triggerTokens(fetchFilters, false),
 			triggerCost(fetchFilters, false),
 			triggerModels(fetchFilters, false),
 			triggerLatency(fetchFilters, false),
-		]);
+		]).then(([histogramResult, tokenResult, costResult, modelResult, latencyResult]) => {
+			setHistogramData(histogramResult.data ?? null);
+			setLoadingHistogram(false);
+			setTokenData(tokenResult.data ?? null);
+			setLoadingTokens(false);
+			setCostData(costResult.data ?? null);
+			setLoadingCost(false);
+			setModelData(modelResult.data ?? null);
+			setLoadingModels(false);
+			setLatencyData(latencyResult.data ?? null);
+			setLoadingLatency(false);
+		});
+		const statsPromise = triggerStats(fetchFilters, false).then((statsResult) => {
+			setLogsStats(statsResult.data ?? null);
+			setLoadingStats(false);
+		});
 
-		setHistogramData(histogramResult.data ?? null);
-		setLoadingHistogram(false);
-		setTokenData(tokenResult.data ?? null);
-		setLoadingTokens(false);
-		setCostData(costResult.data ?? null);
-		setLoadingCost(false);
-		setModelData(modelResult.data ?? null);
-		setLoadingModels(false);
-		setLatencyData(latencyResult.data ?? null);
-		setLoadingLatency(false);
-	}, [filters, triggerHistogram, triggerTokens, triggerCost, triggerModels, triggerLatency]);
+		await Promise.all([overviewPromise, statsPromise]);
+	}, [filters, triggerHistogram, triggerTokens, triggerCost, triggerModels, triggerLatency, triggerStats]);
 
 	// Fetch Provider Usage tab data (3 calls)
 	const fetchProviderData = useCallback(async () => {
@@ -613,6 +625,7 @@ export default function DashboardPage() {
 			costData,
 			modelData,
 			latencyData,
+			logsStats,
 			providerCostData,
 			providerTokenData,
 			providerLatencyData,
@@ -627,6 +640,7 @@ export default function DashboardPage() {
 			costData,
 			modelData,
 			latencyData,
+			logsStats,
 			providerCostData,
 			providerTokenData,
 			providerLatencyData,
@@ -812,11 +826,13 @@ export default function DashboardPage() {
 									costData={costData}
 									modelData={modelData}
 									latencyData={latencyData}
+									logsStats={logsStats}
 									loadingHistogram={loadingHistogram}
 									loadingTokens={loadingTokens}
 									loadingCost={loadingCost}
 									loadingModels={loadingModels}
 									loadingLatency={loadingLatency}
+									loadingStats={loadingStats}
 									startTime={urlState.start_time}
 									endTime={urlState.end_time}
 									volumeChartType={toChartType(urlState.volume_chart)}

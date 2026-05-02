@@ -11,28 +11,28 @@ This release introduces model blacklisting in load balancing, Fireworks AI provi
 
 ## ✨ Features
 
-- **Model Blacklisting for Load Balancer** — Added ability to exclude specific models from provider selection in the load balancing plugin, with support for per-key blacklists, block-all (`["*"]`) wildcards, and provider-level intersection logic
-- **Fireworks AI Provider** — Added Fireworks AI as a first-class provider in the OSS transport layer
-- **Unified Models API** — Unified /api/models and /api/models/details listing behavior
-- **Unique Cluster Node IDs** — Auto-generate a unique UUID for each node's NodeID on config load, ensuring distinct cluster node identifiers
-- **Leader Badge in Cluster View** — Display a "Leader" badge with crown icon in the cluster node table, with sorting by node name
-- **Server Bootstrap Timer** — Added server bootstrap timer for performance monitoring
-- **Security Path Whitelisting** — Allow path whitelisting from security config
-- **Large Payload Optimizations** — Updated config schema for large payload optimizations
-- **Virtual Keys Table** — Added sorting and CSV export to virtual keys table
+- **Model Blacklisting for Load Balancer** - Added ability to exclude specific models from provider selection in the load balancing plugin, with support for per-key blacklists, block-all (`["*"]`) wildcards, and provider-level intersection logic
+- **Fireworks AI Provider** - Added Fireworks AI as a first-class provider in the OSS transport layer
+- **Unified Models API** - Unified /api/models and /api/models/details listing behavior
+- **Unique Cluster Node IDs** - Auto-generate a unique UUID for each node's NodeID on config load, ensuring distinct cluster node identifiers
+- **Leader Badge in Cluster View** - Display a "Leader" badge with crown icon in the cluster node table, with sorting by node name
+- **Server Bootstrap Timer** - Added server bootstrap timer for performance monitoring
+- **Security Path Whitelisting** - Allow path whitelisting from security config
+- **Large Payload Optimizations** - Updated config schema for large payload optimizations
+- **Virtual Keys Table** - Added sorting and CSV export to virtual keys table
 
 ## 🐞 Fixed
 
-- **Leader Election Interval** — Increased leader election check interval to 10 seconds for improved cluster stability
-- **Node ID Consistency** — Minor fixes for node ID consistency across cluster operations
-- **ECR Cross-Account Access** — Fixed IAM role ARN format for ECR pull principals and cleaned up unused AWS provider config
-- **Bedrock Streaming Retries** — Retry retryable AWS exceptions and stale/closed-connection errors
-- **Gemini Thinking Budget** — Fixed thinking budget validation for Gemini models
-- **Integration Data Race** — Fixed race condition in data reading from fasthttp request for integrations
-- **Beta Headers** — Fixed case-insensitive lookup in merge beta headers
-- **Deprecated Config Field** — Replaced enforce_governance_header with enforce_auth_on_inference
-- **Bedrock Config Schema** — Fixed config schema for Bedrock key config
-- **OpenAI Codex** — Fixed store flag for OpenAI Codex
+- **Leader Election Interval** - Increased leader election check interval to 10 seconds for improved cluster stability
+- **Node ID Consistency** - Minor fixes for node ID consistency across cluster operations
+- **ECR Cross-Account Access** - Fixed IAM role ARN format for ECR pull principals and cleaned up unused AWS provider config
+- **Bedrock Streaming Retries** - Retry retryable AWS exceptions and stale/closed-connection errors
+- **Gemini Thinking Budget** - Fixed thinking budget validation for Gemini models
+- **Integration Data Race** - Fixed race condition in data reading from fasthttp request for integrations
+- **Beta Headers** - Fixed case-insensitive lookup in merge beta headers
+- **Deprecated Config Field** - Replaced enforce_governance_header with enforce_auth_on_inference
+- **Bedrock Config Schema** - Fixed config schema for Bedrock key config
+- **OpenAI Codex** - Fixed store flag for OpenAI Codex
 
 ## 📀 Base OSS version
 

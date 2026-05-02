@@ -219,7 +219,7 @@ Key:
       additionalProperties:
         type: string
         minLength: 1
-      description: Model alias mappings — maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)
+      description: Model alias mappings - maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)
     azure_key_config:
       $ref: '#/AzureKeyConfig'
     vertex_key_config:

@@ -607,6 +607,9 @@ export interface LogStats {
 	average_latency: number;
 	total_tokens: number;
 	total_cost: number;
+	cache_hit_rate_total_requests?: number | null;
+	direct_cache_hits?: number | null;
+	semantic_cache_hits?: number | null;
 }
 
 export interface LogSessionDetailResponse {

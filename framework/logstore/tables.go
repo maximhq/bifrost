@@ -94,13 +94,16 @@ type SessionSummaryResult struct {
 }
 
 type SearchStats struct {
-	TotalRequests              int64   `json:"total_requests"`
-	SuccessRate                float64 `json:"success_rate"`                          // Percentage of individual attempts that succeeded
-	UserFacingSuccessRate      float64 `json:"user_facing_success_rate"`              // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
-	UserFacingTotalRequests    int64   `json:"user_facing_total_requests"`            // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
-	AverageLatency             float64 `json:"average_latency"`                       // Average latency in milliseconds
-	TotalTokens                int64   `json:"total_tokens"`                          // Total tokens used
-	TotalCost                  float64 `json:"total_cost"`                            // Total cost in dollars
+	TotalRequests             int64   `json:"total_requests"`
+	SuccessRate               float64 `json:"success_rate"`                            // Percentage of individual attempts that succeeded
+	UserFacingSuccessRate     float64 `json:"user_facing_success_rate"`                // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
+	UserFacingTotalRequests   int64   `json:"user_facing_total_requests"`              // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
+	AverageLatency            float64 `json:"average_latency"`                         // Average latency in milliseconds
+	TotalTokens               int64   `json:"total_tokens"`                            // Total tokens used
+	TotalCost                 float64 `json:"total_cost"`                              // Total cost in dollars
+	CacheHitRateTotalRequests *int64  `json:"cache_hit_rate_total_requests,omitempty"` // Completed requests used as local-cache hit-rate denominator
+	DirectCacheHits           *int64  `json:"direct_cache_hits,omitempty"`             // Number of direct (exact) semantic cache hits
+	SemanticCacheHits         *int64  `json:"semantic_cache_hits,omitempty"`           // Number of semantic (fuzzy) cache hits
 }
 
 // Log represents a complete log entry for a request/response cycle

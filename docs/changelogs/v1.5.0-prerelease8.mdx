@@ -1,0 +1,107 @@
+---
+title: "v1.5.0-prerelease8"
+description: "v1.5.0-prerelease8 changelog - 2026-05-01"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.0-prerelease8
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.0-prerelease8
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.0-prerelease8
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.0-prerelease8">
+## ✨ Features
+
+- **`objectStorageExcludeFields`** - Configurable list of log payload fields that stay in the database instead of being offloaded to object storage
+- **MCP External Base URL Split** - Split MCP external base URL into separate server and client URL fields for clearer reverse-proxy configuration
+
+## 🐞 Fixed
+
+- **Anthropic Integration Routing** - Skip model catalog routing when loadbalancer or governance routing has already selected the provider
+- **Middleware API Key Auth** - Adjusted API key authentication handling in the middleware
+- **Auth Config Disabled Context** - Update request context correctly when auth config is disabled
+- **MCP Tool Field Resolution** - Resolve `tools_to_execute` and `tools_to_auto_execute` from existing config before validation in MCP client update
+- **SCIM Page Layout** - Added `no-scrollbar` utility class and applied `no-padding-parent` to the SCIM page
+- **SGL Extra Params Passthrough** - SGL provider now sets `BifrostContextKeyPassthroughExtraParams`, so SGLang vLLM-style extra-body params (`chat_template_kwargs`, `guided_json`, `guided_regex`, `separate_reasoning`) are no longer silently dropped (thanks [@hensapir](https://github.com/hensapir)!)
+- **Bedrock Structured-Output Streaming** - Suppress non-tool content events (text deltas, reasoning, non-tool content-block starts) when structured output mode is active, preventing prose from corrupting the assembled JSON
+- **`BifrostError` String Output** - Added `String()` method so logged errors render as JSON instead of decimal byte dumps
+- **Streaming Latency Validation** - Allow zero-millisecond latency values (valid for sub-millisecond cache hits)
+- **`NewUnsupportedOperationError` Context** - Now populates `Provider` and `RequestType` in `ExtraFields`
+
+## 🔧 Maintenance
+
+- **Streaming Accumulator Raw Request** - Moved raw request extraction to final chunk processing in the streaming accumulator
+- **Provider Capability Matrix** - Re-enabled `ContextEditing` and `ContextManagementField` for Vertex; disabled `TaskBudgets` for Azure (not documented upstream); added `claude-4.6-sonnet` support to Bedrock test account
+- **Schema Normalizer** - Added raw-byte JSON schema normalizer (`NormalizeSchemaForAnthropicRaw`) to avoid map round-trips during Anthropic schema preparation
+- **Auth Middleware Context Keys** - Added `IsAPIKeyAuthContextKey` (short-circuit when API-key auth already passed) and `IsLocalAdminContextKey` (bypass RBAC when auth is disabled)
+
+</Update>
+<Update label="Core" description="1.5.7">
+- feat: add `IsAPIKeyAuthContextKey` and `IsLocalAdminContextKey` context keys for middleware to short-circuit on API-key auth and bypass RBAC when auth is fully disabled
+- feat: add `NormalizeSchemaForAnthropicRaw` (gjson/sjson) so JSON schema normalization avoids a `map[string]interface{}` round-trip
+- feat: add `extractJSONSchemaObject` helper in Bedrock utils to unify composite and decomposed JSON schema fields for OpenAI-compat structured output
+- fix: skip model catalog routing if loadbalancer or governance routing has already set the provider in anthropic integration
+- fix: set extra params passthrough for SGL provider so SGLang vLLM-style extra-body parameters are no longer dropped (thanks [@hensapir](https://github.com/hensapir)!)
+- fix: suppress non-tool content events in Bedrock structured-output streaming so prose/preamble no longer corrupts the assembled JSON
+- fix: enrich `NewUnsupportedOperationError` with provider and request type in `ExtraFields`
+- fix: allow zero-millisecond streaming latency values (was previously rejected as invalid)
+- fix: add `String()` method on `BifrostError` so logged errors no longer dump raw bytes as decimal
+- chore: re-enable Vertex `ContextEditing` and `ContextManagementField`; disable Azure `TaskBudgets` in the feature-support matrix; add `claude-4.6-sonnet` mapping for the Bedrock test account
+
+</Update>
+<Update label="Framework" description="1.3.7">
+- feat: add `objectStorageExcludeFields` to keep selected log payload fields in DB instead of offloading to object storage
+- feat: split MCP external base URL into separate server and client URL fields
+- refactor: move raw request extraction to final chunk processing in streaming accumulator
+- fix: update context when auth config is disabled
+- chore: upgraded core to v1.5.7
+
+</Update>
+<Update label="compat" description="0.1.6">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="governance" description="1.5.7">
+- fix: skip model catalog routing if loadbalancer or governance routing has already set the provider in anthropic integration
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="jsonparser" description="1.5.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="logging" description="1.5.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="maxim" description="1.6.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="mocker" description="1.5.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="otel" description="1.2.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="prompts" description="1.0.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="semanticcache" description="1.5.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>
+<Update label="telemetry" description="1.5.7">
+- chore: upgraded core to v1.5.7 and framework to v1.3.7
+
+</Update>

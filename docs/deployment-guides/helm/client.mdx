@@ -115,7 +115,7 @@ Controls which `x-bf-eh-*` headers are forwarded to upstream LLM providers.
 | `bifrost.client.requiredHeaders` | Headers that must be present on every request | `[]` |
 | `bifrost.client.allowedHeaders` | Additional headers permitted for CORS and WebSocket | `[]` |
 
-When both lists are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode — only listed headers are forwarded.
+When both lists are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode - only listed headers are forwarded.
 
 ```yaml
 bifrost:
@@ -172,7 +172,7 @@ helm upgrade bifrost bifrost/bifrost \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `bifrost.encryptionKey` | Optional encryption key (plain text — use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
+| `bifrost.encryptionKey` | Optional encryption key (plain text - use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
 | `bifrost.encryptionKeySecret.name` | Kubernetes Secret name containing the key | `""` |
 | `bifrost.encryptionKeySecret.key` | Key within the secret | `"encryption-key"` |
 

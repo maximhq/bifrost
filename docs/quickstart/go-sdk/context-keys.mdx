@@ -4,7 +4,7 @@ description: "Use context keys to configure request behavior, pass metadata, and
 icon: "key"
 ---
 
-Bifrost uses `BifrostContext` — a custom `context.Context` — to pass configuration and metadata through the request lifecycle. Context keys allow you to customize request behavior, pass request-specific settings, and read metadata set by Bifrost.
+Bifrost uses `BifrostContext` - a custom `context.Context` - to pass configuration and metadata through the request lifecycle. Context keys allow you to customize request behavior, pass request-specific settings, and read metadata set by Bifrost.
 
 The idiomatic pattern is to create a `BifrostContext` and call `SetValue` (or the chainable `WithValue`) directly on it:
 
@@ -203,7 +203,7 @@ response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest
 
 <Note>
 - This feature only works for JSON requests, not multipart/form-data requests
-- Parameters already handled by Bifrost are not duplicated — they appear in their proper location
+- Parameters already handled by Bifrost are not duplicated - they appear in their proper location
 - Nested parameters are merged recursively with existing nested structures
 </Note>
 

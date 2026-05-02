@@ -1436,6 +1436,29 @@ func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
+func TestCalculateCost_WebSocketResponsesFallsBackToChatPricing(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+
+	resp := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.WebSocketResponsesRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	assert.InDelta(t, 0.0125, cost, 1e-12)
+}
+
 func TestCalculateCost_NoPricingData(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
 	resp := makeChatResponse(schemas.OpenAI, "unknown-model", &schemas.BifrostLLMUsage{

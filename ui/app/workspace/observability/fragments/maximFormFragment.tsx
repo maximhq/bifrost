@@ -162,16 +162,16 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								<TooltipTrigger asChild>
 									<Button
 										type="submit"
-										disabled={!hasMaximAccess || !form.formState.isDirty || !form.formState.isValid}
+										disabled={!hasMaximAccess || !form.formState.isDirty}
 										isLoading={isSaving}
 									>
 										Save Maxim Configuration
 									</Button>
 								</TooltipTrigger>
-								{(!form.formState.isDirty || !form.formState.isValid) && (
+								{(!form.formState.isDirty) && (
 									<TooltipContent>
 										<p>
-											{!form.formState.isDirty && !form.formState.isValid
+											{!form.formState.isDirty
 												? "No changes made and validation errors present"
 												: !form.formState.isDirty
 													? "No changes made"

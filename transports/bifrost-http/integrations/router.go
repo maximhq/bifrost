@@ -744,7 +744,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				return
 			}
 			extractedProvider, extractedModel := schemas.ParseModelString(model, "")
-			if extractedProvider == "" {
+			// Skip model-catalog when governance already made a routing decision.
+			// Governance uses dot-notation aliases (e.g. "anthropic.claude-sonnet-4-6") which
+			// ParseModelString cannot extract a provider from (it only handles slash separators),
+			// causing a spurious model-catalog lookup that can override governance's selection.
+			skipModelCatalogProviderSelection, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipModelCatalogProviderSelection).(bool)
+			if extractedProvider == "" && !skipModelCatalogProviderSelection {
 				availableProviders := g.handlerStore.GetProvidersForModel(extractedModel)
 				availableProvidersStrs := make([]string, len(availableProviders))
 				for i, p := range availableProviders {

@@ -278,7 +278,35 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	return l.DeserializeFields()
 }
 
-// MarshalPayload serializes the payload map (from ExtractPayload) to JSON.
+// ExtractPayloadFiltered is like ExtractPayload but omits fields present in
+// the excluded set. An empty/nil excluded map is equivalent to ExtractPayload.
+func ExtractPayloadFiltered(l *Log, excluded map[string]struct{}) map[string]string {
+	if len(excluded) == 0 {
+		return ExtractPayload(l)
+	}
+	m := ExtractPayload(l)
+	for f := range excluded {
+		delete(m, f)
+	}
+	return m
+}
+
+// ClearPayloadFiltered zeros only the payload fields that are not present in
+// the excluded set (i.e. the fields that will be sent to object storage).
+// Fields in the excluded set stay in the DB and are left untouched.
+// An empty/nil excluded map is equivalent to ClearPayload.
+func ClearPayloadFiltered(l *Log, excluded map[string]struct{}) {
+	if len(excluded) == 0 {
+		ClearPayload(l)
+		return
+	}
+	for _, f := range payloadFields {
+		if _, skip := excluded[f]; !skip {
+			clearPayloadField(l, f)
+		}
+	}
+}
+
 func MarshalPayload(payload map[string]string) ([]byte, error) {
 	return sonic.Marshal(payload)
 }

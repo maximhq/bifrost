@@ -202,7 +202,11 @@ bifrost:
     disableContentLogging: false
     disableDbPingsInHealth: false
     logRetentionDays: 365
+    # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
+    # Require auth (VK, API key, or user token) on inference endpoints.
+    # When unset, inference endpoints follow authConfig.disableAuthOnInference behavior.
+    enforceAuthOnInference: true
     allowDirectKeys: false
     maxRequestBodySizeMb: 100
     compat:
@@ -233,7 +237,7 @@ bifrost:
   framework:
     pricing:
       # Custom pricing URL for model cost data
-      pricingUrl: ""
+      pricingUrl: "https://getbifrost.ai/datasheet"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
 
@@ -566,6 +570,10 @@ bifrost:
         timeoutSeconds: 10
         successThreshold: 3
         failureThreshold: 3
+    # gRPC transport for cluster counter-sync (replaces gossip broadcast for governance counters)
+    grpc:
+      port: 10102
+      dialTimeoutSeconds: 5
     discovery:
       enabled: false
       # Discovery type: kubernetes, dns, udp, consul, etcd, mdns
@@ -722,6 +730,9 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # Keep selected payload fields in DB instead of offloading to object storage.
+    # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
+    objectStorageExcludeFields: []
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS

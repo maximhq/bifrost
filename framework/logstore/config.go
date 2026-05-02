@@ -15,17 +15,21 @@ type Config struct {
 	RetentionDays int                 `json:"retention_days"`
 	Config        any                 `json:"config"`
 	ObjectStorage *objectstore.Config `json:"object_storage,omitempty"`
+	// ObjectStorageExcludeFields lists payload field names (DB column names) that
+	// should NOT be offloaded to object storage and instead remain in the database.
+	ObjectStorageExcludeFields []string `json:"object_storage_exclude_fields,omitempty"`
 }
 
 // UnmarshalJSON is the custom unmarshal logic for Config
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled       bool                `json:"enabled"`
-		Type          LogStoreType        `json:"type"`
-		Config        json.RawMessage     `json:"config"` // Keep as raw JSON
-		RetentionDays int                 `json:"retention_days"`
-		ObjectStorage *objectstore.Config `json:"object_storage,omitempty"`
+		Enabled                    bool                `json:"enabled"`
+		Type                       LogStoreType        `json:"type"`
+		Config                     json.RawMessage     `json:"config"` // Keep as raw JSON
+		RetentionDays              int                 `json:"retention_days"`
+		ObjectStorage              *objectstore.Config `json:"object_storage,omitempty"`
+		ObjectStorageExcludeFields []string            `json:"object_storage_exclude_fields,omitempty"`
 	}
 
 	var temp TempConfig
@@ -38,6 +42,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.Type = temp.Type
 	c.RetentionDays = temp.RetentionDays
 	c.ObjectStorage = temp.ObjectStorage
+	c.ObjectStorageExcludeFields = temp.ObjectStorageExcludeFields
 	if !temp.Enabled {
 		c.Config = nil
 		return nil
@@ -59,7 +64,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		var err error
 		if err = json.Unmarshal(temp.Config, &postgresConfig); err != nil {
 			return fmt.Errorf("failed to unmarshal postgres config: %w", err)
-		}		
+		}
 		c.Config = &postgresConfig
 	default:
 		return fmt.Errorf("unknown log store type: %s", temp.Type)

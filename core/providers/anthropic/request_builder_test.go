@@ -21,14 +21,19 @@ func makeSimpleInput(text string) []schemas.ResponsesMessage {
 }
 
 func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
-	t.Run("anthropic_native_normalizes_model", func(t *testing.T) {
+	t.Run("anthropic_native_uses_resolved_model", func(t *testing.T) {
+		// request.Model is always the alias-resolved value by the time the provider
+		// method is called (k.Aliases.Resolve runs in executeRequestWithRetries before
+		// the provider is invoked). The raw body may still carry the governance-modified
+		// form ("anthropic/anthropic.claude-sonnet-4-5"), but the output should use the
+		// resolved model from request.Model.
 		ctx := schemas.NewBifrostContext(nil, time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider:       schemas.Anthropic,
-			Model:          "anthropic/claude-sonnet-4-5",
-			RawRequestBody: []byte(`{"model":"anthropic/claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`),
+			Model:          "claude-sonnet-4-5", // alias-resolved; no prefix
+			RawRequestBody: []byte(`{"model":"anthropic/anthropic.claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`),
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
@@ -40,7 +45,34 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 
 		modelVal := providerUtils.GetJSONField(result, "model").String()
 		if modelVal != "claude-sonnet-4-5" {
-			t.Errorf("expected model to be normalized to 'claude-sonnet-4-5', got %q", modelVal)
+			t.Errorf("expected model to be 'claude-sonnet-4-5', got %q", modelVal)
+		}
+	})
+
+	t.Run("dot_notation_alias_resolved_in_raw_body", func(t *testing.T) {
+		// Regression test for: alias "anthropic.claude-sonnet-4-6" → "claude-sonnet-4-6"
+		// being skipped on the raw-body path. Governance rewrites the body model to
+		// "anthropic/anthropic.claude-sonnet-4-6"; request.Model holds the alias-resolved
+		// value "claude-sonnet-4-6". The output must use the resolved model, not the raw bytes.
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-sonnet-4-6", // alias-resolved
+			RawRequestBody: []byte(`{"model":"anthropic/anthropic.claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`),
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		modelVal := providerUtils.GetJSONField(result, "model").String()
+		if modelVal != "claude-sonnet-4-6" {
+			t.Errorf("expected dot-notation alias to be resolved to 'claude-sonnet-4-6', got %q", modelVal)
 		}
 	})
 

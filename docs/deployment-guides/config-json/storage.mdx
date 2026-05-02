@@ -1,10 +1,10 @@
 ---
 title: "Storage"
-description: "Configure Bifrost storage backends in config.json — config_store, logs_store, vector_store, and object storage for logs"
+description: "Configure Bifrost storage backends in config.json - config_store, logs_store, vector_store, and object storage for logs"
 icon: "database"
 ---
 
-Bifrost persists two types of data — **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store. A **vector store** is required for semantic caching.
+Bifrost persists two types of data - **config** (providers, virtual keys, governance rules) and **logs** (request/response records). Each has its own store. A **vector store** is required for semantic caching.
 
 | Store | Purpose | Backends |
 |-------|---------|---------|
@@ -21,7 +21,7 @@ If you use PostgreSQL for any store, the target database must be **UTF8 encoded*
 ## config_store
 
 <Note>
-When `config_store` is disabled (or absent), all configuration is loaded from `config.json` at startup only — the Web UI is disabled and changes require a restart. See [Two Configuration Modes](/deployment-guides/config-json#two-configuration-modes).
+When `config_store` is disabled (or absent), all configuration is loaded from `config.json` at startup only - the Web UI is disabled and changes require a restart. See [Two Configuration Modes](/deployment-guides/config-json#two-configuration-modes).
 </Note>
 
 <Tabs>
@@ -30,7 +30,7 @@ When `config_store` is disabled (or absent), all configuration is loaded from `c
 
 ### SQLite (Default)
 
-Simplest setup — no external database required. Bifrost stores configuration in a local SQLite file.
+Simplest setup - no external database required. Bifrost stores configuration in a local SQLite file.
 
 ```json
 {
@@ -77,12 +77,12 @@ Production-grade storage suitable for high-availability and high-throughput depl
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `host` | — | PostgreSQL host (supports `env.` prefix) |
-| `port` | — | PostgreSQL port (as string) |
-| `user` | — | Database user (supports `env.` prefix) |
-| `password` | — | Database password (supports `env.` prefix). Leave empty for IAM role auth. |
-| `db_name` | — | Database name |
-| `ssl_mode` | — | `"disable"`, `"require"`, `"verify-ca"`, `"verify-full"` |
+| `host` | - | PostgreSQL host (supports `env.` prefix) |
+| `port` | - | PostgreSQL port (as string) |
+| `user` | - | Database user (supports `env.` prefix) |
+| `password` | - | Database password (supports `env.` prefix). Leave empty for IAM role auth. |
+| `db_name` | - | Database name |
+| `ssl_mode` | - | `"disable"`, `"require"`, `"verify-ca"`, `"verify-full"` |
 | `max_idle_conns` | `5` | Maximum idle connections in the pool |
 | `max_open_conns` | `50` | Maximum open connections to the database |
 
@@ -92,7 +92,7 @@ Production-grade storage suitable for high-availability and high-throughput depl
 
 ### Disabled (file-only mode)
 
-Use this when you want Bifrost to read all configuration from `config.json` only — no database, no Web UI.
+Use this when you want Bifrost to read all configuration from `config.json` only - no database, no Web UI.
 
 ```json
 {
@@ -234,7 +234,7 @@ Offload large request/response payloads from the database to S3 or GCS. The data
 }
 ```
 
-**IAM role (instance profile / IRSA)** — omit `access_key_id` and `secret_access_key`:
+**IAM role (instance profile / IRSA)** - omit `access_key_id` and `secret_access_key`:
 
 ```json
 {
@@ -287,7 +287,7 @@ Omit `credentials_json` to use Application Default Credentials (Workload Identit
 | Field | Description |
 |-------|-------------|
 | `project_id` | GCP project ID (supports `env.` prefix) |
-| `credentials_json` | Service account JSON or path — omit for ADC |
+| `credentials_json` | Service account JSON or path - omit for ADC |
 
 </Tab>
 <Tab title="MinIO (Self-Hosted)">
@@ -385,12 +385,12 @@ A vector store is required for [semantic caching](/features/semantic-caching). C
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `addr` | — | Redis/Valkey address `host:port` (supports `env.` prefix) |
-| `password` | — | Redis AUTH password (supports `env.` prefix) |
+| `addr` | - | Redis/Valkey address `host:port` (supports `env.` prefix) |
+| `password` | - | Redis AUTH password (supports `env.` prefix) |
 | `db` | `0` | Redis database number |
 | `use_tls` | `false` | Enable TLS |
 | `cluster_mode` | `false` | Enable cluster mode (required for MemoryDB; `db` must be `0`) |
-| `pool_size` | — | Maximum socket connections |
+| `pool_size` | - | Maximum socket connections |
 
 </Tab>
 
@@ -413,9 +413,9 @@ A vector store is required for [semantic caching](/features/semantic-caching). C
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `host` | — | Qdrant server host (supports `env.` prefix) |
+| `host` | - | Qdrant server host (supports `env.` prefix) |
 | `port` | `6334` | gRPC port |
-| `api_key` | — | API key (supports `env.` prefix) |
+| `api_key` | - | API key (supports `env.` prefix) |
 | `use_tls` | `false` | Enable TLS |
 
 </Tab>

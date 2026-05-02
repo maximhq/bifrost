@@ -758,11 +758,25 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrRespTruncation] = *resp.Truncation
 	}
 	if resp.Tools != nil {
-		tools := make([]string, len(resp.Tools))
-		for i, tool := range resp.Tools {
-			tools[i] = string(tool.Type)
+		type toolInfo struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
 		}
-		attrs[schemas.AttrRespTools] = strings.Join(tools, ",")
+		tools := make([]toolInfo, len(resp.Tools))
+		for i, tool := range resp.Tools {
+			if tool.Name != nil {
+				info := toolInfo{Name: *tool.Name}
+				if tool.Description != nil {
+					info.Description = *tool.Description
+				}
+				tools[i] = info
+			} else {
+				tools[i] = toolInfo{Name: string(tool.Type)}
+			}
+		}
+		if data, err := schemas.MarshalString(tools); err == nil {
+			attrs[schemas.AttrRespTools] = data
+		}
 	}
 
 	// Usage

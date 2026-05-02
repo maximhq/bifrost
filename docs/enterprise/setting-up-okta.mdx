@@ -149,8 +149,8 @@ Configure the claim:
 
 Bifrost can automatically sync Okta groups for two purposes:
 
-- **Team synchronization** — Groups are synced as Bifrost teams
-- **Role mapping** — Groups can be mapped to Bifrost roles (Admin, Developer, Viewer) using Group-to-Role Mappings in the Bifrost UI.
+- **Team synchronization** - Groups are synced as Bifrost teams
+- **Role mapping** - Groups can be mapped to Bifrost roles (Admin, Developer, Viewer) using Group-to-Role Mappings in the Bifrost UI.
 
 ### Create Groups in Okta
 
@@ -270,7 +270,7 @@ Attribute mappings let you translate Okta claim values into Bifrost roles, teams
 - **`attributeTeamMappings`**: map a claim value to a Bifrost team
 - **`attributeBusinessUnitMappings`**: map a claim value to a Bifrost business unit
 
-These mappings work with any Okta claim — the `groups` claim from Step 5, the custom `role` claim from Step 4, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
+These mappings work with any Okta claim - the `groups` claim from Step 5, the custom `role` claim from Step 4, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
 
 To configure attribute mappings:
 
@@ -305,7 +305,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 #### Evaluation rules
 
 - **Role mappings**: Ordered, first match wins. If no rule matches, users are not allowed to login into the system.
-- **Team and business unit mappings**: All matching rules apply — users can be placed on multiple teams and business units simultaneously.
+- **Team and business unit mappings**: All matching rules apply - users can be placed on multiple teams and business units simultaneously.
 - **Claim values**: Can be strings, arrays, or nested objects. Bifrost resolves dotted paths (e.g., `realm_access.roles`).
 
 5. Click **Save Configuration**

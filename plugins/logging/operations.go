@@ -388,6 +388,13 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.StopReason = streamResponse.Data.FinishReason
 	}
 
+	// Passthrough status code
+	if streamResponse.Data.PassthroughOutput != nil {
+		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
+			params.StatusCode = streamResponse.Data.PassthroughOutput.StatusCode
+		}
+	}
+
 	if contentLoggingEnabled {
 		// Transcription output
 		if streamResponse.Data.TranscriptionOutput != nil {
@@ -408,6 +415,10 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		// Responses output
 		if streamResponse.Data.OutputMessages != nil {
 			entry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
+		}
+		// Passthrough output
+		if streamResponse.Data.PassthroughOutput != nil {
+			entry.PassthroughResponseBody = string(streamResponse.Data.PassthroughOutput.Body)
 		}
 		if shouldStoreRaw {
 			// Raw request

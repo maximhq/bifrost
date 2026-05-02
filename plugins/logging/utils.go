@@ -671,6 +671,8 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeTranscription
 	case schemas.ImageGenerationStreamRequest:
 		streamType = streaming.StreamTypeImage
+	case schemas.PassthroughStreamRequest:
+		streamType = streaming.StreamTypePassthrough
 	default:
 		streamType = streaming.StreamTypeChat
 	}
@@ -692,6 +694,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		AudioOutput:           result.AudioOutput,
 		TranscriptionOutput:   result.TranscriptionOutput,
 		ImageGenerationOutput: result.ImageGenerationOutput,
+		PassthroughOutput:     result.PassthroughOutput,
 		FinishReason:          result.FinishReason,
 		RawResponse:           result.RawResponse,
 	}

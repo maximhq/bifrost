@@ -9,10 +9,10 @@ icon: "circle-dollar-to-slot"
 Bifrost computes request costs using a built-in pricing catalog that is automatically synced from a remote datasheet. **Custom Pricing** lets you override those catalog prices at runtime without redeploying, applying your own rates for any model across any combination of provider, key, and virtual key scopes.
 
 **Key capabilities:**
-- **Scoped overrides** — apply prices globally or narrow them to a specific provider, provider key, or virtual key
-- **Pattern matching** — target an exact model name or a wildcard prefix (e.g. `gpt-4*`)
-- **Request type filtering** — restrict an override to one or more specific operations (chat, embeddings, image generation, etc.); at least one request type is required
-- **Hierarchical resolution** — the most-specific matching override always wins; broader scopes act as fallbacks
+- **Scoped overrides** - apply prices globally or narrow them to a specific provider, provider key, or virtual key
+- **Pattern matching** - target an exact model name or a wildcard prefix (e.g. `gpt-4*`)
+- **Request type filtering** - restrict an override to one or more specific operations (chat, embeddings, image generation, etc.); at least one request type is required
+- **Hierarchical resolution** - the most-specific matching override always wins; broader scopes act as fallbacks
 
 ---
 
@@ -70,7 +70,7 @@ global                    (least specific / catch-all)
 
 | Scope kind | Required | Description |
 |------------|----------|-------------|
-| `global` | — | Applies to every request regardless of provider, key, or virtual key |
+| `global` | - | Applies to every request regardless of provider, key, or virtual key |
 | `provider` | `provider_id` | Applies to all keys under a specific provider |
 | `provider_key` | `provider_key_id` | Applies to a specific provider API key only |
 | `virtual_key` | `virtual_key_id` | Applies to all requests made under a virtual key |
@@ -78,7 +78,7 @@ global                    (least specific / catch-all)
 | `virtual_key_provider_key` | `virtual_key_id` + `provider_key_id` | Most specific: virtual key + exact provider API key |
 
 <Note>
-Scope identifiers are exclusive to their scope kind — you cannot mix them. For example, `virtual_key_provider` requires `virtual_key_id` and `provider_id` and must not include `provider_key_id`.
+Scope identifiers are exclusive to their scope kind - you cannot mix them. For example, `virtual_key_provider` requires `virtual_key_id` and `provider_id` and must not include `provider_key_id`.
 </Note>
 
 ---
@@ -90,7 +90,7 @@ The `pattern` field controls which model names the override applies to. The `mat
 | Match type | Behavior | Example |
 |------------|----------|---------|
 | `exact` | Matches only the exact model name | `gpt-4o` matches only `gpt-4o` |
-| `wildcard` | Prefix match — pattern must end with `*` | `gpt-4*` matches `gpt-4o`, `gpt-4-turbo`, `gpt-4o-mini` |
+| `wildcard` | Prefix match - pattern must end with `*` | `gpt-4*` matches `gpt-4o`, `gpt-4-turbo`, `gpt-4o-mini` |
 
 <Info>
 For wildcard patterns, append a `*` at the end of the prefix. For example, `claude-3*` will match all Claude 3 variants.
@@ -100,7 +100,7 @@ For wildcard patterns, append a `*` at the end of the prefix. For example, `clau
 
 ## Request type filtering
 
-`request_types` is **required** and must contain at least one value. Only request types that have pricing support are accepted. Stream variants are treated identically to their base type — specifying `chat_completion` covers both streaming and non-streaming chat requests.
+`request_types` is **required** and must contain at least one value. Only request types that have pricing support are accepted. Stream variants are treated identically to their base type - specifying `chat_completion` covers both streaming and non-streaming chat requests.
 
 | Type | Description |
 |------|-------------|
@@ -130,12 +130,12 @@ For wildcard patterns, append a `*` at the end of the prefix. For example, `clau
 
 2. Click **Create Override**
 3. Fill in the form:
-   - **Name** — a human-readable label
-   - **Scope** — select the scope kind and provide the matching IDs
-   - **Pattern** — enter the model name or wildcard prefix
-   - **Match type** — choose **Exact** or **Wildcard**
-   - **Request types** — select one or more request types (required)
-   - **Pricing fields** — enter the price values you want to override (only non-zero fields are applied)
+   - **Name** - a human-readable label
+   - **Scope** - select the scope kind and provide the matching IDs
+   - **Pattern** - enter the model name or wildcard prefix
+   - **Match type** - choose **Exact** or **Wildcard**
+   - **Request types** - select one or more request types (required)
+   - **Pricing fields** - enter the price values you want to override (only non-zero fields are applied)
 4. Click **Save**
 
 ![Pricing Override Form](../media/ui-custom-pricing-form.png)
@@ -313,10 +313,10 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `output_cost_per_pixel` | Cost per output pixel |
 | `input_cost_per_image_token` | Cost per image input token |
 | `output_cost_per_image_token` | Cost per image output token |
-| `output_cost_per_image_low_quality` | Generated image — low quality |
-| `output_cost_per_image_medium_quality` | Generated image — medium quality |
-| `output_cost_per_image_high_quality` | Generated image — high quality |
-| `output_cost_per_image_auto_quality` | Generated image — auto quality |
+| `output_cost_per_image_low_quality` | Generated image - low quality |
+| `output_cost_per_image_medium_quality` | Generated image - medium quality |
+| `output_cost_per_image_high_quality` | Generated image - high quality |
+| `output_cost_per_image_auto_quality` | Generated image - auto quality |
 | `output_cost_per_image_above_512_and_512_pixels` | Generated image > 512×512 |
 | `output_cost_per_image_above_1024_and_1024_pixels` | Generated image > 1024×1024 |
 | `output_cost_per_image_above_2048_and_2048_pixels` | Generated image > 2048×2048 |
@@ -371,7 +371,7 @@ A specific virtual key has negotiated lower prices for GPT-4o:
 ```json
 {
   "id": "vk-prod-gpt4o-rate",
-  "name": "Prod VK — GPT-4o negotiated rate",
+  "name": "Prod VK - GPT-4o negotiated rate",
   "scope_kind": "virtual_key",
   "virtual_key_id": "vk-abc123",
   "match_type": "exact",
@@ -417,6 +417,6 @@ Use a global override to add pricing for a model not yet in the built-in catalog
 
 ## Next steps
 
-- **[Virtual Keys](../features/governance/virtual-keys)** — Attach virtual-key-scoped overrides to virtual keys for per-customer pricing
-- **[Budget and Limits](../features/governance/budget-and-limits)** — Understand how costs are tracked against budgets
-- **[Model Catalog](../architecture/framework/model-catalog)** — Deep dive into how pricing resolution and cost calculation work internally
+- **[Virtual Keys](../features/governance/virtual-keys)** - Attach virtual-key-scoped overrides to virtual keys for per-customer pricing
+- **[Budget and Limits](../features/governance/budget-and-limits)** - Understand how costs are tracked against budgets
+- **[Model Catalog](../architecture/framework/model-catalog)** - Deep dive into how pricing resolution and cost calculation work internally

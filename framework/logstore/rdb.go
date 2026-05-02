@@ -47,9 +47,9 @@ const (
 
 // RDBLogStore represents a log store that uses a SQLite database.
 type RDBLogStore struct {
-	db             *gorm.DB
-	logger         schemas.Logger
-	matViewsReady  atomic.Bool
+	db            *gorm.DB
+	logger        schemas.Logger
+	matViewsReady atomic.Bool
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.
@@ -717,6 +717,7 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 		}
 
 		completedCount := result.CompletedCount.Int64
+		stats.CacheHitRateTotalRequests = &completedCount
 		if completedCount > 0 {
 			stats.SuccessRate = float64(result.SuccessCount.Int64) / float64(completedCount) * 100
 			if result.AvgLatency.Valid {
@@ -784,7 +785,50 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 		}
 	}
 
+	// Count cache hits by hit_type from cache_debug JSON
+	cacheBase := s.db.WithContext(ctx).Model(&Log{}).Where("status IN ?", []string{"success", "error"})
+	direct, semantic, err := s.aggregateCacheHits(ctx, cacheBase, filters)
+	if err != nil {
+		s.logger.Warn(fmt.Sprintf("logstore: failed to aggregate cache-hit stats, skipping: %s", err))
+	} else if direct != nil || semantic != nil {
+		stats.DirectCacheHits = direct
+		stats.SemanticCacheHits = semantic
+	}
+
 	return stats, nil
+}
+
+// aggregateCacheHits counts direct and semantic cache hits from the cache_debug JSON column.
+// It applies the given base query (already scoped to the right table) plus filters.
+func (s *RDBLogStore) aggregateCacheHits(ctx context.Context, base *gorm.DB, filters SearchFilters) (*int64, *int64, error) {
+	var result struct {
+		DirectHits   sql.NullInt64 `gorm:"column:direct_hits"`
+		SemanticHits sql.NullInt64 `gorm:"column:semantic_hits"`
+	}
+	q := s.applyFilters(base, filters)
+	if s.db.Dialector.Name() == "postgres" {
+		q = q.Where("cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$'")
+		if err := q.Select(
+			`SUM(CASE WHEN substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
+				`SUM(CASE WHEN substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"') = 'semantic' THEN 1 ELSE 0 END) AS semantic_hits`,
+		).Scan(&result).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
+		}
+	} else {
+		q = q.Where("cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug)")
+		if err := q.Select(
+			`SUM(CASE WHEN json_extract(cache_debug, '$.hit_type') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
+				`SUM(CASE WHEN json_extract(cache_debug, '$.hit_type') = 'semantic' THEN 1 ELSE 0 END) AS semantic_hits`,
+		).Scan(&result).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
+		}
+	}
+	if !result.DirectHits.Valid && !result.SemanticHits.Valid {
+		return nil, nil, nil
+	}
+	direct := result.DirectHits.Int64
+	semantic := result.SemanticHits.Int64
+	return &direct, &semantic, nil
 }
 
 // GetHistogram returns time-bucketed request counts for the given filters.

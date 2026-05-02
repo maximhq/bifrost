@@ -4,8 +4,6 @@ description: "Learn how to enable basic authentication for the Bifrost dashboard
 icon: "lock"
 ---
 
-<Note>This feature is only available in OSS. For enterprise builds you can setup [SCIM](/enterprise/scim)</Note>
-
 ## Overview
 
 Bifrost provides built-in authentication to protect your dashboard and admin API endpoints. When enabled, users must log in with credentials before accessing the dashboard or making admin API calls. This feature helps secure your Bifrost instance, especially when deployed in production environments.
@@ -66,7 +64,7 @@ You can configure specific routes that bypass the authentication middleware enti
 <Note>
   System routes like `/health`, `/api/session/login`, `/api/session/is-auth-enabled`, `/api/oauth/callback`, and
   `/api/info` are always whitelisted regardless of this setting. Whitelisted routes only apply to dashboard and admin
-  API endpoints — inference endpoints have their own toggle (see Step 3).
+  API endpoints - inference endpoints have their own toggle (see Step 3).
 </Note>
 
 ### Step 5: Save Changes
@@ -109,7 +107,7 @@ When authentication is enabled for inference calls (i.e., the "Disable authentic
 
 ### Whitelisted Routes
 
-When a route is added to the whitelisted routes list in Security settings, requests to that path bypass authentication entirely — no Basic Auth or Bearer Token is required. This applies only to dashboard and admin API endpoints. Inference endpoints are controlled separately via the "Disable authentication on inference calls" toggle.
+When a route is added to the whitelisted routes list in Security settings, requests to that path bypass authentication entirely - no Basic Auth or Bearer Token is required. This applies only to dashboard and admin API endpoints. Inference endpoints are controlled separately via the "Disable authentication on inference calls" toggle.
 
 ### Example: Using Basic Auth for Inference Calls
 
