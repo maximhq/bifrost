@@ -2800,7 +2800,11 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 			}
 
 			// Convert regular message
-			if role == schemas.ResponsesInputMessageRoleSystem {
+			// OpenAI's Responses API permits role="developer" as a system-message
+			// variant. Bedrock Converse rejects anything other than user/assistant,
+			// so fold "developer" into the system-message branch. See:
+			// github.com/maximhq/bifrost/issues/2492
+			if role == schemas.ResponsesInputMessageRoleSystem || role == schemas.ResponsesInputMessageRoleDeveloper {
 				// Convert to system message
 				systemMsgs := convertBifrostMessageToBedrockSystemMessages(&msg)
 				systemMessages = append(systemMessages, systemMsgs...)
