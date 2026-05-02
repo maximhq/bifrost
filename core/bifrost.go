@@ -608,9 +608,14 @@ func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schema
 		return providerKeys
 	}
 
-	availableProviders, ok := ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
-	if !ok {
+	rawAvailableProviders := ctx.Value(schemas.BifrostContextKeyAvailableProviders)
+	if rawAvailableProviders == nil {
 		return providerKeys
+	}
+
+	availableProviders, ok := rawAvailableProviders.([]schemas.ModelProvider)
+	if !ok {
+		return []schemas.ModelProvider{}
 	}
 
 	if len(availableProviders) == 0 || len(providerKeys) == 0 {

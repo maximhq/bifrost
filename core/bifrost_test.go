@@ -807,6 +807,16 @@ func TestFilterProvidersByContext(t *testing.T) {
 			t.Fatalf("expected no providers, got %v", filtered)
 		}
 	})
+
+	t.Run("malformed available providers fails closed", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, "openai")
+
+		filtered := filterProvidersByContext(ctx, providers)
+		if len(filtered) != 0 {
+			t.Fatalf("expected no providers for malformed context value, got %v", filtered)
+		}
+	})
 }
 
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
