@@ -58,7 +58,8 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 // resolveModelAndProvider parses the model string, validates it, and resolves
 // the provider via model catalog when no provider prefix is present. Stores
 // resolution metadata on the fasthttp context for ConvertToBifrostContext to
-// emit the routing engine log.
+// emit the routing engine log. Returns an empty provider when the prefix is
+// unknown and the catalog has no match; tryRequest validates post-plugin.
 func resolveModelAndProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
 	provider, modelName := schemas.ParseModelString(model, "")
 	if modelName == "" {
@@ -66,15 +67,14 @@ func resolveModelAndProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model
 	}
 	if provider == "" {
 		providers := config.GetProvidersForModel(modelName)
-		if len(providers) == 0 {
-			return "", "", fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog to auto-resolve", modelName)
+		if len(providers) > 0 {
+			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
+				Model:            modelName,
+				ResolvedProvider: providers[0],
+				AllProviders:     providers,
+			})
+			provider = providers[0]
 		}
-		ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
-			Model:            modelName,
-			ResolvedProvider: providers[0],
-			AllProviders:     providers,
-		})
-		provider = providers[0]
 	}
 	return provider, modelName, nil
 }
@@ -594,17 +594,19 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 }
 
-// parseFallbacks extracts fallbacks from string array and converts to Fallback structs
+// parseFallbacks extracts fallbacks from string array and converts to Fallback
+// structs. Empty Provider is preserved so a plugin can re-route before dispatch.
 func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
 	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
 	for _, fallback := range fallbackStrings {
 		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		if fallbackProvider != "" && fallbackModelName != "" {
-			fallbacks = append(fallbacks, schemas.Fallback{
-				Provider: fallbackProvider,
-				Model:    fallbackModelName,
-			})
+		if fallbackModelName == "" {
+			continue
 		}
+		fallbacks = append(fallbacks, schemas.Fallback{
+			Provider: fallbackProvider,
+			Model:    fallbackModelName,
+		})
 	}
 	return fallbacks, nil
 }
