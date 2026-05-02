@@ -567,6 +567,12 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 			}
+			// Bedrock Converse rejects messages with null/empty content. Skip
+			// user/assistant turns that carry no text, tool calls, or reasoning
+			// (e.g. Codex CLI placeholder assistants between tool-call turns).
+			if len(bedrockMsg.Content) == 0 {
+				continue
+			}
 			messages = append(messages, bedrockMsg)
 
 		case schemas.ChatMessageRoleTool:

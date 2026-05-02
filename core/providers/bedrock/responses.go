@@ -2933,6 +2933,14 @@ func convertBifrostMessageToBedrockMessage(msg *schemas.ResponsesMessage) *Bedro
 	if err != nil {
 		return nil
 	}
+	// Bedrock Converse rejects messages with null/empty content. Codex CLI emits
+	// placeholder assistant messages with content=[] between tool-call turns,
+	// and historic transcripts may contain messages whose content consisted
+	// entirely of reasoning/metadata blocks that this converter doesn't map.
+	// Drop such messages so upstream callers can emit a coherent sequence.
+	if len(contentBlocks) == 0 {
+		return nil
+	}
 	bedrockMsg.Content = contentBlocks
 
 	return &bedrockMsg
