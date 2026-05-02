@@ -17,11 +17,11 @@ description: "v1.5.0-prerelease1 changelog - 2026-04-01"
 </Tabs>
 
 <Update label="Bifrost(HTTP)" description="1.5.0-prerelease1">
-- feat: dedicated provider keys API — keys are now managed via `/api/providers/{provider}/keys` endpoints instead of being embedded in provider create/update payloads
+- feat: dedicated provider keys API - keys are now managed via `/api/providers/{provider}/keys` endpoints instead of being embedded in provider create/update payloads
 - feat: VK provider config key_ids now supports ["*"] wildcard to allow all keys; empty key_ids denies all; handler resolves wildcard to AllowAllKeys flag without DB key lookups
 - feat: now plugins can start injecting logs at trace level. Just use `ctx.Log(schemas.LogLevelInfo, "Test log")`
 - feat: add option to disable automatic MCP tool injection per request
-- feat: virtual key MCP configs now act as an execution-time allow-list — tools not permitted by the VK are blocked at inference and MCP tool execution
+- feat: virtual key MCP configs now act as an execution-time allow-list - tools not permitted by the VK are blocked at inference and MCP tool execution
 - refactor: standardize empty array conventions in bifrost. Empty array means no tools/keys are allowed, ["*"] means all tools/keys are allowed.
 - feat: add support for request level extra headers in MCP tool execution.
 - fix: add support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response when using bifrost as an MCP gateway.
@@ -48,7 +48,7 @@ This prerelease introduces 9 breaking changes. See the **[v1.5.0 Migration Guide
 | [3](/migration-guides/v1.5.0#breaking-change-3-virtual-key-provider_configs-is-deny-by-default) | Virtual Key `provider_configs` is deny-by-default (empty = no providers) | `config.json`, REST API |
 | [4](/migration-guides/v1.5.0#breaking-change-4-whitelist-validation) | WhiteList validation: wildcard cannot be mixed, no duplicates | REST API |
 | [5](/migration-guides/v1.5.0#breaking-change-5-weight-is-now-nullable) | `weight` is now nullable (`*float64`) on VK provider configs | REST API, Go SDK |
-| [6](/migration-guides/v1.5.0#breaking-change-6-provider-keys-api-separated) | Provider keys API separated — `keys` removed from provider payloads | REST API |
+| [6](/migration-guides/v1.5.0#breaking-change-6-provider-keys-api-separated) | Provider keys API separated - `keys` removed from provider payloads | REST API |
 | [7](/migration-guides/v1.5.0#breaking-change-7-compact-plugin-restructured) | Compact plugin: `enable_litellm_fallbacks` replaced by three granular options | Plugin config |
 | [8](/migration-guides/v1.5.0#breaking-change-8-replicate-image-edits-removed-from-generations-endpoint) | Replicate image edits removed from `/v1/images/generations` | REST API |
 | [9](/migration-guides/v1.5.0#breaking-change-9-ollama-and-sgl-per-key-url-configuration) | Ollama and SGL moved to per-key URL configuration | `config.json`, REST API |

@@ -15,7 +15,7 @@ Bifrost Enterprise uses **SCIM-backed identity provisioning** to connect your or
 - **Bulk user provisioning** with filter-preview before import
 - **Silent token refresh** using server-stored refresh tokens
 
-Once configured, users sign in to Bifrost with their corporate credentials and inherit the right [role and permissions](./rbac) immediately — no manual account creation.
+Once configured, users sign in to Bifrost with their corporate credentials and inherit the right [role and permissions](./rbac) immediately - no manual account creation.
 
 <Frame>
   <img src="/media/user-provisioning/scim-overview.png" alt="User Provisioning overview in Bifrost dashboard" />
@@ -25,7 +25,7 @@ Once configured, users sign in to Bifrost with their corporate credentials and i
 
 ## Supported Identity Providers
 
-Pick your IdP to follow a step-by-step setup guide. All providers share the same Bifrost configuration surface — the only difference is how the OAuth client and role/group claims are created on the provider side.
+Pick your IdP to follow a step-by-step setup guide. All providers share the same Bifrost configuration surface - the only difference is how the OAuth client and role/group claims are created on the provider side.
 
 <CardGroup cols={3}>
   <Card title="Okta" icon="o" href="/enterprise/setting-up-okta">
@@ -50,12 +50,12 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
   <img src="/media/user-provisioning/scim-flow.png" alt="SCIM authentication and provisioning flow" />
 </Frame>
 
-1. **Login** — Bifrost redirects unauthenticated users to the provider's authorization endpoint (Authorization Code flow).
-2. **Token exchange** — on callback, Bifrost exchanges the code for an access token and refresh token, stores them in an `HttpOnly` cookie / server session, and validates the JWT against the provider's JWKS.
-3. **Identity extraction** — configurable JWT claims (`userIdField`, `rolesField`, `teamIdsField`) are mapped to a Bifrost user, role, and teams. Provider-specific app roles or custom attributes override claim lookup.
-4. **Attribute mapping** — optional `attributeRoleMappings`, `attributeTeamMappings`, and `attributeBusinessUnitMappings` translate arbitrary claim values (e.g., a department string or Okta group name) into Bifrost roles, teams, or business units.
-5. **Bulk import** — admins can preview users matching a filter and bulk-import them via the dashboard, which calls the provider's user directory API.
-6. **Silent refresh** — when the access token expires, Bifrost uses the stored refresh token to mint a new one without requiring re-login.
+1. **Login** - Bifrost redirects unauthenticated users to the provider's authorization endpoint (Authorization Code flow).
+2. **Token exchange** - on callback, Bifrost exchanges the code for an access token and refresh token, stores them in an `HttpOnly` cookie / server session, and validates the JWT against the provider's JWKS.
+3. **Identity extraction** - configurable JWT claims (`userIdField`, `rolesField`, `teamIdsField`) are mapped to a Bifrost user, role, and teams. Provider-specific app roles or custom attributes override claim lookup.
+4. **Attribute mapping** - optional `attributeRoleMappings`, `attributeTeamMappings`, and `attributeBusinessUnitMappings` translate arbitrary claim values (e.g., a department string or Okta group name) into Bifrost roles, teams, or business units.
+5. **Bulk import** - admins can preview users matching a filter and bulk-import them via the dashboard, which calls the provider's user directory API.
+6. **Silent refresh** - when the access token expires, Bifrost uses the stored refresh token to mint a new one without requiring re-login.
 
 ---
 
@@ -87,7 +87,7 @@ All providers share the same outer config shape in `config.json`:
     "enabled": true,
     "provider": "okta | entra | zitadel | keycloak | google | sailpoint",
     "config": {
-      "...": "provider-specific fields — see each IdP guide"
+      "...": "provider-specific fields - see each IdP guide"
     }
   }
 }
@@ -114,7 +114,7 @@ Provider-specific fields (domain, tenant ID, server URL, service-account credent
 
 ## Environment variable support
 
-Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a literal value — Bifrost resolves the variable from the process environment at startup. Attribute mapping arrays are always plain JSON (they cannot reference env vars).
+Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a literal value - Bifrost resolves the variable from the process environment at startup. Attribute mapping arrays are always plain JSON (they cannot reference env vars).
 
 ### Okta
 
@@ -196,7 +196,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 
 ### SailPoint
 
-SailPoint fields are **plain values only** — `env.*` references are not supported for any SailPoint config field.
+SailPoint fields are **plain values only** - `env.*` references are not supported for any SailPoint config field.
 
 | Field | JSON key | Required | Notes |
 | --- | --- | --- | --- |
@@ -253,10 +253,10 @@ Each mapping is an ordered rule:
 ```
 
 Rules are evaluated top-to-bottom:
-- **Role mappings** — first match wins. Set a fallback with `"attribute": "*"` at the end.
-- **Team mappings** and **business unit mappings** — all matching rules apply, so a user with `department=Platform` and `group=sre` can be placed on multiple teams.
+- **Role mappings** - first match wins. Set a fallback with `"attribute": "*"` at the end.
+- **Team mappings** and **business unit mappings** - all matching rules apply, so a user with `department=Platform` and `group=sre` can be placed on multiple teams.
 
-Claim values can be strings, arrays, or nested objects — Bifrost resolves dotted paths (e.g., `realm_access.roles`).
+Claim values can be strings, arrays, or nested objects - Bifrost resolves dotted paths (e.g., `realm_access.roles`).
 
 ---
 
@@ -265,7 +265,7 @@ Claim values can be strings, arrays, or nested objects — Bifrost resolves dott
 Once SCIM is enabled, import users in bulk from your IdP:
 
 1. Go to **Governance → User Provisioning → Import Users**.
-2. Select a filter — groups, roles, departments, or a custom query depending on provider support.
+2. Select a filter - groups, roles, departments, or a custom query depending on provider support.
 3. Click **Preview** to see up to 50 matching users.
 4. Click **Import** to create them in Bifrost with role / team / BU assignments applied.
 
@@ -273,7 +273,7 @@ Once SCIM is enabled, import users in bulk from your IdP:
   <img src="/media/user-provisioning/scim-import-preview.png" alt="Preview of users matching an import filter" />
 </Frame>
 
-Re-running an import reconciles existing users — role and team changes in the IdP are reflected on the next import.
+Re-running an import reconciles existing users - role and team changes in the IdP are reflected on the next import.
 
 ---
 
@@ -282,11 +282,11 @@ Re-running an import reconciles existing users — role and team changes in the 
 | Symptom | Likely cause |
 | --- | --- |
 | Access denied: no application role or group mapping is assigned to this user. | Make sure you have assigned user to the Bifrost IdP application and they have a valid group/attribute mapping to role in Bifrost  |
-| Redirect loop on login | Make sure you have restarted pods/Bifrost instance after changing SCIM configuration, or check for a redirect URI mismatch. Exact string match required — check trailing slashes and `http` vs `https`. |
+| Redirect loop on login | Make sure you have restarted pods/Bifrost instance after changing SCIM configuration, or check for a redirect URI mismatch. Exact string match required - check trailing slashes and `http` vs `https`. |
 | `invalid audience` | `audience` field does not match the access token's `aud` claim. Use the same value your IdP issues. |
 | Empty roles / teams | Claim mapping is off. Verify the JWT at [jwt.io](https://jwt.io) and check `rolesField` / `teamIdsField`. |
 | Token refresh failing | `offline_access` scope missing or refresh token revoked. Re-enable the scope and re-authenticate. |
-| First user gets Admin | By design — if no matching role mapping applies, the first user is promoted to Admin so they can finish configuration. Subsequent users default to Viewer. |
+| First user gets Admin | By design - if no matching role mapping applies, the first user is promoted to Admin so they can finish configuration. Subsequent users default to Viewer. |
 
 Provider-specific troubleshooting lives in each IdP's guide.
 
@@ -294,6 +294,6 @@ Provider-specific troubleshooting lives in each IdP's guide.
 
 ## Related
 
-- [Role-Based Access Control](./rbac) — permissions model and custom roles
-- [Advanced Governance](./advanced-governance) — budgets, limits, and compliance
-- [Audit Logs](./audit-logs) — track authentication events and role changes
+- [Role-Based Access Control](./rbac) - permissions model and custom roles
+- [Advanced Governance](./advanced-governance) - budgets, limits, and compliance
+- [Audit Logs](./audit-logs) - track authentication events and role changes

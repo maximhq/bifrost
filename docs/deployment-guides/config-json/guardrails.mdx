@@ -14,8 +14,8 @@ Credential and endpoint fields in guardrail provider `config` blocks support `"e
 
 Guardrails are configured under `guardrails_config` in `config.json`. The configuration has two parts:
 
-- **`guardrail_providers`** — the backend that performs the check. Rules link to providers by `id`.
-- **`guardrail_rules`** — CEL expressions that control when and where providers are invoked.
+- **`guardrail_providers`** - the backend that performs the check. Rules link to providers by `id`.
+- **`guardrail_rules`** - CEL expressions that control when and where providers are invoked.
 
 ---
 
@@ -53,7 +53,7 @@ Runs entirely in-process with no external dependency. Patterns use RE2 syntax. S
 </Tab>
 <Tab title="AWS Bedrock">
 
-Supports three auth modes: `keys` (static credentials), `api_key` (Bedrock API key), and `iam_role` (ambient IAM/IRSA — no explicit credentials required).
+Supports three auth modes: `keys` (static credentials), `api_key` (Bedrock API key), and `iam_role` (ambient IAM/IRSA - no explicit credentials required).
 
 ```json
 {
@@ -91,7 +91,7 @@ For `auth_type: "api_key"`:
 }
 ```
 
-For `auth_type: "iam_role"` (no credentials — uses ambient IAM):
+For `auth_type: "iam_role"` (no credentials - uses ambient IAM):
 ```json
 {
   "auth_type": "iam_role",
@@ -147,7 +147,7 @@ For `auth_type: "entra_id"` (service principal):
 }
 ```
 
-For `auth_type: "default_credential"` (managed identity / Azure CLI — no credentials needed):
+For `auth_type: "default_credential"` (managed identity / Azure CLI - no credentials needed):
 ```json
 {
   "auth_type": "default_credential"
@@ -216,7 +216,7 @@ For `auth_type: "default_credential"` (managed identity / Azure CLI — no crede
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | Yes | Unique integer ID — referenced by rules via `provider_config_ids` |
+| `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
 | `provider_name` | Yes | Backend: `"regex"`, `"bedrock"`, `"azure"`, `"patronus-ai"`, `"grayswan"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |

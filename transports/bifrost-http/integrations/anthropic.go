@@ -308,6 +308,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 
@@ -315,6 +316,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 	}

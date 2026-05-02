@@ -37,11 +37,11 @@ When Bifrost retries a request (rate-limit or network error) the following field
 
 | Field | Meaning |
 |-------|---------|
-| `selected_key_id` / `selected_key_name` | The API key that **successfully** served the request. `null` when all attempts failed — use `attempt_trail` to see which keys were tried. |
+| `selected_key_id` / `selected_key_name` | The API key that **successfully** served the request. `null` when all attempts failed - use `attempt_trail` to see which keys were tried. |
 | `number_of_retries` | Total number of attempts minus one. **Does not indicate which key was used on each attempt.** |
 | `attempt_trail` | Ordered array of every attempt, with key used and failure reason. `fail_reason` is `null` on the final attempt. |
 
-**Example `attempt_trail`** — two rate-limit rotations then success on a third key:
+**Example `attempt_trail`** - two rate-limit rotations then success on a third key:
 
 ```json
 "attempt_trail": [
@@ -409,9 +409,9 @@ Capture specific HTTP request headers into the **metadata** field of every LLM a
 
 There are two ways headers get captured into log metadata:
 
-**1. Configured Logging Headers** — Define a list of header names in the configuration. The logging plugin looks up each configured header (case-insensitive) and stores its value in the metadata.
+**1. Configured Logging Headers** - Define a list of header names in the configuration. The logging plugin looks up each configured header (case-insensitive) and stores its value in the metadata.
 
-**2. `x-bf-lh-*` Prefix (Automatic)** — Any request header with the `x-bf-lh-` prefix is automatically captured into metadata with no configuration needed. The prefix is stripped and the remainder becomes the metadata key.
+**2. `x-bf-lh-*` Prefix (Automatic)** - Any request header with the `x-bf-lh-` prefix is automatically captured into metadata with no configuration needed. The prefix is stripped and the remainder becomes the metadata key.
 
 | Request Header | Metadata Key | Metadata Value |
 |----------------|-------------|----------------|
@@ -419,7 +419,7 @@ There are two ways headers get captured into log metadata:
 | `x-bf-lh-env: production` | `env` | `production` |
 | `x-bf-lh-region: us-east-1` | `region` | `us-east-1` |
 
-Both methods can be used together — configured headers and `x-bf-lh-*` headers are merged into the same metadata map.
+Both methods can be used together - configured headers and `x-bf-lh-*` headers are merged into the same metadata map.
 
 ### Configuring Logging Headers
 
@@ -435,7 +435,7 @@ Both methods can be used together — configured headers and `x-bf-lh-*` headers
 4. Enter a comma-separated list of header names (e.g., `X-Tenant-ID, X-Correlation-ID`)
 5. Click **Save Changes**
 
-Changes take effect immediately — no restart required.
+Changes take effect immediately - no restart required.
 
 </Tab>
 <Tab title="API">
@@ -513,7 +513,7 @@ Metadata is displayed in the log detail view for both LLM and MCP logs as indivi
 | Feature | Purpose | Effect on Request |
 |---------|---------|-------------------|
 | **Required Headers** | Enforce header presence | Rejects request if missing (400) |
-| **Logging Headers** | Capture header values | No effect on request — only logs metadata |
+| **Logging Headers** | Capture header values | No effect on request - only logs metadata |
 
 A common pattern is to require a header **and** log it:
 

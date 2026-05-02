@@ -44,7 +44,6 @@ type AccumulatedData struct {
 	FinishReason          *string
 	LogProbs              *schemas.BifrostLogProbs
 	RawResponse           *string
-	RawRequest            *string
 }
 
 // AudioStreamChunk represents a single streaming chunk
@@ -85,7 +84,6 @@ type ChatStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
 	RawResponse        *string                                // Raw response if available
-	RawRequest         *string                                // Raw request if available (final chunk only)
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk

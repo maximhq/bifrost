@@ -80,10 +80,10 @@ const (
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
 	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
-	AnthropicTaskBudgetsBetaHeaderPrefix            = "task-budgets-"
-	AnthropicEagerInputStreamingBetaHeaderPrefix    = "fine-grained-tool-streaming-"
-	AnthropicContextManagementBetaHeaderPrefix      = "context-management-"
-	AnthropicCompactionBetaHeaderPrefix             = "compact-"
+	AnthropicTaskBudgetsBetaHeaderPrefix         = "task-budgets-"
+	AnthropicEagerInputStreamingBetaHeaderPrefix = "fine-grained-tool-streaming-"
+	AnthropicContextManagementBetaHeaderPrefix   = "context-management-"
+	AnthropicCompactionBetaHeaderPrefix          = "compact-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -102,36 +102,36 @@ const (
 //	Advisor-excl = Advisor tool Claude-API-only:
 //	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 type ProviderFeatureSupport struct {
-	WebSearch           bool // web_search server tool (cite: A)
-	WebSearchDynamic    bool // web_search_20260209 dynamic filtering (cite: A)
-	WebFetch            bool // web_fetch server tool (cite: A)
-	CodeExecution       bool // code_execution server tool (cite: A)
-	ComputerUse         bool // computer_use client tool (cite: A, B-header)
-	Bash                bool // bash client tool (cite: A, B-header)
-	Memory              bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
-	TextEditor          bool // text_editor client tool (cite: A)
-	ToolSearch          bool // tool_search server tool — tool-search-tool-2025-10-19 (cite: A, B-header)
-	MCP                 bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
-	AdvancedToolUse     bool // advanced-tool-use-2025-11-20 bundle: defer_loading + input_examples + allowed_callers (cite: A)
-	InputExamples       bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
-	StructuredOutputs   bool // strict tool validation / output_format (cite: A)
-	PromptCachingScope  bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
+	WebSearch              bool // web_search server tool (cite: A)
+	WebSearchDynamic       bool // web_search_20260209 dynamic filtering (cite: A)
+	WebFetch               bool // web_fetch server tool (cite: A)
+	CodeExecution          bool // code_execution server tool (cite: A)
+	ComputerUse            bool // computer_use client tool (cite: A, B-header)
+	Bash                   bool // bash client tool (cite: A, B-header)
+	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
+	TextEditor             bool // text_editor client tool (cite: A)
+	ToolSearch             bool // tool_search server tool — tool-search-tool-2025-10-19 (cite: A, B-header)
+	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
+	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: defer_loading + input_examples + allowed_callers (cite: A)
+	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
+	StructuredOutputs      bool // strict tool validation / output_format (cite: A)
+	PromptCachingScope     bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
 	Compaction             bool // compact_20260112 (cite: A, B-header)
 	ContextEditing         bool // clear_tool_uses / clear_thinking (cite: A, B-header)
 	ContextManagementField bool // provider accepts the context_management JSON body field at all; false → entire field dropped regardless of edit types
-	FilesAPI            bool // files-api-2025-04-14, file_id source (cite: A)
-	InterleavedThinking bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
-	Skills              bool // Agent Skills — container.skills object (cite: A)
-	ContainerBasic      bool // Bare string-form container id — universally supported (cite: A)
-	Context1M           bool // 1M context window — context-1m-2025-08-07 (cite: A)
-	FastMode            bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
-	RedactThinking      bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
-	TaskBudgets         bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
-	InferenceGeo        bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
-	EagerInputStreaming bool // fine-grained-tool-streaming-2025-05-14 (cite: A, B-header)
-	AdvisorTool         bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
-	FileSearch          bool // file_search server tool (OpenAI-only)
-	ImageGeneration     bool // image_generation server tool (OpenAI-only)
+	FilesAPI               bool // files-api-2025-04-14, file_id source (cite: A)
+	InterleavedThinking    bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
+	Skills                 bool // Agent Skills — container.skills object (cite: A)
+	ContainerBasic         bool // Bare string-form container id — universally supported (cite: A)
+	Context1M              bool // 1M context window — context-1m-2025-08-07 (cite: A)
+	FastMode               bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
+	RedactThinking         bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
+	TaskBudgets            bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
+	InferenceGeo           bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
+	EagerInputStreaming    bool // fine-grained-tool-streaming-2025-05-14 (cite: A, B-header)
+	AdvisorTool            bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
+	FileSearch             bool // file_search server tool (OpenAI-only)
+	ImageGeneration        bool // image_generation server tool (OpenAI-only)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -153,26 +153,30 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
 	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool, StructuredOutputs,
-	// PromptCachingScope (400 "unexpected beta header" per LiteLLM #19984),
-	// ContextEditing (400 "unexpected beta header" per live API error),
-	// ContextManagementField (400 "Extra inputs are not permitted" per live API error
-	//     when the request body carries a context_management object).
-	// Compaction IS supported on Vertex via the compact-2026-01-12 beta header even
-	//     though Anthropic's compaction docs don't list Vertex (verified by live
-	//     testing). The header passes through FilterBetaHeadersForProvider because
-	//     Compaction: true; the body-field stripper at utils.go:460 removes any
-	//     client-side context_management payload (gated by ContextManagementField:
-	//     false) so the request still succeeds. The two flags are intentionally
-	//     independent: one controls header forwarding, the other controls body shape.
+	// PromptCachingScope (per A overview "Automatic prompt caching" row =
+	//     claudeApi + azureAiBeta only; not yet rolled out to Vertex),
 	// FilesAPI, WebFetch, CodeExecution, AdvancedToolUse, RedactThinking.
+	//
+	// Context editing (context-management-2025-06-27 beta header) and the
+	// context_management body field ARE supported on Vertex (Beta). Cite:
+	// https://platform.claude.com/docs/en/build-with-claude/overview
+	// → "Context management" → Context editing row marked
+	// `<PlatformAvailability claudeApiBeta bedrockBeta vertexAiBeta azureAiBeta />`.
+	// Re-enabled 2026-05-01; PR #3055 had disabled this after a transient 400,
+	// which the documented availability supersedes.
+	//
+	// Compaction is also documented on Vertex per the same overview table
+	// (compact-2026-01-12 beta header).
 	schemas.Vertex: {
 		WebSearch:   true, // web search GA on Vertex per A; earlier code restricted to web_search_20250305 — A doesn't qualify
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
-		ContainerBasic:      true,
-		Compaction:          true,
-		InterleavedThinking: true, // V-platform confirms; fails on non-allowlisted 4-series
-		Context1M:           true,
-		EagerInputStreaming: true, // fine-grained-tool-streaming GA per A
+		ContainerBasic:         true,
+		Compaction:             true,
+		ContextEditing:         true, // context-management-2025-06-27 supported on Vertex (Beta) — see comment above
+		ContextManagementField: true, // Vertex accepts the context_management body field
+		InterleavedThinking:    true, // V-platform confirms; fails on non-allowlisted 4-series
+		Context1M:              true,
+		EagerInputStreaming:    true, // fine-grained-tool-streaming GA per A
 	},
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
 	// Notably NOT supported per docs: MCP, Skills, FilesAPI, WebFetch,
@@ -187,14 +191,14 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// output_format on Bedrock. Needs live verification. If Bedrock's
 		// Converse API actually rejects `strict: true`, flip this to false
 		// and update the corresponding test assertion.
-		StructuredOutputs:   true,
-		Compaction:          true, // compact-2026-01-12 per B-header
-		ContextEditing:      true, // context-management-2025-06-27 per B-header (bundles memory)
+		StructuredOutputs:      true,
+		Compaction:             true, // compact-2026-01-12 per B-header
+		ContextEditing:         true, // context-management-2025-06-27 per B-header (bundles memory)
 		ContextManagementField: true, // Bedrock accepts context_management body field
-		InterleavedThinking: true, // per B-header; model-allowlisted
-		Context1M:           true, // Opus 4.6 / Sonnet 4.6 per A
-		EagerInputStreaming: true, // fine-grained-tool-streaming-2025-05-14 per B-header
-		InputExamples:       true, // tool-examples-2025-10-29 per B-header (standalone; Bedrock doesn't accept the full advanced-tool-use-2025-11-20 bundle — see TestFilterBetaHeadersForProvider)
+		InterleavedThinking:    true, // per B-header; model-allowlisted
+		Context1M:              true, // Opus 4.6 / Sonnet 4.6 per A
+		EagerInputStreaming:    true, // fine-grained-tool-streaming-2025-05-14 per B-header
+		InputExamples:          true, // tool-examples-2025-10-29 per B-header (standalone; Bedrock doesn't accept the full advanced-tool-use-2025-11-20 bundle — see TestFilterBetaHeadersForProvider)
 		// AdvancedToolUse intentionally OFF on Bedrock. The bundle header
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
@@ -202,15 +206,18 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
 	// Az-platform: Admin API, Models API, Message Batch API (not in scope).
+	// TaskBudgets: not documented for Azure on the task-budgets feature page
+	//     or the A overview matrix; flipped to false to match Bedrock/Vertex
+	//     fail-closed treatment (override via BetaHeaderOverrides if needed).
 	schemas.Azure: {
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, InputExamples: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, ContextManagementField: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
-		RedactThinking: true, TaskBudgets: true,
+		RedactThinking:      true,
 		EagerInputStreaming: true,
-		// FastMode, InferenceGeo, AdvisorTool — not in Az-platform; leave off.
+		// FastMode, InferenceGeo, AdvisorTool, TaskBudgets — not documented on Az-platform; leave off.
 	},
 }
 

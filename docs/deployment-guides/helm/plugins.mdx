@@ -1,13 +1,13 @@
 ---
 title: "Plugins"
-description: "Configure Bifrost plugins in Helm — telemetry, logging, semantic cache, OpenTelemetry, Datadog, governance, and custom plugins"
+description: "Configure Bifrost plugins in Helm - telemetry, logging, semantic cache, OpenTelemetry, Datadog, governance, and custom plugins"
 icon: "puzzle-piece"
 ---
 
 Plugins are configured under `bifrost.plugins`. Each plugin is independently enabled/disabled. Pre-hooks run in registration order; post-hooks run in reverse order.
 
 <Note>
-**Telemetry, logging, and governance are auto-loaded built-ins** — they are always active and do not need to be explicitly enabled. Their configuration lives in `bifrost.client.*` and `bifrost.governance.*`, not in the `plugins` block.
+**Telemetry, logging, and governance are auto-loaded built-ins** - they are always active and do not need to be explicitly enabled. Their configuration lives in `bifrost.client.*` and `bifrost.governance.*`, not in the `plugins` block.
 
 The `plugins` block controls the opt-in plugins: `semanticCache`, `otel`, `datadog`, `maxim`, and custom plugins.
 </Note>
@@ -44,7 +44,7 @@ helm upgrade bifrost bifrost/bifrost \
 ### Telemetry (Prometheus)
 
 <Note>
-Telemetry is **always active** — it cannot be disabled. You do not need to set `bifrost.plugins.telemetry.enabled`.
+Telemetry is **always active** - it cannot be disabled. You do not need to set `bifrost.plugins.telemetry.enabled`.
 </Note>
 
 Exposes Prometheus metrics at `GET /metrics`. Custom labels are set via `bifrost.client.prometheusLabels`:

@@ -432,7 +432,7 @@ type BifrostResponseExtraFields struct {
 
 ### Store Raw Request/Response
 
-Persist the raw provider request and response in the log record without necessarily returning them in the API response. This is orthogonal to the send-back flags — enabling this does not affect what the caller receives, and enabling send-back does not automatically store data in logs. Enable both to do both.
+Persist the raw provider request and response in the log record without necessarily returning them in the API response. This is orthogonal to the send-back flags - enabling this does not affect what the caller receives, and enabling send-back does not automatically store data in logs. Enable both to do both.
 
 **Provider-level default** (applies to all requests for this provider):
 
@@ -462,9 +462,9 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 ```
 
 <Note>
-`StoreRawRequestResponse` only has effect when the logging plugin is active — raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
+`StoreRawRequestResponse` only has effect when the logging plugin is active - raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
 
-`StoreRawRequestResponse`, `SendBackRawRequest`, and `SendBackRawResponse` are orthogonal controls — enabling any one does not imply the others. Enable any combination depending on whether you need raw data in logs, in the response, or both.
+`StoreRawRequestResponse`, `SendBackRawRequest`, and `SendBackRawResponse` are orthogonal controls - enabling any one does not imply the others. Enable any combination depending on whether you need raw data in logs, in the response, or both.
 </Note>
 
 ## Best Practices

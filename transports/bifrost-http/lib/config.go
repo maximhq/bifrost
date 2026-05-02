@@ -83,9 +83,14 @@ type HandlerStore interface {
 	ShouldAllowPerRequestStorageOverride() bool
 	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
 	ShouldAllowPerRequestRawOverride() bool
-	// GetMCPExternalBaseURL returns the configured external base URL for OAuth callbacks/metadata,
-	// or empty string if not configured (falls back to dynamic Host-header-based URL).
-	GetMCPExternalBaseURL() string
+	// GetMCPExternalServerURL returns the configured external base URL for OAuth server-side
+	// metadata (.well-known endpoints, WWW-Authenticate header), or empty string if not configured
+	// (falls back to dynamic Host-header-based URL).
+	GetMCPExternalServerURL() string
+	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
+	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
+	// if not configured (falls back to dynamic Host-header-based URL).
+	GetMCPExternalClientURL() string
 }
 
 // Retry backoff constants for validation
@@ -3257,10 +3262,18 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
 }
 
-// GetMCPExternalBaseURL returns the configured external base URL for OAuth callbacks and metadata,
-// or empty string if not configured. Resolves env var references automatically.
-func (c *Config) GetMCPExternalBaseURL() string {
-	return c.ClientConfig.MCPExternalBaseURL.GetValue()
+// GetMCPExternalServerURL returns the configured external base URL for OAuth server-side
+// metadata (.well-known endpoints, WWW-Authenticate header), or empty string if not configured.
+// Resolves env var references automatically.
+func (c *Config) GetMCPExternalServerURL() string {
+	return c.ClientConfig.MCPExternalServerURL.GetValue()
+}
+
+// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
+// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
+// if not configured. Resolves env var references automatically.
+func (c *Config) GetMCPExternalClientURL() string {
+	return c.ClientConfig.MCPExternalClientURL.GetValue()
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.

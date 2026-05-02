@@ -134,15 +134,10 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 					}
 				}
 			} else {
-				// Anthropic native: normalise the model string via ParseModelString.
-				if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
-					if modelStr := modelResult.String(); modelStr != "" {
-						_, model := schemas.ParseModelString(modelStr, schemas.Anthropic)
-						jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", model)
-						if err != nil {
-							return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-						}
-					}
+				// Anthropic native: use the alias-resolved model from the request
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", request.Model)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
 			}
 

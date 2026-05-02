@@ -505,7 +505,7 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 	}
 
 	// Build redirect URI (Bifrost's callback endpoint).
-	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalBaseURL()) + "/api/oauth/callback"
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
 	var vkId *string
 	if virtualKeyID != "" {
 		vkId = &virtualKeyID

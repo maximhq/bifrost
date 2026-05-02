@@ -157,7 +157,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"is_enabled":                false,
-				"disable_auth_on_inference": false,
+				"disable_auth_on_inference": true,
 			}
 		}
 	} else {
@@ -165,7 +165,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"is_enabled":                false,
-			"disable_auth_on_inference": false,
+			"disable_auth_on_inference": true,
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
@@ -428,8 +428,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
 	}
 
-	// Update external base URL for OAuth callbacks/discovery (nil clears the override).
-	updatedConfig.MCPExternalBaseURL = payload.ClientConfig.MCPExternalBaseURL
+	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
+	updatedConfig.MCPExternalServerURL = payload.ClientConfig.MCPExternalServerURL
+	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {

@@ -32717,7 +32717,7 @@
       "post": {
         "operationId": "registerPerUserOAuthClient",
         "summary": "Register OAuth client (RFC 7591)",
-        "description": "Dynamic Client Registration per RFC 7591. MCP clients (Claude Code, Cursor, etc.)\ncall this endpoint to obtain a `client_id` before initiating the authorization flow.\n\nThis endpoint is only available when at least one MCP client is configured with\n`auth_type: per_user_oauth`. Returns `404` otherwise.\n\nAuthentication is not required — this is part of the unauthenticated OAuth bootstrap flow.\n",
+        "description": "Dynamic Client Registration per RFC 7591. MCP clients (Claude Code, Cursor, etc.)\ncall this endpoint to obtain a `client_id` before initiating the authorization flow.\n\nThis endpoint is only available when at least one MCP client is configured with\n`auth_type: per_user_oauth`. Returns `404` otherwise.\n\nAuthentication is not required - this is part of the unauthenticated OAuth bootstrap flow.\n",
         "tags": [
           "OAuth",
           "Per-User OAuth"
@@ -32892,7 +32892,7 @@
       "get": {
         "operationId": "authorizePerUserOAuth",
         "summary": "Authorization endpoint (OAuth 2.1)",
-        "description": "OAuth 2.1 authorization endpoint. Validates the request parameters, creates a\nbrowser-bound `PendingFlow` record (15-minute TTL), and redirects the user to\nthe Bifrost consent screen at `/oauth/consent?flow_id=xxx`.\n\n**PKCE is required** — `code_challenge` and `code_challenge_method=S256` must\nbe provided. Plain code challenges are not supported.\n\nA `__bifrost_flow_secret` HttpOnly SameSite=Lax cookie is set on redirect to\nbind the consent flow to the initiating browser session (CSRF protection).\n\nAuthentication is not required — this is part of the unauthenticated OAuth bootstrap flow.\n",
+        "description": "OAuth 2.1 authorization endpoint. Validates the request parameters, creates a\nbrowser-bound `PendingFlow` record (15-minute TTL), and redirects the user to\nthe Bifrost consent screen at `/oauth/consent?flow_id=xxx`.\n\n**PKCE is required** - `code_challenge` and `code_challenge_method=S256` must\nbe provided. Plain code challenges are not supported.\n\nA `__bifrost_flow_secret` HttpOnly SameSite=Lax cookie is set on redirect to\nbind the consent flow to the initiating browser session (CSRF protection).\n\nAuthentication is not required - this is part of the unauthenticated OAuth bootstrap flow.\n",
         "tags": [
           "OAuth",
           "Per-User OAuth"
@@ -33014,7 +33014,7 @@
       "post": {
         "operationId": "exchangePerUserOAuthToken",
         "summary": "Token endpoint (OAuth 2.1)",
-        "description": "OAuth 2.1 token endpoint. Exchanges a single-use authorization code (5-minute TTL)\nfor a Bifrost-issued access token (24-hour TTL) using PKCE verification.\n\nThe request body must be `application/x-www-form-urlencoded`.\n\nThe returned `access_token` is the Bearer token to use on subsequent `/mcp` requests.\nIt carries the user's upstream service tokens (Notion, GitHub, etc.) linked to their\nidentity (Virtual Key or User ID) from the consent flow.\n\nAuthentication is not required — this is part of the unauthenticated OAuth bootstrap flow.\n",
+        "description": "OAuth 2.1 token endpoint. Exchanges a single-use authorization code (5-minute TTL)\nfor a Bifrost-issued access token (24-hour TTL) using PKCE verification.\n\nThe request body must be `application/x-www-form-urlencoded`.\n\nThe returned `access_token` is the Bearer token to use on subsequent `/mcp` requests.\nIt carries the user's upstream service tokens (Notion, GitHub, etc.) linked to their\nidentity (Virtual Key or User ID) from the consent flow.\n\nAuthentication is not required - this is part of the unauthenticated OAuth bootstrap flow.\n",
         "tags": [
           "OAuth",
           "Per-User OAuth"
@@ -33048,11 +33048,11 @@
                   },
                   "client_id": {
                     "type": "string",
-                    "description": "Client ID (optional — code is already bound to the client)"
+                    "description": "Client ID (optional - code is already bound to the client)"
                   },
                   "code_verifier": {
                     "type": "string",
-                    "description": "PKCE code verifier — the raw secret whose SHA-256 matches the code_challenge"
+                    "description": "PKCE code verifier - the raw secret whose SHA-256 matches the code_challenge"
                   }
                 }
               }
@@ -33157,8 +33157,8 @@
     "/api/oauth/per-user/upstream/authorize": {
       "get": {
         "operationId": "authorizeUpstreamPerUserOAuth",
-        "summary": "Upstream OAuth proxy — authorize with upstream service",
-        "description": "Initiates an OAuth flow with an upstream MCP service (Notion, GitHub, etc.)\non behalf of the current user. Used during the consent flow (via \"Connect\" buttons\non the MCPs page) and at runtime when a tool call is made to an unauthenticated service.\n\n**Consent flow** — provide `flow_id` (from the pending consent flow). The browser-binding\ncookie (`__bifrost_flow_secret`) is validated.\n\n**Runtime flow** — provide `session` (the Bifrost session ID from the token endpoint).\nUsed when a service was skipped during consent and needs to be connected later.\n\nOn success, redirects the user to the upstream provider's authorize URL. After the user\ngrants access, the upstream callback lands at `/api/oauth/callback`, stores the upstream\ntoken against the user's identity, and redirects back to the consent screen (consent flow)\nor returns an authorization success page (runtime flow).\n\nAuthentication is not required — cookie/session validation is performed instead.\n",
+        "summary": "Upstream OAuth proxy - authorize with upstream service",
+        "description": "Initiates an OAuth flow with an upstream MCP service (Notion, GitHub, etc.)\non behalf of the current user. Used during the consent flow (via \"Connect\" buttons\non the MCPs page) and at runtime when a tool call is made to an unauthenticated service.\n\n**Consent flow** - provide `flow_id` (from the pending consent flow). The browser-binding\ncookie (`__bifrost_flow_secret`) is validated.\n\n**Runtime flow** - provide `session` (the Bifrost session ID from the token endpoint).\nUsed when a service was skipped during consent and needs to be connected later.\n\nOn success, redirects the user to the upstream provider's authorize URL. After the user\ngrants access, the upstream callback lands at `/api/oauth/callback`, stores the upstream\ntoken against the user's identity, and redirects back to the consent screen (consent flow)\nor returns an authorization success page (runtime flow).\n\nAuthentication is not required - cookie/session validation is performed instead.\n",
         "tags": [
           "OAuth",
           "Per-User OAuth"
@@ -33261,7 +33261,7 @@
       "get": {
         "operationId": "getConsentIdentityPage",
         "summary": "Consent identity selection page",
-        "description": "Renders the identity selection screen where the user chooses how to identify\nthemselves for the session: Virtual Key, User ID, or Skip (session-only auth).\n\nThe `__bifrost_flow_secret` HttpOnly cookie set during `/api/oauth/per-user/authorize`\nmust be present — it binds the consent flow to the initiating browser.\n\nThe Skip option is only shown when `enforce_auth_on_inference` is `false` in config.\n",
+        "description": "Renders the identity selection screen where the user chooses how to identify\nthemselves for the session: Virtual Key, User ID, or Skip (session-only auth).\n\nThe `__bifrost_flow_secret` HttpOnly cookie set during `/api/oauth/per-user/authorize`\nmust be present - it binds the consent flow to the initiating browser.\n\nThe Skip option is only shown when `enforce_auth_on_inference` is `false` in config.\n",
         "tags": [
           "Per-User OAuth",
           "Consent Flow"
@@ -33425,7 +33425,7 @@
       "post": {
         "operationId": "submitConsentUserID",
         "summary": "Submit User ID identity",
-        "description": "Links a self-declared User ID to the pending flow as the user's identity.\nOn success, redirects to the MCPs page.\n\nThe User ID is self-declared with no server-side verification — it matches\nthe trust model of the `X-Bf-User-Id` header in the LLM Gateway path.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
+        "description": "Links a self-declared User ID to the pending flow as the user's identity.\nOn success, redirects to the MCPs page.\n\nThe User ID is self-declared with no server-side verification - it matches\nthe trust model of the `X-Bf-User-Id` header in the LLM Gateway path.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
         "tags": [
           "Per-User OAuth",
           "Consent Flow"
@@ -33911,7 +33911,7 @@
       "get": {
         "operationId": "getVirtualKeyQuota",
         "summary": "Get virtual key quota",
-        "description": "Returns the budget and rate limit quota for the authenticated virtual key.\nThis is a self-service endpoint — no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
+        "description": "Returns the budget and rate limit quota for the authenticated virtual key.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
         "tags": [
           "Governance"
         ],
@@ -53519,7 +53519,7 @@
               "type": "string",
               "minLength": 1
             },
-            "description": "Model alias mappings — maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)"
+            "description": "Model alias mappings - maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)"
           },
           "azure_key_config": {
             "type": "object",
@@ -56083,7 +56083,7 @@
       },
       "PricingOverrideRequestType": {
         "type": "string",
-        "description": "Request type for pricing override filtering. Stream variants are treated identically to their base type — specifying `chat_completion` covers both streaming and non-streaming chat requests.\n",
+        "description": "Request type for pricing override filtering. Stream variants are treated identically to their base type - specifying `chat_completion` covers both streaming and non-streaming chat requests.\n",
         "enum": [
           "chat_completion",
           "text_completion",
@@ -56419,7 +56419,7 @@
       },
       "UpdatePricingOverrideRequest": {
         "type": "object",
-        "description": "Request body for updating a pricing override. All fields are optional — omitted fields are merged from the existing record. The `patch` field is always replaced in full when provided.\n",
+        "description": "Request body for updating a pricing override. All fields are optional - omitted fields are merged from the existing record. The `patch` field is always replaced in full when provided.\n",
         "properties": {
           "name": {
             "type": "string",

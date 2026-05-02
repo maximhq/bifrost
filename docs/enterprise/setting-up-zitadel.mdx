@@ -6,7 +6,7 @@ icon: "cloud"
 
 ## Overview
 
-This guide walks you through configuring [Zitadel](https://zitadel.com) as your identity provider for Bifrost Enterprise. Zitadel uses standard OIDC with JWKS-based JWT validation, plus a separate **service account** for user provisioning (Zitadel web applications cannot perform the `client_credentials` grant — a dedicated service account is required for directory-level reads).
+This guide walks you through configuring [Zitadel](https://zitadel.com) as your identity provider for Bifrost Enterprise. Zitadel uses standard OIDC with JWKS-based JWT validation, plus a separate **service account** for user provisioning (Zitadel web applications cannot perform the `client_credentials` grant - a dedicated service account is required for directory-level reads).
 
 After completing this guide users will sign in to Bifrost with their Zitadel credentials, and admins can bulk-import users and teams from the Zitadel Management API.
 
@@ -66,7 +66,7 @@ Zitadel only emits role claims in access tokens when the project is configured t
   <img src="/media/user-provisioning/zitadel-assert-roles.png" alt="Assert Roles on Authentication toggle in Zitadel" />
 </Frame>
 
-4. Note the **Project ID** — you'll need it for the Bifrost config so Bifrost can resolve the correct project roles.
+4. Note the **Project ID** - you'll need it for the Bifrost config so Bifrost can resolve the correct project roles.
 
 <Note>
   Without **Assert Roles on Authentication**, the token will not contain role claims and every user will fall back to the default role (Viewer, or Admin for the first signin).
@@ -108,7 +108,7 @@ Web apps in Zitadel cannot use the `client_credentials` grant. Bifrost needs a d
   <img src="/media/user-provisioning/zitadel-service-account-key.png" alt="Creating a service account in Zitadel" />
 </Frame>
 
-4. **Copy the Client ID and Client Secret immediately** — the secret is shown only once.
+4. **Copy the Client ID and Client Secret immediately** - the secret is shown only once.
 
 <Warning>
   Store the service account Client Secret in your password manager. It cannot be retrieved after this screen.
@@ -152,7 +152,7 @@ Web apps in Zitadel cannot use the `client_credentials` grant. Bifrost needs a d
 | **Service Account Client ID** | From Step 4 |
 | **Service Account Client Secret** | From Step 4 |
 
-4. Click **Verify** — Bifrost connects to Zitadel's JWKS and service account token endpoints to confirm the credentials.
+4. Click **Verify** - Bifrost connects to Zitadel's JWKS and service account token endpoints to confirm the credentials.
 5. Configure **Attribute → Role / Team / Business Unit** mappings if you need to translate project roles or metadata into Bifrost roles.
 6. Toggle **Enabled** and click **Save Configuration**.
 
@@ -231,7 +231,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 ### Service account cannot list users
 
 - Confirm the service account has **IAM_USER_READ** or **Org Owner** role in the organization.
-- Regenerate the client secret if you've lost it — the original secret cannot be retrieved.
+- Regenerate the client secret if you've lost it - the original secret cannot be retrieved.
 
 ### Redirect URI mismatch
 
@@ -241,6 +241,6 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ## Next Steps
 
-- [User Provisioning overview](./user-provisioning) — capabilities, attribute mappings, bulk import
-- [Role-Based Access Control](./rbac) — configure custom roles before mapping
-- [Audit Logs](./audit-logs) — track authentication events
+- [User Provisioning overview](./user-provisioning) - capabilities, attribute mappings, bulk import
+- [Role-Based Access Control](./rbac) - configure custom roles before mapping
+- [Audit Logs](./audit-logs) - track authentication events

@@ -607,12 +607,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserID, mcpUserID)
 	}
 
-	// Build and set OAuth redirect URI for per-user OAuth flows
-	var externalBaseURL string
+	// Build and set OAuth redirect URI for per-user OAuth flows. Bifrost is acting as
+	// the OAuth client to upstream MCP servers here, so use the client-side override.
+	var externalClientURL string
 	if store != nil {
-		externalBaseURL = store.GetMCPExternalBaseURL()
+		externalClientURL = store.GetMCPExternalClientURL()
 	}
-	baseURL := BuildBaseURL(ctx, externalBaseURL)
+	baseURL := BuildBaseURL(ctx, externalClientURL)
 	if baseURL != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, baseURL+"/api/oauth/callback")
 	}

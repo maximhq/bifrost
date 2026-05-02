@@ -33,7 +33,7 @@ Runway ML provides video generation via an asynchronous task-based API. Bifrost 
 | `prompt` | string | ✅ | Text description of the video |
 | `input_reference` | string | ❌ | Input image for image-to-video |
 | `seconds` | string | ❌ | Duration in seconds (default: `"2"`) |
-| `size` | string | ❌ | Resolution as `WxH` (e.g., `1280x720`; default: `1280x720`) — converted to `W:H` ratio |
+| `size` | string | ❌ | Resolution as `WxH` (e.g., `1280x720`; default: `1280x720`) - converted to `W:H` ratio |
 | `seed` | int | ❌ | **Gen models only** |
 | `audio` | bool | ❌ | Enable audio generation. **Veo models only** |
 | `video_uri` | string | ❌ | Source video URL for video-to-video. **gen4_aleph only** |
@@ -50,7 +50,7 @@ Runway ML provides video generation via an asynchronous task-based API. Bifrost 
 
 - **Text-to-video**: `prompt` only
 - **Image-to-video**: `prompt` + `input_reference`
-- **Video-to-video**: `prompt` + `video_uri` — **gen4_aleph only**
+- **Video-to-video**: `prompt` + `video_uri` - **gen4_aleph only**
 
 **Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) with `id`, `status`, `videos[]`
 

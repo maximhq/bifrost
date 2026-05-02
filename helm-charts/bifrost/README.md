@@ -4,9 +4,43 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.9
+**Latest Version:** 2.1.13
 
 ## Changelog
+
+### 2.1.13
+
+- Surfaced `bifrost.client.enforceAuthOnInference` in `values.yaml` as a commented default with usage notes. The field was already wired in `_helpers.tpl` to render to `client.enforce_auth_on_inference` and declared in `values.schema.json`; this change makes the knob discoverable without altering default rendered config.
+- Marked `bifrost.client.enforceGovernanceHeader` as deprecated in `values.yaml` (use `enforceAuthOnInference` instead). Schema description was already deprecated in 2.1.11.
+
+### 2.1.12
+
+- Added Helm support for `storage.logsStore.objectStorageExcludeFields` and render path to `logs_store.object_storage_exclude_fields` in generated config.
+
+### 2.1.11
+
+- Added `description` and `default` fields to numerous properties that previously had neither, including `initialPoolSize`, `disableDbPingsInHealth`, `logRetentionDays`, `asyncJobResultTTL`, `mcpAgentDepth`, `mcpToolExecutionTimeout`, `hideDeletedVirtualKeysInFilters`, `mcpDisableAutoToolInject`, and MCP `toolManagerConfig` fields
+- Added `additionalProperties: false` to multiple objects (`bifrost.config`, `bifrost.pricing`, `proxyConfig`, `concurrencyConfig`, `providerConfig`, `credentialsSecret`, and auth provider configs) to reject unknown keys at validation time
+- Added three new `bifrost.client` fields:
+    - `allowPerRequestContentStorageOverride` — controls whether per-request headers can override content logging behavior
+    - `allowPerRequestRawOverride` — controls whether per-request headers can override raw provider request/response passthrough
+    - `mcpExternalBaseUrl` — public base URL for OAuth callbacks and discovery metadata behind a reverse proxy, supporting both string and env-var object forms
+- Added two new `bifrost.cluster.discovery` fields:
+    - `bindPort` — port to bind for cluster communication
+    - `dialTimeout` — timeout for discovery dial operations as a Go duration string
+- Changed `allowedOrigins` items from `oneOf` to `anyOf` and removed the redundant `not: { const: "*" }` constraint on the URI branch
+- Tightened the env-var pattern to require a valid identifier start character (`[A-Za-z_]`) for proxyConfig.url
+- Expanded `toolSyncInterval` to accept either a Go duration string (with a stricter regex) or a legacy integer (nanoseconds) for backward compatibility.
+- Marked `enforceGovernanceHeader` as deprecated in its description
+- Added `mdnsService` description for local network discovery
+
+### 2.1.10
+
+- Added `bifrost.cluster.grpc` block for the cluster gRPC counter-sync transport (enterprise):
+  - New values: `bifrost.cluster.grpc.port` (default `10102`) and `bifrost.cluster.grpc.dialTimeoutSeconds` (default `5`).
+  - Rendered into `cluster_config.grpc` (`port`, `dial_timeout_seconds`) by `templates/_helpers.tpl`.
+  - StatefulSet exposes the port as a named `grpc` container port; `service-headless` exposes it as a named service port so peers can dial each other.
+  - Both port additions are guarded by `if .Values.bifrost.cluster.grpc` so values overrides that omit the block render cleanly.
 
 ### 2.1.9
 
@@ -367,6 +401,7 @@ Bifrost supports two storage backends (SQLite and PostgreSQL) that can be config
 | `storage.configStore.type` | Config store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
 | `storage.logsStore.enabled` | Enable logs store | `true` |
 | `storage.logsStore.type` | Logs store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
+| `storage.logsStore.objectStorageExcludeFields` | Payload DB fields to keep in DB instead of offloading to object storage | `[]` |
 
 #### Mixed Backend Example
 
@@ -829,4 +864,3 @@ kubectl get secret bifrost -o yaml
 This project is licensed under the Apache 2.0 License - see the [LICENSE](../LICENSE) file for details.
 
 Built with ❤️ by [Maxim](https://github.com/maximhq)
-

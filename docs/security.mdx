@@ -11,7 +11,7 @@ reaching production.
 
 | Domain | Tool / Practice | Coverage |
 | --- | --- | --- |
-| Dependency Scanning | Snyk Open Source | Go, Node, Python — all projects |
+| Dependency Scanning | Snyk Open Source | Go, Node, Python - all projects |
 | SAST | Snyk Code, CodeQL | Full codebase static analysis |
 | Container Scanning | Docker Scout | Docker Hub auto-scan on push |
 | Artifact Scanning | GCP Artifact Registry | Enterprise container images |
@@ -23,7 +23,7 @@ reaching production.
 
 ---
 
-## Vulnerability Scanning — Snyk
+## Vulnerability Scanning - Snyk
 
 Bifrost runs two Snyk scanning jobs on every push and pull request. Results are uploaded as
 [SARIF](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning)
@@ -71,14 +71,14 @@ Production containers follow a strict hardening checklist:
 
 <CardGroup cols={2}>
   <Card title="Multi-stage builds" icon="layer-group">
-    Three stages — UI builder (Node), Go builder, and minimal Alpine runtime — ensure no build tools or
+    Three stages - UI builder (Node), Go builder, and minimal Alpine runtime - ensure no build tools or
     source code leak into the final image.
   </Card>
   <Card title="FIPS-compliant base image" icon="lock">
     Production images use a FIPS 140-2 validated Alpine base image with compliant OpenSSL.
   </Card>
   <Card title="Non-root execution" icon="user-shield">
-    The FIPS base image includes a dedicated `appuser`. The container runs as this unprivileged user —
+    The FIPS base image includes a dedicated `appuser`. The container runs as this unprivileged user -
     never as root.
   </Card>
   <Card title="Binary stripping" icon="minimize">
@@ -89,10 +89,10 @@ Production containers follow a strict hardening checklist:
 
 Additional hardening measures:
 
-- **Static builds** — Compiled with `-tags "sqlite_static"` and `-extldflags '-static'` for fully static linking
-- **Build verification** — `RUN test -f /app/main || exit 1` ensures the binary exists before proceeding
-- **CVE patching** — Enterprise Dockerfiles include targeted patches (e.g., `apk upgrade --no-cache openssl` for CVE-2026-22796)
-- **Minimal runtime dependencies** — The FIPS base image provides only essential libraries (`musl`, `libgcc`, `ca-certificates`)
+- **Static builds** - Compiled with `-tags "sqlite_static"` and `-extldflags '-static'` for fully static linking
+- **Build verification** - `RUN test -f /app/main || exit 1` ensures the binary exists before proceeding
+- **CVE patching** - Enterprise Dockerfiles include targeted patches (e.g., `apk upgrade --no-cache openssl` for CVE-2026-22796)
+- **Minimal runtime dependencies** - The FIPS base image provides only essential libraries (`musl`, `libgcc`, `ca-certificates`)
 
 ```dockerfile
 # Runtime stage excerpt (production)
@@ -135,7 +135,7 @@ that automatically analyzes container images for OS and language package vulnera
 
 ### GitHub Actions SHA Pinning
 
-All GitHub Actions in the open-source repository are pinned to exact commit SHAs — not mutable version
+All GitHub Actions in the open-source repository are pinned to exact commit SHAs - not mutable version
 tags. This prevents supply chain attacks where a compromised action maintainer could push malicious code
 to an existing tag.
 
@@ -191,7 +191,7 @@ tests/governance/uv.lock
 
 ---
 
-## Dependency Management — Dependabot
+## Dependency Management - Dependabot
 
 Dependabot monitors four ecosystems on a weekly schedule, automatically opening pull requests for
 outdated or vulnerable dependencies.
@@ -216,7 +216,7 @@ creates GitHub issues for any open Dependabot security alerts, categorized by se
 
 ---
 
-## Code Analysis — CodeQL
+## Code Analysis - CodeQL
 
 GitHub's [CodeQL](https://codeql.github.com/) performs semantic code analysis on every push and pull request,
 complementing Snyk's SAST coverage with GitHub-native findings.
@@ -250,7 +250,7 @@ job level, not the workflow level, and are scoped to the minimum required.
 
 Enterprise deployment workflows authenticate through [Tailscale](https://tailscale.com/) before
 accessing any infrastructure. This ensures that CI/CD runners can only reach deployment targets
-through an encrypted, identity-aware network — never over the public internet.
+through an encrypted, identity-aware network - never over the public internet.
 
 ```yaml
 - name: Authenticate Tailscale
@@ -262,9 +262,9 @@ through an encrypted, identity-aware network — never over the public internet.
     version: 1.84.0
 ```
 
-- **OAuth-based authentication** — No long-lived API keys; runners authenticate via OAuth client credentials
-- **Version pinned** — Tailscale `1.84.0` to prevent unexpected behavior from updates
-- **Tagged runners** — `gha-ci` tag enables Tailscale ACL policies scoped to CI/CD access
+- **OAuth-based authentication** - No long-lived API keys; runners authenticate via OAuth client credentials
+- **Version pinned** - Tailscale `1.84.0` to prevent unexpected behavior from updates
+- **Tagged runners** - `gha-ci` tag enables Tailscale ACL policies scoped to CI/CD access
 
 ### StepSecurity
 

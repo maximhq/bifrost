@@ -548,8 +548,8 @@
                 ? `<tr><td colspan="3" class="no-results">No models found matching "${searchTerm}"</td></tr>`
                 : filteredModels.map((model, idx) => `
                   <tr>
-                    <td class="capitalize">${model.provider || '—'}</td>
-                    <td class="mono">${model.model || '—'}</td>
+                    <td class="capitalize">${model.provider || '-'}</td>
+                    <td class="mono">${model.model || '-'}</td>
                     <td class="center">
                       <button class="view-details-btn" data-index="${idx}">
                         View Details
