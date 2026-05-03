@@ -2279,6 +2279,19 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 				{"text_editor_20250728", "str_replace_based_edit_tool"},
 			},
 		},
+		{
+			// Mirrors the body-embedded fallback in StripUnsupportedFieldsFromRawBody:
+			// when the caller passes model="", recover it from the body so a request
+			// targeting opus-4-7 doesn't silently get the older 20250124 generation.
+			name:  "recovers model from body when caller passes empty model",
+			model: "",
+			inputBody: `{"model":"claude-opus-4-7","tools":[
+				{"type":"text_editor_20250124","name":"str_replace_editor"}
+			]}`,
+			expected: []expectedTool{
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
