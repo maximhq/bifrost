@@ -2605,7 +2605,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 				},
 			}
 
-			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
 			require.NoError(t, err)
 			require.Len(t, messages, 1)
 
@@ -4510,7 +4510,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -4554,7 +4554,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -4587,7 +4587,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 

@@ -129,6 +129,17 @@ type ContainerFileRequest struct {
 	DeleteRequest   *schemas.BifrostContainerFileDeleteRequest
 }
 
+// CachedContentRequest wraps a Bifrost cached content request with its type information.
+// Used by Gemini and Vertex AI integrations for the named cached content lifecycle.
+type CachedContentRequest struct {
+	Type            schemas.RequestType
+	CreateRequest   *schemas.BifrostCachedContentCreateRequest
+	ListRequest    *schemas.BifrostCachedContentListRequest
+	RetrieveRequest *schemas.BifrostCachedContentRetrieveRequest
+	UpdateRequest  *schemas.BifrostCachedContentUpdateRequest
+	DeleteRequest  *schemas.BifrostCachedContentDeleteRequest
+}
+
 // BatchRequestConverter is a function that converts integration-specific batch requests to Bifrost format.
 type BatchRequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error)
 
@@ -140,6 +151,24 @@ type ContainerRequestConverter func(ctx *schemas.BifrostContext, req interface{}
 
 // ContainerFileRequestConverter is a function that converts integration-specific container file requests to Bifrost format.
 type ContainerFileRequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*ContainerFileRequest, error)
+
+// CachedContentRequestConverter is a function that converts integration-specific cached content requests to Bifrost format.
+type CachedContentRequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*CachedContentRequest, error)
+
+// CachedContentCreateResponseConverter converts BifrostCachedContentCreateResponse to integration format.
+type CachedContentCreateResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentCreateResponse) (interface{}, error)
+
+// CachedContentListResponseConverter converts BifrostCachedContentListResponse to integration format.
+type CachedContentListResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentListResponse) (interface{}, error)
+
+// CachedContentRetrieveResponseConverter converts BifrostCachedContentRetrieveResponse to integration format.
+type CachedContentRetrieveResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentRetrieveResponse) (interface{}, error)
+
+// CachedContentUpdateResponseConverter converts BifrostCachedContentUpdateResponse to integration format.
+type CachedContentUpdateResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentUpdateResponse) (interface{}, error)
+
+// CachedContentDeleteResponseConverter converts BifrostCachedContentDeleteResponse to integration format.
+type CachedContentDeleteResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCachedContentDeleteResponse) (interface{}, error)
 
 // RequestConverter is a function that converts integration-specific requests to Bifrost format.
 // It takes the parsed request object and returns a BifrostRequest ready for processing.
@@ -425,6 +454,12 @@ type RouteConfig struct {
 	FileRequestConverter                   FileRequestConverter                   // Function to convert request to FileRequest (for file operations)
 	ContainerRequestConverter              ContainerRequestConverter              // Function to convert request to ContainerRequest (for container operations)
 	ContainerFileRequestConverter          ContainerFileRequestConverter          // Function to convert request to ContainerFileRequest (for container file operations)
+	CachedContentRequestConverter          CachedContentRequestConverter          // Function to convert request to CachedContentRequest (for cached content lifecycle)
+	CachedContentCreateResponseConverter   CachedContentCreateResponseConverter   // Optional response converter for cached content create
+	CachedContentListResponseConverter     CachedContentListResponseConverter     // Optional response converter for cached content list
+	CachedContentRetrieveResponseConverter CachedContentRetrieveResponseConverter // Optional response converter for cached content retrieve
+	CachedContentUpdateResponseConverter   CachedContentUpdateResponseConverter   // Optional response converter for cached content update
+	CachedContentDeleteResponseConverter   CachedContentDeleteResponseConverter   // Optional response converter for cached content delete
 	ListModelsResponseConverter            ListModelsResponseConverter            // Function to convert BifrostListModelsResponse to integration format (SHOULD NOT BE NIL)
 	TextResponseConverter                  TextResponseConverter                  // Function to convert BifrostTextCompletionResponse to integration format (SHOULD NOT BE NIL)
 	ChatResponseConverter                  ChatResponseConverter                  // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
@@ -553,12 +588,13 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			continue
 		}
 
-		// Determine route type: inference, batch, file, container, or container file
+		// Determine route type: inference, batch, file, container, container file, or cached content
 		isBatchRoute := route.BatchRequestConverter != nil
 		isFileRoute := route.FileRequestConverter != nil
 		isContainerRoute := route.ContainerRequestConverter != nil
 		isContainerFileRoute := route.ContainerFileRequestConverter != nil
-		isInferenceRoute := !isBatchRoute && !isFileRoute && !isContainerRoute && !isContainerFileRoute
+		isCachedContentRoute := route.CachedContentRequestConverter != nil
+		isInferenceRoute := !isBatchRoute && !isFileRoute && !isContainerRoute && !isContainerFileRoute && !isCachedContentRoute
 
 		// For inference routes, require RequestConverter
 		if isInferenceRoute && route.RequestConverter == nil {
@@ -842,6 +878,22 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				return
 			}
 			g.handleContainerFileRequest(ctx, config, req, containerFileReq, bifrostCtx)
+			return
+		}
+
+		// Handle cached content requests if CachedContentRequestConverter is set
+		if config.CachedContentRequestConverter != nil {
+			defer cancel()
+			cachedContentReq, err := config.CachedContentRequestConverter(bifrostCtx, req)
+			if err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert cached content request"))
+				return
+			}
+			if cachedContentReq == nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid cached content request"))
+				return
+			}
+			g.handleCachedContentRequest(ctx, config, req, cachedContentReq, bifrostCtx)
 			return
 		}
 
@@ -2217,6 +2269,136 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 
 	if err != nil {
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert container file response"))
+		return
+	}
+
+	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
+}
+
+// handleCachedContentRequest handles cached content API requests
+// (create, list, retrieve, update, delete) for Gemini and Vertex AI.
+func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, cachedReq *CachedContentRequest, bifrostCtx *schemas.BifrostContext) {
+	var response interface{}
+	var err error
+
+	switch cachedReq.Type {
+	case schemas.CachedContentCreateRequest:
+		if cachedReq.CreateRequest == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid cached content create request"))
+			return
+		}
+		bifrostResp, bifrostErr := g.client.CachedContentCreateRequest(bifrostCtx, cachedReq.CreateRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if perr := config.PostCallback(ctx, req, bifrostResp); perr != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(perr, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if config.CachedContentCreateResponseConverter != nil {
+			response, err = config.CachedContentCreateResponseConverter(bifrostCtx, bifrostResp)
+		} else {
+			response = bifrostResp
+		}
+
+	case schemas.CachedContentListRequest:
+		if cachedReq.ListRequest == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid cached content list request"))
+			return
+		}
+		bifrostResp, bifrostErr := g.client.CachedContentListRequest(bifrostCtx, cachedReq.ListRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if perr := config.PostCallback(ctx, req, bifrostResp); perr != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(perr, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if config.CachedContentListResponseConverter != nil {
+			response, err = config.CachedContentListResponseConverter(bifrostCtx, bifrostResp)
+		} else {
+			response = bifrostResp
+		}
+
+	case schemas.CachedContentRetrieveRequest:
+		if cachedReq.RetrieveRequest == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid cached content retrieve request"))
+			return
+		}
+		bifrostResp, bifrostErr := g.client.CachedContentRetrieveRequest(bifrostCtx, cachedReq.RetrieveRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if perr := config.PostCallback(ctx, req, bifrostResp); perr != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(perr, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if config.CachedContentRetrieveResponseConverter != nil {
+			response, err = config.CachedContentRetrieveResponseConverter(bifrostCtx, bifrostResp)
+		} else {
+			response = bifrostResp
+		}
+
+	case schemas.CachedContentUpdateRequest:
+		if cachedReq.UpdateRequest == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid cached content update request"))
+			return
+		}
+		bifrostResp, bifrostErr := g.client.CachedContentUpdateRequest(bifrostCtx, cachedReq.UpdateRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if perr := config.PostCallback(ctx, req, bifrostResp); perr != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(perr, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if config.CachedContentUpdateResponseConverter != nil {
+			response, err = config.CachedContentUpdateResponseConverter(bifrostCtx, bifrostResp)
+		} else {
+			response = bifrostResp
+		}
+
+	case schemas.CachedContentDeleteRequest:
+		if cachedReq.DeleteRequest == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid cached content delete request"))
+			return
+		}
+		bifrostResp, bifrostErr := g.client.CachedContentDeleteRequest(bifrostCtx, cachedReq.DeleteRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if perr := config.PostCallback(ctx, req, bifrostResp); perr != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(perr, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if config.CachedContentDeleteResponseConverter != nil {
+			response, err = config.CachedContentDeleteResponseConverter(bifrostCtx, bifrostResp)
+		} else {
+			response = bifrostResp
+		}
+
+	default:
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "unsupported cached content request type"))
+		return
+	}
+
+	if err != nil {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert cached content response"))
 		return
 	}
 

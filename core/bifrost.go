@@ -2313,6 +2313,123 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 	return response.FileContentResponse, nil
 }
 
+// CachedContentCreateRequest creates a new cached content (Gemini / Vertex AI named cache lifecycle).
+func (bifrost *Bifrost) CachedContentCreateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentCreateRequest) (*schemas.BifrostCachedContentCreateResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content create request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content create request"}}
+	}
+	if req.Model == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "model is required for cached content create request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentCreateRequest
+	bifrostReq.CachedContentCreateRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentCreateResponse, nil
+}
+
+// CachedContentListRequest lists cached contents.
+func (bifrost *Bifrost) CachedContentListRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentListRequest) (*schemas.BifrostCachedContentListResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content list request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content list request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentListRequest
+	bifrostReq.CachedContentListRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentListResponse, nil
+}
+
+// CachedContentRetrieveRequest retrieves a single cached content by name.
+func (bifrost *Bifrost) CachedContentRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentRetrieveRequest) (*schemas.BifrostCachedContentRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content retrieve request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content retrieve request"}}
+	}
+	if req.Name == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content retrieve request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentRetrieveRequest
+	bifrostReq.CachedContentRetrieveRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentRetrieveResponse, nil
+}
+
+// CachedContentUpdateRequest updates expiration on a cached content.
+func (bifrost *Bifrost) CachedContentUpdateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentUpdateRequest) (*schemas.BifrostCachedContentUpdateResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content update request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content update request"}}
+	}
+	if req.Name == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content update request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentUpdateRequest
+	bifrostReq.CachedContentUpdateRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentUpdateResponse, nil
+}
+
+// CachedContentDeleteRequest deletes a cached content by name.
+func (bifrost *Bifrost) CachedContentDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content delete request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content delete request"}}
+	}
+	if req.Name == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content delete request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentDeleteRequest
+	bifrostReq.CachedContentDeleteRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentDeleteResponse, nil
+}
+
 func (bifrost *Bifrost) Passthrough(
 	ctx *schemas.BifrostContext,
 	provider schemas.ModelProvider,
@@ -5608,8 +5725,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				isMultiKeyBatchOp := isBatchRequestType(req.RequestType) && req.RequestType != schemas.BatchCreateRequest
 				isMultiKeyFileOp := isFileRequestType(req.RequestType) && req.RequestType != schemas.FileUploadRequest
 				isMultiKeyContainerOp := isContainerRequestType(req.RequestType) && req.RequestType != schemas.ContainerCreateRequest && req.RequestType != schemas.ContainerFileCreateRequest
+				isMultiKeyCachedContentOp := isCachedContentRequestType(req.RequestType) && req.RequestType != schemas.CachedContentCreateRequest
 
-				if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp {
+				if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp || isMultiKeyCachedContentOp {
 					var modelPtr *string
 					if model != "" {
 						modelPtr = &model
@@ -6033,6 +6151,36 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.FileContentResponse = fileContentResponse
+	case schemas.CachedContentCreateRequest:
+		cachedContentCreateResponse, bifrostError := provider.CachedContentCreate(req.Context, key, req.BifrostRequest.CachedContentCreateRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentCreateResponse = cachedContentCreateResponse
+	case schemas.CachedContentListRequest:
+		cachedContentListResponse, bifrostError := provider.CachedContentList(req.Context, keys, req.BifrostRequest.CachedContentListRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentListResponse = cachedContentListResponse
+	case schemas.CachedContentRetrieveRequest:
+		cachedContentRetrieveResponse, bifrostError := provider.CachedContentRetrieve(req.Context, keys, req.BifrostRequest.CachedContentRetrieveRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentRetrieveResponse = cachedContentRetrieveResponse
+	case schemas.CachedContentUpdateRequest:
+		cachedContentUpdateResponse, bifrostError := provider.CachedContentUpdate(req.Context, keys, req.BifrostRequest.CachedContentUpdateRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentUpdateResponse = cachedContentUpdateResponse
+	case schemas.CachedContentDeleteRequest:
+		cachedContentDeleteResponse, bifrostError := provider.CachedContentDelete(req.Context, keys, req.BifrostRequest.CachedContentDeleteRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentDeleteResponse = cachedContentDeleteResponse
 	case schemas.BatchCreateRequest:
 		batchCreateResponse, bifrostError := provider.BatchCreate(req.Context, key, req.BifrostRequest.BatchCreateRequest)
 		if bifrostError != nil {
@@ -6920,6 +7068,11 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.FileRetrieveRequest = nil
 	req.FileDeleteRequest = nil
 	req.FileContentRequest = nil
+	req.CachedContentCreateRequest = nil
+	req.CachedContentListRequest = nil
+	req.CachedContentRetrieveRequest = nil
+	req.CachedContentUpdateRequest = nil
+	req.CachedContentDeleteRequest = nil
 	req.BatchCreateRequest = nil
 	req.BatchListRequest = nil
 	req.BatchRetrieveRequest = nil

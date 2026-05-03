@@ -8,7 +8,9 @@ icon: "list-check"
 
 Bifrost ships a comprehensive end-to-end test harness (`tests/e2e/api/collections/provider-harness.json`) that exercises every provider's translation surface. This page documents which features are covered for each provider, sourced from each upstream's official docs and verified against what's in the harness collection today.
 
-**Total: 329 requests across 13 folders** covering native API, drop-in routes, cross-model routing, passthrough endpoints, feature variations, and explicit backlog coverage.
+**Total: 321 requests across 12 folders** covering native API, drop-in routes, cross-model routing, passthrough endpoints, feature variations, and explicit backlog coverage.
+
+**`[PREVIEW]` tag**: requests prefixed `[PREVIEW]` are gated behind `INCLUDE_PREVIEW=1` (default-skipped) because they target account/region-scoped resources — preview-model deployments, vector stores, cached content references, MCP servers — that the harness can't provision in arbitrary environments. Run `make run-provider-harness-test INCLUDE_PREVIEW=1` to include them.
 
 Run it with:
 
@@ -21,143 +23,262 @@ Output:
 - `tmp/harness-failures.md` — categorized failures + coverage matrices
 - Interactive viewer at `http://localhost:8090` with Resend + Copy curl
 
-## Cell legend
+## Status legend
 
-- `✅` — feature is exercised by the harness
-- `❌` — feature is **not** exercised yet (gap; PRs welcome)
-- `N/A` — feature is not part of that provider's API surface
+- `✅` — exercised by the harness, expected to pass against a properly-configured upstream
+- `✅*` — exercised, but needs an environment-side resource the harness can't manufacture (vector store, cached content reference, real audio bytes, MCP server, preview deployment, etc.). These rows are typically `[PREVIEW]`-tagged in the collection so they default-skip; opt in with `make run-provider-harness-test INCLUDE_PREVIEW=1`
+- `❌` — provider supports this feature but the harness doesn't yet exercise it (gap; PRs welcome)
 
-## Provider × Feature coverage
+Features a provider doesn't natively support are simply omitted from that provider's table — there's no `N/A` row, since each table only lists features within that provider's own API surface.
 
-### Core conversation
+## Per-provider coverage
 
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Basic chat | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| System message | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Multi-turn conversation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Streaming (SSE) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Stop sequences | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Sampling params (temperature/top_p/top_k) | ✅ | N/A | ✅ | ✅ | ✅ | ✅ |
-| Logprobs / top_logprobs | ✅ | N/A | N/A | ✅ | ✅ | ❌ |
-| Seed (deterministic outputs) | ✅ | N/A | N/A | N/A | N/A | ❌ |
-| Predicted outputs | ✅ | N/A | N/A | N/A | N/A | ❌ |
+### OpenAI
 
-### Tools
+| Feature | Status |
+|---|---|
+| Basic chat | ✅ |
+| System message | ✅ |
+| Multi-turn conversation | ✅ |
+| Streaming (SSE) | ✅ |
+| Stop sequences | ✅ |
+| Sampling params (temperature / top_p) | ✅ |
+| Logprobs / top_logprobs | ✅ |
+| Seed (deterministic outputs) | ✅ |
+| Predicted outputs | ✅ |
+| Function calling (custom tool) | ✅ |
+| Tool choice forced (`required`) | ✅ |
+| Tool choice specific function | ✅ |
+| Parallel tool calls | ✅ |
+| Strict tool input | ✅ |
+| MCP toolset | ✅* |
+| Web search (basic) | ✅ |
+| Code interpreter (Responses API) | ✅ |
+| File search (vector store) | ✅* |
+| Computer use (Responses API) | ✅* |
+| Vision (image input) | ✅ |
+| PDF input | ✅* |
+| Audio input | ✅* |
+| Reasoning effort (`reasoning_effort`) | ✅ |
+| Reasoning summary (Responses API) | ✅ |
+| Structured output (`json_schema`) | ✅ |
+| Response format JSON object | ✅ |
+| Prompt caching (ephemeral) | ✅ |
+| Stream options w/ usage | ✅ |
+| Service tier (`auto` / `flex` / `priority`) | ✅ |
+| Background mode (Responses async) | ✅ |
+| Truncation strategy (`auto`) | ✅ |
+| Include array (Responses) | ✅ |
+| Custom tool (Responses) | ✅ |
+| Skills / container | ✅ |
+| Token counting (`/v1/responses/input_tokens`) | ✅ |
+| Batch API (create / list) | ✅ |
+| Files API (list) | ✅ |
+| Models list | ✅ |
 
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Function calling (custom tool) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool choice forced (`required` / `any`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool choice specific function | ✅ | ✅ | ✅ | ✅ | N/A | ❌ |
-| Parallel tool calls | ✅ | ✅ | ✅ | ✅ | N/A | ✅ |
-| Strict tool input | ✅ | ✅ | N/A | N/A | N/A | ❌ |
-| Tool input examples | N/A | ✅ | N/A | N/A | N/A | N/A |
-| Defer loading | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Allowed callers | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Eager input streaming | N/A | ✅ | N/A | N/A | N/A | N/A |
-| Tool search (BM25 / regex) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| MCP toolset | ✅ | ✅ | ✅ | N/A | ✅ | N/A |
+### Anthropic
 
-### Server-side tools
+| Feature | Status |
+|---|---|
+| Basic chat | ✅ |
+| System message | ✅ |
+| Multi-turn conversation | ✅ |
+| Streaming (SSE) | ✅ |
+| Stop sequences | ✅ |
+| Function calling (custom tool) | ✅ |
+| Tool choice forced (`any`) | ✅ |
+| Tool choice specific function | ✅ |
+| Parallel tool calls | ✅ |
+| Strict tool input | ✅ |
+| Tool input examples | ✅ |
+| Defer loading | ✅ |
+| Allowed callers | ✅ |
+| Eager input streaming | ✅ |
+| Tool search (BM25 / regex) | ✅ |
+| MCP toolset | ✅* |
+| Web search (basic / dynamic filtering / domain filter / user location) | ✅ |
+| Web fetch | ✅ |
+| Code execution | ✅ |
+| Computer use | ✅ |
+| Text editor tool | ✅ |
+| Bash tool | ✅ |
+| Memory tool | ✅ |
+| Vision (image input) | ✅ |
+| PDF input (URL or base64 source) | ✅ |
+| Citations on document blocks | ✅ |
+| Extended thinking (`thinking.budget_tokens`) | ✅ |
+| Adaptive thinking (`thinking.adaptive`) | ✅ |
+| Interleaved thinking (beta) | ✅ |
+| Structured output (`json_schema`) | ✅ |
+| Output config / effort | ✅ |
+| Prompt caching (ephemeral) | ✅ |
+| Prompt caching (1-hour TTL) | ✅ |
+| Service tier | ✅ |
+| `anthropic-beta` header | ✅ |
+| Skills / container | ✅ |
+| Context management / 1M context | ✅ |
+| Compaction beta | ✅ |
+| Token-efficient tools beta | ✅ |
+| Fine-grained tool streaming | ✅ |
+| Fast mode (Opus 4.6) | ✅* |
+| Redact thinking beta | ✅ |
+| Token counting (`/v1/messages/count_tokens`) | ✅ |
+| Batch API (create / list) | ✅ |
+| Files API (list) | ✅ |
+| Models list | ✅ |
 
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Web search (basic) | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
-| Web search (dynamic filtering) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Web search (domain filter) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Web search (user location) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Web fetch | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Code execution | N/A | ✅ | ✅ | ✅ | ✅ | N/A |
-| Code interpreter (OpenAI Responses) | ✅ | N/A | N/A | N/A | N/A | ✅ |
-| File search (vector store) | ✅* | N/A | N/A | N/A | N/A | ✅* |
-| Computer use | ✅ | ✅ | ✅ | N/A | ✅ | N/A |
-| Text editor tool | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Bash tool | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Memory tool | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| URL context tool | N/A | N/A | N/A | ✅ | N/A | N/A |
-| Google search grounding | N/A | N/A | N/A | ✅ | ✅ | N/A |
+### Bedrock
 
-`*` = harness sends a placeholder `vs_REPLACE_ME` ID; passes only with a real OpenAI vector store.
+| Feature | Status |
+|---|---|
+| Basic chat | ✅ |
+| System message | ✅ |
+| Multi-turn conversation | ✅ |
+| Streaming (SSE / AWS event-stream) | ✅ |
+| Stop sequences | ✅ |
+| Sampling params (temperature OR top_p, not both on Anthropic models) | ✅ |
+| Function calling | ✅ |
+| Tool choice forced | ✅ |
+| Tool choice specific function | ✅ |
+| Parallel tool calls | ✅ |
+| MCP toolset | ✅ |
+| Web search (basic / dynamic filtering / domain filter / user location) | ✅ |
+| Web fetch | ✅ |
+| Code execution | ✅ |
+| Computer use | ✅ |
+| Text editor tool | ✅ |
+| Bash tool | ✅ |
+| Memory tool | ✅ |
+| Vision (image; URLs auto-fetched + inlined by Bifrost) | ✅ |
+| PDF input (URLs auto-fetched + inlined) | ✅ |
+| Citations on document blocks | ✅ |
+| Extended thinking (`thinking.budget_tokens`) | ✅ |
+| Interleaved thinking (beta) | ✅ |
+| Structured output (`json_schema` via tool-mode workaround) | ✅ |
+| Output config / effort | ✅ |
+| Prompt caching (ephemeral) | ✅ |
+| Prompt caching (1-hour TTL) | ✅ |
+| `anthropic-beta` header passthrough | ✅ |
+| Context management / 1M context | ✅ |
+| Cross-region inference (`global.` prefix) | ✅ |
+| Cross-region inference (`us.` prefix) | ✅ |
+| Native Converse (`/bedrock/model/{m}/converse`) | ✅ |
+| Native InvokeModel (`/bedrock/model/{m}/invoke`) | ✅ |
+| Model invocation jobs (Batch API equivalent) | ✅ |
+| Batch API | ✅ |
 
-### Multimodal
+### Gemini (Google AI Studio)
 
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Vision (image input) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| PDF input | ✅* | ✅ | ✅ | ✅ | ✅ | N/A |
-| Audio input | ✅* | N/A | N/A | ✅* | ✅* | ✅* |
-| YouTube URL input | N/A | N/A | N/A | ✅ | N/A | N/A |
-| Citations | N/A | ✅ | ✅ | N/A | ✅ | N/A |
+| Feature | Status |
+|---|---|
+| Basic chat | ✅ |
+| System message | ✅ |
+| Multi-turn conversation | ✅ |
+| Streaming (SSE) | ✅ |
+| Stop sequences | ✅ |
+| Sampling params (temperature / top_p / top_k) | ✅ |
+| Logprobs | ✅ |
+| Function calling | ✅ |
+| Tool choice forced (`any`) | ✅ |
+| Tool choice specific function | ✅ |
+| Parallel tool calls | ✅ |
+| Web search (basic) | ✅ |
+| Code execution | ✅ |
+| URL context tool | ✅ |
+| Google search grounding | ✅ |
+| Vision (image input) | ✅ |
+| PDF input | ✅* |
+| Audio input | ✅ |
+| YouTube URL input | ✅ |
+| Thinking budget (`thinkingConfig`) | ✅ |
+| Structured output (`json_schema`) | ✅ |
+| Response MIME type | ✅ |
+| Prompt caching (implicit, via cached content) | ✅ |
+| Cached content reference (`cachedContent: "cachedContents/{id}"`) | ✅* |
+| Cached contents lifecycle (`POST/GET/PATCH/DELETE /v1beta/cachedContents`) | ❌ |
+| Cached contents list (`GET /v1beta/cachedContents`) | ✅ |
+| Safety settings | ✅ |
+| Token counting (`:countTokens`) | ✅ |
+| Files API (list) | ✅ |
+| Models list | ✅ |
 
-`*` = uses a `REPLACE_BASE64` / `file_REPLACE_ME` placeholder; exercises Bifrost's routing but needs real bytes/IDs to succeed end-to-end.
+### Vertex AI
 
-### Reasoning / thinking
+| Feature | Status |
+|---|---|
+| Basic chat | ✅ |
+| System message | ✅ |
+| Multi-turn conversation | ✅ |
+| Streaming (SSE) | ✅ |
+| Sampling params (temperature / top_p) | ✅ |
+| Function calling | ✅ |
+| Tool choice forced | ✅ |
+| Defer loading (Anthropic) | ✅ |
+| Allowed callers (Anthropic) | ✅ |
+| Tool search (Anthropic BM25) | ✅ |
+| MCP toolset | ✅* |
+| Web search (basic / dynamic filtering / domain filter / user location) | ✅ |
+| Web fetch | ✅ |
+| Code execution | ✅ |
+| Google search grounding | ✅ |
+| Computer use (Anthropic) | ✅ |
+| Text editor tool (Anthropic) | ✅ |
+| Bash tool (Anthropic) | ✅ |
+| Memory tool (Anthropic) | ✅ |
+| Vision (image input) | ✅ |
+| PDF input (URLs auto-fetched + inlined for Vertex-Anthropic) | ✅ |
+| Audio input (Gemini) | ✅* |
+| Citations on document blocks | ✅ |
+| Extended thinking (`thinking.budget_tokens`) | ✅ |
+| Adaptive thinking | ✅ |
+| Thinking budget (Gemini `thinkingConfig`) | ✅ |
+| Interleaved thinking (Anthropic beta) | ✅ |
+| Structured output (`json_schema`) | ✅ |
+| Response MIME type (Gemini) | ✅ |
+| Output config / effort (Anthropic) | ✅ |
+| Prompt caching (ephemeral) | ✅ |
+| Prompt caching (1-hour TTL) | ✅ |
+| Cached contents lifecycle (`POST/GET/PATCH/DELETE /v1/projects/.../cachedContents`) | ❌ |
+| `anthropic-beta` header passthrough | ✅ |
+| Safety settings (Gemini) | ✅ |
+| Context management / 1M context (Anthropic) | ✅ |
+| Token counting | ✅ |
+| Model Garden (Llama / Mistral) | ✅* |
 
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Reasoning effort (`reasoning_effort`) | ✅ | N/A | N/A | N/A | N/A | ✅ |
-| Extended thinking (`thinking.budget_tokens`) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Adaptive thinking (`thinking.adaptive`) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Thinking budget (Gemini `thinkingConfig`) | N/A | N/A | N/A | ✅ | ✅ | N/A |
-| Interleaved thinking (Anthropic beta) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Reasoning summary (Responses API) | ✅ | N/A | N/A | N/A | N/A | N/A |
+### Azure OpenAI
 
-### Output controls
+| Feature | Status |
+|---|---|
+| Basic chat | ✅ |
+| System message | ✅ |
+| Multi-turn conversation | ✅ |
+| Streaming (SSE) | ✅ |
+| Stop sequences | ✅ |
+| Sampling params (temperature / top_p) | ✅ |
+| Logprobs / top_logprobs | ❌ |
+| Seed (deterministic outputs) | ❌ |
+| Predicted outputs | ❌ |
+| Function calling | ✅ |
+| Tool choice forced | ✅ |
+| Tool choice specific function | ❌ |
+| Parallel tool calls | ✅ |
+| Strict tool input | ❌ |
+| Code interpreter (Responses preview) | ✅ |
+| File search (Responses preview) | ✅* |
+| Vision (image input) | ✅ |
+| Audio input (`gpt-4o-audio-preview`) | ✅* |
+| Reasoning effort (`o3` deployment) | ✅* |
+| Structured output (`json_schema`) | ✅ |
+| Response format JSON object | ❌ |
+| Service tier (`auto` / `flex` / `priority`) | ✅ |
+| Skills / container | ✅ |
+| Azure On Your Data (`azure_search`) | ✅ |
 
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Structured output (`json_schema`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Response format JSON object | ✅ | N/A | N/A | N/A | N/A | ❌ |
-| Response MIME type (Gemini) | N/A | N/A | N/A | ✅ | ✅ | N/A |
-| Output config / effort (Anthropic) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-
-### Caching / efficiency
-
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Prompt caching (ephemeral) | ✅ | ✅ | ✅ | ✅* | ✅ | N/A |
-| Prompt caching (1-hour TTL) | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Cached content reference (Gemini) | N/A | N/A | N/A | ✅* | N/A | N/A |
-| Stream options w/ usage | ✅ | N/A | N/A | N/A | N/A | N/A |
-
-`*` = uses a placeholder `cachedContents/PLACEHOLDER` ID; needs a real cache reference.
-
-### Provider-specific advanced
-
-| Feature | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Service tier (`scale` / `auto` / `priority`) | ✅ | ✅ | ✅ | N/A | ✅ | ✅ |
-| Background mode (Responses async) | ✅ | N/A | N/A | N/A | N/A | N/A |
-| Truncation strategy (`auto`) | ✅ | N/A | N/A | N/A | N/A | N/A |
-| Include array (Responses) | ✅ | N/A | N/A | N/A | N/A | N/A |
-| Custom tool (Responses) | ✅ | N/A | N/A | N/A | N/A | N/A |
-| Anthropic beta header | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Skills / container | ✅ | ✅ | N/A | N/A | N/A | ✅ |
-| Context management / 1M context | N/A | ✅ | ✅ | N/A | ✅ | N/A |
-| Compaction beta | N/A | ✅ | N/A | N/A | N/A | N/A |
-| Token-efficient tools beta | N/A | ✅ | N/A | N/A | N/A | N/A |
-| Fine-grained tool streaming | N/A | ✅ | N/A | N/A | N/A | N/A |
-| Fast mode (Opus 4.6) | N/A | ✅ | N/A | N/A | N/A | N/A |
-| Redact thinking beta | N/A | ✅ | N/A | N/A | N/A | N/A |
-| Safety settings (Gemini) | N/A | N/A | N/A | ✅ | ✅ | N/A |
-| Azure On Your Data (`azure_search`) | N/A | N/A | N/A | N/A | N/A | ✅ |
-| Bedrock cross-region inference (`global.`) | N/A | N/A | ✅ | N/A | N/A | N/A |
-| Bedrock geo profiles (`us.` / `eu.` / `apac.` / `jp.` / `au.`) | N/A | N/A | ✅ | N/A | N/A | N/A |
-| Vertex Model Garden (Llama / Mistral) | N/A | N/A | N/A | N/A | ✅ | N/A |
-
-### Endpoints (beyond chat completions)
-
-| Endpoint | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
-|---|---|---|---|---|---|---|
-| Token counting | ✅ | ✅ | N/A | ✅ | N/A | N/A |
-| Batch API (create / list) | ✅ | ✅ | ✅ | N/A | N/A | N/A |
-| Files API (list) | ✅ | ✅ | N/A | ✅ | N/A | N/A |
-| Models list | ✅ | ✅ | N/A | ✅ | N/A | N/A |
-| Cached contents list (Gemini) | N/A | N/A | N/A | ✅ | N/A | N/A |
-| Native Bedrock Converse | N/A | N/A | ✅ | N/A | N/A | N/A |
-| Native Bedrock InvokeModel | N/A | N/A | ✅ | N/A | N/A | N/A |
-| Bedrock model invocation jobs | N/A | N/A | ✅ | N/A | N/A | N/A |
+**Bifrost-side normalizations applied automatically** (don't appear as separate rows):
+- Vision URL images on Bedrock — fetched and inlined as base64 (Bedrock Converse only accepts inline bytes)
+- PDF URL documents on Bedrock — same fetch+inline path
+- PDF URL documents on Vertex Claude — same (Vertex-Anthropic doesn't accept URL document sources)
+- Anthropic-style `{type:"document",source:{...}}` blocks on `/v1/chat/completions` — normalized to `{type:"file",file:{...}}` at JSON unmarshal so every provider's converter sees the same shape
 
 ## Cross-cutting (Bifrost-specific)
 
@@ -184,25 +305,23 @@ These exercise Bifrost's translation layer between provider shapes — every che
 
 ## Passthrough surface (`*_passthrough/*`)
 
-Catch-all forwarding routes that strip incoming auth headers and inject Bifrost's configured provider key (or, for Bedrock, re-sign with Bifrost's AWS credentials via SigV4).
+Catch-all forwarding routes that strip incoming auth headers and inject Bifrost's configured provider key.
 
 | Feature | OpenAI | Anthropic | Bedrock | Azure | Gemini |
 |---|---|---|---|---|---|
-| Basic chat | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Streaming | ✅ | N/A | ✅ | N/A | N/A |
+| Basic chat | ✅ | ✅ | N/A | ✅ | ✅ |
+| Streaming | ✅ | N/A | N/A | N/A | N/A |
 | Vision | ✅ | N/A | N/A | N/A | N/A |
-| Web search | ✅ | ✅ | ✅ | N/A | ✅ |
+| Web search | ✅ | ✅ | N/A | N/A | ✅ |
 | Code execution / code interpreter | ✅ | N/A | N/A | N/A | ✅ |
-| Function calling / tool use | N/A | N/A | ✅ | ✅ | N/A |
+| Function calling / tool use | N/A | N/A | N/A | ✅ | N/A |
 | Computer use | N/A | ✅ | N/A | N/A | N/A |
-| Extended thinking | N/A | ✅ | ✅ | N/A | N/A |
-| Prompt caching | N/A | ✅ | ✅ | N/A | N/A |
-| System message | N/A | N/A | ✅ | N/A | N/A |
-| Native InvokeModel | N/A | N/A | ✅ | N/A | N/A |
+| Extended thinking | N/A | ✅ | N/A | N/A | N/A |
+| Prompt caching | N/A | ✅ | N/A | N/A | N/A |
 
-**Bedrock passthrough route**: `/bedrock_passthrough/model/{modelId}/converse` (or `/converse-stream`, or `/invoke`). Unlike the HTTP-header-auth providers, Bedrock requires AWS SigV4 signing — the underlying Bedrock provider re-signs the forwarded request with Bifrost's configured AWS credentials.
+**Bedrock**: passthrough is **not supported by design**. AWS SigV4 signing requires bifrost to sign the request with its own credentials, which fundamentally conflicts with byte-for-byte forwarding. Use the typed `/bedrock/model/{modelId}/converse`, `/converse-stream`, or `/invoke` routes instead — those go through bifrost's typed Bedrock provider with proper sigv4 handling.
 
-**Vertex** still has no passthrough variant — Google OAuth bearer tokens are rotated per-request and can't be bridged through a byte-for-byte forward.
+**Vertex**: no passthrough variant. Google OAuth bearer tokens are rotated per-request and can't be bridged through a byte-for-byte forward.
 
 ## Coverage by transport route
 
@@ -216,13 +335,15 @@ Catch-all forwarding routes that strip incoming auth headers and inject Bifrost'
 
 These cells stay `❌` even after running because they require provider-side state the harness can't manufacture:
 
-- **OpenAI File Search** — needs a real `vs_*` vector store
-- **OpenAI / Azure Audio Input** — needs real base64 audio bytes
+- **OpenAI File Search** — needs a real `vs_*` vector store (`[PREVIEW]`-tagged)
+- **OpenAI / Azure Audio Input** — needs real base64 audio bytes (`[PREVIEW]`-tagged)
 - **OpenAI / Anthropic Batch creation** — needs a real input file ID
-- **Gemini Cached Content** — needs a real `cachedContents/*` reference
-- **Anthropic Skills / Container** — needs container provisioning
+- **Gemini Cached Content reference** — the lifecycle endpoints (create/list/retrieve/update/delete) work end-to-end; only the *referencing* tests (passing `cachedContents/{id}` to `generateContent`) need a pre-provisioned cache with 32k+ tokens of content (Gemini's minimum) (`[PREVIEW]`-tagged)
 - **Vertex Anthropic features in `us-central1`** — region-restricted unless `GOOGLE_LOCATION=global`
-- **Bedrock geo profiles outside your region** — requires multi-region capacity
+- **Vertex preview-model deployments** (Gemini-3.x, etc.) — `[PREVIEW]`-tagged; require account access
+- **Vertex-Anthropic URL document sources** — Vertex doesn't accept URL document sources upstream; bifrost auto-fetches and inlines via `inlineDocumentURLs` for parity with direct Anthropic
+- **Azure preview deployments** (`o3` / `gpt-4o-audio-preview` / `computer-use-preview`) — `[PREVIEW]`-tagged; require deployment provisioning
+- **MCP toolset tests** — `[PREVIEW]`-tagged; need a reachable MCP server
 
 ## Coverage report layout
 
