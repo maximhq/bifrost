@@ -2879,7 +2879,7 @@ func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 	return paths
 }
 
-// NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
+// NewOpenAIRouter creates a new OpenAIRouter with OpenAI compatibility passthrough enabled.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...)

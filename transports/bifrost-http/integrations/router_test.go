@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestNewOpenAIRouterEnablesOpenAICompatibilityPassthrough verifies unmatched OpenAI-compatible routes fall back to provider passthrough.
 func TestNewOpenAIRouterEnablesOpenAICompatibilityPassthrough(t *testing.T) {
 	router := NewOpenAIRouter(nil, &mockHandlerStore{allowDirectKeys: true}, nil)
 
