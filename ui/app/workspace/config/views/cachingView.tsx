@@ -44,7 +44,7 @@ type RedisFormState = {
 	username: EnvVar;
 	password: EnvVar;
 	db: EnvVar;
-	pool_size: number;
+	pool_size: number | "";
 	use_tls: EnvVar;
 	insecure_skip_verify: EnvVar;
 	ca_cert_pem: EnvVar;
@@ -123,7 +123,7 @@ function buildConfigPayload(
 				...base,
 				addr: forms.redis.addr,
 				db: forms.redis.db,
-				pool_size: forms.redis.pool_size,
+				pool_size: forms.redis.pool_size === "" ? 1 : forms.redis.pool_size,
 				use_tls: forms.redis.use_tls,
 				cluster_mode: forms.redis.cluster_mode,
 				username: forms.redis.username,
@@ -453,8 +453,14 @@ export default function CachingView() {
 													min={1}
 													value={formStates.redis.pool_size}
 													onChange={(e) => {
-														const val = parseInt(e.target.value);
-														updateRedis({ pool_size: isNaN(val) || val < 1 ? 1 : val });
+														const raw = e.target.value;
+														if (raw === "") {
+															updateRedis({ pool_size: "" });
+															return;
+														}
+														const val = parseInt(raw);
+														if (isNaN(val)) return;
+														updateRedis({ pool_size: val < 1 ? 1 : val });
 													}}
 												/>
 											</div>
