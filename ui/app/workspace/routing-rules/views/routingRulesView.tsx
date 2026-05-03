@@ -38,6 +38,7 @@ export function RoutingRulesView() {
 	// Permissions
 	const canCreate = useRbac(RbacResource.RoutingRules, RbacOperation.Create);
 	const canDelete = useRbac(RbacResource.RoutingRules, RbacOperation.Delete);
+	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 
 	// API
 	const { data: rulesData, isLoading } = useGetRoutingRulesQuery(
@@ -125,6 +126,7 @@ export function RoutingRulesView() {
 				onEdit={handleEdit}
 				onRowClick={handleRowClick}
 				canDelete={canDelete}
+				canUpdate={canUpdate}
 				search={search}
 				onSearchChange={setSearch}
 				offset={offset}

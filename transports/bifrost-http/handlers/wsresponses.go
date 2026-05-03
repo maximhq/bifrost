@@ -2,7 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -136,9 +140,10 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			if ws.IsUnexpectedCloseError(err, ws.CloseGoingAway, ws.CloseNormalClosure) {
-				logger.Warn("websocket read error: %v", err)
+			if isExpectedResponsesClientClose(err, session) {
+				return
 			}
+			logger.Warn("websocket read error: %v", err)
 			return
 		}
 
@@ -174,7 +179,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
 	if provider == "" || modelName == "" {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
 		return
@@ -207,9 +212,21 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		writeWSError(session, 500, "server_error", "failed to create request context")
 		return
 	}
+	if parentRequestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); parentRequestID == "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, session.ID())
+	}
+
+	// Rewrite the raw event for upstream: strip provider/ prefix from model,
+	// apply store override. The original bytes contain the bifrost-format model
+	// (e.g. "openai/gpt-5.5") which upstream providers don't understand.
+	upstreamEvent, rewriteErr := rewriteUpstreamEvent(message, bifrostReq.Model, event.Store)
+	if rewriteErr != nil {
+		logger.Warn("failed to rewrite upstream event: %v, using original", rewriteErr)
+		upstreamEvent = message
+	}
 
 	// Try native WS upstream first
-	if h.tryNativeWSUpstream(session, bifrostCtx, bifrostReq, message) {
+	if h.tryNativeWSUpstream(session, bifrostCtx, bifrostReq, upstreamEvent) {
 		cancel()
 		return
 	}
@@ -290,6 +307,16 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		return true
 	}
 
+	finalizeTerminalPostHooks := func(bifrostErr *schemas.BifrostError) {
+		if bifrostErr == nil {
+			return
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		if _, postErr := hooks.PostHookRunner(ctx, nil, bifrostErr); postErr != nil {
+			logger.Warn("failed to finalize WS post-hooks for %s: %v", req.Provider, postErr)
+		}
+	}
+
 	// Forward the raw event to upstream
 	if err := upstream.WriteMessage(ws.TextMessage, rawEvent); err != nil {
 		logger.Warn("upstream WS write failed for %s: %v, falling back to HTTP bridge", req.Provider, err)
@@ -301,20 +328,45 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	// Retrieve tracer and traceID for chunk accumulation
 	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	streamIdleTimeout := resolveWSStreamIdleTimeout(h.config, req.Provider)
 
 	// Read response events from upstream and relay to client, running post-hooks per chunk
 	forwardedAny := false
 	for {
+		if err := upstream.SetReadDeadline(time.Now().Add(streamIdleTimeout)); err != nil {
+			// Fail closed: if we can't arm the idle timeout, don't risk hanging forever.
+			logger.Warn("failed to set upstream WS read deadline for %s: %v, treating as terminal", req.Provider, err)
+			h.pool.Discard(upstream)
+			session.SetUpstream(nil)
+			finalizeTerminalPostHooks(newBifrostError(502, "upstream_connection_error", "failed to arm upstream read deadline"))
+			writeWSError(session, 502, "upstream_connection_error", "upstream websocket connection error")
+			return true
+		}
+
 		msgType, data, readErr := upstream.ReadMessage()
 		if readErr != nil {
+			if isWSReadTimeout(readErr) {
+				logger.Warn("upstream WS idle timeout for %s after %s", req.Provider, streamIdleTimeout)
+				h.pool.Discard(upstream)
+				session.SetUpstream(nil)
+				finalizeTerminalPostHooks(newBifrostError(504, "upstream_timeout", "upstream websocket stream timed out"))
+				writeWSError(session, 504, "upstream_timeout", "upstream websocket stream timed out")
+				return true
+			}
+
 			logger.Warn("upstream WS read failed for %s: %v, falling back to HTTP bridge", req.Provider, readErr)
 			h.pool.Discard(upstream)
 			session.SetUpstream(nil)
 			if !forwardedAny {
 				return false
 			}
+			finalizeTerminalPostHooks(newBifrostError(502, "upstream_connection_error", "upstream websocket stream interrupted"))
 			writeWSError(session, 502, "upstream_connection_error", "upstream websocket stream interrupted")
 			return true
+		}
+
+		if err := upstream.SetReadDeadline(time.Time{}); err != nil {
+			logger.Warn("failed to clear upstream WS read deadline for %s: %v", req.Provider, err)
 		}
 
 		streamResp := parseUpstreamWSEvent(data, req.Provider, req.Model)
@@ -343,14 +395,74 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		if writeErr := session.WriteMessage(msgType, data); writeErr != nil {
 			h.pool.Discard(upstream)
 			session.SetUpstream(nil)
+			// Only finalize post-hooks if they haven't already run for this chunk.
+			// When isTerminal && streamResp != nil, PostHookRunner already ran above (line 366),
+			// so calling finalizeTerminalPostHooks again would double-fire the end-of-stream signal.
+			if streamResp == nil || !isTerminal {
+				finalizeTerminalPostHooks(newBifrostError(499, "client_connection_error", "client websocket connection interrupted"))
+			}
 			return true
 		}
 		forwardedAny = true
 
 		if isTerminal {
+			session.MarkResponsesTurnCompleted()
 			h.trackResponseID(session, data)
 			return true
 		}
+	}
+}
+
+func resolveWSStreamIdleTimeout(config *lib.Config, provider schemas.ModelProvider) time.Duration {
+	idleTimeoutSeconds := schemas.DefaultStreamIdleTimeoutInSeconds
+	if config != nil {
+		if providerCfg, err := config.GetProviderConfigRaw(provider); err == nil && providerCfg != nil &&
+			providerCfg.NetworkConfig != nil && providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
+			idleTimeoutSeconds = providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds
+		}
+	}
+	if idleTimeoutSeconds <= 0 {
+		idleTimeoutSeconds = schemas.DefaultStreamIdleTimeoutInSeconds
+	}
+	return time.Duration(idleTimeoutSeconds) * time.Second
+}
+
+func isWSReadTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func isExpectedResponsesClientClose(err error, session *bfws.Session) bool {
+	if err == nil {
+		return true
+	}
+	if !ws.IsUnexpectedCloseError(err, ws.CloseGoingAway, ws.CloseNormalClosure) {
+		return true
+	}
+	if session != nil && session.HasCompletedResponsesTurn() && isResponsesEOFClose(err) {
+		return true
+	}
+	return false
+}
+
+func isResponsesEOFClose(err error) bool {
+	var closeErr *ws.CloseError
+	if !errors.As(err, &closeErr) {
+		return false
+	}
+	return closeErr.Code == ws.CloseAbnormalClosure || closeErr.Code == ws.CloseNoStatusReceived
+}
+
+func newBifrostError(statusCode int, errType, message string) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(statusCode),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr(errType),
+			Message: message,
+		},
 	}
 }
 
@@ -390,6 +502,11 @@ func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model str
 	streamResp.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 	streamResp.ExtraFields.Provider = provider
 	streamResp.ExtraFields.OriginalModelRequested = model
+	// Use SequenceNumber as ChunkIndex so each event gets a unique index.
+	// Without this, all chunks default to ChunkIndex=0 and the accumulator's
+	// dedup (ResponsesChunksSeen) drops every chunk after the first — losing
+	// output text, token usage, and cost data from the logs.
+	streamResp.ExtraFields.ChunkIndex = streamResp.SequenceNumber
 	return &streamResp
 }
 
@@ -419,7 +536,7 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
 func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
 	if provider == "" || modelName == "" {
 		return nil, errModelFormat
 	}
@@ -523,7 +640,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		if strings.HasPrefix(auth.authorization, "Bearer ") {
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
-				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(token, "sk-bf-"))
+				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
 			} else if handlerStore.ShouldAllowDirectKeys() {
 				key := schemas.Key{
 					ID:     "header-provided",
@@ -537,7 +654,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	}
 	if auth.apiKey != "" {
 		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.apiKey, "sk-bf-"))
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.apiKey)
 		} else if handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
@@ -550,7 +667,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	}
 	if auth.googAPIKey != "" {
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.googAPIKey, "sk-bf-"))
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		} else if handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
@@ -592,6 +709,10 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 	req *schemas.BifrostResponsesRequest,
 ) {
 	defer cancel()
+	// Flush the trace after the stream completes so the log entry is persisted
+	// to the log store. Without this, the trace is created by tryStreamRequest
+	// but never flushed — logs won't appear in the dashboard.
+	defer completeTrace(ctx)
 
 	stream, bifrostErr := h.client.ResponsesStreamRequest(ctx, req)
 	if bifrostErr != nil {
@@ -615,12 +736,15 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 			return
 		}
 
-		// Track last response ID for session chaining
+		// Track terminal responses for session chaining and close classification.
 		if chunk.BifrostResponsesStreamResponse != nil &&
-			chunk.BifrostResponsesStreamResponse.Response != nil &&
-			chunk.BifrostResponsesStreamResponse.Response.ID != nil &&
-			*chunk.BifrostResponsesStreamResponse.Response.ID != "" {
-			session.SetLastResponseID(*chunk.BifrostResponsesStreamResponse.Response.ID)
+			isTerminalStreamType(chunk.BifrostResponsesStreamResponse.Type) {
+			session.MarkResponsesTurnCompleted()
+			if chunk.BifrostResponsesStreamResponse.Response != nil &&
+				chunk.BifrostResponsesStreamResponse.Response.ID != nil &&
+				*chunk.BifrostResponsesStreamResponse.Response.ID != "" {
+				session.SetLastResponseID(*chunk.BifrostResponsesStreamResponse.Response.ID)
+			}
 		}
 	}
 }
@@ -682,6 +806,51 @@ var wsResponsesKnownFields = map[string]bool{
 	"metadata":             true,
 	"text":                 true,
 	"truncation":           true,
+}
+
+// rewriteUpstreamEvent modifies the raw JSON event for upstream consumption:
+// - Replaces "model" with provider-native name (strips provider/ prefix)
+// - Applies store override if modified
+// Uses json.RawMessage to preserve all other field values exactly as-is.
+// Re-marshaling via a map may reorder object fields; Responses JSON is
+// order-insensitive, and this path only preserves semantics, not byte order.
+func rewriteUpstreamEvent(rawEvent []byte, nativeModel string, store *bool) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := sonic.Unmarshal(rawEvent, &m); err != nil {
+		return nil, err
+	}
+
+	modelBytes, err := sonic.Marshal(nativeModel)
+	if err != nil {
+		return nil, err
+	}
+	m["model"] = json.RawMessage(modelBytes)
+
+	if store != nil {
+		storeBytes, err := sonic.Marshal(*store)
+		if err != nil {
+			return nil, err
+		}
+		m["store"] = json.RawMessage(storeBytes)
+	}
+
+	return sonic.Marshal(m)
+}
+
+// completeTrace flushes the trace so the log entry is persisted to the log store.
+func completeTrace(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || tracer == nil {
+		return
+	}
+	traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if !ok || traceID == "" {
+		return
+	}
+	tracer.CompleteAndFlushTrace(traceID)
 }
 
 var (

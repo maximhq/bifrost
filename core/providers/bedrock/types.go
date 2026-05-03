@@ -397,8 +397,21 @@ type BedrockTokenUsage struct {
 	OutputTokens int `json:"outputTokens"` // Number of output tokens
 	TotalTokens  int `json:"totalTokens"`  // Total tokens (input + output + cached tokens)
 	// Number of cached input tokens read from the cache; excluded from inputTokens.
-	CacheReadInputTokens  int `json:"cacheReadInputTokens"`
-	CacheWriteInputTokens int `json:"cacheWriteInputTokens"` // Number of cached tokens written
+	CacheReadInputTokens  int                         `json:"cacheReadInputTokens"`
+	CacheWriteInputTokens int                         `json:"cacheWriteInputTokens"`  // Number of cached tokens written
+	CacheDetails          *[]BedrockCacheWriteDetails `json:"cacheDetails,omitempty"` // Cache details
+}
+
+type BedrockCacheWriteTTL string
+
+const (
+	BedrockCacheWriteTTL5m BedrockCacheWriteTTL = "5m"
+	BedrockCacheWriteTTL1h BedrockCacheWriteTTL = "1h"
+)
+
+type BedrockCacheWriteDetails struct {
+	InputTokens int                  `json:"inputTokens"` // Number of input tokens written to the cache
+	TTL         BedrockCacheWriteTTL `json:"ttl"`         // Time to live for the cache
 }
 
 // BedrockConverseMetrics represents response metrics

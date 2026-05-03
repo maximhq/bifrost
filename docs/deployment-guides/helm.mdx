@@ -1,11 +1,11 @@
 ---
 title: "Quick Start"
-description: "Deploy Bifrost on Kubernetes using the official Helm chart — quickstart for OSS and Enterprise"
+description: "Deploy Bifrost on Kubernetes using the official Helm chart - quickstart for OSS and Enterprise"
 icon: "server"
 ---
 
 <Note>
-**Latest Chart Version:** 2.1.0 | [View on Artifact Hub](https://artifacthub.io/packages/helm/bifrost/bifrost)
+**Latest Chart Version**: [View on Artifact Hub](https://artifacthub.io/packages/helm/bifrost/bifrost)
 </Note>
 
 <Tabs>
@@ -23,14 +23,14 @@ icon: "server"
 If you use PostgreSQL for Bifrost storage, ensure the database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
 </Note>
 
-## Step 1 — Add the Helm Repository
+## Step 1 - Add the Helm Repository
 
 ```bash
 helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
 helm repo update
 ```
 
-## Step 2 — Install
+## Step 2 - Install
 
 <Note>
 The Helm chart ships ready-made values files under `helm-charts/bifrost/values-examples/`.
@@ -80,7 +80,7 @@ helm install bifrost bifrost/bifrost \
 </Tab>
 <Tab title="Production (PostgreSQL + HA)">
 
-High-availability setup — 3 replicas, PostgreSQL, autoscaling, ingress.
+High-availability setup - 3 replicas, PostgreSQL, autoscaling, ingress.
 
 ```bash
 # 1. Create secrets
@@ -179,10 +179,13 @@ bifrost:
   plugins:
     telemetry:
       enabled: true
+      version: 1
     logging:
       enabled: true
+      version: 1
     governance:
       enabled: true
+      version: 1
 ```
 
 ```bash
@@ -194,10 +197,10 @@ helm install bifrost bifrost/bifrost -f production.yaml
 </Tabs>
 
 <Note>
-`image.tag` is required — the chart will not start without it. Check [Docker Hub](https://hub.docker.com/r/maximhq/bifrost/tags) for available versions.
+`image.tag` is required - the chart will not start without it. Check [Docker Hub](https://hub.docker.com/r/maximhq/bifrost/tags) for available versions.
 </Note>
 
-## Step 3 — Verify
+## Step 3 - Verify
 
 ```bash
 # Check pods are running
@@ -211,7 +214,7 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 ```
 
-## Step 4 — Configure Providers & Plugins
+## Step 4 - Configure Providers & Plugins
 
 ```bash
 # Make your first inference call
@@ -242,14 +245,14 @@ Enterprise customers receive dedicated container images in a private registry, a
 - Helm 3.2.0+ installed
 - Enterprise registry credentials (provided by Maxim)
 
-## Step 1 — Add the Helm Repository
+## Step 1 - Add the Helm Repository
 
 ```bash
 helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
 helm repo update
 ```
 
-## Step 2 — Create Pull Secret
+## Step 2 - Create Pull Secret
 
 Create a Kubernetes image pull secret for our private enterprise registry:
 
@@ -301,7 +304,7 @@ kubectl create secret docker-registry enterprise-registry-secret \
 </Tab>
 </Tabs>
 
-## Step 3 — Create Required Secrets
+## Step 3 - Create Required Secrets
 
 ```bash
 # Encryption key
@@ -319,7 +322,7 @@ kubectl create secret generic bifrost-admin-credentials \
   --from-literal=password='secure-admin-password'
 ```
 
-## Step 4 — Install
+## Step 4 - Install
 
 ```yaml
 # enterprise.yaml
@@ -441,14 +444,18 @@ bifrost:
   plugins:
     telemetry:
       enabled: true
+      version: 1
     logging:
       enabled: true
+      version: 1
     governance:
       enabled: true
+      version: 1
       config:
         is_vk_mandatory: true
     semanticCache:
       enabled: true
+      version: 1
       config:
         provider: "openai"
         embedding_model: "text-embedding-3-small"
@@ -470,6 +477,10 @@ helm install bifrost bifrost/bifrost -f enterprise.yaml
 ```
 
 Next steps: jump to [Next Steps](#next-steps).
+
+<Note>
+For DB-backed deployments, built-in plugins support a top-level `version` field (for example: `telemetry`, `logging`, `governance`, `semanticCache`, `otel`, `maxim`, `datadog`). Increase this number when you want config from Helm to overwrite an older plugin record in the DB.
+</Note>
 
 ## Enterprise Support
 

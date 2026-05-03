@@ -41,7 +41,7 @@ func NewEnvVar(value string) *EnvVar {
 					FromEnv: envVar.FromEnv,
 					EnvVar:  envVar.EnvVar,
 				}
-				// Here we will check if the Val starts with env and is same as the EnvVar
+				// Old format: value == env_var == "env.XXX"
 				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
 					e.Val = ""
 					// Load the environment variable value
@@ -50,6 +50,13 @@ func NewEnvVar(value string) *EnvVar {
 						e.Val = envValue
 					}
 					e.FromEnv = true
+				}
+				// New format: value is empty, from_env=true, env_var holds the reference
+				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
+					e.FromEnv = true
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+						e.Val = envValue
+					}
 				}
 				return e
 			}
@@ -95,8 +102,12 @@ func (e *EnvVar) IsRedacted() bool {
 			return true
 		}
 	}
-	// Check if its string <redacted>
-	if e.Val == "<redacted>" {
+	// Check for <redacted> sentinel (case-insensitive for compatibility)
+	if strings.EqualFold(e.Val, "<redacted>") {
+		return true
+	}
+	// Check for [REDACTED] sentinel produced by MarshalJSON in scim config serialization
+	if strings.EqualFold(e.Val, "[REDACTED]") {
 		return true
 	}
 	return false
@@ -147,34 +158,6 @@ func (e *EnvVar) Redacted() *EnvVar {
 	}
 }
 
-// MarshalJSON serializes the EnvVar to JSON.
-// SECURITY: When the value was sourced from an environment variable, the resolved
-// value is automatically redacted before being serialized. This ensures that secrets
-// injected via env vars are never leaked through any JSON API response, regardless
-// of whether the surrounding code remembered to call Redacted() explicitly.
-//
-// Plain (non-env) values are still emitted as-is — callers that want to mask those
-// must continue using Redacted() at the field level (this matches the existing
-// per-provider redaction logic).
-//
-// This does NOT affect:
-//   - GORM persistence (uses the Value() driver method, not JSON)
-//   - Encryption (operates on the Val field directly)
-//   - Internal LLM request paths (use GetValue() directly)
-func (e EnvVar) MarshalJSON() ([]byte, error) {
-	type envVarAlias EnvVar
-	out := envVarAlias(e)
-	if e.FromEnv {
-		// Redact the resolved value but keep the env var reference and from_env flag
-		// so the UI still knows which env var backs this field.
-		redacted := e.Redacted()
-		if redacted != nil {
-			out = envVarAlias(*redacted)
-		}
-	}
-	return sonic.Marshal(out)
-}
-
 // UnmarshalJSON unmarshals the value from JSON.
 func (e *EnvVar) UnmarshalJSON(data []byte) error {
 	// This is always going to be value
@@ -202,7 +185,7 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 				e.Val = envVar.Val
 				e.FromEnv = envVar.FromEnv
 				e.EnvVar = envVar.EnvVar
-				// Here we will check if the Val starts with env and is same as the EnvVar
+				// Old format: value == env_var == "env.XXX"
 				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
 					e.Val = ""
 					// Load the environment variable value
@@ -211,6 +194,12 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 						e.Val = envValue
 					}
 					e.FromEnv = true
+				}
+				// New format: value is empty, from_env=true, env_var holds the reference
+				if e.Val == "" && e.FromEnv && strings.HasPrefix(e.EnvVar, "env.") {
+					if envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env.")); ok {
+						e.Val = envValue
+					}
 				}
 				return nil
 			}
@@ -290,6 +279,20 @@ func (e *EnvVar) IsFromEnv() bool {
 	return e.FromEnv
 }
 
+// ShouldPreserveStored returns true when the EnvVar is a client-side placeholder
+// that should not overwrite the stored encrypted credential. Returns true for a
+// nil receiver, an empty non-env value, or a redacted non-env value. Returns false
+// for env var references (always intentional) and plain non-empty values.
+func (e *EnvVar) ShouldPreserveStored() bool {
+	if e == nil {
+		return true
+	}
+	if e.IsFromEnv() {
+		return false
+	}
+	return e.GetValue() == "" || e.IsRedacted()
+}
+
 // IsSet returns true if the EnvVar has a resolved value or an environment variable reference.
 // This should be used instead of GetValue() != "" when checking whether a field was configured,
 // because env var references may have an empty Val before resolution (e.g., when the env var
@@ -298,7 +301,10 @@ func (e *EnvVar) IsSet() bool {
 	if e == nil {
 		return false
 	}
-	return e.Val != "" || e.EnvVar != ""
+	if e.IsFromEnv() {
+		return e.EnvVar != ""
+	}
+	return e.Val != ""
 }
 
 // GetValue returns the value.
@@ -339,15 +345,4 @@ func (e *EnvVar) CoerceBool(defaultValue bool) bool {
 		return defaultValue
 	}
 	return val
-}
-
-// IsDefined returns true if the EnvVar has a source (static value or env key)
-func (e *EnvVar) IsDefined() bool {
-	if e == nil {
-		return false
-	}
-	if e.IsFromEnv() {
-		return e.EnvVar != ""
-	}
-	return e.Val != ""
 }

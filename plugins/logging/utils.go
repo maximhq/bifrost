@@ -85,6 +85,9 @@ type LogManager interface {
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
 	GetAvailableRoutingEngines(ctx context.Context) []string
 
+	// GetAvailableStopReasons returns all unique stop reason values from logs
+	GetAvailableStopReasons(ctx context.Context) []string
+
 	// GetAvailableTeams returns all unique team ID-Name pairs from logs
 	GetAvailableTeams(ctx context.Context) []KeyPair
 
@@ -282,6 +285,11 @@ func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPa
 // GetAvailableRoutingEngines returns all unique routing engine types from logs
 func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
 	return p.plugin.GetAvailableRoutingEngines(ctx)
+}
+
+// GetAvailableStopReasons returns all unique stop reason values from logs
+func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context) []string {
+	return p.plugin.GetAvailableStopReasons(ctx)
 }
 
 // GetAvailableTeams returns all unique team ID-Name pairs from logs.
@@ -655,7 +663,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeText
 	case schemas.ChatCompletionStreamRequest:
 		streamType = streaming.StreamTypeChat
-	case schemas.ResponsesStreamRequest:
+	case schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		streamType = streaming.StreamTypeResponses
 	case schemas.SpeechStreamRequest:
 		streamType = streaming.StreamTypeAudio
@@ -663,6 +671,8 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeTranscription
 	case schemas.ImageGenerationStreamRequest:
 		streamType = streaming.StreamTypeImage
+	case schemas.PassthroughStreamRequest:
+		streamType = streaming.StreamTypePassthrough
 	default:
 		streamType = streaming.StreamTypeChat
 	}
@@ -679,10 +689,12 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		OutputMessages:        result.OutputMessages,
 		ErrorDetails:          result.ErrorDetails,
 		TokenUsage:            result.TokenUsage,
+		CacheDebug:            result.CacheDebug,
 		Cost:                  result.Cost,
 		AudioOutput:           result.AudioOutput,
 		TranscriptionOutput:   result.TranscriptionOutput,
 		ImageGenerationOutput: result.ImageGenerationOutput,
+		PassthroughOutput:     result.PassthroughOutput,
 		FinishReason:          result.FinishReason,
 		RawResponse:           result.RawResponse,
 	}

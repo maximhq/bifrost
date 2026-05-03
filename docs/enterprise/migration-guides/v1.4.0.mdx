@@ -1,0 +1,207 @@
+---
+title: "Migrating to Enterprise v1.4.0"
+description: "Breaking changes and migration instructions for the Enterprise v1.4.0 release"
+---
+
+Enterprise v1.4.0 is a major release built on top of OSS v1.5.0. It inherits every breaking change from the v1.5.0 release plus a handful of enterprise-specific changes around the cluster transport, SCIM group enrichment, and the Helm chart layout. This page walks through both layers and gives you a single migration checklist.
+
+<Warning>
+**Make a database backup before upgrading.** Automatic database migrations run on startup and are not revertible. A backup is the only way to restore a previous state if anything goes wrong. A database successfully migrated to Enterprise v1.4.0 cannot be used to run a previous Enterprise version.
+</Warning>
+
+---
+
+## Inherited OSS v1.5.0 Breaking Changes
+
+Enterprise v1.4.0 ships with the full v1.5.0 OSS base, so every breaking change from that release applies. The largest are summarized below; see the [OSS v1.5.0 Migration Guide](/migration-guides/v1.5.0) for full before/after examples and per-field details.
+
+| # | Change | What you must do |
+|---|--------|------------------|
+| 1 | **Empty array now means "deny all"** | Replace `[]` with `["*"]` on every `models`, `allowed_models`, `key_ids`, and `tools_to_execute` field |
+| 2 | **`allowed_keys` renamed to `key_ids`** | Rename in `config.json` and any REST API consumers; no automatic database migration |
+| 3 | **VK `provider_configs: []` is deny-by-default** | Add at least one provider config per Virtual Key |
+| 4 | **Provider Keys API separated** | Stop sending `keys` in provider create/update payloads; use `/api/providers/{provider}/keys` |
+| 5 | **Compat plugin restructured** | Replace `enable_litellm_fallbacks` with `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params` |
+| 6 | **Provider `deployments` removed** | Move Azure/Bedrock/Vertex/Replicate `deployments` maps into the top-level `aliases` field |
+| 7 | **WhiteList validation** | Lists cannot mix `["*"]` with specific values, and cannot contain duplicates |
+| 8 | **`weight` is now nullable** | Update API consumers to handle `null` |
+| 9 | **`selected_key_id` cleared on terminal retry failures** | Read `attempt_trail` for failure attribution |
+
+The automatic database migration on startup converts existing records to the new semantics. Only `config.json` and any REST API integrations need manual updates.
+
+---
+
+## Enterprise-Specific Breaking Changes
+
+### Breaking Change A: New gRPC Cluster Transport Port
+
+Enterprise v1.4.0 introduces a dedicated **gRPC counter-sync transport** that runs alongside the existing memberlist gossip layer. Application messages (config sync, governance counters, routing rules, all replicated entity types) now travel over gRPC; gossip continues to handle membership and liveness only.
+
+| Transport | Default port | Carries |
+|-----------|--------------|---------|
+| Memberlist gossip | `10101/TCP` and `10101/UDP` | Membership, liveness, region metadata |
+| gRPC counter sync | `10102/TCP` | All application messages and counter sync |
+
+**You must open `10102/TCP` peer-to-peer between every cluster node** before rolling out v1.4.0. NetworkPolicies, security groups, firewall rules, and Helm/Kubernetes manifests all need to be updated.
+
+**Before (Kubernetes StatefulSet):**
+```yaml
+ports:
+  - containerPort: 8080
+    name: http
+  - containerPort: 10101
+    name: gossip
+```
+
+**After:**
+```yaml
+ports:
+  - containerPort: 8080
+    name: http
+  - containerPort: 10101
+    name: gossip
+  - containerPort: 10102
+    name: grpc
+```
+
+Apply the same addition to your headless `Service`. See the updated [Clustering documentation](/enterprise/clustering) for full manifests.
+
+**Optional `cluster_config.grpc` block** (defaults shown):
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "grpc": {
+      "port": 10102,
+      "dial_timeout_seconds": 5
+    }
+  }
+}
+```
+
+### Breaking Change B: Token-Driven SCIM Group Restriction
+
+Earlier Enterprise versions enriched team membership with **platform-wide group lookups** against the IdP directory API (Okta, Entra, Google, Keycloak, SailPoint, Zitadel). v1.4.0 removes this enrichment. Team attachment is now driven exclusively by the group claims **already present in the IdP token**.
+
+**Why it changed:** the old behavior could leak group membership across tenants in multi-tenant IdP setups, and made unnecessary directory API calls for every login.
+
+**What this means for you:**
+- If your IdP issues tokens with `groups` (or your configured `teamIdsField`) populated, no action is needed.
+- If you relied on Bifrost calling back into the IdP to fetch additional group membership beyond what the token carried, you must update your IdP token configuration to include the relevant groups in the token claims directly.
+
+**How to verify:** decode an SSO login token (any JWT decoder) and confirm the field configured in `teamIdsField` is present and contains the expected group IDs. Add it as a token claim in your IdP if it isn't.
+
+### Breaking Change C: Helm Chart - `key_ids` is the canonical field
+
+The Helm chart now uses `key_ids` everywhere `allowed_keys` was previously accepted, mirroring the OSS rename. If you have existing Helm `values.yaml` files using the old field name in virtual key configurations, update them.
+
+**Before:**
+```yaml
+bifrost:
+  governance:
+    virtualKeys:
+      - id: "vk-prod"
+        provider_configs:
+          - provider: "openai"
+            allowed_keys: ["openai-prod"]
+```
+
+**After:**
+```yaml
+bifrost:
+  governance:
+    virtualKeys:
+      - id: "vk-prod"
+        provider_configs:
+          - provider: "openai"
+            key_ids: ["openai-prod"]
+            allowed_models: ["*"]
+```
+
+### Breaking Change D: Helm Chart - Composable Enterprise Overlays
+
+Enterprise-specific Helm configuration now ships as **composable overlay files** rather than a monolithic `values.yaml`. The chart includes overlay templates for guardrails, organizational governance, access profiles, customer budgets, teams, multi-customer governance, and SCIM/SSO. Mix and match overlays for the capabilities you need.
+
+If your existing Helm install bakes everything into a single `values.yaml`, it will continue to work; the overlay files are an additive convention. New deployments should follow the overlay pattern - see the [Helm deployment guide](/deployment-guides/helm) for the current layout.
+
+---
+
+## Opting Out: `version: 1` Compatibility Mode
+
+To smooth the upgrade, the OSS v1.5.0 release introduced a `version: 1` compatibility shim that preserves the old "empty array allows all" semantics for `config.json` only. Enterprise v1.4.0 inherits this shim.
+
+```json
+{
+  "version": 1,
+  "providers": { ... }
+}
+```
+
+| Value | Behavior |
+|---|---|
+| `2` (default) | New deny-by-default semantics: empty = deny all, `["*"]` = allow all |
+| `1` | Legacy semantics: empty = allow all (auto-normalized to `["*"]` at startup) |
+
+This shim **only applies to `config.json`**. Records created or updated through the REST API always use the new semantics. The automatic database migration that runs on startup is also unaffected.
+
+<Warning>
+`version: 1` is a temporary compatibility shim. Plan to update your `config.json` to explicit `["*"]` wildcards and remove the `version` field before the next major Enterprise release.
+</Warning>
+
+---
+
+## Complete Migration Checklist
+
+<Steps>
+<Step title="Backup your database">
+Snapshot your config store database (Postgres dump or SQLite file copy) before starting the upgrade. The v1.4.0 startup migration is one-way.
+</Step>
+
+<Step title="Apply the OSS v1.5.0 migration steps">
+Work through the [OSS v1.5.0 Migration Guide](/migration-guides/v1.5.0) checklist: update `models`, `allowed_models`, `key_ids`, `tools_to_execute`, rename `allowed_keys` to `key_ids`, ensure every VK has at least one provider config, migrate provider key management to dedicated endpoints, and update Go SDK references.
+</Step>
+
+<Step title="Open the gRPC cluster port (10102/TCP) on every node">
+Update Kubernetes StatefulSets/Deployments, headless Services, NetworkPolicies, and any cloud-level security groups or firewall rules to allow `10102/TCP` peer-to-peer between cluster nodes.
+</Step>
+
+<Step title="Verify SCIM group claims in tokens">
+Decode an SSO login token and confirm the field configured in `teamIdsField` is populated. If your IdP relied on directory API enrichment, configure the IdP to include those groups directly in the token.
+</Step>
+
+<Step title="Update Helm values for `key_ids`">
+Rename `allowed_keys` to `key_ids` in any Helm `virtualKeys[].provider_configs[]` entries.
+</Step>
+
+<Step title="Roll out one node at a time">
+v1.4.0 advertises an `ack:v1` capability for cluster ACK tracking. Older Enterprise versions are excluded from the pending-ACK set and will not trigger false retries, so a one-pod-at-a-time rolling upgrade works without quorum loss.
+</Step>
+
+<Step title="Run a cluster diagnostic after the rollout completes">
+From the cluster topology view (or the equivalent admin endpoint), trigger a diagnostic broadcast and confirm every node ACKs. This validates that `10102/TCP` is reachable peer-to-peer end-to-end.
+</Step>
+</Steps>
+
+---
+
+## Troubleshooting
+
+**Cluster nodes form membership but governance counters do not converge**
+
+The gossip port (10101) is reachable but the gRPC port (10102) is blocked. Memberlist will form the cluster correctly, but application messages (counters, config sync, routing rules) will not propagate. Verify `10102/TCP` is open peer-to-peer in your NetworkPolicy / security group configuration, then trigger a cluster diagnostic to confirm.
+
+**Users losing team assignments after upgrade**
+
+The v1.4.0 SCIM change removed platform-wide group enrichment. Verify the SSO token from your IdP includes the field configured in `teamIdsField`. If it doesn't, update the IdP token configuration to include the relevant group claims directly.
+
+**All requests returning 403/blocked after upgrade**
+
+This is the OSS v1.5.0 deny-by-default behavior. A provider key has `models: []`, a Virtual Key has no `provider_configs`, or a provider config has `allowed_models: []`. See the [OSS troubleshooting section](/migration-guides/v1.5.0#troubleshooting) for full guidance.
+
+**Helm install fails on `allowed_keys`**
+
+Rename `allowed_keys` to `key_ids` in `virtualKeys[].provider_configs[]`. The chart no longer accepts the old field name.
+
+**Cluster diagnostic shows some peers as "no ACK"**
+
+Either the affected peers are still on a pre-v1.4.0 Enterprise version (they don't advertise `ack:v1`, which is expected during a rolling upgrade), or `10102/TCP` is not reachable to those peers. Check the React Flow cluster topology view for state and edge color, then verify network reachability.

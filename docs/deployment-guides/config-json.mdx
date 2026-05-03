@@ -1,6 +1,6 @@
 ---
 title: "Quick Start"
-description: "Configure Bifrost using a config.json file — GitOps-friendly, no-UI deployments, and multinode OSS setups"
+description: "Configure Bifrost using a config.json file - GitOps-friendly, no-UI deployments, and multinode OSS setups"
 icon: "file-code"
 ---
 
@@ -103,7 +103,7 @@ Never put secrets directly in `config.json`. Use the `env.` prefix to reference 
 }
 ```
 
-Set the actual values through your deployment platform — shell environment, Docker `-e`, Kubernetes Secrets mounted as env vars, or a `.env` file.
+Set the actual values through your deployment platform - shell environment, Docker `-e`, Kubernetes Secrets mounted as env vars, or a `.env` file.
 
 ---
 
@@ -197,6 +197,105 @@ A production-ready file with PostgreSQL storage, multi-provider setup, governanc
 
 ---
 
+## Enterprise Example: Postgres + etcd + Access Profiles
+
+Use this pattern when you want enterprise access-profile configuration to be seeded directly from `config.json`, while running clustered nodes with etcd discovery.
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "etcd",
+      "service_name": "bifrost-cluster",
+      "etcd_endpoints": ["http://localhost:2379"]
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "postgres",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost-config",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "postgres",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost-config",
+      "ssl_mode": "disable"
+    }
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "client_id": "echo_http",
+        "name": "echo_http",
+        "connection_type": "http",
+        "connection_string": "https://mcpplaygroundonline.com/mcp-echo-server",
+        "auth_type": "none",
+        "tools_to_execute": ["echo"]
+      }
+    ]
+  },
+  "access_profiles": [
+    {
+      "name": "platform-default",
+      "description": "Default profile for enterprise access-profile testing",
+      "is_active": true,
+      "tags": ["platform", "test"],
+      "provider_configs": [
+        {
+          "provider_name": "OpenAi",
+          "all_models_allowed": false,
+          "allowed_models": ["gpt-4o-mini"]
+        }
+      ]
+    },
+    {
+      "name": "platform-readonly-mcp",
+      "description": "Profile for validating MCP include/exclude behavior",
+      "is_active": true,
+      "tags": ["mcp", "test"],
+      "mcp_servers": [
+        {
+          "mcp_server_id": "echo_http"
+        }
+      ],
+      "mcp_tool_overrides": [
+        {
+          "mcp_client_id": "echo_http",
+          "tool_name": "echo",
+          "action": "include"
+        },
+        {
+          "mcp_client_id": "github",
+          "tool_name": "create_pull_request",
+          "action": "exclude"
+        }
+      ]
+    }
+  ]
+}
+```
+
+<Note>
+`access_profiles` is an enterprise capability. For OSS-only deployments, use `governance.virtual_keys` and related governance resources instead.
+</Note>
+
+---
+
 ## Example Configs
 
 Ready-to-use reference configurations from the [examples/configs](https://github.com/maximhq/bifrost/tree/main/examples/configs) directory on GitHub:
@@ -207,7 +306,7 @@ Ready-to-use reference configurations from the [examples/configs](https://github
 
 | Example | Description |
 |---------|-------------|
-| [noconfigstorenologstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/noconfigstorenologstore/config.json) | Bare-minimum file-only mode — no database, no UI, providers loaded from file |
+| [noconfigstorenologstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/noconfigstorenologstore/config.json) | Bare-minimum file-only mode - no database, no UI, providers loaded from file |
 | [partial](https://github.com/maximhq/bifrost/blob/main/examples/configs/partial/config.json) | SQLite config store with a minimal provider setup |
 | [v1compat](https://github.com/maximhq/bifrost/blob/main/examples/configs/v1compat/config.json) | `"version": 1` for v1.4.x array semantics (empty = allow all) |
 
@@ -267,6 +366,7 @@ Ready-to-use reference configurations from the [examples/configs](https://github
 | [withframework](https://github.com/maximhq/bifrost/blob/main/examples/configs/withframework/config.json) | Custom model pricing catalog URL and sync interval |
 | [withlargepayload](https://github.com/maximhq/bifrost/blob/main/examples/configs/withlargepayload/config.json) | Large payload optimization (streaming without full materialisation) |
 | [withwebsocket](https://github.com/maximhq/bifrost/blob/main/examples/configs/withwebsocket/config.json) | WebSocket / Realtime API connection pool tuning |
+| [withnginxreverseproxy](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/config.json) | 3-node Bifrost behind NGINX reverse proxy (includes [docker-compose](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/docker-compose.yml), [nginx.conf](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/nginx.conf), [helm values](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/helm-values.yaml), and [k8s ingress](https://github.com/maximhq/bifrost/blob/main/examples/configs/withnginxreverseproxy/k8s-ingress.yaml)) |
 | [withpostgresmcpclientsinconfig](https://github.com/maximhq/bifrost/blob/main/examples/configs/withpostgresmcpclientsinconfig/config.json) | MCP client definitions seeded from config.json with PostgreSQL store |
 | [encryptionmigration](https://github.com/maximhq/bifrost/blob/main/examples/configs/encryptionmigration/config.json) | Migrating to a new encryption key |
 
@@ -289,10 +389,13 @@ Ready-to-use reference configurations from the [examples/configs](https://github
     OpenAI, Anthropic, Azure, Bedrock, Vertex, Groq, self-hosted
   </Card>
   <Card title="Storage" icon="database" href="/deployment-guides/config-json/storage">
-    config_store, logs_store, vector_store — SQLite, PostgreSQL, object storage
+    config_store, logs_store, vector_store - SQLite, PostgreSQL, object storage
   </Card>
   <Card title="Plugins" icon="puzzle-piece" href="/deployment-guides/config-json/plugins">
     Semantic cache, OTel, Maxim, Datadog, custom plugins
+  </Card>
+  <Card title="Cluster" icon="circle-nodes" href="/deployment-guides/config-json/cluster">
+    Cluster mode with static peers or discovery backends (enterprise)
   </Card>
   <Card title="Governance" icon="shield-check" href="/deployment-guides/config-json/governance">
     Virtual keys, budgets, rate limits, routing rules, admin auth

@@ -168,10 +168,10 @@ export function getMessage(log?: LogEntry) {
 
 export function LogMessageCell({
   log,
-  maxWidth = "max-w-[400px]",
+  contentClassName = "max-w-full",
 }: {
   log: LogEntry;
-  maxWidth?: string;
+  contentClassName?: string;
 }) {
   const input = getMessage(log);
   const isLargePayload =
@@ -190,13 +190,12 @@ export function LogMessageCell({
         </span>
       )}
       {realtimeMessages &&
-      (realtimeMessages.tool ||
-        realtimeMessages.user ||
-        realtimeMessages.assistantToolCall ||
-        realtimeMessages.assistant) ? (
+        (realtimeMessages.tool ||
+          realtimeMessages.user ||
+          realtimeMessages.assistantToolCall ||
+          realtimeMessages.assistant) ? (
         <div
-          className={cn(maxWidth, "font-mono text-sm font-normal leading-5")}
-          title={input || "-"}
+          className={cn(contentClassName, "font-mono text-sm font-normal leading-5")}
         >
           {realtimeMessages.tool ? (
             <div className="truncate">Tool Result: {realtimeMessages.tool}</div>
@@ -217,8 +216,7 @@ export function LogMessageCell({
         </div>
       ) : (
         <div
-          className={cn(maxWidth, "truncate font-mono text-[12px] font-normal")}
-          title={input || "-"}
+          className={cn(contentClassName, "truncate font-mono text-[12px] font-normal")}
         >
           {input ||
             (isLargePayload
@@ -293,13 +291,13 @@ export const createColumns = (
             className={cn(
               "font-mono text-[11px] py-0.5 px-1.5 uppercase",
               RequestTypeColors[
-                row.original.object as keyof typeof RequestTypeColors
+              row.original.object as keyof typeof RequestTypeColors
               ],
             )}
           >
             {
               RequestTypeLabels[
-                row.original.object as keyof typeof RequestTypeLabels
+              row.original.object as keyof typeof RequestTypeLabels
               ]
             }
           </Badge>

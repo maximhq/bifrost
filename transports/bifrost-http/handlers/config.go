@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -104,7 +105,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if cc != nil {
-			mapConfig["client_config"] = *cc
+			mapConfig["client_config"] = cc.Redacted()
 		}
 		// Fetching framework config
 		fc, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
@@ -115,7 +116,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(fc, nil)
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	} else {
-		mapConfig["client_config"] = h.store.ClientConfig
+		mapConfig["client_config"] = h.store.ClientConfig.Redacted()
 		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(nil, h.store.FrameworkConfig)
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	}
@@ -159,7 +160,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"is_enabled":                false,
-				"disable_auth_on_inference": false,
+				"disable_auth_on_inference": true,
 			}
 		}
 	} else {
@@ -167,7 +168,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"is_enabled":                false,
-			"disable_auth_on_inference": false,
+			"disable_auth_on_inference": true,
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
@@ -282,6 +283,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
 		shouldReloadMCPToolManagerConfig = true
 	}
+	// MCPToolSyncInterval supports 0 (disabled), so compare against current value
+	// instead of a > 0 guard used by other numeric fields.
+	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
+		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
+	}
 
 	// Reload MCP tool manager config with all current values in one call
 	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
@@ -290,6 +296,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp tool manager config: %v", err))
 			return
 		}
+	}
+	// Keep in-memory MCP config aligned with client-config-backed MCP settings.
+	if h.store.MCPConfig != nil {
+		if h.store.MCPConfig.ToolManagerConfig == nil {
+			h.store.MCPConfig.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
+		}
+		h.store.MCPConfig.ToolSyncInterval = time.Duration(updatedConfig.MCPToolSyncInterval) * time.Second
+		h.store.MCPConfig.ToolManagerConfig.MaxAgentDepth = updatedConfig.MCPAgentDepth
+		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(time.Duration(updatedConfig.MCPToolExecutionTimeout) * time.Second)
+		h.store.MCPConfig.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(updatedConfig.MCPCodeModeBindingLevel)
+		h.store.MCPConfig.ToolManagerConfig.DisableAutoToolInject = updatedConfig.MCPDisableAutoToolInject
 	}
 
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
@@ -324,9 +341,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 	}
 
-	if payload.ClientConfig.DisableContentLogging != currentConfig.DisableContentLogging {
-		restartReasons = append(restartReasons, "Content logging")
-	}
+	// No restart needed - logging plugin holds a live pointer to ClientConfig.DisableContentLogging,
+	// and ReloadClientConfigFromConfigStore mutates the struct in place so the next request picks up the new value.
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
@@ -378,6 +394,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.ClientConfig.MCPToolExecutionTimeout > 0 {
 		updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
 	}
+	// 0 is a valid value (disabled), so persist it when changed.
+	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
+		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
+	}
 	// Only update MCPCodeModeBindingLevel if payload is non-empty to avoid clearing stored value
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
 		updatedConfig.MCPCodeModeBindingLevel = payload.ClientConfig.MCPCodeModeBindingLevel
@@ -400,10 +420,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Toggle whether deleted virtual keys should appear in logs filter data.
 	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
 
+	// Toggle allowing per-request override for content storage and raw request/response storage
+	updatedConfig.AllowPerRequestContentStorageOverride = payload.ClientConfig.AllowPerRequestContentStorageOverride
+
+	// Toggle allowing per-request override for raw request/response exposure
+	updatedConfig.AllowPerRequestRawOverride = payload.ClientConfig.AllowPerRequestRawOverride
+
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {
 		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
 	}
+
+	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
+	updatedConfig.MCPExternalServerURL = payload.ClientConfig.MCPExternalServerURL
+	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {

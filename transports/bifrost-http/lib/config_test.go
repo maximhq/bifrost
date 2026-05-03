@@ -2007,6 +2007,69 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 	}
 }
 
+func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	store := NewMockConfigStore()
+
+	existing := &schemas.MCPClientConfig{
+		ID:             "mcp-existing",
+		Name:           "echo_http",
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ToolsToExecute: schemas.WhiteList{"read"},
+	}
+	existingTable, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existingHash, err := configstore.GenerateMCPClientHash(existingTable)
+	require.NoError(t, err)
+	existing.ConfigHash = existingHash
+
+	store.mcpConfig = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{existing},
+	}
+
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:           "echo_http",
+				ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ToolsToExecute: schemas.WhiteList{"*"},
+			},
+			{
+				Name:           "filesystem_tools",
+				ConnectionType: schemas.MCPConnectionTypeSTDIO,
+				StdioConfig: &schemas.MCPStdioConfig{
+					Command: "npx",
+				},
+				ToolsToExecute: schemas.WhiteList{"*"},
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "expected one updated MCP client")
+	require.Equal(t, "mcp-existing", store.mcpClientConfigUpdates[0].ID)
+	require.Equal(t, "echo_http", store.mcpClientConfigUpdates[0].Config.Name)
+	require.Equal(t, schemas.WhiteList{"*"}, store.mcpClientConfigUpdates[0].Config.ToolsToExecute)
+	require.NotEmpty(t, store.mcpClientConfigUpdates[0].Config.ConfigHash)
+
+	require.Len(t, store.mcpConfigsCreated, 1, "expected one created MCP client")
+	require.Equal(t, "filesystem_tools", store.mcpConfigsCreated[0].Name)
+	require.NotEmpty(t, store.mcpConfigsCreated[0].ID)
+	require.NotEmpty(t, store.mcpConfigsCreated[0].ConfigHash)
+
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 2)
+	byName := map[string]*schemas.MCPClientConfig{}
+	for _, client := range cfg.MCPConfig.ClientConfigs {
+		byName[client.Name] = client
+	}
+	require.Equal(t, "mcp-existing", byName["echo_http"].ID, "updated client should preserve DB client_id")
+	require.NotEmpty(t, byName["echo_http"].ConfigHash)
+	require.NotEmpty(t, byName["filesystem_tools"].ConfigHash)
+}
+
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
 func TestLoadConfig_Governance_Merge(t *testing.T) {
 	// Setup DB governance config
@@ -2290,7 +2353,7 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 		SendBackRawResponse: true,
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: schemas.HTTPProxy,
-			URL:  "http://proxy.example.com:8080",
+			URL:  schemas.NewEnvVar("http://proxy.example.com:8080"),
 		},
 	}
 
@@ -2979,7 +3042,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewEnvVar("sk-123"), Weight: 1}},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: false,
 	}
@@ -3057,7 +3120,7 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType: "openai",
@@ -3300,7 +3363,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3317,7 +3380,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3340,7 +3403,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		// ConcurrencyAndBufferSize: nil (removed)
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -3389,7 +3452,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: false, // Changed to false
 	}
@@ -3413,7 +3476,7 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
-			URL:  "http://proxy.example.com",
+			URL:  schemas.NewEnvVar("http://proxy.example.com"),
 		},
 		SendBackRawResponse: true,
 	}
@@ -11892,12 +11955,12 @@ func TestGenerateMCPClientHash(t *testing.T) {
 		t.Error("Same MCP should produce same hash")
 	}
 
-	// Different ClientID should produce different hash
+	// Different ClientID should produce the same hash (ClientID is system-assigned)
 	mcp2 := mcp1
 	mcp2.ClientID = "mcp-2"
 	hash2, _ := configstore.GenerateMCPClientHash(mcp2)
-	if hash1 == hash2 {
-		t.Error("Different ClientID should produce different hash")
+	if hash1 != hash2 {
+		t.Error("Different ClientID should not affect hash")
 	}
 
 	// Different Name should produce different hash
@@ -12685,6 +12748,284 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	t.Log("✓ All dashboard-added entities preserved on reload")
 }
 
+func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	callUpdate := func(
+		cfg *Config,
+		modelAdds []tables.TableModelConfig,
+		modelUpdates []tables.TableModelConfig,
+		providerAdds []tables.TableProvider,
+		providerUpdates []tables.TableProvider,
+	) error {
+		return updateGovernanceConfigInStore(
+			ctx,
+			cfg,
+			nil, nil, // budgets
+			nil, nil, // rate limits
+			nil, nil, // customers
+			nil, nil, // teams
+			nil, nil, // virtual keys
+			nil, nil, // routing rules
+			nil, nil, // pricing overrides
+			modelAdds, modelUpdates,
+			providerAdds, providerUpdates,
+		)
+	}
+
+	setupConfig := func(t *testing.T) (*Config, string, string) {
+		t.Helper()
+		tempDir := createTempDir(t)
+		store := createTestSQLiteConfigStore(t, tempDir)
+
+		budgetID := "shared-budget"
+		rateLimitID := "shared-rate-limit"
+
+		require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{
+			ID:            budgetID,
+			MaxLimit:      100,
+			ResetDuration: "1d",
+		}))
+		tokenMax := int64(1000)
+		tokenDur := "1h"
+		require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+			ID:                 rateLimitID,
+			TokenMaxLimit:      &tokenMax,
+			TokenResetDuration: &tokenDur,
+		}))
+		require.NoError(t, store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := tx.Create(&tables.TableProvider{Name: "provider-a"}).Error; err != nil {
+				return err
+			}
+			if err := tx.Create(&tables.TableProvider{Name: "provider-b"}).Error; err != nil {
+				return err
+			}
+			return nil
+		}))
+
+		return &Config{ConfigStore: store}, budgetID, rateLimitID
+	}
+
+	t.Run("model add rejects budget linked to another model", func(t *testing.T) {
+		cfg, budgetID, _ := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-existing",
+			ModelName: "gpt-existing",
+			BudgetID:  &budgetID,
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:        "model-new",
+			ModelName: "gpt-new",
+			BudgetID:  &budgetID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("model update rejects rate limit linked to another model", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:          "model-existing",
+			ModelName:   "gpt-existing",
+			RateLimitID: &rateLimitID,
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-update",
+			ModelName: "gpt-update",
+		}))
+
+		err := callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-update",
+			ModelName:   "gpt-update",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("provider add rejects budget linked to another provider", func(t *testing.T) {
+		cfg, budgetID, _ := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{"budget_id": budgetID}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:     "provider-b",
+			BudgetID: &budgetID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("provider update rejects rate limit linked to another provider", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{"rate_limit_id": rateLimitID}).Error; err != nil {
+				return err
+			}
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-b").
+				Updates(map[string]interface{}{"rate_limit_id": nil}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model add and update reject budget or rate limit linked to provider", func(t *testing.T) {
+		cfg, budgetID, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-update-target",
+			ModelName: "gpt-update-target",
+		}))
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-a").
+				Updates(map[string]interface{}{
+					"budget_id":     budgetID,
+					"rate_limit_id": rateLimitID,
+				}).Error
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:          "model-new",
+			ModelName:   "gpt-new",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-update-target",
+			ModelName:   "gpt-update-target",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "model config")
+	})
+
+	t.Run("provider add and update reject budget or rate limit linked to model", func(t *testing.T) {
+		cfg, budgetID, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:          "model-existing",
+			ModelName:   "gpt-existing",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}))
+		require.NoError(t, cfg.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Model(&tables.TableProvider{}).
+				Where("name = ?", "provider-b").
+				Updates(map[string]interface{}{
+					"budget_id":     nil,
+					"rate_limit_id": nil,
+				}).Error
+		}))
+
+		err := callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:        "provider-new",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+
+		err = callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			BudgetID:    &budgetID,
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model add and provider update reject rate limit linked to team", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateTeam(ctx, &tables.TableTeam{
+			ID:          "team-rl-owner",
+			Name:        "Team RL Owner",
+			RateLimitID: &rateLimitID,
+		}))
+
+		err := callUpdate(cfg, []tables.TableModelConfig{{
+			ID:          "model-new-team-collision",
+			ModelName:   "gpt-team-collision",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "team")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, nil, nil, []tables.TableProvider{{
+			Name:        "provider-b",
+			RateLimitID: &rateLimitID,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "team")
+		require.Contains(t, err.Error(), "provider")
+	})
+
+	t.Run("model update and provider add reject rate limit linked to virtual-key provider config", func(t *testing.T) {
+		cfg, _, rateLimitID := setupConfig(t)
+		require.NoError(t, cfg.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+			ID:        "model-vk-update-target",
+			ModelName: "gpt-vk-update-target",
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID:       "vk-rl-owner",
+			Name:     "vk-rl-owner",
+			Value:    "vk-rl-owner-value",
+			IsActive: true,
+		}))
+		require.NoError(t, cfg.ConfigStore.CreateVirtualKeyProviderConfig(ctx, &tables.TableVirtualKeyProviderConfig{
+			VirtualKeyID:  "vk-rl-owner",
+			Provider:      "openai",
+			RateLimitID:   &rateLimitID,
+			AllowedModels: []string{"*"},
+		}))
+
+		err := callUpdate(cfg, nil, []tables.TableModelConfig{{
+			ID:          "model-vk-update-target",
+			ModelName:   "gpt-vk-update-target",
+			RateLimitID: &rateLimitID,
+		}}, nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "virtual-key provider config")
+		require.Contains(t, err.Error(), "model config")
+
+		err = callUpdate(cfg, nil, nil, []tables.TableProvider{{
+			Name:        "provider-new-vk-collision",
+			RateLimitID: &rateLimitID,
+		}}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "already linked")
+		require.Contains(t, err.Error(), "virtual-key provider config")
+		require.Contains(t, err.Error(), "provider")
+	})
+}
+
 // TestSQLite_Governance_PricingOverrides_Reconciliation tests that pricing overrides
 // defined in config.json are properly reconciled on reload (create, update, preserve).
 func TestSQLite_Governance_PricingOverrides_Reconciliation(t *testing.T) {
@@ -13313,7 +13654,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("ProxyConfig_GORMRoundTrip", func(t *testing.T) {
 		proxyConfig := &schemas.ProxyConfig{
 			Type: schemas.HTTPProxy,
-			URL:  "http://proxy.example.com:8080",
+			URL:  schemas.NewEnvVar("http://proxy.example.com:8080"),
 		}
 
 		providerToSave := tables.TableProvider{
@@ -15377,6 +15718,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 // enterpriseSchemaPaths are schema paths that exist only in enterprise version
 var enterpriseSchemaPaths = map[string]bool{
 	"$schema":                    true,
+	"access_profiles":            true,
 	"audit_logs":                 true,
 	"cluster_config":             true,
 	"scim_config":                true,
@@ -15434,7 +15776,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"config_hash":  true,
 		"created_at":   true,
 		"updated_at":   true,
-		"budget":       true, // GORM relation
+		"budgets":      true, // GORM relation (multiple budgets with different reset intervals)
 		"rate_limit":   true, // GORM relation
 		"customer":     true, // GORM relation
 		"virtual_keys": true, // GORM relation
@@ -15495,12 +15837,22 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"client": {
 		"allowed_headers": true, // Not in ClientConfig
 	},
+	"governance": {
+		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
+	},
+	"governance.teams": {
+		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
+		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
+	},
 	"governance.virtual_keys.provider_configs": {
 		"keys":    true, // Complex nested type, validated separately
 		"key_ids": true, // Config-file format; handled via custom UnmarshalJSON into allow_all_keys/keys
 	},
 	"governance.virtual_keys.mcp_configs": {
 		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
+	},
+	"mcp": {
+		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
 	},
 	"mcp.client_configs": {
 		"websocket_config": true, // Schema documents all connection types
@@ -15748,6 +16100,7 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	// and validation purposes, but are only available in the enterprise version.
 	enterpriseSchemaFields := map[string]bool{
 		"$schema":                    true,
+		"access_profiles":            true,
 		"audit_logs":                 true,
 		"cluster_config":             true,
 		"scim_config":                true,

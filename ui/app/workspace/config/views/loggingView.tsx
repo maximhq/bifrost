@@ -31,6 +31,8 @@ export default function LoggingView() {
 		return (
 			localConfig.enable_logging !== config.enable_logging ||
 			localConfig.disable_content_logging !== config.disable_content_logging ||
+			localConfig.allow_per_request_content_storage_override !== config.allow_per_request_content_storage_override ||
+			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
 			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
 			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || [])
@@ -39,7 +41,9 @@ export default function LoggingView() {
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[]) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
-		if (field === "enable_logging" || field === "disable_content_logging") {
+		// Only enable_logging requires a restart (logging plugin is registered/skipped at startup).
+		// disable_content_logging is read live via pointer by the logging plugin and applies on the next request.
+		if (field === "enable_logging") {
 			setNeedsRestart(true);
 		}
 	}, []);
@@ -115,8 +119,10 @@ export default function LoggingView() {
 									Disable Content Logging
 								</label>
 								<p className="text-muted-foreground text-sm">
-									When enabled, only usage metadata (latency, cost, token count, etc.) will be logged. Request/response content will not be
-									stored.
+									When enabled, only usage metadata (latency, cost, token count, status, routing IDs, etc.) is logged. Request/response
+									content — messages, params, tool calls, and any raw provider bytes — is dropped from log records, even when{" "}
+									<code className="text-xs">store_raw_request_response</code> is on. Raw-byte send-back to callers via{" "}
+									<code className="text-xs">send_back_raw_*</code> is unaffected.
 								</p>
 							</div>
 							<Switch
@@ -126,9 +132,56 @@ export default function LoggingView() {
 								onCheckedChange={(checked) => handleConfigChange("disable_content_logging", checked)}
 							/>
 						</div>
-						{needsRestart && <RestartWarning />}
 					</div>
 				)}
+
+				{/* Allow Per-Request Content Storage Override - Only show when logging is enabled */}
+				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
+					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="allow-per-request-content-storage-override" className="text-sm font-medium">
+								Allow Per-Request Content Storage Override
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, individual requests can override the global content logging setting using the{" "}
+								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw provider
+								bytes in logs using the <code className="text-xs">x-bf-store-raw-request-response</code> header. Raw-byte storage requires
+								content logging to be on — either globally, or via{" "}
+								<code className="text-xs">x-bf-disable-content-logging: false</code> on the same request. If content logging is off, raw bytes
+								are dropped from the log record even when <code className="text-xs">x-bf-store-raw-request-response: true</code>. Does not
+								control sending raw bytes back to callers — see Allow Per-Request Raw Override.
+							</p>
+						</div>
+						<Switch
+							id="allow-per-request-content-storage-override"
+							data-testid="workspace-content-storage-override-switch"
+							size="md"
+							checked={localConfig.allow_per_request_content_storage_override}
+							onCheckedChange={(checked) => handleConfigChange("allow_per_request_content_storage_override", checked)}
+						/>
+					</div>
+				)}
+
+				{/* Allow Per-Request Raw Override */}
+				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">
+								Allow Per-Request Raw Override
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, individual requests can send raw provider request/response bytes back to the caller using the{" "}
+								<code className="text-xs">x-bf-send-back-raw-request</code> and{" "}
+								<code className="text-xs">x-bf-send-back-raw-response</code> headers. Does not affect log storage — raw-byte persistence in logs is controlled by Allow Per-Request Content Storage Override.
+							</p>
+						</div>
+						<Switch
+							id="allow-per-request-raw-override"
+							data-testid="workspace-raw-override-switch"
+							size="md"
+							checked={localConfig.allow_per_request_raw_override}
+							onCheckedChange={(checked) => handleConfigChange("allow_per_request_raw_override", checked)}
+						/>
+					</div>
 
 				{/* Log Retention Days */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (

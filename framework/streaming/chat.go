@@ -555,19 +555,21 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			return nil, processErr
 		}
 		var rawRequest interface{}
-		if result != nil && result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
-			rawRequest = result.ChatResponse.ExtraFields.RawRequest
-		} else if result != nil && result.TextCompletionResponse != nil && result.TextCompletionResponse.ExtraFields.RawRequest != nil {
-			rawRequest = result.TextCompletionResponse.ExtraFields.RawRequest
+		if result != nil {
+			if result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ChatResponse.ExtraFields.RawRequest
+			} else if result.TextCompletionResponse != nil && result.TextCompletionResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.TextCompletionResponse.ExtraFields.RawRequest
+			}
 		}
 		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: streamType,
-			Provider:   provider,
+			RequestID:      requestID,
+			StreamType:     streamType,
+			Provider:       provider,
 			RequestedModel: model,
 			ResolvedModel:  resolvedModel,
-			Data:       data,
-			RawRequest: &rawRequest,
+			Data:           data,
+			RawRequest:     &rawRequest,
 		}, nil
 	}
 	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.

@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -319,7 +322,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	}
 }
 
-// stripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
+// StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
 // StripUnsupportedAnthropicFields. It mutates the request body bytes using
 // sjson/gjson (preserving key order for prompt caching) so the raw-body
 // passthrough path has behavioural parity with the typed conversion path.
@@ -338,7 +341,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 // Unknown providers: safe default — no stripping (parity with the typed helper).
 // Unknown edit types in context_management: left in place for the provider
 // to reject (parity with the typed helper).
-func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
 	if len(jsonBody) == 0 {
 		return jsonBody, nil
 	}
@@ -453,36 +456,44 @@ func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
-	// context_management.edits[] — gate per edit.type.
-	if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
-		edits := editsResult.Array()
-		// Collect indices to drop (iterate forwards, delete in reverse).
-		dropIndices := []int{}
-		for i, edit := range edits {
-			editType := edit.Get("type").String()
-			keep := true
-			switch editType {
-			case string(ContextManagementEditTypeCompact):
-				keep = features.Compaction
-			case string(ContextManagementEditTypeClearToolUses), string(ContextManagementEditTypeClearThinking):
-				keep = features.ContextEditing
-			}
-			if !keep {
-				dropIndices = append(dropIndices, i)
-			}
-		}
-		if len(dropIndices) == len(edits) && len(edits) > 0 {
-			// All edits unsupported — drop the whole context_management.
+	// context_management — if the provider doesn't accept the field at all (e.g. Vertex),
+	// drop it entirely. Otherwise gate per edit.type.
+	if providerUtils.JSONFieldExists(jsonBody, "context_management") {
+		if !features.ContextManagementField {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw context_management: %w", err)
 			}
-		} else {
-			for i := len(dropIndices) - 1; i >= 0; i-- {
-				path := fmt.Sprintf("context_management.edits.%d", dropIndices[i])
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+		} else if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
+			edits := editsResult.Array()
+			// Collect indices to drop (iterate forwards, delete in reverse).
+			dropIndices := []int{}
+			for i, edit := range edits {
+				editType := edit.Get("type").String()
+				keep := true
+				switch editType {
+				case string(ContextManagementEditTypeCompact):
+					keep = features.Compaction
+				case string(ContextManagementEditTypeClearToolUses), string(ContextManagementEditTypeClearThinking):
+					keep = features.ContextEditing
+				}
+				if !keep {
+					dropIndices = append(dropIndices, i)
+				}
+			}
+			if len(dropIndices) == len(edits) {
+				// No edits to keep (either empty input or all unsupported) — drop the whole context_management.
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 				if err != nil {
-					return nil, fmt.Errorf("strip raw context_management.edits[%d]: %w", dropIndices[i], err)
+					return nil, fmt.Errorf("strip raw context_management: %w", err)
+				}
+			} else {
+				for i := len(dropIndices) - 1; i >= 0; i-- {
+					path := fmt.Sprintf("context_management.edits.%d", dropIndices[i])
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+					if err != nil {
+						return nil, fmt.Errorf("strip raw context_management.edits[%d]: %w", dropIndices[i], err)
+					}
 				}
 			}
 		}
@@ -661,133 +672,16 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 	req.OutputConfig.Effort = &effort
 }
 
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string) ([]byte, *schemas.BifrostError) {
-	// Large payload mode: body streams directly from the LP reader in completeRequest/
-	// setAnthropicRequestBody — skip all body building here (matches CheckContextAndGetRequestBody).
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, nil
-	}
-
-	var jsonBody []byte
-	var err error
-
-	// Check if raw request body should be used
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonBody = request.GetRawRequestBody()
-
-		// Update model with provider model (using gjson/sjson to preserve key order for prompt caching)
-		if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
-			if modelStr := modelResult.String(); modelStr != "" {
-				_, model := schemas.ParseModelString(modelStr, schemas.Anthropic)
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", model)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-		// Add max_tokens if not present
-		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-			defaultMaxTokens := AnthropicDefaultMaxTokens
-			if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
-				defaultMaxTokens = providerUtils.GetMaxOutputTokensOrDefault(modelResult.String(), AnthropicDefaultMaxTokens)
-			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", defaultMaxTokens)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-		// Add stream if streaming
-		if isStreaming {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-		// Strip auto-injectable server-side tools to prevent conflicts with API auto-injection
-		jsonBody, err = StripAutoInjectableTools(jsonBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Sanitize raw-body fields the target provider does not support.
-		// Behavioural parity with StripUnsupportedAnthropicFields on the typed path.
-		// Feature gating keyed to schemas.Anthropic (not providerName) to match
-		// the typed path below which also hardcodes schemas.Anthropic — ensures
-		// custom Anthropic aliases get identical feature lookup in both modes.
-		jsonBody, err = stripUnsupportedFieldsFromRawBody(jsonBody, schemas.Anthropic, "")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Auto-inject matching anthropic-beta headers for fields the sanitizer
-		// preserved (speed, task_budget, cache_control.scope, input_examples,
-		// defer_loading, allowed_callers, eager_input_streaming, mcp_servers,
-		// structured outputs, etc). Without this, raw-body callers who supply
-		// gated fields but not headers would 400 upstream. Single source of
-		// truth: probe-unmarshal into the typed struct and reuse the typed
-		// path's header walker.
-		var probe AnthropicMessageRequest
-		if err := schemas.Unmarshal(jsonBody, &probe); err == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
-		}
-		// Remove excluded fields
-		for _, field := range excludeFields {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-	} else {
-		// Convert request to Anthropic format
-		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr)
-		}
-		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
-		}
-		AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Anthropic)
-		if isStreaming {
-			reqBody.Stream = schemas.Ptr(true)
-		}
-		// Marshal struct to JSON bytes
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err))
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := reqBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use MergeExtraParamsIntoJSON which preserves key order
-				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-			// Remove excluded fields after merging (using sjson to preserve order)
-			for _, field := range excludeFields {
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		} else if len(excludeFields) > 0 {
-			// Remove excluded fields using sjson to preserve key order
-			for _, field := range excludeFields {
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-	}
-
-	// delete fallbacks field
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-	}
-
-	return jsonBody, nil
+// getRequestBodyForResponses serializes a BifrostResponsesRequest into the Anthropic wire format.
+// It delegates to BuildAnthropicResponsesRequestBody with the appropriate provider and streaming config.
+func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
+	return BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               isStreaming,
+		ExcludeFields:             excludeFields,
+		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
+		ShouldSendBackRawResponse: shouldSendBackRawResponse,
+	})
 }
 
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.
@@ -1070,6 +964,58 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 	},
 }
 
+// doesWebSearchOrFetchAutoInjectCodeExecution reports whether the given web search/fetch tool type
+// automatically injects a code-execution beta header. Newer tool versions (2026-02-09 and later)
+// require it; older ones do not. Defaults to true for unrecognized types to preserve backward compatibility.
+func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
+	switch toolType {
+	case string(AnthropicToolTypeWebSearch20250305):
+		return false
+	case string(AnthropicToolTypeWebSearch20260209):
+		return true
+	case string(AnthropicToolTypeWebFetch20260309):
+		return true
+	case string(AnthropicToolTypeWebFetch20250910):
+		return false
+	case string(AnthropicToolTypeWebFetch20260209):
+		return true
+	}
+
+	// Keeping it for backward compatibility as this always used to be true
+	return true
+}
+
+// StripEmptyThinkingBlocks removes thinking content blocks where
+// "thinking" is an empty string. Anthropic rejects such blocks with a 400.
+func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return jsonBody, nil
+	}
+	var err error
+	for mi, msg := range messagesResult.Array() {
+		contentResult := msg.Get("content")
+		if !contentResult.Exists() || !contentResult.IsArray() {
+			continue
+		}
+		var toStrip []int
+		for ci, block := range contentResult.Array() {
+			if block.Get("type").String() == "thinking" && block.Get("thinking").String() == "" {
+				toStrip = append(toStrip, ci)
+			}
+		}
+		for i := len(toStrip) - 1; i >= 0; i-- {
+			path := fmt.Sprintf("messages.%d.content.%d", mi, toStrip[i])
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+			if err != nil {
+				return nil, fmt.Errorf("failed to strip empty thinking block at %s: %w", path, err)
+			}
+
+		}
+	}
+	return jsonBody, nil
+}
+
 // StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
 // when web_search or web_fetch tools are also present. The Anthropic API auto-injects
 // code_execution when web_search_20260209 or web_fetch_20260209 is included in the request,
@@ -1089,16 +1035,16 @@ func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
 
 	// Check if web_search or web_fetch is present — only then does Anthropic
 	// auto-inject code_execution, causing a conflict if it's also explicit.
-	hasWebSearchOrFetch := false
+	hasWebSearchOrFetchWithAutoInjectableCodeExecution := false
 	for _, tool := range tools {
 		toolType := tool.Get("type").String()
 		if strings.HasPrefix(toolType, "web_search_") || strings.HasPrefix(toolType, "web_fetch_") {
-			hasWebSearchOrFetch = true
+			hasWebSearchOrFetchWithAutoInjectableCodeExecution = doesWebSearchOrFetchAutoInjectCodeExecution(toolType)
 			break
 		}
 	}
 
-	if !hasWebSearchOrFetch {
+	if !hasWebSearchOrFetchWithAutoInjectableCodeExecution {
 		return jsonBody, nil
 	}
 
@@ -1203,11 +1149,11 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
-func MergeBetaHeaders(providerExtraHeaders map[string]string, ctx context.Context) []string {
+func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]string) []string {
 	seen := make(map[string]bool)
 	var all []string
 	add := func(v string) {
-		for _, part := range strings.Split(v, ",") {
+		for part := range strings.SplitSeq(v, ",") {
 			if t := strings.TrimSpace(part); t != "" && !seen[t] {
 				seen[t] = true
 				all = append(all, t)
@@ -1250,8 +1196,7 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 	filtered := make([]string, 0, len(headers))
 	for _, h := range headers {
-		tokens := strings.Split(h, ",")
-		for _, token := range tokens {
+		for token := range strings.SplitSeq(h, ",") {
 			token = strings.TrimSpace(token)
 
 			if token == "" {
@@ -1317,10 +1262,8 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 // appendUniqueHeader adds a header to the slice if not already present
 func appendUniqueHeader(slice []string, item string) []string {
-	for _, s := range slice {
-		if s == item {
-			return slice
-		}
+	if slices.Contains(slice, item) {
+		return slice
 	}
 	return append(slice, item)
 }
@@ -2015,6 +1958,177 @@ func filterEnumValuesByType(enumValues []interface{}, schemaType string) []inter
 	}
 
 	return filtered
+}
+
+// NormalizeSchemaForAnthropic is the exported entry point for normalizeSchemaForAnthropic,
+// used by providers (e.g. Bedrock) that share Anthropic's schema validation rules.
+func NormalizeSchemaForAnthropic(schema map[string]interface{}) map[string]interface{} {
+	return normalizeSchemaForAnthropic(schema)
+}
+
+// sjsonEscapeKey escapes characters that have special meaning in sjson path
+// syntax. Necessary for property names that include such characters; for the
+// common JSON Schema case (alphanumeric + underscore + $ + -) this is a no-op.
+func sjsonEscapeKey(k string) string {
+	if !strings.ContainsAny(k, `.*?#\`) {
+		return k
+	}
+	var b strings.Builder
+	b.Grow(len(k) + 2)
+	for _, r := range k {
+		switch r {
+		case '.', '*', '?', '#', '\\':
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// filterEnumValuesByTypeRaw is the gjson equivalent of filterEnumValuesByType.
+// Object/array enum values pass through to all branches (matches the map
+// version's default-case behavior).
+func filterEnumValuesByTypeRaw(values []gjson.Result, schemaType string) []gjson.Result {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]gjson.Result, 0, len(values))
+	for _, v := range values {
+		var actual string
+		switch v.Type {
+		case gjson.String:
+			actual = "string"
+		case gjson.Number:
+			f := v.Float()
+			if f == float64(int64(f)) {
+				actual = "integer"
+			} else {
+				actual = "number"
+			}
+		case gjson.True, gjson.False:
+			actual = "boolean"
+		case gjson.Null:
+			actual = "null"
+		case gjson.JSON:
+			out = append(out, v)
+			continue
+		default:
+			continue
+		}
+		if actual == schemaType || (schemaType == "number" && actual == "integer") {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// NormalizeSchemaForAnthropicRaw is the json.RawMessage equivalent of
+// NormalizeSchemaForAnthropic. Operates on raw JSON bytes throughout via
+// sjson/gjson; produces functionally identical output to the map-based
+// version. Use this when the caller already has the schema as raw bytes
+// and wants to avoid a map round-trip.
+func NormalizeSchemaForAnthropicRaw(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 {
+		return schema
+	}
+	if !gjson.ParseBytes(schema).IsObject() {
+		return schema
+	}
+
+	body := append([]byte(nil), schema...)
+
+	if typeVal := gjson.GetBytes(body, "type"); typeVal.IsArray() {
+		var types []string
+		for _, t := range typeVal.Array() {
+			types = append(types, t.String())
+		}
+		nonNullTypes := make([]string, 0, len(types))
+		for _, t := range types {
+			if t != "null" {
+				nonNullTypes = append(nonNullTypes, t)
+			}
+		}
+
+		switch {
+		case len(nonNullTypes) == 0:
+			body, _ = sjson.SetBytes(body, "type", "null")
+		case len(nonNullTypes) == 1 && len(types) == 1:
+			body, _ = sjson.SetBytes(body, "type", nonNullTypes[0])
+		default:
+			body, _ = sjson.DeleteBytes(body, "type")
+
+			enumVal := gjson.GetBytes(body, "enum")
+			hasEnum := enumVal.Exists() && enumVal.IsArray()
+			var enumArr []gjson.Result
+			if hasEnum {
+				enumArr = enumVal.Array()
+			}
+
+			anyOf := []byte("[]")
+			i := 0
+			for _, t := range nonNullTypes {
+				branch := []byte(`{}`)
+				branch, _ = sjson.SetBytes(branch, "type", t)
+				if hasEnum {
+					filtered := filterEnumValuesByTypeRaw(enumArr, t)
+					if len(filtered) > 0 {
+						enumOut := []byte("[]")
+						for j, v := range filtered {
+							enumOut, _ = sjson.SetRawBytes(enumOut, fmt.Sprintf("%d", j), []byte(v.Raw))
+						}
+						branch, _ = sjson.SetRawBytes(branch, "enum", enumOut)
+					}
+				}
+				anyOf, _ = sjson.SetRawBytes(anyOf, fmt.Sprintf("%d", i), branch)
+				i++
+			}
+			if len(nonNullTypes) < len(types) {
+				nullBranch, _ := sjson.SetBytes([]byte(`{}`), "type", "null")
+				anyOf, _ = sjson.SetRawBytes(anyOf, fmt.Sprintf("%d", i), nullBranch)
+			}
+			body, _ = sjson.SetRawBytes(body, "anyOf", anyOf)
+			body, _ = sjson.DeleteBytes(body, "enum")
+		}
+	}
+
+	for _, key := range []string{"properties", "definitions", "$defs"} {
+		val := gjson.GetBytes(body, key)
+		if !val.IsObject() {
+			continue
+		}
+		newObj := []byte("{}")
+		val.ForEach(func(k, v gjson.Result) bool {
+			child := []byte(v.Raw)
+			if v.IsObject() {
+				child = NormalizeSchemaForAnthropicRaw(child)
+			}
+			newObj, _ = sjson.SetRawBytes(newObj, sjsonEscapeKey(k.String()), child)
+			return true
+		})
+		body, _ = sjson.SetRawBytes(body, sjsonEscapeKey(key), newObj)
+	}
+
+	if items := gjson.GetBytes(body, "items"); items.IsObject() {
+		body, _ = sjson.SetRawBytes(body, "items", NormalizeSchemaForAnthropicRaw([]byte(items.Raw)))
+	}
+
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		arr := gjson.GetBytes(body, key)
+		if !arr.IsArray() {
+			continue
+		}
+		newArr := []byte("[]")
+		for i, item := range arr.Array() {
+			child := []byte(item.Raw)
+			if item.IsObject() {
+				child = NormalizeSchemaForAnthropicRaw(child)
+			}
+			newArr, _ = sjson.SetRawBytes(newArr, fmt.Sprintf("%d", i), child)
+		}
+		body, _ = sjson.SetRawBytes(body, key, newArr)
+	}
+
+	return body
 }
 
 // normalizeSchemaForAnthropic recursively normalizes a JSON schema to be compatible with Anthropic's API.

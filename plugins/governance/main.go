@@ -346,6 +346,10 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
 	hasRoutingRules := p.store.HasRoutingRules(ctx)
 
+	if strings.Contains(req.Path, "passthrough") {
+		return nil, nil
+	}
+
 	// If no virtual key and no routing rules configured, skip all processing
 	if virtualKeyValue == nil && !hasRoutingRules {
 		return nil, nil
@@ -652,12 +656,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		}
 	}
 
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Loading balance provider for model %s", modelStr))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing provider for model %s", modelStr))
 
 	// Get provider configs for this virtual key
 	providerConfigs := virtualKey.ProviderConfigs
 	if len(providerConfigs) == 0 {
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
 		// No provider configs, continue without modification
 		return body, nil
 	}
@@ -667,7 +671,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		configuredProviders = append(configuredProviders, pc.Provider)
 	}
 	p.logger.Debug("[Governance] Virtual key has %d provider configs: %v", len(providerConfigs), configuredProviders)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Load balancing model %s across %d configured providers: %v", modelStr, len(providerConfigs), configuredProviders))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing model %s across %d configured providers: %v", modelStr, len(providerConfigs), configuredProviders))
 
 	allowedProviderConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0)
 	for _, config := range providerConfigs {
@@ -692,16 +696,16 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		if isProviderAllowed {
 			// Check if the provider's budget or rate limits are violated using resolver helper methods
 			if p.resolver.isProviderBudgetViolated(ctx, virtualKey, config) {
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Provider %s excluded: budget limit violated", config.Provider))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: budget limit violated", config.Provider))
 				continue
 			}
 			if p.resolver.isProviderRateLimitViolated(ctx, virtualKey, config) {
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Provider %s excluded: rate limit violated", config.Provider))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: rate limit violated", config.Provider))
 				continue
 			}
 			allowedProviderConfigs = append(allowedProviderConfigs, config)
 		} else {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Provider %s excluded: model %s not in allowed models list", config.Provider, modelStr))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s not in allowed models list", config.Provider, modelStr))
 		}
 	}
 
@@ -710,10 +714,10 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		allowedProviders = append(allowedProviders, pc.Provider)
 	}
 	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
 
 	if len(allowedProviderConfigs) == 0 {
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("No eligible providers remaining after filtering for model %s, skipping load balancing", modelStr))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No eligible providers remaining after filtering for model %s, skipping load balancing", modelStr))
 		// TODO: Send proper error if (overall VK budget/rate limit) or (all provider budgets/rate limits) are violated
 		// No allowed provider configs, continue without modification
 		return body, nil
@@ -754,8 +758,8 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		return body, nil
 	}
 
-	p.logger.Debug("[Governance] Selected provider: %s", selectedProvider)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))
+	p.logger.Debug("[governance] Selected provider: %s", selectedProvider)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))
 
 	// For genai integration, model is present in URL path instead of the request body
 	if isGeminiPath {
@@ -810,7 +814,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 
 		// Add fallbacks to request body
 		body["fallbacks"] = fallbacks
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Added %d fallback providers: %v", len(fallbacks), fallbacks))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Added %d fallback providers: %v", len(fallbacks), fallbacks))
 	}
 
 	return body, nil
@@ -896,13 +900,12 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 
 	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",
 		provider, model, requestType, virtualKey != nil, len(req.Headers), len(req.Query))
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Evaluating routing rules for model=%s, provider=%s, requestType=%s", model, provider, requestType))
 
 	// Evaluate routing rules
 	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
 	if err != nil {
 		p.logger.Error("failed to evaluate routing rules: %v", err)
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Routing rule evaluation error: %v", err))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Routing rule evaluation error: %v", err))
 		return body, nil, nil
 	}
 
@@ -939,9 +942,23 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		// Append routing-rule to routing engines used
 		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
 
-		// Add fallbacks if present
+		// Add fallbacks if present; fill in the incoming model for fallbacks that omit it
 		if len(decision.Fallbacks) > 0 {
-			body["fallbacks"] = decision.Fallbacks
+			resolvedFallbacks := make([]string, 0, len(decision.Fallbacks))
+			for _, fb := range decision.Fallbacks {
+				fbProvider, fbModel := schemas.ParseModelString(fb, "")
+				trimmedFbProvider := strings.TrimSpace(string(fbProvider))
+				trimmedFbModel := strings.TrimSpace(fbModel)
+				if trimmedFbProvider == "" {
+					continue
+				}
+				if trimmedFbModel == "" && model != "" {
+					resolvedFallbacks = append(resolvedFallbacks, trimmedFbProvider+"/"+model)
+				} else {
+					resolvedFallbacks = append(resolvedFallbacks, trimmedFbProvider+"/"+trimmedFbModel)
+				}
+			}
+			body["fallbacks"] = resolvedFallbacks
 		}
 
 		// Pin specific API key by ID if the routing rule specifies one

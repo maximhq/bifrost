@@ -76,6 +76,11 @@ spec:
             - name: gossip-udp
               containerPort: {{ .Values.bifrost.cluster.gossip.port }}
               protocol: UDP
+            {{- if .Values.bifrost.cluster.grpc }}
+            - name: grpc
+              containerPort: {{ .Values.bifrost.cluster.grpc.port }}
+              protocol: TCP
+            {{- end }}
             {{- end }}
           env:
             - name: APP_DIR
@@ -88,7 +93,7 @@ spec:
               value: {{ .Values.bifrost.logLevel | quote }}
             - name: LOG_STYLE
               value: {{ .Values.bifrost.logStyle | quote }}
-            {{- if .Values.bifrost.encryptionKeySecret }}
+            {{- if .Values.bifrost.encryptionKeySecret.name }}
             - name: BIFROST_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
@@ -286,7 +291,13 @@ spec:
     - metadata:
         name: data
         labels:
-          {{- include "bifrost.labels" . | nindent 10 }}
+          {{- /*
+              Keep volumeClaimTemplates labels immutable-safe.
+              Do not include bifrost.labels here because chart/app version labels
+              change between releases and StatefulSet volumeClaimTemplates are immutable.
+          */}}
+          {{- include "bifrost.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: server
       spec:
         accessModes:
           - {{ .Values.storage.persistence.accessMode }}

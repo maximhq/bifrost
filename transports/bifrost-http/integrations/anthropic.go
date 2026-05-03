@@ -23,6 +23,18 @@ type AnthropicRouter struct {
 	*GenericRouter
 }
 
+// anthropicModelGetter extracts the model field from any Anthropic integration request type.
+// It is called after body parsing, so req is fully populated.
+func anthropicModelGetter(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
+	switch r := req.(type) {
+	case *anthropic.AnthropicTextRequest:
+		return r.Model, nil
+	case *anthropic.AnthropicMessageRequest:
+		return r.Model, nil
+	}
+	return "", nil
+}
+
 // createAnthropicCompleteRouteConfig creates a route configuration for the `/v1/complete` endpoint.
 func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 	return RouteConfig{
@@ -35,6 +47,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
+		GetRequestModel: anthropicModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 				return &schemas.BifrostRequest{
@@ -75,6 +88,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
+			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
@@ -203,58 +217,11 @@ func hasFastModeBetaHeader(headers map[string][]string) bool {
 	return false
 }
 
-// filterVertexUnsupportedBetaHeaders removes beta headers that Vertex AI doesn't support.
-// Vertex AI doesn't support: structured-outputs, advanced-tool-use, prompt-caching-scope, mcp-client.
-func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string][]string {
-	var betaHeaderKey string
-	var betaHeaders []string
-	var found bool
-	for k, v := range headers {
-		if strings.ToLower(k) == anthropic.AnthropicBetaHeader {
-			betaHeaderKey = k
-			betaHeaders = v
-			found = true
-			break
-		}
-	}
-
-	if found {
-		var filteredBetas []string
-		for _, headerValue := range betaHeaders {
-			// Split comma-separated beta headers
-			for beta := range strings.SplitSeq(headerValue, ",") {
-				beta = strings.TrimSpace(beta)
-				if beta == "" {
-					continue
-				}
-				// Skip unsupported headers for Vertex.
-				// Use prefix matching so that future date bumps
-				// (e.g. structured-outputs-2025-12-15) are still caught.
-				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicSkillsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicRedactThinkingBetaHeaderPrefix) {
-					continue
-				}
-				filteredBetas = append(filteredBetas, beta)
-			}
-		}
-		if len(filteredBetas) > 0 {
-			headers[betaHeaderKey] = []string{strings.Join(filteredBetas, ",")}
-		} else {
-			delete(headers, betaHeaderKey)
-		}
-	}
-
-	return headers
-}
-
 // extractPassthroughHeaders filters headers to only include those in the safe whitelist.
-// Header matching is case-insensitive.
-func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.ModelProvider) map[string][]string {
+// Header matching is case-insensitive. Provider-aware beta-header filtering happens
+// downstream at each provider's wire layer (e.g. anthropic.go, vertex.go), where
+// networkConfig.BetaHeaderOverrides is in scope.
+func extractPassthroughHeaders(allHeaders map[string][]string) map[string][]string {
 	filtered := make(map[string][]string)
 	for k, v := range allHeaders {
 		if passthroughSafeHeaders[strings.ToLower(k)] {
@@ -341,6 +308,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 
@@ -348,6 +316,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 	}
@@ -371,7 +340,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 		} else {
 			// API key flow: pass only whitelisted safe headers (like anthropic-beta for feature detection)
-			passthroughHeaders := extractPassthroughHeaders(headers, provider)
+			passthroughHeaders := extractPassthroughHeaders(headers)
 			if len(passthroughHeaders) > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
@@ -441,6 +410,7 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
+			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)

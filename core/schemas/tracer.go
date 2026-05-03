@@ -24,10 +24,12 @@ type StreamAccumulatorResult struct {
 	OutputMessages        []ResponsesMessage              // For responses API
 	TokenUsage            *BifrostLLMUsage                // Token usage
 	Cost                  *float64                        // Cost in dollars
+	CacheDebug            *BifrostCacheDebug              // Semantic cache debug info if available
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
 	ImageGenerationOutput *BifrostImageGenerationResponse // For image generation streaming
+	PassthroughOutput     *BifrostPassthroughResponse     // For passthrough streaming
 	FinishReason          *string                         // Finish reason
 	RawResponse           *string                         // Raw response
 	RawRequest            interface{}                     // Raw request

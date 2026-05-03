@@ -150,8 +150,7 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	// Create resource with service info
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+		resource.NewSchemaless(
 			semconv.ServiceName(config.ServiceName),
 			semconv.ServiceInstanceID(instanceID),
 		),

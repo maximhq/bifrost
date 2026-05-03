@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -66,6 +67,46 @@ func writeUint32LE(b []byte, v uint32) {
 	b[1] = byte(v >> 8)
 	b[2] = byte(v >> 16)
 	b[3] = byte(v >> 24)
+}
+
+func TestParseTranscriptionFormDataBodyFromRequest_OrdersMetadataBeforeFile(t *testing.T) {
+	t.Parallel()
+
+	req := &MistralTranscriptionRequest{
+		Model:          "voxtral-mini-latest",
+		File:           createMinimalAudioFile(),
+		Filename:       "sample.wav",
+		Stream:         schemas.Ptr(true),
+		Language:       schemas.Ptr("en"),
+		Prompt:         schemas.Ptr("hello"),
+		ResponseFormat: schemas.Ptr("json"),
+		Temperature:    schemas.Ptr(0.2),
+		TimestampGranularities: []string{"word", "segment"},
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.Nil(t, parseTranscriptionFormDataBodyFromRequest(writer, req, schemas.Mistral))
+
+	_, params, err := mime.ParseMediaType(writer.FormDataContentType())
+	require.NoError(t, err)
+
+	reader := multipart.NewReader(bytes.NewReader(body.Bytes()), params["boundary"])
+	var order []string
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		order = append(order, part.FormName())
+		require.NoError(t, part.Close())
+	}
+
+	assert.Equal(t,
+		[]string{"model", "stream", "language", "prompt", "response_format", "temperature", "timestamp_granularities[]", "timestamp_granularities[]", "file"},
+		order,
+	)
 }
 
 // TestToMistralTranscriptionRequest tests the Bifrost-to-Mistral request conversion.

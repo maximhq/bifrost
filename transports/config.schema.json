@@ -68,6 +68,16 @@
           "type": "boolean",
           "description": "Disable logging of sensitive content (inputs, outputs, embeddings, etc.)"
         },
+        "allow_per_request_content_storage_override": {
+          "type": "boolean",
+          "description": "Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key, and to opt in to raw-byte persistence in logs via x-bf-store-raw-request-response. When false (default), the global disable_content_logging setting is authoritative and per-request storage overrides are ignored. Does not control sending raw bytes back to callers — see allow_per_request_raw_override.",
+          "default": false
+        },
+        "allow_per_request_raw_override": {
+          "type": "boolean",
+          "description": "Allow individual requests to send raw provider request/response bytes back to the caller via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), the provider-level send_back_raw_request/response settings are authoritative and per-request overrides are ignored. Does not affect raw-byte persistence in logs — see allow_per_request_content_storage_override.",
+          "default": false
+        },
         "disable_db_pings_in_health": {
           "type": "boolean",
           "description": "Disable DB pings in health check",
@@ -187,29 +197,29 @@
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum depth for MCP agent mode tool execution",
+          "description": "DEPRECATED: Maximum depth for MCP agent mode tool execution. Use mcp.tool_manager_config.max_agent_depth.",
           "default": 10
         },
         "mcp_tool_execution_timeout": {
           "type": "integer",
           "minimum": 1,
-          "description": "Timeout for individual MCP tool execution in seconds",
+          "description": "DEPRECATED: Timeout for individual MCP tool execution in seconds. Use mcp.tool_manager_config.tool_execution_timeout.",
           "default": 30
         },
         "mcp_code_mode_binding_level": {
           "type": "string",
           "enum": ["server", "tool"],
-          "description": "Code mode binding level for MCP tools"
+          "description": "DEPRECATED: Code mode binding level for MCP tools. Use mcp.tool_manager_config.code_mode_binding_level."
         },
         "mcp_tool_sync_interval": {
           "type": "integer",
           "minimum": 0,
-          "description": "Global tool sync interval in minutes (0 = disabled)",
+          "description": "DEPRECATED: Global tool sync interval in minutes (0 = disabled). Use mcp.tool_sync_interval.",
           "default": 10
         },
         "mcp_disable_auto_tool_inject": {
           "type": "boolean",
-          "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
+          "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
         "routing_chain_max_depth": {
@@ -217,6 +227,40 @@
           "minimum": 1,
           "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
+        },
+        "mcp_external_server_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": { "type": "string" },
+                "env_var": { "type": "string" },
+                "from_env": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Public base URL Bifrost advertises when acting as an OAuth server/resource (well-known metadata, WWW-Authenticate). Set when Bifrost runs behind a reverse proxy. Supports env var syntax: \"env.MY_VAR\"."
+        },
+        "mcp_external_client_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": { "type": "string" },
+                "env_var": { "type": "string" },
+                "from_env": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         }
       },
       "additionalProperties": false
@@ -345,6 +389,15 @@
               "provider_config_id": {
                 "type": "integer",
                 "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
+              },
+              "team_id": {
+                "type": "string",
+                "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id and provider_config_id)"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               }
             },
             "required": ["id", "max_limit", "reset_duration"],
@@ -396,6 +449,11 @@
                 "type": "string",
                 "format": "date-time",
                 "description": "Last time request counter was reset"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               }
             },
             "required": ["id"],
@@ -455,6 +513,10 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
+              "business_unit_id": {
+                "type": "string",
+                "description": "Associated business unit ID"
+              },
               "profile": {
                 "type": "object",
                 "description": "Team profile data"
@@ -466,6 +528,58 @@
               "claims": {
                 "type": "object",
                 "description": "Team claims data"
+              },
+              "virtual_key_count": {
+                "type": "integer",
+                "description": "Computed count of virtual keys associated with this team",
+                "minimum": 0,
+                "readOnly": true
+              }
+            },
+            "required": ["id", "name"],
+            "additionalProperties": false
+          }
+        },
+        "business_units": {
+          "type": "array",
+          "description": "Business unit configurations with optional team assignments",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Business unit ID"
+              },
+              "name": {
+                "type": "string",
+                "description": "Business unit name"
+              },
+              "budget_id": {
+                "type": "string",
+                "description": "Associated budget ID"
+              },
+              "rate_limit_id": {
+                "type": "string",
+                "description": "Associated rate limit ID"
+              },
+              "profile": {
+                "type": "object",
+                "description": "Business unit profile data"
+              },
+              "config": {
+                "type": "object",
+                "description": "Business unit configuration data"
+              },
+              "claims": {
+                "type": "object",
+                "description": "Business unit claims data"
+              },
+              "team_ids": {
+                "type": "array",
+                "description": "Team IDs to assign to this business unit",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": ["id", "name"],
@@ -658,8 +772,23 @@
           "$ref": "#/$defs/mcp_tool_manager_config"
         },
         "tool_sync_interval": {
-          "type": "string",
-          "description": "Global default interval for syncing tools from MCP servers (Go duration, e.g. '10m', '1h')"
+          "description": "Global default interval for syncing tools from MCP servers (Go duration string, e.g. '10m', '1h', '0s' to use runtime default). Legacy numeric nanoseconds are also supported for backward compatibility.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "tool_groups": {
+          "type": "array",
+          "description": "Enterprise MCP tool groups with optional governance associations",
+          "items": {
+            "$ref": "#/$defs/mcp_tool_group_config"
+          }
         }
       },
       "additionalProperties": false
@@ -815,7 +944,14 @@
                     "default": 50
                   }
                 },
-                "required": ["host", "port", "user", "password", "db_name", "ssl_mode"],
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
                 "additionalProperties": false
               }
             }
@@ -906,7 +1042,14 @@
                     "default": 50
                   }
                 },
-                "required": ["host", "port", "user", "password", "db_name", "ssl_mode"],
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name",
+                  "ssl_mode"
+                ],
                 "additionalProperties": false
               }
             }
@@ -1010,6 +1153,13 @@
             "additionalProperties": false
           }
         },
+        "object_storage_exclude_fields": {
+          "type": "array",
+          "description": "Payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored.",
+          "items": {
+            "type": "string"
+          }
+        },
         "retention_days": {
           "type": "integer",
           "minimum": 0,
@@ -1045,7 +1195,8 @@
           "version": {
             "type": "integer",
             "minimum": 1,
-            "description": "DB-Backed Only. Version of the plugin (default: 1). Ignored in config.json. Increment in this number will force a reload of the plugin and DB update.",
+            "maximum": 32767,
+            "description": "DB-Backed Only. Version metadata persisted on TablePlugin (default: 1). In DB-backed sync, version metadata is considered for plugin replacement/reload decisions.",
             "optional": true,
             "default": 1
           },
@@ -1158,6 +1309,11 @@
                     "disable_content_logging": {
                       "type": "boolean",
                       "description": "Disable logging of request and response content"
+                    },
+                    "allow_per_request_content_storage_override": {
+                      "type": "boolean",
+                      "description": "Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key, and to opt in to raw-byte persistence in logs via x-bf-store-raw-request-response. When false (default), per-request storage overrides are ignored. Does not control sending raw bytes back to callers — see allow_per_request_raw_override.",
+                      "default": false
                     },
                     "logging_headers": {
                       "type": "array",
@@ -1277,13 +1433,6 @@
                         "sgl",
                         "huggingface"
                       ]
-                    },
-                    "keys": {
-                      "type": "array",
-                      "description": "API keys for the embedding provider. These are injected at runtime for config-driven setups and are not needed for direct caching with dimension: 1.",
-                      "items": {
-                        "type": "string"
-                      }
                     },
                     "embedding_model": {
                       "type": "string",
@@ -1544,6 +1693,9 @@
     },
     "scim_config": {
       "$ref": "#/$defs/scim_config"
+    },
+    "access_profiles": {
+      "$ref": "#/$defs/access_profiles"
     }
   },
   "additionalProperties": false,
@@ -1562,10 +1714,10 @@
           "minLength": 1,
           "description": "Target model name. Omit to use the incoming request model"
         },
-        "key_id": {
+        "provider_key_name": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional API key UUID to pin for this target. Omit for load-balanced key selection"
+          "description": "Optional provider key name. Resolved to internal key_id at config load time. Requires provider."
         },
         "weight": {
           "type": "number",
@@ -1640,9 +1792,30 @@
           "default": 0
         },
         "query": {
-          "type": "object",
-          "description": "Additional query parameters",
-          "additionalProperties": true
+          "description": "Visual rule builder state for the management UI (react-querybuilder). Omitted unless exported from the dashboard. Not evaluated at routing runtime (cel_expression is). When present, must include combinator and rules[] so arbitrary metadata cannot be mistaken for builder state.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": ["combinator", "rules"],
+              "properties": {
+                "combinator": {
+                  "type": "string",
+                  "enum": ["and", "or"]
+                },
+                "rules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "description": "Leaf rules (field, operator, value) and/or nested combinator+rules groups from the query builder."
+                }
+              },
+              "additionalProperties": true
+            }
+          ]
         }
       },
       "required": ["id", "name", "targets"],
@@ -1807,12 +1980,12 @@
         },
         "retry_backoff_initial": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Initial retry backoff in milliseconds"
         },
         "retry_backoff_max": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Maximum retry backoff in milliseconds"
         },
         "enforce_http2": {
@@ -1825,7 +1998,7 @@
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA). Supports inline PEM or env.VAR_NAME."
         },
         "stream_idle_timeout_in_seconds": {
           "type": "integer",
@@ -1871,12 +2044,12 @@
         },
         "retry_backoff_initial": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Initial retry backoff in milliseconds"
         },
         "retry_backoff_max": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 100,
           "description": "Maximum retry backoff in milliseconds"
         },
         "enforce_http2": {
@@ -2483,7 +2656,7 @@
           "description": "API keys for this provider"
         },
         "network_config": {
-          "$ref": "#/$defs/network_config_without_base_url"
+          "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_and_buffer_size"
@@ -2507,7 +2680,6 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_sgl_config": {
@@ -2522,7 +2694,7 @@
           "description": "API keys for this provider"
         },
         "network_config": {
-          "$ref": "#/$defs/network_config_without_base_url"
+          "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_and_buffer_size"
@@ -2546,7 +2718,6 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": ["keys"],
       "additionalProperties": false
     },
     "mcp_client_config": {
@@ -2629,8 +2800,16 @@
           "description": "Auto-execute list of tools. ['*'] means all, [] means none."
         },
         "tool_sync_interval": {
-          "type": "string",
-          "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
+          "description": "Per-client override for tool sync interval. Prefer Go duration strings (e.g. '10m', '-1s', '0s' = use global). Legacy integer nanoseconds are also supported for backward compatibility.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
         },
         "allowed_extra_headers": {
           "type": "array",
@@ -2739,6 +2918,96 @@
           "default": false
         }
       }
+    },
+    "mcp_tool_group_config": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Tool group name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Tool group description"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether tool group is enabled",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "description": "MCP tools included in this group",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcp_client_id": {
+                "type": "string",
+                "description": "MCP client ID"
+              },
+              "mcp_client_name": {
+                "type": "string",
+                "description": "MCP client name (resolved to client_id at startup)"
+              },
+              "tool_names": {
+                "type": "array",
+                "description": "Tool names to allow. Empty means all tools from this MCP client.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": ["mcp_client_id"]
+              },
+              {
+                "required": ["mcp_client_name"]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtual_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "team_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "customer_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "user_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provider_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "api_key_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
     },
     "weaviate_config": {
       "type": "object",
@@ -2935,21 +3204,29 @@
           "description": "Type of proxy to use"
         },
         "url": {
-          "type": "string",
-          "format": "uri",
-          "description": "URL of the proxy server"
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            {
+              "type": "string",
+              "format": "uri"
+            }
+          ],
+          "description": "URL of the proxy server (supports env.VAR_NAME or a literal URI)"
         },
         "username": {
           "type": "string",
-          "description": "Username for proxy authentication"
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
         },
         "password": {
           "type": "string",
-          "description": "Password for proxy authentication"
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies)"
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, supports env.VAR_NAME)"
         }
       },
       "required": ["type"],
@@ -2965,7 +3242,7 @@
         },
         "region": {
           "type": "string",
-          "description": "AWS region for cluster deployment (default: us-east-1)"
+          "description": "Region label for cluster deployment (runtime default: unknown)"
         },
         "peers": {
           "type": "array",
@@ -3005,11 +3282,35 @@
                   "description": "Number of failed probes before marking as failed"
                 }
               },
-              "required": ["timeout_seconds", "success_threshold", "failure_threshold"],
+              "required": [
+                "timeout_seconds",
+                "success_threshold",
+                "failure_threshold"
+              ],
               "additionalProperties": false
             }
           },
           "required": ["port", "config"],
+          "additionalProperties": false
+        },
+        "grpc": {
+          "type": "object",
+          "description": "gRPC transport settings for the cluster counter-sync layer. Replaces the memberlist gossip broadcast path for governance usage counters; memberlist continues to handle cluster membership and other entity sync.",
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "TCP port the gRPC server listens on",
+              "default": 10102
+            },
+            "dial_timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "How long to wait when dialing a peer, in seconds",
+              "default": 5
+            }
+          },
           "additionalProperties": false
         },
         "discovery": {
@@ -3303,6 +3604,32 @@
                 "type": "string",
                 "description": "CEL (Common Expression Language) expression for rule evaluation"
               },
+              "query": {
+                "description": "Visual rule builder state for the management UI (react-querybuilder). Omitted unless exported from the dashboard. Not evaluated at runtime (cel_expression is).",
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "required": ["combinator", "rules"],
+                    "properties": {
+                      "combinator": {
+                        "type": "string",
+                        "enum": ["and", "or"]
+                      },
+                      "rules": {
+                        "type": "array",
+                        "items": {
+                          "type": "object"
+                        },
+                        "description": "Leaf rules and/or nested combinator+rules groups from the query builder."
+                      }
+                    },
+                    "additionalProperties": true
+                  }
+                ]
+              },
               "apply_to": {
                 "type": "string",
                 "enum": ["input", "output", "both"],
@@ -3368,6 +3695,199 @@
           }
         }
       },
+      "additionalProperties": false
+    },
+    "access_profiles": {
+      "type": "array",
+      "description": "Enterprise access profile templates for RBAC-driven governance controls",
+      "items": {
+        "$ref": "#/$defs/access_profile"
+      }
+    },
+    "budget_line": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Budget ID"
+        },
+        "max_limit": {
+          "type": "number",
+          "description": "Maximum spend limit in USD"
+        },
+        "reset_duration": {
+          "type": "string",
+          "description": "Reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "required": ["id", "max_limit", "reset_duration"],
+      "additionalProperties": false
+    },
+    "rate_limit_line": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Rate limit ID"
+        },
+        "token_max_limit": {
+          "type": "integer",
+          "description": "Maximum number of tokens allowed in the reset window"
+        },
+        "token_reset_duration": {
+          "type": "string",
+          "description": "Token reset window, e.g. \"1M\", \"1h\""
+        },
+        "request_max_limit": {
+          "type": "integer",
+          "description": "Maximum number of requests allowed in the reset window"
+        },
+        "request_reset_duration": {
+          "type": "string",
+          "description": "Request reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    },
+    "access_profile": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique access profile name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional profile description"
+        },
+        "is_active": {
+          "type": "boolean",
+          "description": "Whether this access profile is active",
+          "default": true
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of tags for filtering and grouping profiles"
+        },
+        "budgets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/budget_line"
+          },
+          "description": "Profile-level budgets"
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/rate_limit_line"
+        },
+        "provider_configs": {
+          "type": "array",
+          "description": "Per-provider restrictions and limits for this profile",
+          "items": {
+            "$ref": "#/$defs/access_profile_provider_config"
+          }
+        },
+        "mcp_tool_groups": {
+          "type": "array",
+          "description": "MCP tool group associations",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_tool_group"
+          }
+        },
+        "mcp_servers": {
+          "type": "array",
+          "description": "MCP server associations",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_server"
+          }
+        },
+        "mcp_tool_overrides": {
+          "type": "array",
+          "description": "Per-tool include/exclude MCP overrides",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_tool_override"
+          }
+        }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "access_profile_provider_config": {
+      "type": "object",
+      "properties": {
+        "provider_name": {
+          "type": "string",
+          "description": "Provider name"
+        },
+        "all_models_allowed": {
+          "type": "boolean",
+          "description": "Whether all models under this provider are allowed",
+          "default": false
+        },
+        "allowed_models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed model names (ignored when all_models_allowed is true)"
+        },
+        "budgets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/budget_line"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/rate_limit_line"
+        }
+      },
+      "required": ["provider_name"],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_tool_group": {
+      "type": "object",
+      "properties": {
+        "tool_group_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "MCP tool group ID"
+        }
+      },
+      "required": ["tool_group_id"],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_server": {
+      "type": "object",
+      "properties": {
+        "mcp_server_id": {
+          "type": "string",
+          "description": "MCP server identifier"
+        }
+      },
+      "required": ["mcp_server_id"],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_tool_override": {
+      "type": "object",
+      "properties": {
+        "mcp_client_id": {
+          "type": "string",
+          "description": "MCP client identifier"
+        },
+        "tool_name": {
+          "type": "string",
+          "description": "Tool name"
+        },
+        "action": {
+          "type": "string",
+          "enum": ["include", "exclude"],
+          "description": "Override action"
+        }
+      },
+      "required": ["mcp_client_id", "tool_name", "action"],
       "additionalProperties": false
     },
     "audit_logs_config": {
@@ -3513,11 +4033,11 @@
         },
         "provider_id": {
           "type": "string",
-          "description": "Provider ID (required for provider* scopes)"
+          "description": "Provider name (required for provider* scopes; field key remains provider_id for compatibility)"
         },
-        "provider_key_id": {
+        "provider_key_name": {
           "type": "string",
-          "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)"
+          "description": "Provider key name alias. Resolved to internal provider key ID at config load time."
         },
         "match_type": {
           "type": "string",
@@ -3545,7 +4065,14 @@
           "description": "Internal hash for change detection (auto-managed)"
         }
       },
-      "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"],
+      "required": [
+        "id",
+        "name",
+        "scope_kind",
+        "match_type",
+        "pattern",
+        "request_types"
+      ],
       "additionalProperties": false
     },
     "pricing_override_match_type": {

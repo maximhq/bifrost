@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/governance
 
-go 1.26.1
+go 1.26.2
 
 require gorm.io/gorm v1.31.1
 
@@ -8,8 +8,8 @@ require (
 	github.com/bytedance/sonic v1.15.0
 	github.com/google/cel-go v0.26.1
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.5.3
-	github.com/maximhq/bifrost/framework v1.3.3
+	github.com/maximhq/bifrost/core v1.5.7
+	github.com/maximhq/bifrost/framework v1.3.7
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.68.0
 )

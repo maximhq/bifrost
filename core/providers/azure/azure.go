@@ -256,7 +256,7 @@ func (provider *AzureProvider) completeRequest(
 		url = fmt.Sprintf("%s/%s", endpoint, path)
 
 		// Merge ExtraHeaders + context anthropic-beta, filter for Azure, then set as HTTP header
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Azure, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Azure, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
 			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 		} else {
 			req.Header.Del(anthropic.AnthropicBetaHeader)
@@ -687,7 +687,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	var jsonData []byte
 	var bifrostErr *schemas.BifrostError
 	if schemas.IsAnthropicModel(request.Model) {
-		jsonData, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false)
+		jsonData, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	} else {
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -779,7 +779,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		authHeader["anthropic-version"] = AzureAnthropicAPIVersionDefault
 		url = fmt.Sprintf("%s/anthropic/v1/messages", key.AzureKeyConfig.Endpoint.GetValue())
 
-		jsonData, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true)
+		jsonData, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -2744,29 +2744,21 @@ func (provider *AzureProvider) Passthrough(
 	}
 
 	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
 
-	// Remove wire-level encoding headers after decoding; downstream should recalculate them for the buffered body.
-	for k := range headers {
-		if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
-			delete(headers, k)
-		}
-	}
-
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
 		Body:       body,
-	}
-
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &bifrostResponse.ExtraFields)
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: headers,
+		},
 	}
 
 	return bifrostResponse, nil
@@ -2833,6 +2825,7 @@ func (provider *AzureProvider) PassthroughStream(
 	}
 
 	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	rawBodyStream := resp.BodyStream()
 	if rawBodyStream == nil {
@@ -2843,9 +2836,8 @@ func (provider *AzureProvider) PassthroughStream(
 	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(rawBodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx))
 	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
 
-	extraFields := schemas.BifrostResponseExtraFields{}
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &extraFields)
+	extraFields := schemas.BifrostResponseExtraFields{
+		ProviderResponseHeaders: headers,
 	}
 	statusCode := resp.StatusCode()
 
@@ -2870,33 +2862,25 @@ func (provider *AzureProvider) PassthroughStream(
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
-				select {
-				case ch <- &schemas.BifrostStreamChunk{
-					BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
+					PassthroughResponse: &schemas.BifrostPassthroughResponse{
 						StatusCode:  statusCode,
 						Headers:     headers,
 						Body:        chunk,
 						ExtraFields: extraFields,
 					},
-				}:
-				case <-ctx.Done():
-					return
-				}
+				}, ch, postHookSpanFinalizer)
 			}
 			if readErr == io.EOF {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				extraFields.Latency = time.Since(startTime).Milliseconds()
-				finalResp := &schemas.BifrostResponse{
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{
 						StatusCode:  statusCode,
 						Headers:     headers,
 						ExtraFields: extraFields,
 					},
-				}
-				postHookRunner(ctx, finalResp, nil)
-				if postHookSpanFinalizer != nil {
-					postHookSpanFinalizer(ctx)
-				}
+				}, ch, postHookSpanFinalizer)
 				return
 			}
 			if readErr != nil {

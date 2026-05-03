@@ -167,6 +167,22 @@ func (s *BifrostHTTPServer) updateKeyStatus(
 			continue
 		}
 
+		isKeylessProvider := providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess
+
+		if ks.KeyID == "" {
+			if !isKeylessProvider {
+				logger.Warn("received provider-level status update for keyed provider %s; skipping in-memory update", ks.Provider)
+				s.Config.Mu.Unlock()
+				continue
+			}
+			providerConfig.Status = string(ks.Status)
+			providerConfig.Description = errorMsg
+			s.Config.Providers[ks.Provider] = providerConfig
+			logger.Debug("updated in-memory status for keyless provider %s", ks.Provider)
+			s.Config.Mu.Unlock()
+			continue
+		}
+
 		// Find and update the specific key in the Keys slice
 		updated := false
 		for i := range providerConfig.Keys {

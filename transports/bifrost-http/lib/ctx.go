@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -31,7 +32,19 @@ const (
 	// FastHTTPUserValueLargeResponseMode marks requests that streamed a large response body.
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
+	// FastHTTPUserValueModelCatalogResolution stores model catalog resolution metadata
+	// set by prepare*Request functions when a provider was auto-resolved. Picked up
+	// centrally in ConvertToBifrostContext to add the routing engine log.
+	FastHTTPUserValueModelCatalogResolution = "__bifrost_model_catalog_resolution"
 )
+
+// ModelCatalogResolution carries the result of an automatic provider lookup so
+// that ConvertToBifrostContext can emit the routing engine log in one place.
+type ModelCatalogResolution struct {
+	Model            string
+	ResolvedProvider schemas.ModelProvider
+	AllProviders     []schemas.ModelProvider
+}
 
 // ParseSessionIDFromBaggage extracts the session-id baggage member value.
 // It supports simple W3C baggage parsing sufficient for log grouping.
@@ -68,10 +81,15 @@ func ParseSessionIDFromBaggage(header string) string {
 // preserving important header values for monitoring and tracing purposes.
 //
 // The function processes several types of special headers:
-// 1. Prometheus Headers (x-bf-prom-*):
-//   - All headers prefixed with 'x-bf-prom-' are copied to the context
-//   - The prefix is stripped and the remainder becomes the context key
-//   - Example: 'x-bf-prom-latency' becomes 'latency' in the context
+// 1. Dimension Headers (x-bf-dim-*):
+//   - All headers prefixed with 'x-bf-dim-' are collected into a map[string]string stored under
+//     schemas.BifrostContextKeyDimensions and are forwarded to all observability integrations
+//     (internal logs, OTEL spans, Prometheus custom labels, Datadog, etc.).
+//   - The prefix is stripped and the remainder becomes the dimension key.
+//   - Example: 'x-bf-dim-environment' with value 'production' stores {"environment": "production"}.
+//
+// 1a. Prometheus Headers (x-bf-prom-*) [DEPRECATED — use x-bf-dim-* instead]:
+//   - All headers prefixed with 'x-bf-prom-' are still accepted for backward compatibility.
 //
 // 2. Maxim Tracing Headers (x-bf-maxim-*):
 //   - Specifically handles 'x-bf-maxim-traceID' and 'x-bf-maxim-generationID'
@@ -115,22 +133,34 @@ func ParseSessionIDFromBaggage(header string) string {
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
-//   - allowDirectKeys: Whether to allow direct API key usage from headers
+//   - store: HandlerStore providing per-request policy flags and header matchers
 //
 // Returns:
-//   - *context.Context: A new cancellable context.Context containing the propagated values
+//   - *schemas.BifrostContext: A new cancellable context containing the propagated values
 //   - context.CancelFunc: Function to cancel the context (should be called when request completes)
 //
 // Example Usage:
 //
 //	fastCtx := &fasthttp.RequestCtx{...}
-//	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, true, nil)
+//	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, handlerStore)
 //	defer cancel() // Ensure cleanup
 //	// bifrostCtx now contains propagated header values including Prometheus metrics,
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher, mcpHeaderCombinedAllowlist schemas.WhiteList) (*schemas.BifrostContext, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
+	allowDirectKeys := false
+	var matcher *HeaderMatcher
+	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
+	allowPerRequestStorageOverride := false
+	allowPerRequestRawOverride := false
+	if store != nil {
+		allowDirectKeys = store.ShouldAllowDirectKeys()
+		matcher = store.GetHeaderMatcher()
+		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
+		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
+		allowPerRequestRawOverride = store.ShouldAllowPerRequestRawOverride()
+	}
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
 	var cancel context.CancelFunc
@@ -175,8 +205,26 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	ctx.VisitUserValuesAll(func(key, value any) {
 		bifrostCtx.SetValue(key, value)
 	})
+
+	// When a prepare*Request function resolved a provider via the model catalog,
+	// it stores the resolution info on the fasthttp context. Emit the routing
+	// engine log and mark the engine as used centrally here.
+	if res, ok := ctx.UserValue(FastHTTPUserValueModelCatalogResolution).(*ModelCatalogResolution); ok && res != nil {
+		providerStrs := make([]string, len(res.AllProviders))
+		for i, p := range res.AllProviders {
+			providerStrs[i] = string(p)
+		}
+		bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+			"No provider specified for model %s, found %d options in model catalog: [%s], selecting first: %s",
+			res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider,
+		))
+		schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
+	}
+
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)
+	// Initialize dimensions map for x-bf-dim-* headers
+	dimensions := make(map[string]string)
 	// Initialize extra headers map for headers prefixed with x-bf-eh-
 	extraHeaders := make(map[string][]string)
 	// Initialize extra headers map for headers in the mcp header combined allowlist
@@ -217,8 +265,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			}
 			return true
 		}
-		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok {
-			bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
+			if labelName != "path" && labelName != "method" {
+				dimensions[labelName] = string(value)
+			}
+			return true
+		}
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok && labelName != "" {
+			// x-bf-prom-* is Prometheus-only and must not flow into unified dimensions
+			// (logs/OTEL/Maxim/etc). Prometheus plugin reads headers directly.
 			return true
 		}
 		// Checking for maxim headers
@@ -390,7 +445,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 				return true
 			}
 			// Apply configurable header filter
-			if !matcher.ShouldAllow(labelName) {
+			if matcher != nil && !matcher.ShouldAllow(labelName) {
 				return true
 			}
 			// Append header value (allow multiple values for the same header)
@@ -401,7 +456,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
 		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
 		// Only applies when allowlist is non-empty (backward compatible).
-		if matcher.HasAllowlist() {
+		if matcher != nil && matcher.HasAllowlist() {
 			if matcher.MatchesAllow(keyStr) {
 				// Skip reserved x-bf-* headers (handled separately)
 				if strings.HasPrefix(keyStr, "x-bf-") {
@@ -448,6 +503,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			}
 			return true
 		}
+		if keyStr == "x-bf-disable-content-logging" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, b)
+			}
+			return true
+		}
 		// Parent request ID header (for linking MCP tool calls to parent LLM requests)
 		if keyStr == "x-bf-parent-request-id" {
 			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {
@@ -459,6 +520,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		if keyStr == "x-bf-passthrough-extra-params" {
 			if valueStr := string(value); valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			return true
+		}
+		if keyStr == "x-bf-disable-content-logging" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, b)
 			}
 			return true
 		}
@@ -511,6 +578,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		bifrostCtx.SetValue(schemas.BifrostContextKey(maxim.TagsKey), maximTags)
 	}
 
+	// Store collected dimensions (x-bf-dim-* only) in the context
+	if len(dimensions) > 0 {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyDimensions, dimensions)
+	}
+
 	// Store collected extra headers in the context if any were found
 	if len(extraHeaders) > 0 {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
@@ -535,14 +607,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserID, mcpUserID)
 	}
 
-	// Build and set OAuth redirect URI for per-user OAuth flows
-	scheme := "http"
-	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		scheme = "https"
+	// Build and set OAuth redirect URI for per-user OAuth flows. Bifrost is acting as
+	// the OAuth client to upstream MCP servers here, so use the client-side override.
+	var externalClientURL string
+	if store != nil {
+		externalClientURL = store.GetMCPExternalClientURL()
 	}
-	host := string(ctx.Host())
-	if host != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host))
+	baseURL := BuildBaseURL(ctx, externalClientURL)
+	if baseURL != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, baseURL+"/api/oauth/callback")
 	}
 
 	if allowDirectKeys {
@@ -589,7 +662,34 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
 	return bifrostCtx, cancel
+}
+
+// BuildBaseURL returns the effective base URL for OAuth callbacks and metadata discovery.
+// When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
+// deployments behind a reverse proxy advertise the proxy's public URL rather than the
+// internal Host header seen by Bifrost.
+func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
+	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
+		if parsed, err := url.Parse(override); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			return override
+		}
+	}
+	scheme := "http"
+	xfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-Proto"))))
+	if comma := strings.IndexByte(xfProto, ','); comma >= 0 {
+		xfProto = strings.TrimSpace(xfProto[:comma])
+	}
+	if ctx.IsTLS() || xfProto == "https" {
+		scheme = "https"
+	}
+	host := string(ctx.Host())
+	if host == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
 // BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.

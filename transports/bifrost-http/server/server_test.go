@@ -1,7 +1,12 @@
 package server
 
 import (
+	"context"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
 // TestConfig is a sample config struct for testing
@@ -9,6 +14,114 @@ type TestConfig struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 	Count   int    `json:"count"`
+}
+
+type updateStatusOnlyConfigStore struct {
+	configstore.ConfigStore
+	calls []schemas.KeyStatus
+}
+
+type noopTestLogger struct{}
+
+func (noopTestLogger) Debug(string, ...any)                   {}
+func (noopTestLogger) Info(string, ...any)                    {}
+func (noopTestLogger) Warn(string, ...any)                    {}
+func (noopTestLogger) Error(string, ...any)                   {}
+func (noopTestLogger) Fatal(string, ...any)                   {}
+func (noopTestLogger) SetLevel(schemas.LogLevel)              {}
+func (noopTestLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (noopTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func (s *updateStatusOnlyConfigStore) UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error {
+	s.calls = append(s.calls, schemas.KeyStatus{
+		Provider: provider,
+		KeyID:    keyID,
+		Status:   schemas.KeyStatusType(status),
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: errorMsg}},
+	})
+	return nil
+}
+
+func TestUpdateKeyStatus_KeylessProviderUpdatesProviderStatusInMemory(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	store := &updateStatusOnlyConfigStore{}
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ConfigStore: store,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"mock-openai": {
+					CustomProviderConfig: &schemas.CustomProviderConfig{IsKeyLess: true},
+					Status:               "unknown",
+				},
+			},
+		},
+	}
+
+	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: "mock-openai",
+		KeyID:    "",
+		Status:   schemas.KeyStatusListModelsFailed,
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "preview missing model"}},
+	}})
+
+	provider := server.Config.Providers["mock-openai"]
+	if provider.Status != string(schemas.KeyStatusListModelsFailed) {
+		t.Fatalf("expected provider status %q, got %q", schemas.KeyStatusListModelsFailed, provider.Status)
+	}
+	if provider.Description != "preview missing model" {
+		t.Fatalf("expected provider description to be updated, got %q", provider.Description)
+	}
+	if len(store.calls) != 1 {
+		t.Fatalf("expected one status update call, got %d", len(store.calls))
+	}
+	if store.calls[0].Provider != "mock-openai" || store.calls[0].KeyID != "" {
+		t.Fatalf("expected provider-level status update, got provider=%q keyID=%q", store.calls[0].Provider, store.calls[0].KeyID)
+	}
+}
+
+func TestUpdateKeyStatus_EmptyKeyIDDoesNotOverwriteKeyedProviderStatus(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	store := &updateStatusOnlyConfigStore{}
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ConfigStore: store,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"openai": {
+					Keys:   []schemas.Key{{ID: "key-1"}},
+					Status: "healthy",
+				},
+			},
+		},
+	}
+
+	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: "openai",
+		KeyID:    "",
+		Status:   schemas.KeyStatusListModelsFailed,
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "malformed status"}},
+	}})
+
+	provider := server.Config.Providers["openai"]
+	if provider.Status != "healthy" {
+		t.Fatalf("expected keyed provider status to remain unchanged, got %q", provider.Status)
+	}
+	if provider.Description != "" {
+		t.Fatalf("expected keyed provider description to remain unchanged, got %q", provider.Description)
+	}
+	if len(store.calls) != 1 {
+		t.Fatalf("expected one status update call, got %d", len(store.calls))
+	}
+	if store.calls[0].Provider != "openai" || store.calls[0].KeyID != "" {
+		t.Fatalf("expected DB status update to retain empty key ID, got provider=%q keyID=%q", store.calls[0].Provider, store.calls[0].KeyID)
+	}
 }
 
 func TestMarshalPluginConfig_WithPointerType(t *testing.T) {

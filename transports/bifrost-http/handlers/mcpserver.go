@@ -112,7 +112,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
 
 	injectMCPSessionIdentity(bifrostCtx, session)
@@ -153,7 +153,7 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set("Connection", "keep-alive")
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 
 	injectMCPSessionIdentity(bifrostCtx, session)
 
@@ -463,12 +463,7 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 
 	// If per_user_oauth MCP clients are configured and no valid auth, return 401 with discovery
 	if clients := h.config.GetPerUserOAuthMCPClients(); len(clients) > 0 && userOauthSession == nil && vk == "" {
-		scheme := "http"
-		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-			scheme = "https"
-		}
-		host := string(ctx.Host())
-		resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", scheme, host)
+		resourceMetadataURL := lib.BuildBaseURL(ctx, h.config.GetMCPExternalServerURL()) + "/.well-known/oauth-protected-resource"
 		ctx.Response.Header.Set("WWW-Authenticate",
 			fmt.Sprintf(`Bearer resource_metadata="%s"`, resourceMetadataURL))
 		return nil, nil, fmt.Errorf("oauth authentication required for mcp access")

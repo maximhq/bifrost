@@ -33,7 +33,7 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	require.NoError(t, err)
 
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{})
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil)
 	return hybrid, inner, objStore
 }
 
@@ -329,4 +329,127 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, dbLog.ContentSummary, "capital of France")
 	assert.NotContains(t, dbLog.ContentSummary, "Paris", "content_summary should not contain output text")
+}
+
+// newTestHybridWithExclude creates a HybridLogStore with specific excluded fields.
+func newTestHybridWithExclude(t *testing.T, excludeFields []string) (*HybridLogStore, LogStore, *objectstore.InMemoryObjectStore) {
+	t.Helper()
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: ":memory:"}, hybridTestLogger{})
+	require.NoError(t, err)
+	objStore := objectstore.NewInMemoryObjectStore()
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields)
+	return hybrid, inner, objStore
+}
+
+func TestHybrid_ExcludeFields_RawRequestStaysInDB(t *testing.T) {
+	hybrid, inner, objStore := newTestHybridWithExclude(t, []string{"raw_request", "raw_response"})
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	inputContent := "Hello"
+	entry := &Log{
+		ID:          "exc-1",
+		Timestamp:   time.Now().UTC(),
+		Provider:    "openai",
+		Model:       "gpt-4",
+		Status:      "success",
+		Object:      "chat.completion",
+		RawRequest:  `{"model":"gpt-4","messages":[]}`,
+		RawResponse: `{"id":"chatcmpl-xxx"}`,
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputContent}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// The DB row should still carry raw_request and raw_response (they were excluded from S3).
+	dbLog, err := inner.FindByID(ctx, "exc-1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, dbLog.RawRequest, "raw_request should remain in DB when excluded from S3")
+	assert.NotEmpty(t, dbLog.RawResponse, "raw_response should remain in DB when excluded from S3")
+
+	// The S3 payload must NOT contain raw_request or raw_response.
+	key := ObjectKey("test", entry.Timestamp, "exc-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.NotContains(t, string(rawPayload), `"raw_request":"`, "raw_request must not appear in S3 payload")
+	assert.NotContains(t, string(rawPayload), `"raw_response":"`, "raw_response must not appear in S3 payload")
+}
+
+func TestHybrid_ExcludeFields_InputHistoryStaysFullInDB(t *testing.T) {
+	// Excluding input_history means the full conversation is stored in DB,
+	// not just the last user message. An output_message is included so the
+	// S3 upload is not skipped (the payload would otherwise be empty).
+	hybrid, inner, objStore := newTestHybridWithExclude(t, []string{"input_history"})
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	system := "You are a helpful assistant."
+	user1 := "What is 2+2?"
+	assistant1 := "4"
+	user2 := "And 3+3?"
+	outputText := "6"
+	entry := &Log{
+		ID:        "exc-ih-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-4",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &user1}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &assistant1}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &user2}},
+		},
+		OutputMessageParsed: &schemas.ChatMessage{
+			Content: &schemas.ChatMessageContent{ContentStr: &outputText},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// DB should contain the FULL input_history (all 4 messages), not just the last user message.
+	dbLog, err := inner.FindByID(ctx, "exc-ih-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.InputHistory, "What is 2+2?", "full history should be in DB")
+	assert.Contains(t, dbLog.InputHistory, "You are a helpful assistant.", "system message should be in DB")
+
+	// S3 payload must NOT contain input_history.
+	key := ObjectKey("test", entry.Timestamp, "exc-ih-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.NotContains(t, string(rawPayload), `"input_history":"`, "input_history must not appear in S3 payload when excluded")
+	// output_message (not excluded) should be in the payload.
+	assert.Contains(t, string(rawPayload), "output_message", "output_message should be in S3 payload")
+}
+
+func TestHybrid_ExcludeFields_UnknownFieldIgnored(t *testing.T) {
+	// Unknown field names in excludeFields are silently ignored.
+	hybrid, _, objStore := newTestHybridWithExclude(t, []string{"nonexistent_field_xyz"})
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	content := "test"
+	entry := &Log{
+		ID:        "exc-noop-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-4",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// Standard behaviour: one object uploaded, input_history offloaded.
+	assert.Equal(t, 1, objStore.Len(), "upload should succeed with unknown exclude field")
 }

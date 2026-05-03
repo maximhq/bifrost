@@ -1527,97 +1527,35 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 	if requestBaselines == nil {
 		requestBaselines = map[string]int64{}
 	}
-	// Collect unique rate limit IDs from virtual keys, model configs, and providers
-	rateLimitIDs := make(map[string]bool)
-	gs.virtualKeys.Range(func(key, value interface{}) bool {
-		vk, ok := value.(*configstoreTables.TableVirtualKey)
-		if !ok || vk == nil {
-			return true // continue
-		}
-		if vk.RateLimitID != nil {
-			rateLimitIDs[*vk.RateLimitID] = true
-		}
-		if vk.ProviderConfigs != nil {
-			for _, pc := range vk.ProviderConfigs {
-				if pc.RateLimitID != nil {
-					rateLimitIDs[*pc.RateLimitID] = true
-				}
-			}
-		}
-		return true // continue
-	})
-	// Collect rate limit IDs from model configs
-	gs.modelConfigs.Range(func(key, value interface{}) bool {
-		mc, ok := value.(*configstoreTables.TableModelConfig)
-		if !ok || mc == nil {
-			return true // continue
-		}
-		if mc.RateLimitID != nil {
-			rateLimitIDs[*mc.RateLimitID] = true
-		}
-		return true // continue
-	})
-	// Collect rate limit IDs from providers
-	gs.providers.Range(func(key, value interface{}) bool {
-		provider, ok := value.(*configstoreTables.TableProvider)
-		if !ok || provider == nil {
-			return true // continue
-		}
-		if provider.RateLimitID != nil {
-			rateLimitIDs[*provider.RateLimitID] = true
-		}
-		return true // continue
-	})
-
-	// Collect rate limit IDs from teams
-	gs.teams.Range(func(key, value interface{}) bool {
-		team, ok := value.(*configstoreTables.TableTeam)
-		if !ok || team == nil {
-			return true // continue
-		}
-		if team.RateLimitID != nil {
-			rateLimitIDs[*team.RateLimitID] = true
-		}
-		return true // continue
-	})
-
-	// Collect rate limit IDs from customers
-	gs.customers.Range(func(key, value interface{}) bool {
-		customer, ok := value.(*configstoreTables.TableCustomer)
-		if !ok || customer == nil {
-			return true // continue
-		}
-		if customer.RateLimitID != nil {
-			rateLimitIDs[*customer.RateLimitID] = true
-		}
-		return true // continue
-	})
-
-	// Prepare rate limit usage updates with baselines
+	// Range over ALL rate limits in memory (mirrors DumpBudgets pattern).
+	// This covers rate limits from every source: virtual keys, model configs,
+	// providers, teams, customers, AND access profiles — whose IDs were
+	// previously missing, causing AP rate-limit usage to never reach the DB.
 	type rateLimitUpdate struct {
 		ID                  string
 		TokenCurrentUsage   int64
 		RequestCurrentUsage int64
 	}
 	var rateLimitUpdates []rateLimitUpdate
-	for rateLimitID := range rateLimitIDs {
-		if rateLimitValue, exists := gs.rateLimits.Load(rateLimitID); exists && rateLimitValue != nil {
-			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-				update := rateLimitUpdate{
-					ID:                  rateLimit.ID,
-					TokenCurrentUsage:   rateLimit.TokenCurrentUsage,
-					RequestCurrentUsage: rateLimit.RequestCurrentUsage,
-				}
-				if tokenBaseline, exists := tokenBaselines[rateLimit.ID]; exists {
-					update.TokenCurrentUsage += tokenBaseline
-				}
-				if requestBaseline, exists := requestBaselines[rateLimit.ID]; exists {
-					update.RequestCurrentUsage += requestBaseline
-				}
-				rateLimitUpdates = append(rateLimitUpdates, update)
-			}
+	gs.rateLimits.Range(func(key, value interface{}) bool {
+		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
+		if !ok || rateLimit == nil {
+			return true
 		}
-	}
+		update := rateLimitUpdate{
+			ID:                  rateLimit.ID,
+			TokenCurrentUsage:   rateLimit.TokenCurrentUsage,
+			RequestCurrentUsage: rateLimit.RequestCurrentUsage,
+		}
+		if tokenBaseline, exists := tokenBaselines[rateLimit.ID]; exists {
+			update.TokenCurrentUsage += tokenBaseline
+		}
+		if requestBaseline, exists := requestBaselines[rateLimit.ID]; exists {
+			update.RequestCurrentUsage += requestBaseline
+		}
+		rateLimitUpdates = append(rateLimitUpdates, update)
+		return true
+	})
 
 	// Save all updated rate limits to database using direct UPDATE to avoid overwriting config fields
 	if len(rateLimitUpdates) > 0 && gs.configStore != nil {

@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -44,7 +45,7 @@ import {
   RoutingEngineUsedLabels,
   Status
 } from "@/lib/constants/logs";
-import { LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { Link } from "@tanstack/react-router";
@@ -53,6 +54,7 @@ import {
   AlertCircle,
   ChevronDown,
   Clipboard,
+  Copy,
   Download,
   Loader2,
   MoreVertical,
@@ -99,6 +101,91 @@ const extractResponsesText = (msg: ResponsesMessage): string => {
   }
   if (typeof (msg as any).arguments === "string")
     return (msg as any).arguments as string;
+  return "";
+};
+
+type ReasoningParts = {
+  summaries: string[];
+  encrypted?: string;
+  signatures: string[];
+  contentText?: string;
+};
+
+const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: string[] } => {
+  const texts: string[] = [];
+  const signatures: string[] = [];
+  for (const b of blocks) {
+    if (!b || typeof b !== "object") continue;
+    const isReasoningish =
+      b.type === "input_text" ||
+      b.type === "output_text" ||
+      b.type === "reasoning_text" ||
+      b.type === "refusal" ||
+      !b.type;
+    if (isReasoningish && typeof b.text === "string" && b.text.trim()) {
+      texts.push(b.text);
+    }
+    if (typeof b.signature === "string" && b.signature.trim()) {
+      signatures.push(b.signature.trim());
+    }
+  }
+  return { text: texts.join("\n"), signatures };
+};
+
+const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
+  const summaries = (msg.summary ?? [])
+    .map((s) => (s?.text ?? "").trim())
+    .filter(Boolean);
+  const encryptedRaw = (msg as any).encrypted_content?.trim?.();
+  const encrypted = encryptedRaw ? encryptedRaw : undefined;
+  const signatures: string[] = [];
+  let contentText = "";
+  if (typeof msg.content === "string") {
+    contentText = msg.content;
+  } else if (Array.isArray(msg.content)) {
+    const fromContent = collectReasoningFromBlocks(msg.content as any[]);
+    contentText = fromContent.text;
+    signatures.push(...fromContent.signatures);
+  }
+  // Some providers stash reasoning under `output` instead of `content`
+  const out = (msg as any).output;
+  if (out !== undefined) {
+    if (typeof out === "string" && out.trim() && !contentText) {
+      contentText = out;
+    } else if (Array.isArray(out)) {
+      const fromOutput = collectReasoningFromBlocks(out as any[]);
+      if (!contentText && fromOutput.text) contentText = fromOutput.text;
+      signatures.push(...fromOutput.signatures);
+    }
+  }
+  // Defensive: top-level text-bearing fields some variants use
+  if (!contentText) {
+    const topText =
+      (typeof (msg as any).text === "string" && (msg as any).text) ||
+      (typeof (msg as any).thinking === "string" && (msg as any).thinking) ||
+      "";
+    if (topText.trim()) contentText = topText;
+  }
+  return {
+    summaries,
+    encrypted,
+    signatures,
+    contentText: contentText || undefined,
+  };
+};
+
+const extractChatReasoning = (message: any): string => {
+  if (!message) return "";
+  if (typeof message.reasoning === "string" && message.reasoning.trim()) {
+    return message.reasoning;
+  }
+  if (Array.isArray(message.reasoning_details)) {
+    const parts = (message.reasoning_details as any[])
+      .map((d) => (typeof d?.text === "string" ? d.text : d?.summary ?? ""))
+      .map((t: string) => (typeof t === "string" ? t.trim() : ""))
+      .filter(Boolean);
+    if (parts.length > 0) return parts.join("\n");
+  }
   return "";
 };
 
@@ -294,8 +381,101 @@ const messageRoleLabel: Record<MessageRole, string> = {
   user: "User",
   assistant: "Assistant",
   reasoning: "Reasoning",
-  tool: "Tool",
+  tool: "Tool Result",
 };
+
+function RoutingDecisionLogs({ logs }: { logs: string }) {
+  const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+  return (
+    <div className="w-full rounded-sm border">
+      <div className="flex items-center justify-between border-b py-2 pl-6">
+        <div className="text-sm font-medium">Routing Decision Logs</div>
+        <button
+          type="button"
+          onClick={() => copy(logs)}
+          className="text-muted-foreground mx-2 flex h-6 items-center rounded px-1 py-1 hover:text-black dark:hover:text-white"
+        >
+          <Copy className="h-3 w-3" />
+        </button>
+      </div>
+      <div>
+        {logs
+          .split("\n")
+          .filter((l) => l.trim())
+          .map((line, i) => {
+            const m = line.match(/^\[(\d+)\]\s+\[([^\]]+)\]\s+-\s+(.*)$/);
+            const ts = m ? Number(m[1]) : null;
+            const scope = m ? m[2] : null;
+            const message = m ? m[3] : line;
+            return (
+              <div
+                key={i}
+                className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0"
+              >
+                {ts != null ? (
+                  <span className="text-muted-foreground shrink-0">
+                    {format(new Date(ts), "HH:mm:ss.SSS")}
+                  </span>
+                ) : null}
+                {scope ? (
+                  <span
+                    className={cn(
+                      "inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
+                      RoutingEngineUsedColors[
+                      scope as keyof typeof RoutingEngineUsedColors
+                      ] ?? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+                    )}
+                  >
+                    {RoutingEngineUsedLabels[
+                      scope as keyof typeof RoutingEngineUsedLabels
+                    ] ?? scope}
+                  </span>
+                ) : null}
+                <span className="break-words whitespace-pre-wrap">{message}</span>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
+function EncryptedReveal({
+  text,
+  label,
+}: {
+  text: string;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[10.5px] font-semibold tracking-wider uppercase"
+      >
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 transition-transform",
+            open ? "rotate-180" : "-rotate-90",
+          )}
+        />
+        {label}
+        {!open ? (
+          <span className="text-muted-foreground/70 ml-1 font-mono text-[10px] normal-case tracking-normal">
+            {text.length} chars
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <pre className="font-mono text-[12.5px] leading-[1.6] break-all whitespace-pre-wrap">
+          {text}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
 
 function CollapsibleCode({
   text,
@@ -406,13 +586,12 @@ export function LogDetailView({
   headerAction,
   onFilterByParentRequestId,
 }: LogDetailViewProps) {
-  const { copy: copyRequestId } = useCopyToClipboard({
-    successMessage: "Request ID copied",
-  });
   const { copy: copyBody } = useCopyToClipboard({
     successMessage: "Request body copied to clipboard",
     errorMessage: "Failed to copy request body",
   });
+  const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
+  const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
 
   if (!log) return null;
 
@@ -423,18 +602,18 @@ export function LogDetailView({
   const isPassthrough = isPassthroughOperation(log.object);
   const passthroughParams = isPassthrough
     ? (log.params as {
-        method?: string;
-        path?: string;
-        raw_query?: string;
-        status_code?: number;
-      })
+      method?: string;
+      path?: string;
+      raw_query?: string;
+      status_code?: number;
+    })
     : null;
 
   let toolsParameter = null;
   if (log.params?.tools) {
     try {
       toolsParameter = JSON.stringify(log.params.tools, null, 2);
-    } catch {}
+    } catch { }
   }
 
   const audioFormat =
@@ -457,7 +636,7 @@ export function LogDetailView({
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
       }
-    } catch {}
+    } catch { }
     return 0;
   })();
 
@@ -473,7 +652,7 @@ export function LogDetailView({
           {headerAction}
           <span className="text-foreground font-medium">Request details</span>
         </div>
-        {handleDelete && onClose ? (
+        {onClose ? (
           <AlertDialog>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -487,13 +666,15 @@ export function LogDetailView({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => copyRequestBody(log, copyBody)}
-                  data-testid="logdetails-copy-request-body-button"
-                >
-                  <Clipboard className="h-4 w-4" />
-                  Copy request body
-                </DropdownMenuItem>
+                {!isPassthrough && (
+                  <DropdownMenuItem
+                    onClick={() => copyRequestBody(log, copyBody)}
+                    data-testid="logdetails-copy-request-body-button"
+                  >
+                    <Clipboard className="h-4 w-4" />
+                    Copy request body
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
                   data-testid="logdetails-export-log-button"
@@ -501,8 +682,8 @@ export function LogDetailView({
                   <Download className="h-4 w-4" />
                   Export as JSON
                 </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <AlertDialogTrigger asChild>
+
+                {handleDelete ? <><DropdownMenuSeparator /><AlertDialogTrigger asChild>
                   <DropdownMenuItem
                     variant="destructive"
                     data-testid="logdetails-delete-item"
@@ -510,7 +691,8 @@ export function LogDetailView({
                     <Trash2 className="h-4 w-4" />
                     Delete log
                   </DropdownMenuItem>
-                </AlertDialogTrigger>
+                </AlertDialogTrigger> </> : null
+                }
               </DropdownMenuContent>
             </DropdownMenu>
             <AlertDialogContent>
@@ -530,7 +712,7 @@ export function LogDetailView({
                 <AlertDialogAction
                   data-testid="logdetails-delete-confirm-button"
                   onClick={() => {
-                    handleDelete(log);
+                    if (handleDelete) handleDelete(log);
                     onClose();
                   }}
                 >
@@ -551,7 +733,7 @@ export function LogDetailView({
                 className={cn(
                   "rounded-sm px-2 py-0.5 font-medium",
                   RequestTypeColors[
-                    log.object as keyof typeof RequestTypeColors
+                  log.object as keyof typeof RequestTypeColors
                   ] ?? "bg-gray-100 text-gray-800",
                 )}
               >
@@ -577,13 +759,13 @@ export function LogDetailView({
               ) : null}
               {(log.is_large_payload_request ||
                 log.is_large_payload_response) && (
-                <Badge
-                  variant="outline"
-                  className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
-                >
-                  Large Payload
-                </Badge>
-              )}
+                  <Badge
+                    variant="outline"
+                    className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
+                  >
+                    Large Payload
+                  </Badge>
+                )}
             </div>
             <div className="mt-3 flex items-center gap-2">
               <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
@@ -648,6 +830,7 @@ export function LogDetailView({
             mono
             value={log.model || "—"}
             sub={log.provider?.toLowerCase() || ""}
+            valueClass="whitespace-normal overflow-visible break-all"
             hasRightBorder
           />
           <HeroStat
@@ -660,11 +843,10 @@ export function LogDetailView({
             }
             sub={
               log.token_usage
-                ? `total ${formatTokens(log.token_usage.total_tokens ?? 0)}${
-                    log.token_usage.completion_tokens_details?.reasoning_tokens
-                      ? ` · reasoning ${formatTokens(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-                      : ""
-                  }`
+                ? `total ${formatTokens(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
+                  ? ` · reasoning ${formatTokens(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+                  : ""
+                }`
                 : "—"
             }
             hasRightBorder
@@ -688,7 +870,7 @@ export function LogDetailView({
                 : ""
             }
           />
-        </div>        
+        </div>
       </div>
       <details className="group bg-card rounded-sm border" open={false}>
         <summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
@@ -721,9 +903,9 @@ export function LogDetailView({
                   const d = log.timestamp ? new Date(log.timestamp) : null;
                   return d && !isNaN(d.getTime())
                     ? format(
-                        addMilliseconds(d, log.latency || 0),
-                        "yyyy-MM-dd hh:mm:ss aa",
-                      )
+                      addMilliseconds(d, log.latency || 0),
+                      "yyyy-MM-dd hh:mm:ss aa",
+                    )
                     : "N/A";
                 })()}
               />
@@ -786,6 +968,30 @@ export function LogDetailView({
                   </div>
                 }
               />
+              {log.stop_reason && (
+                <LogEntryDetailsView
+                  className="w-full"
+                  label="Stop Reason"
+                  value={
+                    <Badge
+                      variant="secondary"
+                      className={cn(
+                        "uppercase",
+                        log.stop_reason === "content_filter" ||
+                          log.stop_reason === "safety" ||
+                          log.stop_reason === "refusal"
+                          ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                          : log.stop_reason === "length" ||
+                            log.stop_reason === "max_tokens"
+                            ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                            : "",
+                      )}
+                    >
+                      {log.stop_reason}
+                    </Badge>
+                  }
+                />
+              )}
               {log.parent_request_id && (
                 <LogEntryDetailsView
                   className="w-full"
@@ -827,22 +1033,22 @@ export function LogDetailView({
               {(log.selected_prompt_id ||
                 log.selected_prompt_name ||
                 log.selected_prompt_version) && (
-                <LogEntryDetailsView
-                  className="w-full"
-                  label="Selected Prompt"
-                  value={
-                    <span className="break-words">
-                      {selectedPromptDisplayName}
-                      {selectedPromptDisplayName && log.selected_prompt_version
-                        ? " · "
-                        : ""}
-                      {log.selected_prompt_version ? (
-                        <>v{log.selected_prompt_version}</>
-                      ) : null}
-                    </span>
-                  }
-                />
-              )}
+                  <LogEntryDetailsView
+                    className="w-full"
+                    label="Selected Prompt"
+                    value={
+                      <span className="break-words">
+                        {selectedPromptDisplayName}
+                        {selectedPromptDisplayName && log.selected_prompt_version
+                          ? " · "
+                          : ""}
+                        {log.selected_prompt_version ? (
+                          <>v{log.selected_prompt_version}</>
+                        ) : null}
+                      </span>
+                    }
+                  />
+                )}
               {log.number_of_retries > 0 && (
                 <LogEntryDetailsView
                   className="w-full"
@@ -947,7 +1153,7 @@ export function LogDetailView({
                             key={engine}
                             className={
                               RoutingEngineUsedColors[
-                                engine as keyof typeof RoutingEngineUsedColors
+                              engine as keyof typeof RoutingEngineUsedColors
                               ] ?? "bg-gray-100 text-gray-800"
                             }
                           >
@@ -1094,26 +1300,26 @@ export function LogDetailView({
                     <>
                       {log.token_usage.prompt_tokens_details
                         .cached_read_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Cache Read Tokens"
-                          value={
-                            log.token_usage.prompt_tokens_details
-                              .cached_read_tokens ?? 0
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Cache Read Tokens"
+                            value={
+                              log.token_usage.prompt_tokens_details
+                                .cached_read_tokens ?? 0
+                            }
+                          />
+                        )}
                       {log.token_usage.prompt_tokens_details
                         .cached_write_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Cache Write Tokens"
-                          value={
-                            log.token_usage.prompt_tokens_details
-                              .cached_write_tokens ?? 0
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Cache Write Tokens"
+                            value={
+                              log.token_usage.prompt_tokens_details
+                                .cached_write_tokens ?? 0
+                            }
+                          />
+                        )}
                       {log.token_usage.prompt_tokens_details.audio_tokens && (
                         <LogEntryDetailsView
                           className="w-full"
@@ -1130,48 +1336,48 @@ export function LogDetailView({
                     <>
                       {log.token_usage.completion_tokens_details
                         .reasoning_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Reasoning Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .reasoning_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Reasoning Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .reasoning_tokens || "-"
+                            }
+                          />
+                        )}
                       {log.token_usage.completion_tokens_details
                         .audio_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Output Audio Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .audio_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Output Audio Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .audio_tokens || "-"
+                            }
+                          />
+                        )}
                       {log.token_usage.completion_tokens_details
                         .accepted_prediction_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Accepted Prediction Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .accepted_prediction_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Accepted Prediction Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .accepted_prediction_tokens || "-"
+                            }
+                          />
+                        )}
                       {log.token_usage.completion_tokens_details
                         .rejected_prediction_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Rejected Prediction Tokens"
-                          value={
-                            log.token_usage.completion_tokens_details
-                              .rejected_prediction_tokens || "-"
-                          }
-                        />
-                      )}
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Rejected Prediction Tokens"
+                            value={
+                              log.token_usage.completion_tokens_details
+                                .rejected_prediction_tokens || "-"
+                            }
+                          />
+                        )}
                     </>
                   )}
                 </div>
@@ -1378,14 +1584,17 @@ export function LogDetailView({
               </span>
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="tools" className="px-3">
-            Tools
-            {log.params?.tools?.length ? (
-              <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-                {log.params.tools.length}
-              </span>
-            ) : null}
-          </TabsTrigger>
+
+          {!isPassthrough && !log.list_models_output && (
+            <TabsTrigger value="tools" className="px-3">
+              Tools
+              {log.params?.tools?.length ? (
+                <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+                  {log.params.tools.length}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="routing" className="px-3">
             Routing
             {log.routing_engine_logs ? (
@@ -1402,12 +1611,84 @@ export function LogDetailView({
               </span>
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="raw" className="px-3">
-            Raw JSON
-          </TabsTrigger>
+          {!isPassthrough && (
+            <TabsTrigger value="raw" className="px-3">
+              Raw JSON
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="messages" className="space-y-4">
+          <div className="flex justify-end">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11.5px] font-medium transition",
+                    visibleRoles.size < allRoles.length
+                      ? "bg-muted text-foreground border-border"
+                      : "text-muted-foreground hover:text-foreground border-transparent hover:border-border",
+                  )}
+                >
+                  Messages
+                  {visibleRoles.size < allRoles.length && (
+                    <span className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums">
+                      {visibleRoles.size}/{allRoles.length}
+                    </span>
+                  )}
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuCheckboxItem
+                  checked={visibleRoles.size === allRoles.length}
+                  onCheckedChange={(checked) =>
+                    setVisibleRoles(checked ? new Set(allRoles) : new Set())
+                  }
+                >
+                  Show all messages
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+                {(
+                  [
+                    ["system", "System"],
+                    ["user", "User"],
+                    ["assistant", "Assistant"],
+                    ["tool", "Tool"],
+                    ["reasoning", "Reasoning"],
+                  ] as [MessageRole, string][]
+                ).map(([role, label]) => (
+                  <DropdownMenuCheckboxItem
+                    key={role}
+                    checked={visibleRoles.has(role)}
+                    onCheckedChange={(checked) =>
+                      setVisibleRoles((prev) => {
+                        const next = new Set(prev);
+                        checked ? next.add(role) : next.delete(role);
+                        return next;
+                      })
+                    }
+                  >
+                    <span
+                      className={cn(
+                        "mr-1.5 inline-block h-2 w-2 rounded-sm",
+                        messageDotClass[role],
+                      )}
+                    />
+                    {label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setVisibleRoles(new Set())}
+                  className="text-muted-foreground justify-center text-[12px]"
+                >
+                  Clear all
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           {(log.ocr_input || log.ocr_output) && (
             <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />
           )}
@@ -1429,14 +1710,14 @@ export function LogDetailView({
             log.image_edit_input ||
             log.image_variation_input ||
             log.image_generation_output) && (
-            <ImageView
-              imageInput={log.image_generation_input}
-              imageEditInput={log.image_edit_input}
-              imageVariationInput={log.image_variation_input}
-              imageOutput={log.image_generation_output}
-              requestType={log.object}
-            />
-          )}
+              <ImageView
+                imageInput={log.image_generation_input}
+                imageEditInput={log.image_edit_input}
+                imageVariationInput={log.image_variation_input}
+                imageOutput={log.image_generation_output}
+                requestType={log.object}
+              />
+            )}
           {(log.video_generation_input || videoOutput || videoListOutput) && (
             <VideoView
               videoInput={log.video_generation_input}
@@ -1446,124 +1727,371 @@ export function LogDetailView({
             />
           )}
 
-          {((log.input_history && log.input_history.length > 0) ||
-            (log.output_message && !log.error_details?.error.message)) && (
-            <div className="bg-card rounded-sm border p-5">
-              {log.input_history?.map((message, index) => {
-                const role = ((message.role as string) ||
-                  "user") as MessageRole;
-                const text = extractMessageText(message);
-                const hasToolCalls =
-                  Array.isArray(message.tool_calls) &&
-                  message.tool_calls.length > 0;
-                const isLast =
-                  index === (log.input_history?.length ?? 0) - 1 &&
-                  !log.output_message &&
-                  !log.error_details?.error.message;
-                const lineCount = text ? text.split("\n").length : 0;
-                const approxTokens = text
-                  ? Math.max(1, Math.round(text.length / 4))
-                  : 0;
-                const meta = text
-                  ? role === "system" || role === "tool"
-                    ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-                    : `${lineCount} line${lineCount === 1 ? "" : "s"}`
-                  : hasToolCalls
-                    ? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
-                    : undefined;
-                const usePlainText = role === "user" || role === "assistant";
-                return (
-                  <MessageRow key={index} role={role} meta={meta} last={isLast}>
-                    {text ? (
-                      usePlainText ? (
-                        <CollapsibleCode text={text} preview={3} mono={false} />
-                      ) : (
-                        <CollapsibleCode
-                          text={text}
-                          preview={3}
-                          lang={role === "system" ? "xml" : undefined}
-                        />
-                      )
-                    ) : (
-                      <LogChatMessageView
-                        message={message}
-                        audioFormat={audioFormat}
-                      />
-                    )}
-                    {hasToolCalls && text ? (
-                      <div className="text-muted-foreground mt-2 text-[11px]">
-                        {message.tool_calls!
-                          .map((tc) => tc.function?.name)
-                          .filter(Boolean)
-                          .join(", ") ||
-                          `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
-                      </div>
-                    ) : null}
-                  </MessageRow>
-                );
-              })}
-              {log.output_message &&
-                !log.error_details?.error.message &&
-                (() => {
-                  const text = extractMessageText(log.output_message);
-                  const lineCount = text ? text.split("\n").length : 0;
-                  const tokenMeta = log.token_usage?.completion_tokens
-                    ? `${log.token_usage.completion_tokens} tokens`
-                    : undefined;
-                  const meta = text
-                    ? tokenMeta
-                      ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ${tokenMeta}`
-                      : `${lineCount} line${lineCount === 1 ? "" : "s"}`
-                    : tokenMeta;
-                  return (
-                    <MessageRow role="assistant" meta={meta} last>
-                      {text ? (
-                        <CollapsibleCode text={text} preview={3} mono={false} />
-                      ) : (
-                        <LogChatMessageView
-                          message={log.output_message}
-                          audioFormat={audioFormat}
-                        />
-                      )}
-                    </MessageRow>
+          {isPassthrough && passthroughRequestBody && (
+            <CollapsibleBox
+              title="Request Body"
+              onCopy={() => {
+                try {
+                  return JSON.stringify(
+                    JSON.parse(passthroughRequestBody || ""),
+                    null,
+                    2,
                   );
+                } catch {
+                  return passthroughRequestBody || "";
+                }
+              }}
+            >
+              <CodeEditor
+                className="z-0 w-full"
+                shouldAdjustInitialHeight={true}
+                maxHeight={450}
+                wrap={true}
+                code={(() => {
+                  try {
+                    return JSON.stringify(
+                      JSON.parse(passthroughRequestBody || ""),
+                      null,
+                      2,
+                    );
+                  } catch {
+                    return passthroughRequestBody || "";
+                  }
                 })()}
-            </div>
+                lang="json"
+                readonly={true}
+                options={{
+                  scrollBeyondLastLine: false,
+                  lineNumbers: "off",
+                  alwaysConsumeMouseWheel: false,
+                }}
+              />
+            </CollapsibleBox>
           )}
+          {isPassthrough &&
+            passthroughResponseBody &&
+            log.status !== "processing" && (
+              <CollapsibleBox
+                title="Response Body"
+                onCopy={() => {
+                  try {
+                    return JSON.stringify(
+                      JSON.parse(passthroughResponseBody || ""),
+                      null,
+                      2,
+                    );
+                  } catch {
+                    return passthroughResponseBody || "";
+                  }
+                }}
+              >
+                <CodeEditor
+                  className="z-0 w-full"
+                  shouldAdjustInitialHeight={true}
+                  maxHeight={450}
+                  wrap={true}
+                  code={(() => {
+                    try {
+                      return JSON.stringify(
+                        JSON.parse(passthroughResponseBody || ""),
+                        null,
+                        2,
+                      );
+                    } catch {
+                      return passthroughResponseBody || "";
+                    }
+                  })()}
+                  lang="json"
+                  readonly={true}
+                  options={{
+                    scrollBeyondLastLine: false,
+                    lineNumbers: "off",
+                    alwaysConsumeMouseWheel: false,
+                  }}
+                />
+              </CollapsibleBox>
+            )}
+
+          {!isPassthrough && ((log.input_history && log.input_history.length > 0) ||
+            (log.output_message && !log.error_details?.error.message) ||
+            (log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety")) && (
+              <div className="bg-card rounded-sm border p-5">
+                {(visibleRoles.size < allRoles.length
+                  ? log.input_history?.filter((m) => {
+                    const mainRole = ((m.role as string) || "user") as MessageRole;
+                    const hasReasoning = !!extractChatReasoning(m);
+                    return (
+                      visibleRoles.has(mainRole) ||
+                      (hasReasoning && visibleRoles.has("reasoning"))
+                    );
+                  })
+                  : log.input_history
+                )?.flatMap((message, index) => {
+                  const role = ((message.role as string) ||
+                    "user") as MessageRole;
+                  const text = extractMessageText(message);
+                  const reasoningText = extractChatReasoning(message);
+                  const showAll = visibleRoles.size === allRoles.length;
+                  const showMain = showAll || visibleRoles.has(role);
+                  const showReasoning =
+                    !!reasoningText && (showAll || visibleRoles.has("reasoning"));
+                  const hasToolCalls =
+                    Array.isArray(message.tool_calls) &&
+                    message.tool_calls.length > 0;
+                  const isOverallLast =
+                    index === (log.input_history?.length ?? 0) - 1 &&
+                    !log.output_message &&
+                    !log.error_details?.error.message;
+                  const lineCount = text ? text.split("\n").length : 0;
+                  const approxTokens = text
+                    ? Math.max(1, Math.round(text.length / 4))
+                    : 0;
+                  const reasoningTokens = reasoningText
+                    ? Math.max(1, Math.round(reasoningText.length / 4))
+                    : 0;
+                  const meta = text
+                    ? role === "system" || role === "tool"
+                      ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+                      : `${lineCount} line${lineCount === 1 ? "" : "s"}`
+                    : hasToolCalls
+                      ? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
+                      : undefined;
+                  const usePlainText = role === "user" || role === "assistant";
+                  const rows: ReactNode[] = [];
+                  if (showReasoning) {
+                    rows.push(
+                      <MessageRow
+                        key={`${index}-reasoning`}
+                        role="reasoning"
+                        meta={`~${reasoningTokens} tokens`}
+                        last={isOverallLast && !showMain}
+                      >
+                        <CollapsibleCode
+                          text={reasoningText}
+                          preview={3}
+                          mono={false}
+                        />
+                      </MessageRow>
+                    );
+                  }
+                  if (showMain) {
+                    rows.push(
+                      <MessageRow
+                        key={index}
+                        role={role}
+                        meta={meta}
+                        last={isOverallLast}
+                      >
+                        {text ? (
+                          usePlainText ? (
+                            <CollapsibleCode text={text} preview={3} mono={false} />
+                          ) : (
+                            <CollapsibleCode
+                              text={text}
+                              preview={3}
+                              lang={role === "system" ? "xml" : undefined}
+                            />
+                          )
+                        ) : (
+                          <LogChatMessageView
+                            message={message}
+                            audioFormat={audioFormat}
+                          />
+                        )}
+                        {text &&
+                          Array.isArray(message.content) &&
+                          (message.content as ContentBlock[])
+                            .filter((b) => b.type === "image_url")
+                            .map((b, i) => {
+                              const src = b.image_url?.url;
+                              if (!src) return null;
+                              return (
+                                <img
+                                  key={`${i}-${src}`}
+                                  src={src}
+                                  alt="Attached image"
+                                  className="mt-2 max-w-full rounded border"
+                                />
+                              );
+                            })}
+                        {hasToolCalls && text ? (
+                          <div className="text-muted-foreground mt-2 text-[11px]">
+                            {message.tool_calls!
+                              .map((tc) => tc.function?.name)
+                              .filter(Boolean)
+                              .join(", ") ||
+                              `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+                          </div>
+                        ) : null}
+                      </MessageRow>
+                    );
+                  }
+                  return rows;
+                })}
+                {log.output_message &&
+                  !log.error_details?.error.message &&
+                  (() => {
+                    const reasoningText = extractChatReasoning(log.output_message);
+                    const showReasoning =
+                      !!reasoningText &&
+                      (visibleRoles.size === allRoles.length ||
+                        visibleRoles.has("reasoning"));
+                    const showAssistant = visibleRoles.has("assistant");
+                    if (!showReasoning && !showAssistant) return null;
+                    const text = extractMessageText(log.output_message);
+                    const refusalText = log.output_message.refusal;
+                    const isStopReasonRefusal =
+                      log.stop_reason === "refusal" ||
+                      log.stop_reason === "content_filter" ||
+                      log.stop_reason === "safety";
+                    const showRefusal = refusalText || (!text && isStopReasonRefusal);
+                    const lineCount = text ? text.split("\n").length : 0;
+                    const tokenMeta = log.token_usage?.completion_tokens
+                      ? `${log.token_usage.completion_tokens} tokens`
+                      : undefined;
+                    const meta = text
+                      ? tokenMeta
+                        ? `${lineCount} line${lineCount === 1 ? "" : "s"} · ${tokenMeta}`
+                        : `${lineCount} line${lineCount === 1 ? "" : "s"}`
+                      : showRefusal
+                        ? "refusal"
+                        : tokenMeta;
+                    const reasoningTokens = reasoningText
+                      ? log.token_usage?.completion_tokens_details
+                          ?.reasoning_tokens ||
+                        Math.max(1, Math.round(reasoningText.length / 4))
+                      : 0;
+                    return (
+                      <>
+                        {showReasoning ? (
+                          <MessageRow
+                            role="reasoning"
+                            meta={`~${reasoningTokens} tokens`}
+                            last={!showAssistant}
+                          >
+                            <CollapsibleCode
+                              text={reasoningText}
+                              preview={3}
+                              mono={false}
+                            />
+                          </MessageRow>
+                        ) : null}
+                        {showAssistant ? (
+                          <MessageRow role="assistant" meta={meta} last>
+                            {showRefusal ? (
+                              <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                                  <AlertCircle className="h-4 w-4 shrink-0" />
+                                  <span className="text-[12.5px] font-semibold">
+                                    Refusal
+                                  </span>
+                                </div>
+                                {refusalText && (
+                                  <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+                                    {refusalText}
+                                  </div>
+                                )}
+                              </div>
+                            ) : text ? (
+                              <CollapsibleCode text={text} preview={3} mono={false} />
+                            ) : (
+                              <LogChatMessageView
+                                message={log.output_message}
+                                audioFormat={audioFormat}
+                              />
+                            )}
+                          </MessageRow>
+                        ) : null}
+                      </>
+                    );
+                  })()}
+                {!log.output_message &&
+                  !log.error_details?.error.message &&
+                  (log.stop_reason === "refusal" ||
+                    log.stop_reason === "content_filter" ||
+                    log.stop_reason === "safety") && (
+                    <MessageRow role="assistant" meta="refusal" last>
+                      <div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+                        <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                          <AlertCircle className="h-4 w-4 shrink-0" />
+                          <span className="text-[12.5px] font-semibold">
+                            Refusal
+                          </span>
+                        </div>
+                      </div>
+                    </MessageRow>
+                  )}
+              </div>
+            )}
 
           {(() => {
-            const inputMsgs = log.responses_input_history ?? [];
-            const outputMsgs =
+            const rawInput = log.responses_input_history ?? [];
+            const inputMsgs = visibleRoles.size < allRoles.length
+              ? rawInput.filter((m) => visibleRoles.has(getResponsesRole(m)))
+              : rawInput;
+            const rawOutput =
               log.status !== "processing" && !log.error_details?.error.message
                 ? (log.responses_output ?? [])
                 : [];
+            const outputMsgs = visibleRoles.size < allRoles.length
+              ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m)))
+              : rawOutput;
             const all: ResponsesMessage[] = [...inputMsgs, ...outputMsgs];
             if (all.length === 0) return null;
             return (
               <div className="bg-card rounded-sm border p-5">
                 {all.map((msg, index) => {
                   const role = getResponsesRole(msg);
-                  const text = extractResponsesText(msg);
                   const isLast = index === all.length - 1;
+                  const reasoningParts =
+                    role === "reasoning" ? extractReasoningParts(msg) : null;
+                  const reasoningHasAny =
+                    !!reasoningParts &&
+                    (reasoningParts.summaries.length > 0 ||
+                      !!reasoningParts.encrypted ||
+                      !!reasoningParts.contentText ||
+                      reasoningParts.signatures.length > 0);
+                  const text =
+                    role === "reasoning" ? "" : extractResponsesText(msg);
                   const lineCount = text ? text.split("\n").length : 0;
                   const approxTokens = text
                     ? Math.max(1, Math.round(text.length / 4))
                     : 0;
-                  const isEncrypted =
-                    msg.type === "reasoning" && !!msg.encrypted_content;
-                  const meta = text
-                    ? role === "system" || role === "tool"
-                      ? msg.name
-                        ? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-                        : `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-                      : role === "reasoning"
-                        ? `~${approxTokens} tokens${isEncrypted ? " · encrypted" : ""}`
+                  let meta: string | undefined;
+                  if (role === "reasoning" && reasoningParts) {
+                    const totalLen =
+                      reasoningParts.summaries.reduce(
+                        (acc, s) => acc + s.length,
+                        0,
+                      ) +
+                      (reasoningParts.contentText?.length ?? 0) +
+                      (reasoningParts.encrypted?.length ?? 0);
+                    const totalApprox = totalLen
+                      ? Math.max(1, Math.round(totalLen / 4))
+                      : 0;
+                    const hasOpaqueOnly =
+                      (!!reasoningParts.encrypted ||
+                        reasoningParts.signatures.length > 0) &&
+                      reasoningParts.summaries.length === 0 &&
+                      !reasoningParts.contentText;
+                    meta = totalApprox
+                      ? `~${totalApprox} tokens${hasOpaqueOnly ? " · encrypted" : ""}`
+                      : hasOpaqueOnly
+                        ? "encrypted"
+                        : undefined;
+                  } else {
+                    meta = text
+                      ? role === "system" || role === "tool"
+                        ? msg.name
+                          ? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+                          : `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
                         : `${lineCount} line${lineCount === 1 ? "" : "s"}`
-                    : msg.name
-                      ? msg.name
-                      : msg.type === "function_call_output" && msg.call_id
-                        ? msg.call_id
-                        : msg.type || undefined;
+                      : msg.name
+                        ? msg.name
+                        : msg.type === "function_call_output" && msg.call_id
+                          ? msg.call_id
+                          : msg.type || undefined;
+                  }
                   const usePlainText = role === "user" || role === "assistant";
                   return (
                     <MessageRow
@@ -1572,7 +2100,58 @@ export function LogDetailView({
                       meta={meta}
                       last={isLast}
                     >
-                      {text ? (
+                      {role === "reasoning" ? (
+                        reasoningHasAny && reasoningParts ? (
+                          <div className="space-y-3">
+                            {reasoningParts.contentText ? (
+                              <CollapsibleCode
+                                text={reasoningParts.contentText}
+                                preview={3}
+                                mono={false}
+                              />
+                            ) : null}
+                            {reasoningParts.summaries.map((s, i) => (
+                              <div key={`s-${i}`} className="space-y-1">
+                                {reasoningParts.summaries.length > 1 ? (
+                                  <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
+                                    Summary {i + 1}
+                                  </div>
+                                ) : null}
+                                <CollapsibleCode
+                                  text={s}
+                                  preview={3}
+                                  mono={false}
+                                />
+                              </div>
+                            ))}
+                            {reasoningParts.encrypted ? (
+                              <div className="space-y-1">
+                                <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
+                                  Encrypted
+                                </div>
+                                <CollapsibleCode
+                                  text={reasoningParts.encrypted}
+                                  preview={2}
+                                />
+                              </div>
+                            ) : null}
+                            {reasoningParts.signatures.length > 0 ? (
+                              <EncryptedReveal
+                                text={reasoningParts.signatures.join("\n\n")}
+                                label={
+                                  reasoningParts.signatures.length > 1
+                                    ? "Encrypted signatures"
+                                    : "Encrypted signature"
+                                }
+                              />
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="text-muted-foreground text-[12px] italic">
+                            No reasoning content available
+                          </div>
+                        )
+                      ) : text ? (
                         usePlainText ? (
                           <CollapsibleCode
                             text={text}
@@ -1592,10 +2171,16 @@ export function LogDetailView({
                           preview={3}
                         />
                       ) : (
-                        <div className="text-muted-foreground text-[12px]">
-                          {msg.type || "—"}
+                        <div className="text-muted-foreground text-[12px] italic">
+                          No content
                         </div>
                       )}
+                      {Array.isArray(msg.content) &&
+                        msg.content
+                          .filter((b) => b?.type === "input_image" && b.image_url)
+                          .map((b, i) => (
+                            <img key={`${i}-${b.image_url}`} src={b.image_url} alt="Attached image" className="mt-2 max-w-full rounded border" />
+                          ))}
                     </MessageRow>
                   );
                 })}
@@ -1669,36 +2254,58 @@ export function LogDetailView({
               </CollapsibleBox>
             )}
 
+          {log.list_models_output && (
+            <CollapsibleBox
+              title={`List Models Output (${log.list_models_output.length})`}
+              onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
+            >
+              <CodeEditor
+                className="z-0 w-full"
+                shouldAdjustInitialHeight={true}
+                maxHeight={450}
+                wrap={true}
+                code={JSON.stringify(log.list_models_output, null, 2)}
+                lang="json"
+                readonly={true}
+                options={{
+                  scrollBeyondLastLine: false,
+                  lineNumbers: "off",
+                  alwaysConsumeMouseWheel: false,
+                }}
+              />
+            </CollapsibleBox>
+          )}
+
           {(log.error_details?.error.message ||
             log.error_details?.error.error != null) && (
-            <div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
-              <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span className="text-[12.5px] font-semibold">Error</span>
+              <div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
+                <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span className="text-[12.5px] font-semibold">Error</span>
+                  {log.error_details?.error.message ? (
+                    <CopyInlineButton text={log.error_details.error.message} />
+                  ) : null}
+                </div>
                 {log.error_details?.error.message ? (
-                  <CopyInlineButton text={log.error_details.error.message} />
+                  <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+                    {log.error_details.error.message}
+                  </div>
+                ) : null}
+                {log.error_details?.error.error != null ? (
+                  <details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
+                    <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
+                      <span className="font-medium">Details</span>
+                      <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+                    </summary>
+                    <div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
+                      {typeof log.error_details.error.error === "string"
+                        ? log.error_details.error.error
+                        : JSON.stringify(log.error_details.error.error, null, 2)}
+                    </div>
+                  </details>
                 ) : null}
               </div>
-              {log.error_details?.error.message ? (
-                <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-                  {log.error_details.error.message}
-                </div>
-              ) : null}
-              {log.error_details?.error.error != null ? (
-                <details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
-                  <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
-                    <span className="font-medium">Details</span>
-                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-                  </summary>
-                  <div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
-                    {typeof log.error_details.error.error === "string"
-                      ? log.error_details.error.error
-                      : JSON.stringify(log.error_details.error.error, null, 2)}
-                  </div>
-                </details>
-              ) : null}
-            </div>
-          )}
+            )}
         </TabsContent>
 
         <TabsContent value="tools" className="space-y-3">
@@ -1839,51 +2446,13 @@ export function LogDetailView({
               </div>
             </CollapsibleBox>
           )}
-          {log.routing_engine_logs && (
-            <CollapsibleBox
-              title="Routing Decision Logs"
-              onCopy={() => log.routing_engine_logs || ""}
-            >
-              <div className="custom-scrollbar max-h-[400px] overflow-y-auto">
-                {log.routing_engine_logs
-                  .split("\n")
-                  .filter((l) => l.trim())
-                  .map((line, i) => {
-                    const m = line.match(
-                      /^\[(\d+)\]\s+\[([^\]]+)\]\s+-\s+(.*)$/,
-                    );
-                    const ts = m ? Number(m[1]) : null;
-                    const scope = m ? m[2] : null;
-                    const message = m ? m[3] : line;
-                    return (
-                      <div
-                        key={i}
-                        className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0"
-                      >
-                        {ts != null ? (
-                          <span className="text-muted-foreground shrink-0">
-                            {format(new Date(ts), "HH:mm:ss.SSS")}
-                          </span>
-                        ) : null}
-                        {scope ? (
-                          <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-300">
-                            {scope}
-                          </span>
-                        ) : null}
-                        <span className="break-words whitespace-pre-wrap">
-                          {message}
-                        </span>
-                      </div>
-                    );
-                  })}
-              </div>
-            </CollapsibleBox>
+          {log.routing_engine_logs ? (
+            <RoutingDecisionLogs logs={log.routing_engine_logs} />
+          ) : (
+            <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+              No routing logs for this request.
+            </div>
           )}
-          {!log.attempt_trail?.length && !log.routing_engine_logs && (
-              <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-                No routing logs for this request.
-              </div>
-            )}
         </TabsContent>
 
         <TabsContent value="plugins" className="space-y-3">
@@ -1897,90 +2466,6 @@ export function LogDetailView({
         </TabsContent>
 
         <TabsContent value="raw" className="space-y-3">
-          {isPassthrough && passthroughRequestBody && (
-            <CollapsibleBox
-              title="Request Body"
-              onCopy={() => {
-                try {
-                  return JSON.stringify(
-                    JSON.parse(passthroughRequestBody || ""),
-                    null,
-                    2,
-                  );
-                } catch {
-                  return passthroughRequestBody || "";
-                }
-              }}
-            >
-              <CodeEditor
-                className="z-0 w-full"
-                shouldAdjustInitialHeight={true}
-                maxHeight={450}
-                wrap={true}
-                code={(() => {
-                  try {
-                    return JSON.stringify(
-                      JSON.parse(passthroughRequestBody || ""),
-                      null,
-                      2,
-                    );
-                  } catch {
-                    return passthroughRequestBody || "";
-                  }
-                })()}
-                lang="json"
-                readonly={true}
-                options={{
-                  scrollBeyondLastLine: false,
-                  lineNumbers: "off",
-                  alwaysConsumeMouseWheel: false,
-                }}
-              />
-            </CollapsibleBox>
-          )}
-          {isPassthrough &&
-            passthroughResponseBody &&
-            log.status !== "processing" && (
-              <CollapsibleBox
-                title="Response Body"
-                onCopy={() => {
-                  try {
-                    return JSON.stringify(
-                      JSON.parse(passthroughResponseBody || ""),
-                      null,
-                      2,
-                    );
-                  } catch {
-                    return passthroughResponseBody || "";
-                  }
-                }}
-              >
-                <CodeEditor
-                  className="z-0 w-full"
-                  shouldAdjustInitialHeight={true}
-                  maxHeight={450}
-                  wrap={true}
-                  code={(() => {
-                    try {
-                      return JSON.stringify(
-                        JSON.parse(passthroughResponseBody || ""),
-                        null,
-                        2,
-                      );
-                    } catch {
-                      return passthroughResponseBody || "";
-                    }
-                  })()}
-                  lang="json"
-                  readonly={true}
-                  options={{
-                    scrollBeyondLastLine: false,
-                    lineNumbers: "off",
-                    alwaysConsumeMouseWheel: false,
-                  }}
-                />
-              </CollapsibleBox>
-            )}
           {rawRequest && (
             <>
               <div className="text-muted-foreground text-[12px]">
@@ -2057,32 +2542,10 @@ export function LogDetailView({
               </CollapsibleBox>
             </>
           )}
-          {log.list_models_output && (
-            <CollapsibleBox
-              title={`List Models Output (${log.list_models_output.length})`}
-              onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
-            >
-              <CodeEditor
-                className="z-0 w-full"
-                shouldAdjustInitialHeight={true}
-                maxHeight={450}
-                wrap={true}
-                code={JSON.stringify(log.list_models_output, null, 2)}
-                lang="json"
-                readonly={true}
-                options={{
-                  scrollBeyondLastLine: false,
-                  lineNumbers: "off",
-                  alwaysConsumeMouseWheel: false,
-                }}
-              />
-            </CollapsibleBox>
-          )}
           {!rawRequest &&
             !rawResponse &&
             !passthroughRequestBody &&
-            !passthroughResponseBody &&
-            !log.list_models_output && (
+            !passthroughResponseBody && (
               <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
                 No raw JSON available.
               </div>
@@ -2100,6 +2563,7 @@ const copyRequestBody = async (
   try {
     const isChat =
       log.object === "chat.completion" ||
+      log.object === "chat_completion" ||
       log.object === "chat.completion.chunk";
     const isResponses =
       log.object === "response" || log.object === "response.completion.chunk";

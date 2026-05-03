@@ -87,7 +87,7 @@ type TableOauthToken struct {
 	AccessToken      string     `gorm:"type:text;not null" json:"-"`                 // Encrypted access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                          // Encrypted refresh token (optional)
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"` // "Bearer"
-	ExpiresAt        time.Time  `gorm:"index;not null" json:"expires_at"`            // Token expiration
+	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`            // Token expiration (nil means unknown/non-expiring)
 	Scopes           string     `gorm:"type:text" json:"scopes"`                     // JSON array of granted scopes
 	LastRefreshedAt  *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"`    // Track when token was last refreshed
 	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
@@ -202,7 +202,7 @@ type TableOauthUserToken struct {
 	AccessToken      string     `gorm:"type:text;not null" json:"-"`                                                         // Encrypted user's OAuth access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                                                                  // Encrypted user's OAuth refresh token
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"`                                         // "Bearer"
-	ExpiresAt        time.Time  `gorm:"index;not null" json:"expires_at"`                                                    // Token expiry
+	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`                                                    // Token expiry (nil means unknown/non-expiring)
 	Scopes           string     `gorm:"type:text" json:"scopes"`                                                             // JSON array of granted scopes
 	LastRefreshedAt  *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"`                                            // Last refresh time
 	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`

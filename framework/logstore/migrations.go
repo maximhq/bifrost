@@ -242,6 +242,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOCRInputColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddStopReasonColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2084,17 +2087,18 @@ var performanceIndexes = []performanceIndexDef{
 	{
 		table: "logs",
 		name:  "idx_logs_content_summary_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', content_summary)) WHERE content_summary IS NOT NULL",
+		// left() caps input characters to stay within to_tsvector's 1MB output limit.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', left(content_summary, 800000))) WHERE content_summary IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_arguments_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', arguments)) WHERE arguments IS NOT NULL",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(arguments, 800000))) WHERE arguments IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_result_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', result)) WHERE result IS NOT NULL",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(result, 800000))) WHERE result IS NOT NULL",
 	},
 	{
 		table: "logs",
@@ -2145,6 +2149,11 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_status_parent_request_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_status_parent_request_id ON logs(status, parent_request_id) WHERE parent_request_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_stop_reason",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_stop_reason ON logs(stop_reason)",
 	},
 }
 
@@ -2620,3 +2629,38 @@ func migrationAddOCRInputColumn(ctx context.Context, db *gorm.DB) error {
 	}
 	return nil
 }
+
+// migrationAddStopReasonColumn adds the stop_reason column to the logs table.
+// This column stores the reason why the model stopped generating (e.g., "stop", "length", "content_filter", "tool_calls").
+func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_stop_reason_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "stop_reason") {
+				if err := mig.AddColumn(&Log{}, "stop_reason"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "stop_reason") {
+				if err := mig.DropColumn(&Log{}, "stop_reason"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding stop_reason column: %s", err.Error())
+	}
+	return nil
+}
+

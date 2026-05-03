@@ -463,19 +463,21 @@ type ResponsesResponseInputTokens struct {
 	ImageTokens int `json:"image_tokens,omitempty"` // Tokens for image input
 
 	// For Providers which don't separate between cache creation and cache read tokens (like Openai, Gemini, etc), this is the total number of cached tokens read.
-	CachedReadTokens  int `json:"cached_read_tokens"`
-	CachedWriteTokens int `json:"cached_write_tokens"`
+	CachedReadTokens        int                          `json:"cached_read_tokens"`
+	CachedWriteTokens       int                          `json:"cached_write_tokens"`
+	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 }
 
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
 func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		TextTokens        int  `json:"text_tokens"`
-		AudioTokens       int  `json:"audio_tokens"`
-		ImageTokens       int  `json:"image_tokens"`
-		CachedReadTokens  int  `json:"cached_read_tokens"`
-		CachedWriteTokens int  `json:"cached_write_tokens"`
-		CachedTokens      *int `json:"cached_tokens"`
+		TextTokens              int                          `json:"text_tokens"`
+		AudioTokens             int                          `json:"audio_tokens"`
+		ImageTokens             int                          `json:"image_tokens"`
+		CachedReadTokens        int                          `json:"cached_read_tokens"`
+		CachedWriteTokens       int                          `json:"cached_write_tokens"`
+		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
+		CachedTokens            *int                         `json:"cached_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -485,6 +487,7 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	d.ImageTokens = raw.ImageTokens
 	d.CachedReadTokens = raw.CachedReadTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
+	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
@@ -495,20 +498,22 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 // MarshalJSON emits cached_tokens (read+write) alongside the individual fields for OpenAI spec compatibility.
 func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 	type raw struct {
-		TextTokens        int `json:"text_tokens,omitempty"`
-		AudioTokens       int `json:"audio_tokens,omitempty"`
-		ImageTokens       int `json:"image_tokens,omitempty"`
-		CachedReadTokens  int `json:"cached_read_tokens"`
-		CachedWriteTokens int `json:"cached_write_tokens"`
-		CachedTokens      int `json:"cached_tokens"`
+		TextTokens              int                          `json:"text_tokens,omitempty"`
+		AudioTokens             int                          `json:"audio_tokens,omitempty"`
+		ImageTokens             int                          `json:"image_tokens,omitempty"`
+		CachedReadTokens        int                          `json:"cached_read_tokens"`
+		CachedWriteTokens       int                          `json:"cached_write_tokens"`
+		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
+		CachedTokens            int                          `json:"cached_tokens"`
 	}
 	return MarshalSorted(raw{
-		TextTokens:        d.TextTokens,
-		AudioTokens:       d.AudioTokens,
-		ImageTokens:       d.ImageTokens,
-		CachedReadTokens:  d.CachedReadTokens,
-		CachedWriteTokens: d.CachedWriteTokens,
-		CachedTokens:      d.CachedReadTokens + d.CachedWriteTokens,
+		TextTokens:              d.TextTokens,
+		AudioTokens:             d.AudioTokens,
+		ImageTokens:             d.ImageTokens,
+		CachedReadTokens:        d.CachedReadTokens,
+		CachedWriteTokens:       d.CachedWriteTokens,
+		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
+		CachedTokens:            d.CachedReadTokens + d.CachedWriteTokens,
 	})
 }
 
@@ -866,6 +871,7 @@ func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	}
 	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
 }
+
 func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error {
 	var str string
 	if err := Unmarshal(data, &str); err == nil {
@@ -997,7 +1003,7 @@ type ResponsesWebFetchToolCallAction struct {
 
 // ResponsesFunctionToolCallOutput represents a function tool call output
 type ResponsesFunctionToolCallOutput struct {
-	ResponsesFunctionToolCallOutputStr    *string //A JSON string of the output of the function tool call.
+	ResponsesFunctionToolCallOutputStr    *string // A JSON string of the output of the function tool call.
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 }
 
@@ -1364,6 +1370,7 @@ const (
 	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
 	ResponsesToolTypeMemory             ResponsesToolType = "memory"
 	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
+	ResponsesToolTypeNamespace          ResponsesToolType = "namespace"
 )
 
 // normalizeResponsesToolType maps versioned/provider-specific tool type strings
@@ -1425,6 +1432,8 @@ type ResponsesTool struct {
 	*ResponsesToolLocalShell
 	*ResponsesToolCustom
 	*ResponsesToolWebSearchPreview
+	*ResponsesToolToolSearch
+	*ResponsesToolNamespace
 }
 
 // mergeJSONFields merges all top-level fields from src into dst using sjson,
@@ -1550,6 +1559,14 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeWebSearchPreview:
 		if t.ResponsesToolWebSearchPreview != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolWebSearchPreview)
+		}
+	case ResponsesToolTypeToolSearch:
+		if t.ResponsesToolToolSearch != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolToolSearch)
+		}
+	case ResponsesToolTypeNamespace:
+		if t.ResponsesToolNamespace != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolNamespace)
 		}
 	}
 	if err != nil {
@@ -1711,6 +1728,20 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolWebSearchPreview = &webSearchPreviewTool
+
+	case ResponsesToolTypeToolSearch:
+		var toolSearchTool ResponsesToolToolSearch
+		if err := Unmarshal(data, &toolSearchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolToolSearch = &toolSearchTool
+
+	case ResponsesToolTypeNamespace:
+		var namespaceTool ResponsesToolNamespace
+		if err := Unmarshal(data, &namespaceTool); err != nil {
+			return err
+		}
+		t.ResponsesToolNamespace = &namespaceTool
 	}
 
 	return nil
@@ -1881,9 +1912,11 @@ type ResponsesToolComputerUsePreview struct {
 
 // ResponsesToolWebSearch represents a tool web search
 type ResponsesToolWebSearch struct {
-	Filters           *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`             // Filters for the search
-	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
-	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
+	ExternalWebAccess  *bool                               `json:"external_web_access,omitempty"`
+	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"` // Filters for the search
+	SearchContentTypes []string                            `json:"search_content_types,omitempty"`
+	SearchContextSize  *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
+	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
@@ -2117,11 +2150,22 @@ type ResponsesToolWebSearchPreview struct {
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The user's location
 }
 
+// ResponsesToolToolSearch represents a Responses API tool_search tool.
+type ResponsesToolToolSearch struct {
+	Execution  *string                 `json:"execution,omitempty"`
+	Parameters *ToolFunctionParameters `json:"parameters,omitempty"`
+}
+
 // ResponsesToolWebFetch represents a web fetch tool
 type ResponsesToolWebFetch struct {
 	MaxUses          *int                           `json:"max_uses,omitempty"`
 	Filters          *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
 	MaxContentTokens *int                           `json:"max_content_tokens,omitempty"`
+}
+
+// ResponsesToolNamespace represents a namespace tool that groups related function tools.
+type ResponsesToolNamespace struct {
+	Tools []ResponsesTool `json:"tools,omitempty"`
 }
 
 // ======================================================= Streaming Structs =======================================================

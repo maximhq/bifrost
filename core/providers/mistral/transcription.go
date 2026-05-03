@@ -102,20 +102,7 @@ func createMistralTranscriptionMultipartBody(req *MistralTranscriptionRequest, p
 
 // parseTranscriptionFormDataBodyFromRequest writes the transcription request to a multipart form.
 func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, req *MistralTranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
-	// Add file field - Mistral uses "file" as the form field name
-	filename := req.Filename
-	if filename == "" {
-		filename = providerUtils.AudioFilenameFromBytes(req.File)
-	}
-	fileWriter, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to create form file",  err)
-	}
-	if _, err := fileWriter.Write(req.File); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write file data",  err)
-	}
-
-	// Add model field (required)
+	// Add model field (required) before the file so upstreams can route without buffering audio bytes.
 	if err := writer.WriteField("model", req.Model); err != nil {
 		return providerUtils.NewBifrostOperationError("failed to write model field",  err)
 	}
@@ -156,6 +143,19 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, req *Mi
 		if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write timestamp_granularities field",  err)
 		}
+	}
+
+	// Add file field last - Mistral uses "file" as the form field name.
+	filename := req.Filename
+	if filename == "" {
+		filename = providerUtils.AudioFilenameFromBytes(req.File)
+	}
+	fileWriter, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to create form file",  err)
+	}
+	if _, err := fileWriter.Write(req.File); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to write file data",  err)
 	}
 
 	// Close the multipart writer to finalize the form

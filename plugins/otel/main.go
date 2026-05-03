@@ -97,6 +97,7 @@ type OtelPlugin struct {
 	bifrostVersion string
 
 	attributesFromEnvironment []*commonpb.KeyValue
+	instanceAttrs             []*commonpb.KeyValue // machine ID + pod labels, added only to root spans
 
 	client OtelClient
 
@@ -142,6 +143,21 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			}
 		}
 	}
+
+	// Build instance-level attrs (machine ID + pod labels) — added only to root spans
+	instanceAttrs := make([]*commonpb.KeyValue, 0)
+	if hostname, herr := os.Hostname(); herr == nil && hostname != "" {
+		instanceAttrs = append(instanceAttrs, kvStr("service.instance.id", hostname))
+	}
+	if podName := firstNonEmpty(os.Getenv("MY_POD_NAME"), os.Getenv("POD_NAME")); podName != "" {
+		instanceAttrs = append(instanceAttrs, kvStr("k8s.pod.name", podName))
+	}
+	if podNamespace := firstNonEmpty(os.Getenv("MY_POD_NAMESPACE"), os.Getenv("POD_NAMESPACE"), os.Getenv("NAMESPACE")); podNamespace != "" {
+		instanceAttrs = append(instanceAttrs, kvStr("k8s.namespace.name", podNamespace))
+	}
+	if nodeName := firstNonEmpty(os.Getenv("MY_NODE_NAME"), os.Getenv("NODE_NAME")); nodeName != "" {
+		instanceAttrs = append(instanceAttrs, kvStr("k8s.node.name", nodeName))
+	}
 	// Preparing the plugin
 	p := &OtelPlugin{
 		serviceName:               config.ServiceName,
@@ -152,6 +168,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		pricingManager:            pricingManager,
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
+		instanceAttrs:             instanceAttrs,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
@@ -464,6 +481,16 @@ func (p *OtelPlugin) Cleanup() error {
 // GetMetricsExporter returns the metrics exporter for external use (e.g., by telemetry plugin)
 func (p *OtelPlugin) GetMetricsExporter() *MetricsExporter {
 	return p.metricsExporter
+}
+
+// firstNonEmpty returns the first non-empty string from the provided values.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Compile-time check that OtelPlugin implements ObservabilityPlugin

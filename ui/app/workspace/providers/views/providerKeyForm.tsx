@@ -93,14 +93,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		}
 		const mutation = isEditing
 			? updateProviderKey({
-					provider: provider.name,
-					keyId: currentKey!.id,
-					key,
-				})
+				provider: provider.name,
+				keyId: currentKey!.id,
+				key,
+			})
 			: createProviderKey({
-					provider: provider.name,
-					key,
-				});
+				provider: provider.name,
+				key,
+			});
 
 		mutation
 			.unwrap()
@@ -116,10 +116,12 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-				<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
-				{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
-				<div className="dark:bg-card bg-white pt-6">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="pt-4 grow flex flex-col gap-6">
+				<div className="px-8 grow">
+					<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
+					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
+				</div>
+				<div className="bg-card sticky bottom-0 border-t px-8 py-4">
 					<div className="flex justify-end space-x-3">
 						<Button type="button" variant="outline" onClick={onCancel} data-testid="key-cancel-btn">
 							Cancel
@@ -134,7 +136,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 											isLoading={form.formState.isSubmitting || isCreatingProviderKey || isUpdatingProviderKey}
 											data-testid="key-save-btn"
 										>
-											<Save className="h-4 w-4" />
+											<Save className="h-4 w-4 shrink-0" />
 											Save
 										</Button>
 									</span>

@@ -1,10 +1,10 @@
 module github.com/maximhq/bifrost/plugins/mocker
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/jaswdr/faker/v2 v2.8.0
-	github.com/maximhq/bifrost/core v1.5.3
+	github.com/maximhq/bifrost/core v1.5.7
 )
 
 require (

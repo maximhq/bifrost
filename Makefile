@@ -24,7 +24,7 @@ NC=\033[0m # No Color
 ECHO := printf '%b\n'
 
 # nvm requires bash-compatible shell semantics; /bin/sh is dash on some Linux distros.
-SHELL := /bin/bash
+SHELL := /usr/bin/env bash
 
 # Ensures the Node version pinned in .nvmrc is active before any npm/node call.
 # nvm is a shell function, so each recipe that needs it must inline this snippet
@@ -199,7 +199,7 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 	if [ -n "$(DEBUG)" ]; then \
 		$(ECHO) "$(CYAN)Starting with pulse + delve debugger on port 2345...$(NC)"; \
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
-		BIFROST_UI_DEV=true pulse -- \
+		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
 			-host "$(HOST)" \
 			-port "$(PORT)" \
 			-log-style "$(LOG_STYLE)" \
@@ -207,7 +207,7 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
 			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
 	else \
-		BIFROST_UI_DEV=true pulse -- \
+		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
 			-host "$(HOST)" \
 			-port "$(PORT)" \
 			-log-style "$(LOG_STYLE)" \

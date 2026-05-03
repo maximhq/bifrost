@@ -24,6 +24,12 @@ spec:
       targetPort: gossip-udp
       protocol: UDP
       name: gossip-udp
+    {{- if .Values.bifrost.cluster.grpc }}
+    - port: {{ .Values.bifrost.cluster.grpc.port }}
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+    {{- end }}
     {{- end }}
   selector:
     {{- include "bifrost.serverSelectorLabels" . | nindent 4 }}

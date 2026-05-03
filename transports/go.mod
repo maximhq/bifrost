@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/transports
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/andybalholm/brotli v1.2.0
@@ -12,16 +12,16 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.5.3
-	github.com/maximhq/bifrost/framework v1.3.3
-	github.com/maximhq/bifrost/plugins/compat v0.1.2
-	github.com/maximhq/bifrost/plugins/governance v1.5.3
-	github.com/maximhq/bifrost/plugins/logging v1.5.3
-	github.com/maximhq/bifrost/plugins/maxim v1.6.3
-	github.com/maximhq/bifrost/plugins/otel v1.2.3
-	github.com/maximhq/bifrost/plugins/prompts v1.0.3
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.3
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.3
+	github.com/maximhq/bifrost/core v1.5.7
+	github.com/maximhq/bifrost/framework v1.3.7
+	github.com/maximhq/bifrost/plugins/compat v0.1.6
+	github.com/maximhq/bifrost/plugins/governance v1.5.7
+	github.com/maximhq/bifrost/plugins/logging v1.5.7
+	github.com/maximhq/bifrost/plugins/maxim v1.6.7
+	github.com/maximhq/bifrost/plugins/otel v1.2.7
+	github.com/maximhq/bifrost/plugins/prompts v1.0.7
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.7
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.7
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/prometheus/client_golang v1.23.2
@@ -131,7 +131,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.3 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.7 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect

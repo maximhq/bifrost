@@ -292,7 +292,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			Headers:               dbClient.Headers,
 			AllowedExtraHeaders:   dbClient.AllowedExtraHeaders,
 			IsPingAvailable:       &isPingAvailable,
-			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolPricing:           dbClient.ToolPricing,
 			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
 		}
@@ -380,10 +380,12 @@ type MCPVKConfigRequest struct {
 	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
 }
 
-// MCPClientUpdateRequest wraps TableMCPClient and adds optional VK assignment management
+// MCPClientUpdateRequest wraps TableMCPClient and adds optional VK assignment management, ToolsToExecute and ToolsToAutoExecute
 type MCPClientUpdateRequest struct {
 	configstoreTables.TableMCPClient
-	VKConfigs *[]MCPVKConfigRequest `json:"vk_configs,omitempty"`
+	VKConfigs          *[]MCPVKConfigRequest `json:"vk_configs,omitempty"`
+	ToolsToExecute     *schemas.WhiteList    `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute *schemas.WhiteList    `json:"tools_to_auto_execute,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -439,12 +441,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		scheme := "http"
-		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-			scheme = "https"
-		}
-		host := string(ctx.Host())
-		redirectURI := fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
+		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
 
 		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
 			ClientID:        req.OauthConfig.ClientID,
@@ -532,13 +529,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Build redirect URI - use Bifrost's own callback endpoint
-		// Extract the base URL from the current request
-		scheme := "http"
-		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-			scheme = "https"
-		}
-		host := string(ctx.Host())
-		redirectURI := fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
+		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
 
 		// Initiate OAuth flow
 		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)
@@ -700,31 +691,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	req.ClientID = id
-	// Validate tools_to_execute
-	if err := validateToolsToExecute(req.ToolsToExecute); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
-		return
-	}
-	// Auto-clear tools_to_auto_execute if tools_to_execute is empty
-	// If no tools are allowed to execute, no tools can be auto-executed
-	if req.ToolsToExecute.IsEmpty() {
-		req.ToolsToAutoExecute = schemas.WhiteList{}
-	}
-	// Validate tools_to_auto_execute
-	if err := validateToolsToAutoExecute(req.ToolsToAutoExecute, req.ToolsToExecute); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
-		return
-	}
-	// Validate client name
-	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
-		return
-	}
-	if err := validateAllowedExtraHeaders(req.AllowedExtraHeaders); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
-		return
-	}
-	// Get existing config to handle redacted values
+
+	// Fetch existing config first — needed to resolve optional fields before validation.
 	var existingConfig *schemas.MCPClientConfig
 	if h.store.MCPConfig != nil {
 		for i, client := range h.store.MCPConfig.ClientConfigs {
@@ -739,6 +707,37 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Resolve tools_to_execute and tools_to_auto_execute.
+	resolvedToolsToExecute := existingConfig.ToolsToExecute
+	if req.ToolsToExecute != nil {
+		resolvedToolsToExecute = *req.ToolsToExecute
+	}
+	resolvedToolsToAutoExecute := existingConfig.ToolsToAutoExecute
+	if resolvedToolsToExecute.IsEmpty() {
+		resolvedToolsToAutoExecute = schemas.WhiteList{}
+	} else if req.ToolsToAutoExecute != nil {
+		resolvedToolsToAutoExecute = *req.ToolsToAutoExecute
+	}
+
+	// Validate tools_to_execute
+	if err := validateToolsToExecute(resolvedToolsToExecute); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
+		return
+	}
+	// Validate tools_to_auto_execute
+	if err := validateToolsToAutoExecute(resolvedToolsToAutoExecute, resolvedToolsToExecute); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
+		return
+	}
+	// Validate client name
+	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
+		return
+	}
+	if err := validateAllowedExtraHeaders(req.AllowedExtraHeaders); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
+		return
+	}
 	// Merge redacted values - preserve old values if incoming values are redacted and unchanged
 	merged := mergeMCPRedactedValues(&req.TableMCPClient, existingConfig, h.store.RedactMCPClientConfig(existingConfig))
 	req.TableMCPClient = *merged
@@ -752,7 +751,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	// Persist changes to config store
+	// Persist changes to config store.
+	req.TableMCPClient.ToolsToExecute = resolvedToolsToExecute
+	req.TableMCPClient.ToolsToAutoExecute = resolvedToolsToAutoExecute
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &req.TableMCPClient); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
@@ -780,8 +781,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ConnectionType:        existingConfig.ConnectionType,
 		ConnectionString:      existingConfig.ConnectionString,
 		StdioConfig:           existingConfig.StdioConfig,
-		ToolsToExecute:        req.ToolsToExecute,
-		ToolsToAutoExecute:    req.ToolsToAutoExecute,
+		ToolsToExecute:        resolvedToolsToExecute,
+		ToolsToAutoExecute:    resolvedToolsToAutoExecute,
 		Headers:               req.Headers,
 		AllowedExtraHeaders:   req.AllowedExtraHeaders,
 		AuthType:              existingConfig.AuthType,

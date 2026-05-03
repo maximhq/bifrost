@@ -1,6 +1,6 @@
 ---
 title: "Provider Setup"
-description: "Configure LLM providers in config.json — API keys, cloud-native auth, per-provider network settings, and self-hosted endpoints"
+description: "Configure LLM providers in config.json - API keys, cloud-native auth, per-provider network settings, and self-hosted endpoints"
 icon: "plug"
 ---
 
@@ -8,7 +8,7 @@ All providers are configured under `providers` in `config.json`. Each provider e
 
 **Supplying credentials:**
 
-Use the `env.` prefix to reference environment variables — never put API keys directly in `config.json`:
+Use the `env.` prefix to reference environment variables - never put API keys directly in `config.json`:
 
 ```json
 {
@@ -171,7 +171,7 @@ Supports multiple keys with weighted load balancing. Mark one key with `use_for_
 
 ### Azure OpenAI
 
-Azure requires `azure_key_config` on every key with `endpoint` and `api_version`. List your Azure deployment names in `models` — Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
+Azure requires `azure_key_config` on every key with `endpoint` and `api_version`. List your Azure deployment names in `models` - Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
 
 <Tabs>
 <Tab title="API Key">
@@ -208,7 +208,7 @@ export AZURE_API_VERSION="2024-10-21"
 </Tab>
 <Tab title="Managed Identity / DefaultAzureCredential">
 
-When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — which resolves credentials from Workload Identity, VM managed identity, or `az login`.
+When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` - which resolves credentials from Workload Identity, VM managed identity, or `az login`.
 
 ```json
 {
@@ -234,7 +234,7 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` — whic
 </Tab>
 </Tabs>
 
-**Deployment name aliases** — when your Azure deployment names differ from the model names in requests, use `aliases`:
+**Deployment name aliases** - when your Azure deployment names differ from the model names in requests, use `aliases`:
 
 ```json
 {
@@ -329,7 +329,7 @@ Bedrock requires `bedrock_key_config` with at minimum a `region`. Three auth mod
 </Tab>
 <Tab title="IAM Role (instance profile / IRSA)">
 
-When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain — IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
+When only `region` is set, Bifrost inherits credentials from the AWS SDK default chain - IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` env vars.
 
 ```json
 {
@@ -394,7 +394,7 @@ When only `region` is set, Bifrost inherits credentials from the AWS SDK default
 }
 ```
 
-**Batch API — S3 configuration:**
+**Batch API - S3 configuration:**
 
 ```json
 {
@@ -453,7 +453,7 @@ Vertex requires `vertex_key_config` with `project_id` and `region`. Two auth mod
 </Tab>
 <Tab title="GKE Workload Identity / ADC">
 
-When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` — which resolves to GKE Workload Identity, GCE metadata server, or `gcloud auth application-default login`.
+When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials` - which resolves to GKE Workload Identity, GCE metadata server, or `gcloud auth application-default login`.
 
 ```json
 {
@@ -485,7 +485,7 @@ When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials
 
 ### Standard API-Key Providers
 
-These providers follow the same simple pattern — one or more keys with weights. Replace the provider name and env var name accordingly.
+These providers follow the same simple pattern - one or more keys with weights. Replace the provider name and env var name accordingly.
 
 ```json
 {
@@ -586,7 +586,7 @@ Using an env var for the URL (useful across environments):
 </Tab>
 <Tab title="vLLM">
 
-vLLM instances are model-specific — one key per served model:
+vLLM instances are model-specific - one key per served model:
 
 ```json
 {

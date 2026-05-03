@@ -30,7 +30,7 @@ func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return m.headerMatcher
 }
 
-func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+func (m *mockHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
 	return m.availableProviders
 }
 
@@ -52,6 +52,22 @@ func (m *mockHandlerStore) GetKVStore() *kvstore.Store {
 
 func (m *mockHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return m.mcpHeaderCombinedAllowlist
+}
+
+func (m *mockHandlerStore) ShouldAllowPerRequestStorageOverride() bool {
+	return false
+}
+
+func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
+	return false
+}
+
+func (m *mockHandlerStore) GetMCPExternalServerURL() string {
+	return ""
+}
+
+func (m *mockHandlerStore) GetMCPExternalClientURL() string {
+	return ""
 }
 
 // Ensure mockHandlerStore implements lib.HandlerStore

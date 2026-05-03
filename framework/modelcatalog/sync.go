@@ -95,7 +95,10 @@ func (mc *ModelCatalog) populateModelParamsFromPricing(pricingData map[string]Pr
 	for modelKey, entry := range pricingData {
 		if entry.MaxOutputTokens != nil {
 			modelName := extractModelName(modelKey)
-			modelParamsEntries[modelName] = providerUtils.ModelParams{MaxOutputTokens: entry.MaxOutputTokens}
+			params := providerUtils.ModelParams{
+				MaxOutputTokens: entry.MaxOutputTokens,
+			}
+			modelParamsEntries[modelName] = params
 		}
 	}
 	if len(modelParamsEntries) > 0 {
@@ -390,12 +393,11 @@ func (mc *ModelCatalog) applyModelParameters(paramsData map[string]json.RawMessa
 		var p struct {
 			MaxOutputTokens *int `json:"max_output_tokens"`
 		}
-		if p.MaxOutputTokens == nil {
-			if err := json.Unmarshal(rawData, &p); err == nil && p.MaxOutputTokens != nil {
-				modelParamsEntries[model] = providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+		if err := json.Unmarshal(rawData, &p); err == nil && (p.MaxOutputTokens != nil || parsed.VertexMultiRegionOnly != nil) {
+			modelParamsEntries[model] = providerUtils.ModelParams{
+				MaxOutputTokens:        p.MaxOutputTokens,
+				IsVertexMultiRegionOnly: parsed.VertexMultiRegionOnly,
 			}
-		} else {
-			modelParamsEntries[model] = providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
 		}
 	}
 

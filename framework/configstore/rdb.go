@@ -41,6 +41,16 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error) {
+	if interval < 0 {
+		return 0, fmt.Errorf("tool_sync_interval must be non-negative, got %q", interval.String())
+	}
+	if interval%time.Second != 0 {
+		return 0, fmt.Errorf("tool_sync_interval must be a whole number of seconds, got %q", interval.String())
+	}
+	return int(interval / time.Second), nil
+}
+
 // schemaKeyFromTableKey converts a database key to a schema key.
 func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
@@ -126,40 +136,58 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 	return dbKey, nil
 }
 
+// mcpExternalURLToString converts an *schemas.EnvVar to its storage string form.
+// Stores "env.MY_VAR" when sourced from an env var, or the raw URL otherwise.
+func mcpExternalURLToString(e *schemas.EnvVar) string {
+	if e == nil {
+		return ""
+	}
+	if v, err := e.Value(); err == nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
-		DropExcessRequests:              config.DropExcessRequests,
-		InitialPoolSize:                 config.InitialPoolSize,
-		EnableLogging:                   config.EnableLogging,
-		DisableContentLogging:           config.DisableContentLogging,
-		DisableDBPingsInHealth:          config.DisableDBPingsInHealth,
-		LogRetentionDays:                config.LogRetentionDays,
-		EnforceAuthOnInference:          config.EnforceAuthOnInference,
-		EnforceGovernanceHeader:         config.EnforceGovernanceHeader,
-		EnforceSCIMAuth:                 config.EnforceSCIMAuth,
-		AllowDirectKeys:                 config.AllowDirectKeys,
-		PrometheusLabels:                config.PrometheusLabels,
-		AllowedOrigins:                  config.AllowedOrigins,
-		AllowedHeaders:                  config.AllowedHeaders,
-		MaxRequestBodySizeMB:            config.MaxRequestBodySizeMB,
-		CompatConvertTextToChat:         config.Compat.ConvertTextToChat,
-		CompatConvertChatToResponses:    config.Compat.ConvertChatToResponses,
-		CompatShouldDropParams:          config.Compat.ShouldDropParams,
-		CompatShouldConvertParams:       config.Compat.ShouldConvertParams,
-		MCPAgentDepth:                   config.MCPAgentDepth,
-		MCPToolExecutionTimeout:         config.MCPToolExecutionTimeout,
-		MCPCodeModeBindingLevel:         config.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:             config.MCPToolSyncInterval,
-		MCPDisableAutoToolInject:        config.MCPDisableAutoToolInject,
-		AsyncJobResultTTL:               config.AsyncJobResultTTL,
-		RequiredHeaders:                 config.RequiredHeaders,
-		LoggingHeaders:                  config.LoggingHeaders,
-		WhitelistedRoutes:               config.WhitelistedRoutes,
-		HideDeletedVirtualKeysInFilters: config.HideDeletedVirtualKeysInFilters,
-		RoutingChainMaxDepth:            config.RoutingChainMaxDepth,
-		HeaderFilterConfig:              config.HeaderFilterConfig,
-		ConfigHash:                      config.ConfigHash,
+		DropExcessRequests:                    config.DropExcessRequests,
+		InitialPoolSize:                       config.InitialPoolSize,
+		EnableLogging:                         config.EnableLogging,
+		DisableContentLogging:                 config.DisableContentLogging,
+		DisableDBPingsInHealth:                config.DisableDBPingsInHealth,
+		LogRetentionDays:                      config.LogRetentionDays,
+		EnforceAuthOnInference:                config.EnforceAuthOnInference,
+		EnforceGovernanceHeader:               config.EnforceGovernanceHeader,
+		EnforceSCIMAuth:                       config.EnforceSCIMAuth,
+		AllowDirectKeys:                       config.AllowDirectKeys,
+		PrometheusLabels:                      config.PrometheusLabels,
+		AllowedOrigins:                        config.AllowedOrigins,
+		AllowedHeaders:                        config.AllowedHeaders,
+		MaxRequestBodySizeMB:                  config.MaxRequestBodySizeMB,
+		CompatConvertTextToChat:               config.Compat.ConvertTextToChat,
+		CompatConvertChatToResponses:          config.Compat.ConvertChatToResponses,
+		CompatShouldDropParams:                config.Compat.ShouldDropParams,
+		CompatShouldConvertParams:             config.Compat.ShouldConvertParams,
+		MCPAgentDepth:                         config.MCPAgentDepth,
+		MCPToolExecutionTimeout:               config.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:              config.MCPDisableAutoToolInject,
+		AsyncJobResultTTL:                     config.AsyncJobResultTTL,
+		RequiredHeaders:                       config.RequiredHeaders,
+		LoggingHeaders:                        config.LoggingHeaders,
+		WhitelistedRoutes:                     config.WhitelistedRoutes,
+		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
+		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
+		MCPExternalServerURL:                  mcpExternalURLToString(config.MCPExternalServerURL),
+		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
+		HeaderFilterConfig:                    config.HeaderFilterConfig,
+		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
+		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
+		ConfigHash:                            config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -357,19 +385,23 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 			ShouldDropParams:       dbConfig.CompatShouldDropParams,
 			ShouldConvertParams:    dbConfig.CompatShouldConvertParams,
 		},
-		MCPAgentDepth:                   dbConfig.MCPAgentDepth,
-		MCPToolExecutionTimeout:         dbConfig.MCPToolExecutionTimeout,
-		MCPCodeModeBindingLevel:         dbConfig.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:             dbConfig.MCPToolSyncInterval,
-		MCPDisableAutoToolInject:        dbConfig.MCPDisableAutoToolInject,
-		AsyncJobResultTTL:               dbConfig.AsyncJobResultTTL,
-		RequiredHeaders:                 dbConfig.RequiredHeaders,
-		LoggingHeaders:                  dbConfig.LoggingHeaders,
-		WhitelistedRoutes:               dbConfig.WhitelistedRoutes,
-		HideDeletedVirtualKeysInFilters: dbConfig.HideDeletedVirtualKeysInFilters,
-		RoutingChainMaxDepth:            dbConfig.RoutingChainMaxDepth,
-		HeaderFilterConfig:              dbConfig.HeaderFilterConfig,
-		ConfigHash:                      dbConfig.ConfigHash,
+		MCPAgentDepth:                         dbConfig.MCPAgentDepth,
+		MCPToolExecutionTimeout:               dbConfig.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:              dbConfig.MCPDisableAutoToolInject,
+		AsyncJobResultTTL:                     dbConfig.AsyncJobResultTTL,
+		RequiredHeaders:                       dbConfig.RequiredHeaders,
+		LoggingHeaders:                        dbConfig.LoggingHeaders,
+		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
+		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
+		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
+		MCPExternalServerURL:                  schemas.NewEnvVar(dbConfig.MCPExternalServerURL),
+		MCPExternalClientURL:                  schemas.NewEnvVar(dbConfig.MCPExternalClientURL),
+		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
+		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
+		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
+		ConfigHash:                            dbConfig.ConfigHash,
 	}, nil
 }
 
@@ -1212,7 +1244,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Headers:                   dbClient.Headers,
 					AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 					IsPingAvailable:           dbClient.IsPingAvailable,
-					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
 					AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 					DiscoveredTools:           dbClient.DiscoveredTools,
@@ -1222,15 +1254,15 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			return &schemas.MCPConfig{
 				ClientConfigs: clientConfigs,
 				ToolManagerConfig: &schemas.MCPToolManagerConfig{
-					ToolExecutionTimeout: 30 * time.Second, // default from TableClientConfig
-					MaxAgentDepth:        10,               // default from TableClientConfig
+					ToolExecutionTimeout: schemas.Duration(30 * time.Second), // default from TableClientConfig
+					MaxAgentDepth:        10,                                 // default from TableClientConfig
 				},
 			}, nil
 		}
 		return nil, err
 	}
 	toolManagerConfig := schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout:  time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
+		ToolExecutionTimeout:  schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
 		MaxAgentDepth:         clientConfig.MCPAgentDepth,
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,
@@ -1251,7 +1283,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			Headers:                   dbClient.Headers,
 			AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 			IsPingAvailable:           dbClient.IsPingAvailable,
-			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
@@ -1335,7 +1367,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		Headers:                   dbClient.Headers,
 		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 		IsPingAvailable:           dbClient.IsPingAvailable,
-		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
@@ -1368,22 +1400,26 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			return err
 		}
 		// Create new client
+		toolSyncIntervalSec, err := toolSyncIntervalDurationToStoredSeconds(clientConfigCopy.ToolSyncInterval)
+		if err != nil {
+			return err
+		}
 		dbClient := tables.TableMCPClient{
-			ClientID:                  clientConfigCopy.ID,
-			Name:                      clientConfigCopy.Name,
-			IsCodeModeClient:          clientConfigCopy.IsCodeModeClient,
-			ConnectionType:            string(clientConfigCopy.ConnectionType),
-			ConnectionString:          clientConfigCopy.ConnectionString,
-			StdioConfig:               clientConfigCopy.StdioConfig,
-			AuthType:                  string(clientConfigCopy.AuthType),
-			OauthConfigID:             clientConfigCopy.OauthConfigID,
-			ToolsToExecute:            clientConfigCopy.ToolsToExecute,
-			ToolsToAutoExecute:        clientConfigCopy.ToolsToAutoExecute,
-			Headers:                   clientConfigCopy.Headers,
-			AllowedExtraHeaders:       clientConfigCopy.AllowedExtraHeaders,
-			IsPingAvailable:           clientConfigCopy.IsPingAvailable,
-			ToolSyncInterval:          int(clientConfigCopy.ToolSyncInterval.Minutes()),
-			AllowOnAllVirtualKeys:     clientConfigCopy.AllowOnAllVirtualKeys,
+			ClientID:              clientConfigCopy.ID,
+			Name:                  clientConfigCopy.Name,
+			IsCodeModeClient:      clientConfigCopy.IsCodeModeClient,
+			ConnectionType:        string(clientConfigCopy.ConnectionType),
+			ConnectionString:      clientConfigCopy.ConnectionString,
+			StdioConfig:           clientConfigCopy.StdioConfig,
+			AuthType:              string(clientConfigCopy.AuthType),
+			OauthConfigID:         clientConfigCopy.OauthConfigID,
+			ToolsToExecute:        clientConfigCopy.ToolsToExecute,
+			ToolsToAutoExecute:    clientConfigCopy.ToolsToAutoExecute,
+			Headers:               clientConfigCopy.Headers,
+			AllowedExtraHeaders:   clientConfigCopy.AllowedExtraHeaders,
+			IsPingAvailable:       clientConfigCopy.IsPingAvailable,
+			ToolSyncInterval:      toolSyncIntervalSec,
+			AllowOnAllVirtualKeys: clientConfigCopy.AllowOnAllVirtualKeys,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -1452,6 +1488,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal allowed_extra_headers: %w", err)
 		}
+		var stdioConfigJSON *string
+		if clientConfigCopy.StdioConfig != nil {
+			stdioData, marshalErr := json.Marshal(clientConfigCopy.StdioConfig)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal stdio_config: %w", marshalErr)
+			}
+			stdioStr := string(stdioData)
+			stdioConfigJSON = &stdioStr
+		}
 
 		if clientConfigCopy.ToolPricing == nil {
 			clientConfigCopy.ToolPricing = map[string]float64{}
@@ -1486,6 +1531,29 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		if encrypt.IsEnabled() {
 			updates["encryption_status"] = encryptionStatusEncrypted
+		}
+		// Config-file driven reconciliation passes ConfigHash. In this mode we should
+		// also sync connection/auth metadata from config.json and persist the hash.
+		if clientConfigCopy.ConfigHash != "" {
+			connectionStringToPersist := clientConfigCopy.ConnectionString
+			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
+				!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
+				// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
+				cs := *connectionStringToPersist
+				encryptedConnString, encErr := encrypt.Encrypt(cs.Val)
+				if encErr != nil {
+					return fmt.Errorf("failed to encrypt mcp connection string: %w", encErr)
+				}
+				cs.Val = encryptedConnString
+				connectionStringToPersist = &cs
+			}
+
+			updates["config_hash"] = clientConfigCopy.ConfigHash
+			updates["connection_type"] = clientConfigCopy.ConnectionType
+			updates["connection_string"] = connectionStringToPersist
+			updates["stdio_config_json"] = stdioConfigJSON
+			updates["auth_type"] = clientConfigCopy.AuthType
+			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)
@@ -2133,7 +2201,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		case "name":
 			orderClause = fmt.Sprintf("governance_virtual_keys.name %s, governance_virtual_keys.id ASC", dir)
 		case "budget_spent":
-			orderClause = fmt.Sprintf("COALESCE(governance_budgets.current_usage, 0) %s, governance_virtual_keys.id ASC", dir)
+			orderClause = fmt.Sprintf("COALESCE(vk_budget_totals.total_usage, 0) %s, governance_virtual_keys.id ASC", dir)
 		case "created_at":
 			orderClause = fmt.Sprintf("governance_virtual_keys.created_at %s, governance_virtual_keys.id ASC", dir)
 		case "status":
@@ -2144,7 +2212,14 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 	// Fetch with preloads and pagination
 	query := preloadVirtualKeyBaseRelations(baseQuery)
 	if params.SortBy == "budget_spent" {
-		query = query.Joins("LEFT JOIN governance_budgets ON governance_budgets.id = governance_virtual_keys.budget_id")
+		// A virtual key can have multiple budgets (different reset intervals); take MAX so the
+		// highest-spending budget drives the sort without duplicating rows.
+		query = query.Joins(`LEFT JOIN (
+			SELECT virtual_key_id, MAX(current_usage) AS total_usage
+			FROM governance_budgets
+			WHERE virtual_key_id IS NOT NULL
+			GROUP BY virtual_key_id
+		) AS vk_budget_totals ON vk_budget_totals.virtual_key_id = governance_virtual_keys.id`)
 	}
 	var virtualKeys []tables.TableVirtualKey
 	if err := query.
@@ -3214,7 +3289,7 @@ func (s *RDBConfigStore) GetRoutingRulesPaginated(ctx context.Context, params Ro
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
-		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ? OR LOWER(cel_expression) LIKE ?", search, search)
 	}
 
 	var totalCount int64
@@ -3712,6 +3787,10 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	if username == nil || password == nil {
 		return nil, nil
 	}
+	// We are no longer keeping this option in the database
+	if !isEnabled {
+		disableAuthOnInference = true
+	}
 	return &AuthConfig{
 		AdminUserName:          schemas.NewEnvVar(*username),
 		AdminPassword:          schemas.NewEnvVar(*password),
@@ -4164,7 +4243,7 @@ func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error 
 func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
 	var tokens []*tables.TableOauthToken
 	result := s.DB().WithContext(ctx).
-		Where("expires_at < ?", before).
+		Where("expires_at IS NOT NULL AND expires_at < ?", before).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)

@@ -11,10 +11,8 @@ import (
 )
 
 // TestProviderConfig_Redacted_AutoMasksEnvBackedFields verifies that env-backed
-// values in any provider config field are automatically redacted in the JSON output
-// of a Redacted() ProviderConfig — even fields that don't have explicit Redacted()
-// calls (like Azure APIVersion). This is the defense-in-depth guarantee provided
-// by EnvVar.MarshalJSON.
+// values in provider config fields are redacted in the JSON output of a Redacted()
+// ProviderConfig, including fields like Azure APIVersion.
 func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	t.Setenv("MY_AZURE_API_VERSION_SECRET", "2024-10-21-preview-secret")
 
@@ -134,11 +132,9 @@ func TestProviderConfig_Redacted_PreservesEnvVarReferenceForVertex(t *testing.T)
 	assert.True(t, out.FromEnv)
 }
 
-// TestProviderConfig_Redacted_DoesNotMutateOriginal ensures Redacted() and the
-// subsequent JSON marshaling do not mutate the original config in memory. The
-// inference path reads from the in-memory config and calls GetValue() to build
-// outgoing LLM requests; if Redacted() or MarshalJSON were to mutate state, every
-// inference request after a UI fetch would silently start using masked values.
+// TestProviderConfig_Redacted_DoesNotMutateOriginal ensures Redacted() does not
+// mutate the original config in memory. The inference path reads from the in-memory
+// config and calls GetValue() to build outgoing LLM requests.
 func TestProviderConfig_Redacted_DoesNotMutateOriginal(t *testing.T) {
 	t.Setenv("MY_REAL_KEY", "sk-real-secret-1234567890abcdef")
 

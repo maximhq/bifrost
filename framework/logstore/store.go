@@ -63,6 +63,7 @@ type LogStore interface {
 	GetDistinctAliases(ctx context.Context) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context) ([]string, error)
+	GetDistinctStopReasons(ctx context.Context) ([]string, error)
 	GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error)
 
 	// MCP Tool Log histogram methods
@@ -134,7 +135,7 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger), nil
+		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields), nil
 	}
 	return inner, nil
 }

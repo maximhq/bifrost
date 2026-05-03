@@ -4,9 +4,119 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.2
+**Latest Version:** 2.1.13
 
 ## Changelog
+
+### 2.1.13
+
+- Surfaced `bifrost.client.enforceAuthOnInference` in `values.yaml` as a commented default with usage notes. The field was already wired in `_helpers.tpl` to render to `client.enforce_auth_on_inference` and declared in `values.schema.json`; this change makes the knob discoverable without altering default rendered config.
+- Marked `bifrost.client.enforceGovernanceHeader` as deprecated in `values.yaml` (use `enforceAuthOnInference` instead). Schema description was already deprecated in 2.1.11.
+
+### 2.1.12
+
+- Added Helm support for `storage.logsStore.objectStorageExcludeFields` and render path to `logs_store.object_storage_exclude_fields` in generated config.
+
+### 2.1.11
+
+- Added `description` and `default` fields to numerous properties that previously had neither, including `initialPoolSize`, `disableDbPingsInHealth`, `logRetentionDays`, `asyncJobResultTTL`, `mcpAgentDepth`, `mcpToolExecutionTimeout`, `hideDeletedVirtualKeysInFilters`, `mcpDisableAutoToolInject`, and MCP `toolManagerConfig` fields
+- Added `additionalProperties: false` to multiple objects (`bifrost.config`, `bifrost.pricing`, `proxyConfig`, `concurrencyConfig`, `providerConfig`, `credentialsSecret`, and auth provider configs) to reject unknown keys at validation time
+- Added three new `bifrost.client` fields:
+    - `allowPerRequestContentStorageOverride` — controls whether per-request headers can override content logging behavior
+    - `allowPerRequestRawOverride` — controls whether per-request headers can override raw provider request/response passthrough
+    - `mcpExternalBaseUrl` — public base URL for OAuth callbacks and discovery metadata behind a reverse proxy, supporting both string and env-var object forms
+- Added two new `bifrost.cluster.discovery` fields:
+    - `bindPort` — port to bind for cluster communication
+    - `dialTimeout` — timeout for discovery dial operations as a Go duration string
+- Changed `allowedOrigins` items from `oneOf` to `anyOf` and removed the redundant `not: { const: "*" }` constraint on the URI branch
+- Tightened the env-var pattern to require a valid identifier start character (`[A-Za-z_]`) for proxyConfig.url
+- Expanded `toolSyncInterval` to accept either a Go duration string (with a stricter regex) or a legacy integer (nanoseconds) for backward compatibility.
+- Marked `enforceGovernanceHeader` as deprecated in its description
+- Added `mdnsService` description for local network discovery
+
+### 2.1.10
+
+- Added `bifrost.cluster.grpc` block for the cluster gRPC counter-sync transport (enterprise):
+  - New values: `bifrost.cluster.grpc.port` (default `10102`) and `bifrost.cluster.grpc.dialTimeoutSeconds` (default `5`).
+  - Rendered into `cluster_config.grpc` (`port`, `dial_timeout_seconds`) by `templates/_helpers.tpl`.
+  - StatefulSet exposes the port as a named `grpc` container port; `service-headless` exposes it as a named service port so peers can dial each other.
+  - Both port additions are guarded by `if .Values.bifrost.cluster.grpc` so values overrides that omit the block render cleanly.
+
+### 2.1.9
+
+- Added Kubernetes pod-discovery RBAC templates for cluster discovery:
+  - Added `templates/rbac.yaml` to render a namespaced `Role`/`RoleBinding` for pod `get/list/watch`.
+  - Added `rbac.podDiscovery.enabled` to `values.yaml` and `values.schema.json` for controlled enablement (defaults to `true`).
+  - RBAC resources render only when `rbac.podDiscovery.enabled`, `bifrost.cluster.enabled`, and `bifrost.cluster.discovery.enabled` are true, with discovery `type: kubernetes`.
+
+### 2.1.8
+
+- Added provider key backward compatibility in Helm rendering:
+  - If `bifrost.providers.<provider>.keys[].id` is omitted and `name` is present, Helm now auto-populates `id = name`.
+  - This preserves legacy values files that only defined key names while still supporting `governance.virtualKeys[].provider_configs[].key_ids`.
+
+### 2.1.7
+
+- Added semantic cache Helm layers and examples:
+  - Added Redis deployment template for semantic cache.
+  - Extended Helm values/schema coverage for semantic cache and client-config examples.
+- Added enterprise/governance Helm support:
+  - Added governance `business_units` support in Helm schema/template rendering.
+  - Added deferred virtual-key/provider-config budget ordering handling in Helm rendering.
+- Added MCP tool-groups support in Helm:
+  - Added `mcp.tool_groups` config support with governance bindings.
+  - Added camelCase alias compatibility for related Helm config fields.
+
+### 2.1.6
+
+- Includes unreleased `2.1.5` changes 
+- Built-in plugin versioning for DB-backed deployments:
+  - Added `version` field support for built-in plugins.
+  - Added default `version: 1` for built-in plugins in `values.yaml` (`telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`).
+  - Updated `_helpers.tpl` to include plugin `version` in rendered config when set (cast as integer).
+- Updated StatefulSet PVC template labels to be immutable-safe:
+  - `spec.volumeClaimTemplates.metadata.labels` now uses stable selector labels (without chart/app version labels).
+- Governance schema and validation updates:
+  - Added `governance.budgets[].virtual_key_id` support.
+  - Removed stale `budget_id` references from virtual keys and provider configs in templates/tests.
+  - `validate-helm-config-fields.sh` assertions were updated accordingly.
+- Query/schema compatibility updates:
+  - Tightened `query` validation in `values.schema.json` and `config.schema.json` to valid RuleGroupType shape (`null` or `{ combinator, rules }`).
+- Config/input alias support updates:
+  - Added support for `env.*` references in proxy/TLS fields (`ca_cert_pem`, `url`, `username`, `password`).
+  - Added `provider_key_name` alias for routing targets and pricing overrides (resolved to `key_id` at config load time).
+- MCP config improvements:
+  - Added Go duration string support for `mcp.toolSyncInterval` (legacy numeric nanoseconds still supported).
+  - Added hash-based MCP client config reconciliation for DB-backed config store updates.
+- Upgrade impact:
+  - Existing SQLite StatefulSets created from older chart templates may require a one-time StatefulSet recreation during upgrade because `spec.volumeClaimTemplates` is immutable in Kubernetes.
+- Migration notes (only if upgrade fails with StatefulSet immutable-field error):
+  1. Identify StatefulSet name and namespace for your Helm release.
+  2. Delete only the StatefulSet while preserving dependents:
+     - `kubectl delete statefulset <statefulset-name> -n <namespace> --cascade=orphan`
+  3. Run Helm upgrade:
+     - `helm upgrade <release-name> bifrost/bifrost -n <namespace> -f <values-file> --set image.tag=<tag>`
+  4. If needed, re-apply/recreate the StatefulSet from the upgraded chart manifests.
+  5. Verify PVCs are preserved and pods become healthy:
+     - `kubectl get pvc -n <namespace>`
+     - `kubectl get pods -n <namespace>`
+
+### 2.1.5 (not released separately)
+
+- Merged into `2.1.6` release notes above.
+
+### 2.1.4
+
+- Added stricter cluster discovery validation in Helm templates:
+  - Require `bifrost.cluster.discovery.serviceName` when `bifrost.cluster.discovery.type` is `consul`, `etcd`, or `udp`.
+  - For `udp` discovery, require both:
+    - `bifrost.cluster.discovery.udpBroadcastPort`
+    - `bifrost.cluster.discovery.allowedAddressSpace`
+- Added/updated template fail-fast errors so invalid discovery config is rejected at render time instead of failing later at runtime.
+
+### 2.1.3
+
+- For `bifrost.cluster.discovery.type` set to `consul`, `etcd`, or `udp`, set `bifrost.cluster.discovery.serviceName` explicitly during upgrade.
 
 ### v2.1.2
 
@@ -291,6 +401,7 @@ Bifrost supports two storage backends (SQLite and PostgreSQL) that can be config
 | `storage.configStore.type` | Config store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
 | `storage.logsStore.enabled` | Enable logs store | `true` |
 | `storage.logsStore.type` | Logs store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
+| `storage.logsStore.objectStorageExcludeFields` | Payload DB fields to keep in DB instead of offloading to object storage | `[]` |
 
 #### Mixed Backend Example
 
@@ -387,6 +498,8 @@ vectorStore:
 
 Configure AI provider API keys:
 
+> **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+
 ```yaml
 bifrost:
   providers:
@@ -447,6 +560,23 @@ bifrost:
 | `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
 | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout in seconds | `30` |
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
+| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
+| `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |
+| `bifrost.mcp.toolSyncInterval` | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended. | `10m` |
+
+#### MCP Migration Guide (`client.mcp*` -> `mcp.*`)
+
+Prefer MCP settings under `bifrost.mcp` going forward. Older `bifrost.client.mcp*`
+keys are retained for backward compatibility, but new configs should migrate to the
+`mcp.toolManagerConfig` and `mcp.toolSyncInterval` fields.
+
+| Old key | New key |
+|---------|---------|
+| `bifrost.client.mcpAgentDepth` | `bifrost.mcp.toolManagerConfig.maxAgentDepth` |
+| `bifrost.client.mcpToolExecutionTimeout` | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` |
+| `bifrost.client.mcpCodeModeBindingLevel` | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` |
+| `bifrost.client.mcpDisableAutoToolInject` | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` |
+| `bifrost.client.mcpToolSyncInterval` | `bifrost.mcp.toolSyncInterval` |
 
 ### Ingress Configuration
 
@@ -734,4 +864,3 @@ kubectl get secret bifrost -o yaml
 This project is licensed under the Apache 2.0 License - see the [LICENSE](../LICENSE) file for details.
 
 Built with ❤️ by [Maxim](https://github.com/maximhq)
-

@@ -17,7 +17,10 @@ Both options work perfectly - choose what fits your workflow:
 #### NPX Binary
 
 <video width="100%" controls>
-  <source src="https://github.com/maximhq/bifrost/raw/refs/heads/main/docs/media/run-npx.mp4" type="video/mp4" />
+  <source
+    src="https://github.com/maximhq/bifrost/raw/refs/heads/main/docs/media/run-npx.mp4"
+    type="video/mp4"
+  />
   Your browser does not support the video tag.
 </video>
 
@@ -119,7 +122,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 1. **Zero Configuration Start**: Bifrost launched without any config files - everything can be configured through the Web UI or API
 2. **OpenAI-Compatible API**: All Bifrost APIs follow OpenAI request/response format for seamless integration
 3. **Unified API Endpoint**: `/v1/chat/completions` works with any provider (OpenAI, Anthropic, Bedrock, etc.)
-4. **Provider Resolution**: `openai/gpt-4o-mini` tells Bifrost to use OpenAI's GPT-4o Mini model
+4. **Provider Resolution**: `openai/gpt-4o-mini` tells Bifrost to use OpenAI's GPT-4o Mini model. You can also use bare model names like `gpt-4o-mini`, Bifrost will automatically resolve the provider via the [Model Catalog](/providers/provider-routing#default-provider-resolution)
 5. **Automatic Routing**: Bifrost handles authentication, rate limiting, and request routing automatically
 
 ---
@@ -139,7 +142,9 @@ Bifrost supports **two configuration approaches** - you cannot use both simultan
 
 ### Mode 2: File-based Configuration
 
-<Note>You can view entire config schema [here](https://www.getbifrost.ai/schema)</Note>
+<Note>
+  You can view entire config schema [here](https://www.getbifrost.ai/schema)
+</Note>
 
 **When to use:** Advanced setups, GitOps workflows, or when UI is not needed
 
@@ -199,13 +204,12 @@ If you want database persistence but prefer not to use the UI, note that modifyi
 
 ## PostgreSQL UTF8 Requirement
 
-<Note>
-  The minimum PostgreSQL version required is 16 or above.
-</Note>
+<Note>The minimum PostgreSQL version required is 16 or above.</Note>
 
 <Note>
-  For the log store, Bifrost creates materialized views to improve analytics performance. Ensure that the PostgreSQL user
-  has the necessary permissions to perform these operations on the target schema.
+  For the log store, Bifrost creates materialized views to improve analytics
+  performance. Ensure that the PostgreSQL user has the necessary permissions to
+  perform these operations on the target schema.
 </Note>
 
 If you use PostgreSQL for `config_store` or `logs_store`, the target database must use `UTF8` encoding.
