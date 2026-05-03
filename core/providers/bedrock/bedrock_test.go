@@ -4596,3 +4596,306 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 		assert.Empty(t, toolResult.Content, "remote URL image should be dropped (Bedrock only supports base64)")
 	})
 }
+
+// TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice locks in the
+// per-model gate for Meta Llama on Bedrock. Bedrock Converse rejects
+// `toolConfig.toolChoice.tool` on Llama variants with HTTP 400
+// ("This model doesn't support the toolConfig.toolChoice.tool field. Remove
+// toolConfig.toolChoice.tool and try again."). The synthetic `bf_so_*` tool
+// is still injected — Llama receives a single tool to call — but no forced
+// tool_choice is emitted. With one tool bound and Bedrock's default "auto"
+// behavior, the structured-output contract is preserved (the model has
+// exactly one tool it can call, so "any" and "the named one" converge).
+//
+// See per-model support matrix at
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+// and the langchain-aws ChatBedrockConverse implementation
+// (`supports_tool_choice_values`) for prior art that ships the same gate.
+func TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "PlannerOutput",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"intent": map[string]any{"type": "string"},
+				},
+				"required": []any{"intent"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("classify this message"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Positive: synthetic bf_so_* tool still injected so the model has the
+	// schema available to call.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec, "expected ToolSpec on synthetic tool")
+	assert.Contains(t, result.ToolConfig.Tools[0].ToolSpec.Name, "bf_so_", "expected synthetic bf_so_* tool to be present")
+	assert.Equal(t, "bf_so_PlannerOutput", result.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// Negative: NO forced tool_choice on Llama. With one tool bound, Bedrock's
+	// default "auto" produces equivalent behavior without triggering the
+	// 400 ValidationException.
+	assert.Nil(t, result.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestBedrockNonLlamaChatStructuredOutputForcesToolChoice is the regression
+// guard for the non-Llama side of the gate added in
+// TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice. Non-Llama models
+// (Anthropic, Nova, etc.) MUST continue to receive the forced tool_choice
+// pinning the synthetic bf_so_* tool — that's the contract that makes
+// structured output reliable on those families.
+func TestBedrockNonLlamaChatStructuredOutputForcesToolChoice(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "PlannerOutput",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"intent": map[string]any{"type": "string"},
+				},
+				"required": []any{"intent"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "us.amazon.nova-pro-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("classify this message"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool")
+	require.NotNil(t, result.ToolConfig.ToolChoice, "expected forced tool_choice on non-Llama models")
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
+	assert.Equal(t, "bf_so_PlannerOutput", result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+// TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice
+// is the responses-path twin of
+// TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice. The OpenAI
+// Responses API surface routes structured output via Params.Text.Format
+// rather than Params.ResponseFormat, but lands at the same Bedrock Converse
+// constraint: toolChoice.tool is rejected on Llama.
+func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("intent", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+		)),
+		schemas.KV("required", []string{"intent"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("PlannerOutput"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Positive: synthetic bf_so_* tool still injected.
+	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, bedrockReq.ToolConfig.Tools[0].ToolSpec, "expected ToolSpec on synthetic tool")
+	assert.Contains(t, bedrockReq.ToolConfig.Tools[0].ToolSpec.Name, "bf_so_", "expected synthetic bf_so_* tool to be present")
+
+	// Negative: no forced tool_choice on Llama for the Responses API path either.
+	assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestBedrockLlamaConvertToolConfigOmitsForcedToolChoice exercises the
+// defense-in-depth gate at the bind_tools entry point. Callers that pass an
+// explicit `tool_choice = {"type": "function", "function": {"name": "X"}}`
+// (the OpenAI SDK shape; emitted by some LangChain bind_tools callers) hit
+// `convertToolChoice` -> `BedrockToolChoice{Tool: ...}` rather than the
+// synthetic-tool path. The same Llama 400 applies, and the same gate
+// applies: drop the forced specific-tool pin and let the model "auto"
+// choose from the bound tool list.
+func TestBedrockLlamaConvertToolConfigOmitsForcedToolChoice(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("classify this message"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "PlannerOutput",
+						Description: schemas.Ptr("Return the planner output as JSON"),
+					},
+				},
+			},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type: schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{
+						Name: "PlannerOutput",
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Positive: tools list survives intact.
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "PlannerOutput", result.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// Negative: forced specific-tool selection dropped on Llama.
+	assert.Nil(t, result.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestToBedrockResponsesRequest_LlamaConvertResponsesToolChoiceOmitsForcedToolChoice
+// is the responses-path twin of
+// TestBedrockLlamaConvertToolConfigOmitsForcedToolChoice. The Responses API
+// surface routes explicit tool_choice through
+// `convertResponsesToolChoice`, which yields `BedrockToolChoice{Tool: ...}`
+// for `{"type": "function", "name": "X"}`. The same Llama 400 applies, and
+// the same gate must apply: drop the forced specific-tool pin so the request
+// passes Bedrock's per-model toolChoice support matrix.
+func TestToBedrockResponsesRequest_LlamaConvertResponsesToolChoiceOmitsForcedToolChoice(t *testing.T) {
+	toolName := "PlannerOutput"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: &toolName,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{
+							Type:       "object",
+							Properties: &schemas.OrderedMap{},
+						},
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: &toolName,
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Positive: explicit tools list still present.
+	require.NotNil(t, bedrockReq.ToolConfig)
+	require.Len(t, bedrockReq.ToolConfig.Tools, 1)
+	require.NotNil(t, bedrockReq.ToolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, toolName, bedrockReq.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// Negative: forced specific-tool selection dropped on Llama.
+	assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolChoice
+// is the regression guard for the Llama gate above: Nova / Anthropic must
+// still receive the explicit forced tool_choice when callers ask for it on
+// the Responses API path.
+func TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolChoice(t *testing.T) {
+	toolName := "PlannerOutput"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: &toolName,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{
+							Type:       "object",
+							Properties: &schemas.OrderedMap{},
+						},
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: &toolName,
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Anthropic / Nova still get the forced specific-tool selection — the
+	// Llama gate must not over-fire on supported model families.
+	require.NotNil(t, bedrockReq.ToolConfig)
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice)
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected forced tool_choice for non-Llama models")
+	assert.Equal(t, toolName, bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+}

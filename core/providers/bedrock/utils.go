@@ -272,11 +272,23 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 		// Add the response format tool to the beginning of the tools list
 		bedrockReq.ToolConfig.Tools = append([]BedrockTool{*responseFormatTool}, bedrockReq.ToolConfig.Tools...)
-		// Force the model to use this specific tool
-		bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
-			Tool: &BedrockToolChoiceTool{
-				Name: responseFormatTool.ToolSpec.Name,
-			},
+		// Force the model to use this specific tool, EXCEPT on Meta Llama where
+		// Bedrock Converse rejects toolConfig.toolChoice.tool with HTTP 400
+		// ("This model doesn't support the toolConfig.toolChoice.tool field").
+		// With only the synthetic bf_so_* tool bound, omitting tool_choice
+		// (Bedrock default = "auto") yields the same outcome on Llama because
+		// there's exactly one tool the model can call. See the per-model
+		// support matrix at
+		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+		// and the langchain-aws ChatBedrockConverse implementation at
+		// https://github.com/langchain-ai/langchain-aws/blob/main/libs/aws/langchain_aws/chat_models/bedrock_converse.py
+		// (supports_tool_choice_values), which ships the same model-family gate.
+		if !schemas.IsLlamaModel(bifrostReq.Model) {
+			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
+				Tool: &BedrockToolChoiceTool{
+					Name: responseFormatTool.ToolSpec.Name,
+				},
+			}
 		}
 	}
 	if bifrostReq.Params.ServiceTier != nil {
@@ -1555,6 +1567,17 @@ func convertToolConfigFromFiltered(model string, params *schemas.ChatParameters,
 				if !found {
 					toolChoice = nil
 				}
+			}
+			// Per-model gate: Bedrock Converse rejects toolConfig.toolChoice.tool
+			// on Meta Llama variants ("This model doesn't support the
+			// toolConfig.toolChoice.tool field"). Drop the forced specific-tool
+			// pin on Llama; the bound tool list is unaffected so the model can
+			// still call the intended tool under Bedrock's default "auto"
+			// behavior. See per-model support matrix at
+			// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+			// (mirrors the synthetic-tool gate in convertChatParameters).
+			if toolChoice != nil && toolChoice.Tool != nil && schemas.IsLlamaModel(model) {
+				toolChoice = nil
 			}
 			if toolChoice != nil {
 				toolConfig.ToolChoice = toolChoice

@@ -1959,6 +1959,17 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Convert tool choice
 	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
+		// Per-model gate: Bedrock Converse rejects toolConfig.toolChoice.tool
+		// on Meta Llama variants ("This model doesn't support the
+		// toolConfig.toolChoice.tool field"). Drop the forced specific-tool
+		// pin on Llama; the bound tool list is unaffected so the model can
+		// still call the intended tool under Bedrock's default "auto"
+		// behavior. See per-model support matrix at
+		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+		// (mirrors the gate in convertToolConfigFromFiltered for ChatCompletions).
+		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModel(bifrostReq.Model) {
+			bedrockToolChoice = nil
+		}
 		if bedrockToolChoice != nil {
 			if bedrockReq.ToolConfig == nil {
 				bedrockReq.ToolConfig = &BedrockToolConfig{}
@@ -1974,10 +1985,21 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			bedrockReq.ToolConfig = &BedrockToolConfig{}
 		}
 		bedrockReq.ToolConfig.Tools = append([]BedrockTool{*responsesStructuredOutputTool}, bedrockReq.ToolConfig.Tools...)
-		bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
-			Tool: &BedrockToolChoiceTool{
-				Name: responsesStructuredOutputTool.ToolSpec.Name,
-			},
+		// Force the model to use this specific tool, EXCEPT on Meta Llama where
+		// Bedrock Converse rejects toolConfig.toolChoice.tool with HTTP 400
+		// ("This model doesn't support the toolConfig.toolChoice.tool field").
+		// With only the synthetic bf_so_* tool bound, omitting tool_choice
+		// (Bedrock default = "auto") yields the same outcome on Llama because
+		// there's exactly one tool the model can call. See the per-model
+		// support matrix at
+		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+		// (mirrors the gate applied in convertChatParameters).
+		if !schemas.IsLlamaModel(bifrostReq.Model) {
+			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
+				Tool: &BedrockToolChoiceTool{
+					Name: responsesStructuredOutputTool.ToolSpec.Name,
+				},
+			}
 		}
 	}
 
