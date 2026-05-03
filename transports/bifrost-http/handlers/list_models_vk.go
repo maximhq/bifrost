@@ -39,7 +39,7 @@ func (h *CompletionHandler) applyListModelsVirtualKeyProviderFilter(ctx *fasthtt
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to resolve virtual key: %v", err))
 		return false
 	}
-	if vk == nil {
+	if vk == nil || !vk.IsActive {
 		return true
 	}
 
