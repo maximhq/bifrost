@@ -342,6 +342,13 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileDeleteRequest
 }
 
+// isCachedContentRequestType returns true if the given request type is a cached-content API operation.
+func isCachedContentRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.CachedContentCreateRequest || reqType == schemas.CachedContentListRequest ||
+		reqType == schemas.CachedContentRetrieveRequest || reqType == schemas.CachedContentUpdateRequest ||
+		reqType == schemas.CachedContentDeleteRequest
+}
+
 // isModellessVideoRequestType returns true if the given request type is a video request that does not require a model.
 func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	switch reqType {

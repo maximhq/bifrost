@@ -265,7 +265,7 @@ Sources:
 - [ ] **Count tokens** (`POST /v1beta/models/{model}:countTokens`)
 - [ ] **Embed content** (`POST /v1beta/models/{model}:embedContent`)
 - [ ] **Batch embed** (`POST /v1beta/models/{model}:batchEmbedContents`)
-- [ ] **Cached content CRUD** (`POST /v1beta/cachedContents`, list, get, update, delete)
+- [~] **Cached content CRUD** (`POST /v1beta/cachedContents`, list, get, update, delete): typed lifecycle implemented for both Gemini and Vertex; harness `Gemini: list cached contents` runs against real upstream (list only; create/retrieve/update/delete not yet exercised)
 - [ ] **Files API** (`POST /v1beta/files` upload, list, get, delete)
 - [ ] **Models list** (`GET /v1beta/models`)
 - [ ] **Tuned models** (`POST /v1beta/tunedModels`)

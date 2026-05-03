@@ -2,9 +2,11 @@ package bedrock
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"regexp"
 	"strings"
 
@@ -555,8 +557,9 @@ func ensureChatToolConfigForConversation(bifrostReq *schemas.BifrostChatRequest,
 }
 
 // convertMessages converts Bifrost messages to Bedrock format
-// Returns regular messages and system messages separately
-func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
+// Returns regular messages and system messages separately.
+// The ctx is propagated to URL fetches inside individual messages.
+func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
@@ -573,7 +576,7 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 
 		case schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
 			// Convert regular message
-			bedrockMsg, err := convertMessage(msg)
+			bedrockMsg, err := convertMessage(ctx, msg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 			}
@@ -591,7 +594,7 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 			}
 
 			// Convert all collected tool messages into a single Bedrock message
-			bedrockMsg, err := convertToolMessages(toolMessages)
+			bedrockMsg, err := convertToolMessages(ctx, toolMessages)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert tool messages: %w", err)
 			}
@@ -647,8 +650,9 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 	return systemMsgs, nil
 }
 
-// convertMessage converts a Bifrost message to Bedrock format
-func convertMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
+// convertMessage converts a Bifrost message to Bedrock format.
+// The ctx is propagated to URL fetches inside content blocks.
+func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessage, error) {
 	bedrockMsg := BedrockMessage{
 		Role: BedrockMessageRole(msg.Role),
 	}
@@ -657,7 +661,7 @@ func convertMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 	var contentBlocks []BedrockContentBlock
 	if msg.Content != nil {
 		var err error
-		contentBlocks, err = convertContent(*msg.Content)
+		contentBlocks, err = convertContent(ctx, *msg.Content)
 		if err != nil {
 			return BedrockMessage{}, fmt.Errorf("failed to convert content: %w", err)
 		}
@@ -691,8 +695,9 @@ func convertMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 	return bedrockMsg, nil
 }
 
-// convertToolMessages converts multiple consecutive Bifrost tool messages to a single Bedrock message
-func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
+// convertToolMessages converts multiple consecutive Bifrost tool messages to a single Bedrock message.
+// The ctx is propagated to URL fetches inside tool result image blocks.
+func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (BedrockMessage, error) {
 	if len(msgs) == 0 {
 		return BedrockMessage{}, fmt.Errorf("no tool messages provided")
 	}
@@ -761,7 +766,7 @@ func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
 					}
 				case schemas.ChatContentBlockTypeImage:
 					if block.ImageURLStruct != nil {
-						imageSource, err := convertImageToBedrockSource(block.ImageURLStruct.URL)
+						imageSource, err := convertImageToBedrockSource(ctx, block.ImageURLStruct.URL)
 						if err != nil {
 							return BedrockMessage{}, fmt.Errorf("failed to convert image in tool result: %w", err)
 						}
@@ -805,8 +810,9 @@ func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
 	return bedrockMsg, nil
 }
 
-// convertContent converts Bifrost message content to Bedrock content blocks
-func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
+// convertContent converts Bifrost message content to Bedrock content blocks.
+// The ctx is propagated to URL fetches inside individual content blocks.
+func convertContent(ctx context.Context, content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
 	if content.ContentStr != nil && *content.ContentStr != "" {
 		// Simple text content (skip empty strings as Bedrock rejects blank text)
@@ -816,7 +822,7 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 	} else if content.ContentBlocks != nil {
 		// Multi-modal content
 		for _, block := range content.ContentBlocks {
-			bedrockBlocks, err := convertContentBlock(block)
+			bedrockBlocks, err := convertContentBlock(ctx, block)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert content block: %w", err)
 			}
@@ -827,8 +833,9 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 	return contentBlocks, nil
 }
 
-// convertContentBlock converts a Bifrost content block to Bedrock format
-func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
+// convertContentBlock converts a Bifrost content block to Bedrock format.
+// The ctx is propagated to URL fetches for image and document blocks.
+func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
 	// Handle Bedrock native format where type may be empty but text is set directly
 	// This occurs when requests are sent in Bedrock's native format (e.g., from Claude Code)
 	// In Bedrock format: {"text": "hello"} vs OpenAI format: {"type": "text", "text": "hello"}
@@ -866,7 +873,7 @@ func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock,
 			return nil, fmt.Errorf("image_url block missing image_url field")
 		}
 
-		imageSource, err := convertImageToBedrockSource(block.ImageURLStruct.URL)
+		imageSource, err := convertImageToBedrockSource(ctx, block.ImageURLStruct.URL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert image: %w", err)
 		}
@@ -931,6 +938,51 @@ func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock,
 			}
 		}
 
+		// URL-sourced document: fetch and inline the bytes (Bedrock Converse only
+		// accepts inline source bytes, not remote URLs).
+		if block.File.FileURL != nil && *block.File.FileURL != "" {
+			fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
+			if fetchErr != nil {
+				return nil, fetchErr
+			}
+			// Refine format from response Content-Type when present (more reliable
+			// than file extension or upstream-declared media type). Normalize to
+			// strip parameters (e.g. "; charset=utf-8") and lowercase the base type.
+			if mt, _, err := mime.ParseMediaType(fetchedMediaType); err == nil {
+				fetchedMediaType = mt
+			}
+			switch fetchedMediaType {
+			case "application/pdf":
+				documentSource.Format = "pdf"
+			case "text/plain":
+				documentSource.Format = "txt"
+				isText = true
+			case "text/markdown":
+				documentSource.Format = "md"
+				isText = true
+			case "text/html":
+				documentSource.Format = "html"
+				isText = true
+			case "text/csv":
+				documentSource.Format = "csv"
+				isText = true
+			case "application/msword":
+				documentSource.Format = "doc"
+			case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+				documentSource.Format = "docx"
+			case "application/vnd.ms-excel":
+				documentSource.Format = "xls"
+			case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+				documentSource.Format = "xlsx"
+			}
+			documentSource.Source.Bytes = &fetchedB64
+			return []BedrockContentBlock{
+				{
+					Document: documentSource,
+				},
+			}, nil
+		}
+
 		// Handle file data - strip data URL prefix if present
 		if block.File.FileData != nil {
 			fileData := *block.File.FileData
@@ -982,45 +1034,59 @@ func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock,
 	}
 }
 
-// convertImageToBedrockSource converts a Bifrost image URL to Bedrock image source
-// Uses centralized utility functions like Anthropic converter
-// Returns an error for URL-based images (non-base64) since Bedrock requires base64 data
-func convertImageToBedrockSource(imageURL string) (*BedrockImageSource, error) {
-	// Use centralized utility functions from schemas package
+// convertImageToBedrockSource converts a Bifrost image URL to Bedrock image source.
+// Bedrock Converse requires inline base64 bytes - it does not accept remote URLs.
+// For data: URLs (already base64), use the bytes directly. For http(s) URLs, fetch
+// the image and inline it via fetchImageFromURL. The ctx is propagated to the
+// fetch so request cancellation/deadlines abort in-flight downloads.
+func convertImageToBedrockSource(ctx context.Context, imageURL string) (*BedrockImageSource, error) {
 	sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sanitize image URL: %w", err)
 	}
 	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
 
-	// Check if this is a URL-based image (not base64/data URI)
-	if urlTypeInfo.Type != schemas.ImageContentTypeBase64 || urlTypeInfo.DataURLWithoutPrefix == nil {
-		return nil, fmt.Errorf("only base64-encoded images (data URI format) are supported; remote image URLs are not allowed")
-	}
-
-	// Determine format from media type or default to jpeg
-	format := "jpeg"
+	var encoded *string
+	var mediaType string
 	if urlTypeInfo.MediaType != nil {
-		switch *urlTypeInfo.MediaType {
-		case "image/png":
-			format = "png"
-		case "image/gif":
-			format = "gif"
-		case "image/webp":
-			format = "webp"
-		case "image/jpeg", "image/jpg":
-			format = "jpeg"
-		}
+		mediaType = *urlTypeInfo.MediaType
 	}
 
-	imageSource := &BedrockImageSource{
+	if urlTypeInfo.Type == schemas.ImageContentTypeBase64 && urlTypeInfo.DataURLWithoutPrefix != nil {
+		encoded = urlTypeInfo.DataURLWithoutPrefix
+	} else {
+		fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, sanitizedURL)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		// Prefer the response Content-Type over an extension-inferred media type.
+		if fetchedMediaType != "" {
+			mediaType = fetchedMediaType
+		}
+		encoded = &fetchedB64
+	}
+
+	if mt, _, err := mime.ParseMediaType(mediaType); err == nil {
+		mediaType = mt
+	}
+	format := "jpeg"
+	switch mediaType {
+	case "image/png":
+		format = "png"
+	case "image/gif":
+		format = "gif"
+	case "image/webp":
+		format = "webp"
+	case "image/jpeg", "image/jpg":
+		format = "jpeg"
+	}
+
+	return &BedrockImageSource{
 		Format: format,
 		Source: BedrockImageSourceData{
-			Bytes: urlTypeInfo.DataURLWithoutPrefix,
+			Bytes: encoded,
 		},
-	}
-
-	return imageSource, nil
+	}, nil
 }
 
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
