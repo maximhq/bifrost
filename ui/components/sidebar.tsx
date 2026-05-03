@@ -19,7 +19,10 @@ import {
   LogOut,
   Logs,
   Network,
+  PanelLeft,
   PanelLeftClose,
+  PanelLeftOpen,
+  PanelRight,
   Plug,
   Puzzle,
   ScrollText,
@@ -539,7 +542,6 @@ const compareVersions = (v1: string, v2: string): number => {
     if (prereleaseNum1 > prereleaseNum2) return 1;
     if (prereleaseNum1 < prereleaseNum2) return -1;
   }
-
   return 0;
 };
 
@@ -549,7 +551,7 @@ export default function AppSidebar() {
   const tsNavigate = useNavigate();
   // Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
   // strictly typed, but our sidebar items come from a runtime config).
-  const navigate = useCallback((url: string) => tsNavigate({ to: url as any }), [tsNavigate]);
+  const navigate = useCallback((url: string) => tsNavigate({ to: url as string }), [tsNavigate]);
   const [mounted, setMounted] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -1273,6 +1275,8 @@ export default function AppSidebar() {
           </Link>
           <button
             onClick={toggleSidebar}
+            type="button"
+            data-testid="sidebar-collapse-btn"
             className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex h-7 w-7 items-center justify-center rounded-md transition-colors"
             aria-label="Collapse sidebar"
           >
@@ -1290,7 +1294,7 @@ export default function AppSidebar() {
             alt="Bifrost"
             width={22}
             height={22}
-            style={{ width: 20 }}
+            style={{ width: 18 }}
           />
         </div>
       </SidebarHeader>
@@ -1425,6 +1429,17 @@ export default function AppSidebar() {
                   </button>
                 </div>
               ) : null}
+              <div className="hidden w-full cursor-pointer flex-col items-center group-data-[collapsible=icon]:flex">
+                <button
+                  onClick={toggleSidebar}
+                  type="button"
+                  data-testid="sidebar-expand-btn"
+                  className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center justify-center rounded-md transition-colors cursor-pointer"
+                  aria-label="Expand sidebar"
+                >
+                  <PanelLeftOpen className="h-4 w-4" />
+                </button>
+              </div>
             </div>
           </div>
           <div className="mx-auto flex flex-col items-center gap-1 group-data-[collapsible=icon]:hidden">

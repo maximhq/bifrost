@@ -333,6 +333,13 @@ func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
 }
 
+// isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.
+func isCachedContentRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.CachedContentCreateRequest || reqType == schemas.CachedContentListRequest ||
+		reqType == schemas.CachedContentRetrieveRequest || reqType == schemas.CachedContentUpdateRequest ||
+		reqType == schemas.CachedContentDeleteRequest
+}
+
 // isContainerRequestType returns true if the given request type is a container API operation.
 func isContainerRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.ContainerCreateRequest || reqType == schemas.ContainerListRequest ||
@@ -340,13 +347,6 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileCreateRequest || reqType == schemas.ContainerFileListRequest ||
 		reqType == schemas.ContainerFileRetrieveRequest || reqType == schemas.ContainerFileContentRequest ||
 		reqType == schemas.ContainerFileDeleteRequest
-}
-
-// isCachedContentRequestType returns true if the given request type is a cached-content API operation.
-func isCachedContentRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.CachedContentCreateRequest || reqType == schemas.CachedContentListRequest ||
-		reqType == schemas.CachedContentRetrieveRequest || reqType == schemas.CachedContentUpdateRequest ||
-		reqType == schemas.CachedContentDeleteRequest
 }
 
 // isModellessVideoRequestType returns true if the given request type is a video request that does not require a model.

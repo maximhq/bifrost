@@ -690,6 +690,35 @@ func ComputerUseGeneration(model string) string {
 	return ComputerUseGen20250124
 }
 
+// TextEditorGeneration returns the text_editor tool-version generation for a model.
+// Differs from ComputerUseGeneration because Anthropic's per-tool support matrix
+// is not always uniform - e.g., sonnet-4-5 supports old-gen computer_20250124 but
+// requires new-gen text_editor_20250728+.
+//
+// Models requiring new-gen text_editor:
+//   - Opus 4.7+ (matches IsOpus47)
+//   - Opus 4.5 / 4.6
+//   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
+func TextEditorGeneration(model string) string {
+	m := strings.ToLower(model)
+	if IsOpus47(m) {
+		return ComputerUseGen20251124
+	}
+	if strings.Contains(m, "opus") {
+		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	if strings.Contains(m, "sonnet") {
+		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	return ComputerUseGen20250124
+}
+
 // NormalizedToolSpec returns the canonical {type, name} pair Anthropic's API
 // expects for a server tool, given the model's computer-use generation.
 // baseTool is the family name with no version suffix: "computer", "text_editor", or "bash".
@@ -1023,6 +1052,10 @@ var providerToolVersionRemaps = map[schemas.ModelProvider][]ToolVersionRemap{
 	schemas.Vertex: {
 		// Vertex only supports basic web search, not dynamic filtering
 		{From: string(AnthropicToolTypeWebSearch20260209), To: string(AnthropicToolTypeWebSearch20250305)},
+		// Vertex AI's Anthropic surface lags Anthropic-direct on computer-use tool versions
+		// — computer_20251124 not yet accepted. Downgrade to the GA tag (name is the same
+		// "computer" for both, so no name rewrite needed).
+		{From: string(AnthropicToolTypeComputer20251124), To: string(AnthropicToolTypeComputer20250124)},
 		// Vertex does not support web fetch at all — no remap, these should error
 		// Vertex does not support code execution — no remap, these should error
 	},
@@ -1175,6 +1208,15 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		return jsonBody, nil
 	}
 
+	// Fall back to body-embedded model when caller didn't pass one. Mirrors
+	// the same fallback in StripUnsupportedFieldsFromRawBody so both helpers
+	// pick the same generation when invoked without an explicit model.
+	if model == "" {
+		if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
+			model = modelResult.String()
+		}
+	}
+
 	var err error
 	tools := toolsResult.Array()
 
@@ -1194,12 +1236,17 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 	// (type, name) pair for the model's generation. Runs before
 	// providerToolVersionRemaps so downgrades still work for non-Anthropic
 	// providers that share the schema.
-	generation := ComputerUseGeneration(model)
+	computerGeneration := ComputerUseGeneration(model)
+	textEditorGeneration := TextEditorGeneration(model)
 	for i, tool := range tools {
 		toolType := tool.Get("type").String()
 		baseTool := computerUseBaseTool(toolType)
 		if baseTool == "" {
 			continue
+		}
+		generation := computerGeneration
+		if baseTool == "text_editor" {
+			generation = textEditorGeneration
 		}
 		wantType, wantName := NormalizedToolSpec(generation, baseTool)
 		if wantType == "" {
@@ -1839,6 +1886,7 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		// Check if it's plain text based on file type
 		if file.FileType != nil && (*file.FileType == "text/plain" || *file.FileType == "txt") {
 			documentBlock.Source.SourceObj.Type = "text"
+			documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
 			documentBlock.Source.SourceObj.Data = &fileData
 			return documentBlock
 		}

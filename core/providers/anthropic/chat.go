@@ -130,7 +130,11 @@ func convertServerToolToAnthropic(tool schemas.ChatTool, model string) (Anthropi
 	// canonical {type, name} pair for the model's generation. Keeps callers
 	// from having to memorize Anthropic's per-generation tool naming matrix.
 	if baseTool := computerUseBaseTool(typeStr); baseTool != "" {
-		if wantType, wantName := NormalizedToolSpec(ComputerUseGeneration(model), baseTool); wantType != "" {
+		generation := ComputerUseGeneration(model)
+		if baseTool == "text_editor" {
+			generation = TextEditorGeneration(model)
+		}
+		if wantType, wantName := NormalizedToolSpec(generation, baseTool); wantType != "" {
 			typeStr = wantType
 			if toolName == "" || toolName != wantName {
 				toolName = wantName

@@ -579,3 +579,23 @@ func (provider *GeminiProvider) CachedContentDelete(ctx *schemas.BifrostContext,
 	}
 	return nil, lastErr
 }
+
+// fromBifrostObject is the inverse of toBifrostObject — projects a bifrost-canonical
+// CachedContentObject back into the Gemini wire shape (camelCase keys).
+//
+// API ref: https://ai.google.dev/api/caching#CachedContent
+func fromBifrostObject(o schemas.CachedContentObject) geminiCachedContent {
+	return geminiCachedContent{
+		Name:              o.Name,
+		DisplayName:       o.DisplayName,
+		Model:             o.Model,
+		SystemInstruction: o.SystemInstruction,
+		Contents:          o.Contents,
+		Tools:             o.Tools,
+		ToolConfig:        o.ToolConfig,
+		CreateTime:        o.CreateTime,
+		UpdateTime:        o.UpdateTime,
+		ExpireTime:        o.ExpireTime,
+		UsageMetadata:     o.UsageMetadata,
+	}
+}
