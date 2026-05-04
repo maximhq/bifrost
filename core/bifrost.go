@@ -5908,6 +5908,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		embeddingResponse.BackfillParams(req.BifrostRequest.EmbeddingRequest)
 		response.EmbeddingResponse = embeddingResponse
 	case schemas.RerankRequest:
 		rerankResponse, bifrostError := provider.Rerank(req.Context, key, req.BifrostRequest.RerankRequest)
