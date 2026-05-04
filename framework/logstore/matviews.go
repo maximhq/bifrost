@@ -195,13 +195,13 @@ var filterMatViews = []filterMatViewDef{
 // filterMatViewKeyPairColumns maps the (idCol, nameCol) pair callers pass into
 // GetDistinctKeyPairs to the per-dimension matview that pre-aggregates it.
 var filterMatViewKeyPairColumns = map[[2]string]string{
-	{"selected_key_id", "selected_key_name"}:     "mv_filter_selected_keys",
-	{"virtual_key_id", "virtual_key_name"}:       "mv_filter_virtual_keys",
-	{"routing_rule_id", "routing_rule_name"}:     "mv_filter_routing_rules",
-	{"team_id", "team_name"}:                     "mv_filter_teams",
-	{"customer_id", "customer_name"}:             "mv_filter_customers",
-	{"user_id", "user_id"}:                       "mv_filter_users",
-	{"business_unit_id", "business_unit_name"}:   "mv_filter_business_units",
+	{"selected_key_id", "selected_key_name"}:   "mv_filter_selected_keys",
+	{"virtual_key_id", "virtual_key_name"}:     "mv_filter_virtual_keys",
+	{"routing_rule_id", "routing_rule_name"}:   "mv_filter_routing_rules",
+	{"team_id", "team_name"}:                   "mv_filter_teams",
+	{"customer_id", "customer_name"}:           "mv_filter_customers",
+	{"user_id", "user_id"}:                     "mv_filter_users",
+	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
 }
 
 func filterMatViewDDL(v filterMatViewDef) string {
@@ -481,10 +481,10 @@ const matViewRefreshSafetyInterval = 10 * time.Minute
 // changed. Per-process state — multi-replica deployments still serialize via
 // the advisory lock.
 type matViewRefreshGate struct {
-	mu               sync.Mutex
-	lastActivity     int64
-	lastForcedAt     time.Time
-	initialized      bool
+	mu           sync.Mutex
+	lastActivity int64
+	lastForcedAt time.Time
+	initialized  bool
 }
 
 var refreshGate matViewRefreshGate
@@ -682,7 +682,19 @@ func (s *RDBLogStore) canUseMatViewForFreshAggregate(f SearchFilters) bool {
 // ---------------------------------------------------------------------------
 
 // applyMatViewFilters builds WHERE clauses for queries against mv_logs_hourly.
-func applyMatViewFilters(q *gorm.DB, f SearchFilters) *gorm.DB {
+// It also applies the request's VisibilityFilter (read off the gorm statement
+// context) so dashboard/metrics queries served from the materialized view are
+// scoped identically to raw-table queries.
+func (s *RDBLogStore) applyMatViewFilters(q *gorm.DB, f SearchFilters) *gorm.DB {
+	q = s.applyVisibility(q)
+	return applyMatViewFiltersOnly(q, f)
+}
+
+// applyMatViewFiltersOnly builds WHERE clauses for queries against
+// mv_logs_hourly without applying visibility. Kept separate so the visibility
+// pass happens exactly once (at the entry point) and unit tests of the filter
+// translation don't need a context.
+func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	if f.StartTime != nil {
 		q = q.Where("hour >= date_trunc('hour', ?::timestamptz)", *f.StartTime)
 	}
@@ -734,7 +746,7 @@ func applyMatViewFilters(q *gorm.DB, f SearchFilters) *gorm.DB {
 func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFilters) (int64, error) {
 	var total int64
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select("COALESCE(SUM(count), 0)").Row().Scan(&total); err != nil {
 		return 0, err
 	}
@@ -753,7 +765,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		TotalCost    float64 `gorm:"column:total_cost"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(`
 		COALESCE(SUM(count), 0) AS total_count,
 		COALESCE(SUM(success_count), 0) AS success_count,
@@ -819,7 +831,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		ErrorCount      int64 `gorm:"column:error_count"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		SUM(count) AS total,
@@ -862,7 +874,7 @@ func (s *RDBLogStore) getTokenHistogramFromMatView(ctx context.Context, filters 
 		CachedReadTokens int64 `gorm:"column:cached_read_tokens"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		SUM(total_prompt_tokens) AS prompt_tokens,
@@ -906,7 +918,7 @@ func (s *RDBLogStore) getCostHistogramFromMatView(ctx context.Context, filters S
 		Cost            float64 `gorm:"column:cost"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		model,
@@ -961,7 +973,7 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 		ErrorCount      int64  `gorm:"column:error_count"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		model,
@@ -1022,7 +1034,7 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 	}
 	// Weighted average of percentiles across hourly buckets
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
@@ -1068,7 +1080,7 @@ func (s *RDBLogStore) getProviderCostHistogramFromMatView(ctx context.Context, f
 		Cost            float64 `gorm:"column:cost"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		provider,
@@ -1123,7 +1135,7 @@ func (s *RDBLogStore) getProviderTokenHistogramFromMatView(ctx context.Context, 
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		provider,
@@ -1197,7 +1209,7 @@ func (s *RDBLogStore) getProviderLatencyHistogramFromMatView(ctx context.Context
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		provider,
@@ -1262,7 +1274,7 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 		Cost            float64 `gorm:"column:cost"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -1318,7 +1330,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -1391,7 +1403,7 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -1455,7 +1467,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		TotalCost    float64 `gorm:"column:total_cost"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(`
 		model, provider,
 		SUM(count) AS total,
@@ -1487,7 +1499,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
 		pq := s.db.WithContext(ctx).Table("mv_logs_hourly")
-		pq = applyMatViewFilters(pq, prevFilters)
+		pq = s.applyMatViewFilters(pq, prevFilters)
 		if err := pq.Select(`
 			model, provider,
 			SUM(count) AS total,
@@ -1547,7 +1559,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		TotalCost   float64 `gorm:"column:total_cost"`
 	}
 	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
-	q = applyMatViewFilters(q, filters)
+	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
 	if err := q.Select(`
 		user_id,
@@ -1576,7 +1588,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
 		pq := s.db.WithContext(ctx).Table("mv_logs_hourly")
-		pq = applyMatViewFilters(pq, prevFilters)
+		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("user_id != ''")
 		if err := pq.Select(`
 			user_id,
@@ -1625,7 +1637,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 // of which path served the request.
 func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context) ([]string, error) {
 	var models []string
-	if err := s.db.WithContext(ctx).Table("mv_filter_models").
+	if err := s.applyVisibility(s.db.WithContext(ctx)).Table("mv_filter_models").
 		Distinct("model").
 		Where("model != ''").
 		Limit(defaultFilterDataLimit).
@@ -1638,7 +1650,8 @@ func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context) ([]strin
 // getDistinctAliasesFromMatView returns unique alias values from mv_filter_aliases.
 func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context) ([]string, error) {
 	var aliases []string
-	if err := s.db.WithContext(ctx).Table("mv_filter_aliases").
+	q := s.applyVisibility(s.db.WithContext(ctx).Table("mv_logs_filterdata"))
+	if err := q.
 		Distinct("alias").
 		Where("alias != ''").
 		Limit(defaultFilterDataLimit).
@@ -1692,8 +1705,8 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 // mv_filter_routing_engines.
 func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context) ([]string, error) {
 	var rawValues []string
-	if err := s.db.WithContext(ctx).Table("mv_filter_routing_engines").
-		Distinct("routing_engines_used").
+	q := s.applyVisibility(s.db.WithContext(ctx).Table("mv_logs_filterdata"))
+	if err := q.Distinct("routing_engines_used").
 		Where("routing_engines_used != ''").
 		Limit(defaultFilterDataLimit).
 		Pluck("routing_engines_used", &rawValues).Error; err != nil {

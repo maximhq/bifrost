@@ -132,7 +132,11 @@ func (s *RDBConfigStore) DeleteFolder(ctx context.Context, id string) error {
 // Prompt Repository - Prompts
 // ============================================================================
 
-// GetPrompts gets all prompts, optionally filtered by folder ID
+// GetPrompts gets all prompts, optionally filtered by folder ID.
+//
+// When the caller's context carries a *VisibilityFilter, the query is
+// narrowed to prompts the caller is allowed to see (user_id IN UserIDs OR
+// team_id IN TeamIDs).
 func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error) {
 	var prompts []tables.TablePrompt
 	query := s.DB().WithContext(ctx).
@@ -142,6 +146,7 @@ func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]ta
 	if folderID != nil {
 		query = query.Where("folder_id = ?", *folderID)
 	}
+	query = applyPromptVisibility(ctx, query)
 
 	if err := query.Find(&prompts).Error; err != nil {
 		return nil, err
@@ -165,12 +170,16 @@ func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]ta
 	return prompts, nil
 }
 
-// GetPromptByID gets a prompt by ID with latest version
+// GetPromptByID gets a prompt by ID with latest version.
+//
+// When the caller's context carries a *VisibilityFilter, a prompt that
+// exists but falls outside the filter returns ErrNotFound so URL guessing
+// cannot distinguish "hidden" from "absent".
 func (s *RDBConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error) {
 	var prompt tables.TablePrompt
-	if err := s.DB().WithContext(ctx).
-		Preload("Folder").
-		First(&prompt, "id = ?", id).Error; err != nil {
+	q := s.DB().WithContext(ctx).Preload("Folder")
+	q = applyPromptVisibility(ctx, q)
+	if err := q.First(&prompt, "prompts.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}

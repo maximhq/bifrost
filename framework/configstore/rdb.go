@@ -2273,6 +2273,11 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 	// Build base query with filters
 	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableVirtualKey{})
 
+	// Apply caller-supplied row visibility before per-call filters so the
+	// total count and the page result agree on what the caller is allowed
+	// to see.
+	baseQuery = applyVirtualKeyVisibility(ctx, baseQuery)
+
 	// Virtual keys are either customer-scoped or team-scoped, never both.
 	// When both filters are provided, use OR to match keys belonging to either.
 	if params.CustomerID != "" && params.TeamID != "" {
@@ -2360,10 +2365,17 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 }
 
 // GetVirtualKey retrieves a virtual key from the database.
+//
+// When the caller's context carries a *VisibilityFilter, the query is
+// narrowed to rows the caller is allowed to see. A row that exists but
+// falls outside the filter returns ErrNotFound — the same response a
+// genuinely-missing row produces — so URL guessing cannot distinguish
+// "hidden" from "absent".
 func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := preloadVirtualKeyDetailRelations(s.DB().WithContext(ctx)).
-		First(&virtualKey, "id = ?", id).Error; err != nil {
+	q := preloadVirtualKeyDetailRelations(s.DB().WithContext(ctx))
+	q = applyVirtualKeyVisibility(ctx, q)
+	if err := q.First(&virtualKey, "governance_virtual_keys.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2951,9 +2963,13 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 const teamSelectWithVKCount = "governance_teams.*, (SELECT COUNT(*) FROM governance_virtual_keys WHERE team_id = governance_teams.id) AS virtual_key_count"
 
 // GetTeams retrieves all teams from the database.
+//
+// When the caller's context carries a *VisibilityFilter for EntityTeam,
+// the query is narrowed to governance_teams.id IN OwnTeamIDs (see
+// applyTeamVisibility).
 func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error) {
 	// Preload relationships for complete information
-	query := s.DB().WithContext(ctx).
+	query := applyTeamVisibility(ctx, s.DB().WithContext(ctx)).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit")
 	// Optional filtering by customer
@@ -2968,8 +2984,11 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 }
 
 // GetTeamsPaginated retrieves teams with pagination, filtering, and search support.
+//
+// When the caller's context carries a *VisibilityFilter for EntityTeam,
+// the query is narrowed to governance_teams.id IN OwnTeamIDs.
 func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableTeam{})
+	baseQuery := applyTeamVisibility(ctx, s.DB().WithContext(ctx).Model(&tables.TableTeam{}))
 
 	if params.CustomerID != "" {
 		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
@@ -3007,12 +3026,17 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 }
 
 // GetTeam retrieves a specific team from the database.
+//
+// When the caller's context carries a *VisibilityFilter for EntityTeam,
+// a team that doesn't satisfy the filter returns ErrNotFound — the
+// caller cannot distinguish "doesn't exist" from "not visible," matching
+// the leak-prevention contract used by the other governance entities.
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
-	if err := s.DB().WithContext(ctx).
+	if err := applyTeamVisibility(ctx, s.DB().WithContext(ctx)).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit").
-		First(&team, "id = ?", id).Error; err != nil {
+		First(&team, "governance_teams.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3110,9 +3134,13 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 }
 
 // GetCustomers retrieves all customers from the database.
+//
+// When the caller's context carries a *VisibilityFilter for
+// EntityCustomer, the query is narrowed to governance_customers.id IN
+// CustomerIDs (see applyCustomerVisibility).
 func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustomer, error) {
 	var customers []tables.TableCustomer
-	if err := preloadCustomerRelations(s.DB().WithContext(ctx), "").
+	if err := preloadCustomerRelations(applyCustomerVisibility(ctx, s.DB().WithContext(ctx)), "").
 		Order("created_at ASC").
 		Find(&customers).Error; err != nil {
 		return nil, err
@@ -3120,9 +3148,14 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 	return customers, nil
 }
 
-// GetCustomersPaginated retrieves customers with pagination and optional search filtering.
+// GetCustomersPaginated retrieves customers with pagination and optional
+// search filtering.
+//
+// When the caller's context carries a *VisibilityFilter for
+// EntityCustomer, the query is narrowed to governance_customers.id IN
+// CustomerIDs.
 func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableCustomer{})
+	baseQuery := applyCustomerVisibility(ctx, s.DB().WithContext(ctx).Model(&tables.TableCustomer{}))
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
@@ -3152,10 +3185,16 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 }
 
 // GetCustomer retrieves a specific customer from the database.
+//
+// When the caller's context carries a *VisibilityFilter for
+// EntityCustomer, a customer that doesn't satisfy the filter returns
+// ErrNotFound — the caller cannot distinguish "doesn't exist" from
+// "not visible," matching the leak-prevention contract used by the
+// other governance entities.
 func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer
-	if err := preloadCustomerRelations(s.DB().WithContext(ctx), "").
-		First(&customer, "id = ?", id).Error; err != nil {
+	if err := preloadCustomerRelations(applyCustomerVisibility(ctx, s.DB().WithContext(ctx)), "").
+		First(&customer, "governance_customers.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3546,8 +3585,14 @@ func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRou
 }
 
 // GetRoutingRulesPaginated retrieves routing rules with pagination and optional search filtering.
+//
+// When the caller's context carries a *VisibilityFilter with RoutingScopes
+// set, the query is narrowed to rules whose (scope, scope_id) tuple appears
+// in the allowlist; rules with scope='global' are always included.
 func (s *RDBConfigStore) GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error) {
 	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableRoutingRule{})
+
+	baseQuery = applyRoutingRuleVisibility(ctx, baseQuery)
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
