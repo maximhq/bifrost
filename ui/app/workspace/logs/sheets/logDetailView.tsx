@@ -1575,7 +1575,7 @@ export function LogDetailView({
           )}
         </div>
       </details>
-      <Tabs defaultValue={showTabs ? "messages" : "plugins"} className="gap-2">
+      <Tabs key={log.id} defaultValue={showTabs ? "messages" : "plugins"} className="gap-2">
         <TabsList className="bg-muted/60 h-10 w-fit">
           {showTabs && (
             <TabsTrigger value="messages" className="px-3">
