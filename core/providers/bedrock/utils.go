@@ -588,10 +588,23 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
+		msg := bifrostMessages[0]
+		msg.Role = schemas.ChatMessageRoleUser
+		bedrockMsg, err := convertMessage(ctx, msg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to convert message: %w", err)
+		}
+		if len(bedrockMsg.Content) > 0 {
+			return []BedrockMessage{bedrockMsg}, nil, nil
+		}
+	}
+
 	for i := 0; i < len(bifrostMessages); i++ {
 		msg := bifrostMessages[i]
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
 			// Convert system message
 			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {

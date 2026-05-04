@@ -1729,6 +1729,14 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
 func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
+		content := convertSystemChatMessageToGeminiUserContent(messages[0])
+		if len(content.Parts) > 0 {
+			return []Content{content}, nil
+		}
+	}
+
 	var contents []Content
 	var systemInstruction *Content
 
@@ -1740,7 +1748,8 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 
 	for i, message := range messages {
 		// Handle system messages separately - Gemini requires them in SystemInstruction field
-		if message.Role == schemas.ChatMessageRoleSystem {
+		// Gemini has no support for role "developer", so we treat it as "system"
+		if message.Role == schemas.ChatMessageRoleSystem || message.Role == schemas.ChatMessageRoleDeveloper {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -2076,6 +2085,33 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 	}
 
 	return contents, systemInstruction
+}
+
+func convertSystemChatMessageToGeminiUserContent(message schemas.ChatMessage) Content {
+	content := Content{Role: "user"}
+
+	if message.Content == nil {
+		return content
+	}
+
+	if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+		content.Parts = append(content.Parts, &Part{
+			Text: *message.Content.ContentStr,
+		})
+		return content
+	}
+
+	if message.Content.ContentBlocks != nil {
+		for _, block := range message.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				content.Parts = append(content.Parts, &Part{
+					Text: *block.Text,
+				})
+			}
+		}
+	}
+
+	return content
 }
 
 // normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase

@@ -1214,6 +1214,16 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 // ConvertBifrostMessagesToCohereMessages converts an array of Bifrost ResponsesMessage to Cohere message format
 // This is the main conversion method from Bifrost to Cohere - handles all message types and returns messages
 func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesMessage, params *schemas.ResponsesParameters) []CohereMessage {
+	// If only a single system / developer message is present, convert it to a user message.
+	// Cohere requires a user message to be present in the conversation.
+	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		msg := bifrostMessages[0]
+		msg.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
+		if cohereMsg := convertBifrostMessageToCohereMessage(&msg); cohereMsg != nil {
+			return []CohereMessage{*cohereMsg}
+		}
+	}
+
 	var cohereMessages []CohereMessage
 	var systemContent []string
 	var pendingReasoningContentBlocks []CohereContentBlock
@@ -1234,7 +1244,8 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 				role = string(*msg.Role)
 			}
 
-			if role == "system" {
+			// Cohere has no support for role "developer", so we treat it as "system"
+			if role == "system" || role == "developer" {
 				// Collect system messages separately for Cohere
 				systemMsgs := convertBifrostMessageToCohereSystemContent(&msg)
 				systemContent = append(systemContent, systemMsgs...)

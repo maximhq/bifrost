@@ -68,7 +68,6 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	bifrostReq.Params = params
 
 	return bifrostReq
-
 }
 
 func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
@@ -2495,8 +2494,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				},
 			}
 			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
-				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query =
-					schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
 			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}
@@ -2899,6 +2897,32 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 
 // convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents
 func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage) ([]Content, *Content, error) {
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		content := Content{Role: "user"}
+		if messages[0].Content != nil {
+			if messages[0].Content.ContentStr != nil && *messages[0].Content.ContentStr != "" {
+				content.Parts = append(content.Parts, &Part{
+					Text: *messages[0].Content.ContentStr,
+				})
+			}
+			if messages[0].Content.ContentBlocks != nil {
+				for _, block := range messages[0].Content.ContentBlocks {
+					part, err := convertContentBlockToGeminiPart(block)
+					if err != nil {
+						return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
+					}
+					if part != nil {
+						content.Parts = append(content.Parts, part)
+					}
+				}
+			}
+		}
+		if len(content.Parts) > 0 {
+			return []Content{content}, nil, nil
+		}
+	}
+
 	var contents []Content
 	var systemInstruction *Content
 
@@ -2927,7 +2951,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		}
 
 		// Handle system messages separately
-		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
+		if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}

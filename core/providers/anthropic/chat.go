@@ -569,7 +569,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		msg := messages[i]
 
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
 			// Handle system message separately
 			if msg.Content != nil {
 				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
@@ -588,6 +588,17 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					if len(blocks) > 0 {
 						systemContent = &AnthropicContent{ContentBlocks: blocks}
 					}
+				}
+			}
+			// If only a single system message is present, convert it user message (since openai allows it)
+			if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
+				if systemContent != nil {
+					content := systemContent
+					systemContent = nil
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:    AnthropicMessageRoleUser,
+						Content: *content,
+					})
 				}
 			}
 			i++
