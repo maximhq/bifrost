@@ -63,7 +63,7 @@ func (m *MCPManager) ReconnectClient(id string) error {
 	// Reconnect is not applicable because auth is resolved per request/user identity.
 	if client.ExecutionConfig != nil && client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
 		m.mu.Unlock()
-		return fmt.Errorf("reconnect is not supported for per_user_oauth clients")
+		return fmt.Errorf("per-user OAuth clients do not maintain a shared upstream connection (each user manages their own auth): %w", schemas.ErrMCPReconnectNotApplicable)
 	}
 	config := client.ExecutionConfig
 	m.mu.Unlock()

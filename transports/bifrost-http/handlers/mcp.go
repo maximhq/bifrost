@@ -421,6 +421,13 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if err := h.mcpManager.ReconnectMCPClient(ctx, id); err != nil {
+		// Per-user OAuth (and any future client type that opts out of the
+		// shared-connection model) is a 400-class error: the request is
+		// well-formed, the client just doesn't support this operation.
+		if errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client: %v", err))
 		return
 	}

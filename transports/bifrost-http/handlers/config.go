@@ -214,6 +214,19 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Validate MCP external URL overrides up front — the rest of this handler
+	// applies live mutations (drop-excess flag, MCP tool-manager reload, compat
+	// plugin reload, in-memory MCP config) before persisting, so a late
+	// rejection would leave the process in a partially-updated state.
+	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalServerURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_server_url %v", err))
+		return
+	}
+	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalClientURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_client_url %v", err))
+		return
+	}
+
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		// Checking the accessibility of the pricing URL
@@ -428,6 +441,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
+	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
 	updatedConfig.MCPExternalServerURL = payload.ClientConfig.MCPExternalServerURL
 	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 

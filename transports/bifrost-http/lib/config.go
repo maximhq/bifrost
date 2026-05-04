@@ -690,6 +690,26 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	}
 }
 
+// sanitizeMCPExternalOAuthURLs validates the MCP external OAuth URL overrides
+// on a ClientConfig and clears any invalid override so it cannot leak into
+// OAuth URL generation. The warning intentionally omits the offending value:
+// these fields support env-var references (`env.MY_VAR`), and echoing the
+// resolved value would let a misconfigured deployment surface env contents
+// in logs.
+func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
+	if client == nil {
+		return
+	}
+	if err := ValidateBaseURL(client.MCPExternalServerURL.GetValue()); err != nil {
+		logger.Warn("mcp_external_server_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
+		client.MCPExternalServerURL = nil
+	}
+	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
+		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
+		client.MCPExternalClientURL = nil
+	}
+}
+
 // loadClientConfig loads and merges client config from file with store using hash-based reconciliation
 func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	var clientConfig *configstore.ClientConfig
@@ -704,6 +724,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig == nil {
 		logger.Debug("client config not found in store, using config file")
 		if configData.Client != nil {
+			sanitizeMCPExternalOAuthURLs(configData.Client)
 			config.ClientConfig = configData.Client
 			applyClientConfigDefaults(config.ClientConfig)
 			// Generate hash for the file config
@@ -748,6 +769,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig.ConfigHash != fileHash {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
+		sanitizeMCPExternalOAuthURLs(configData.Client)
 		config.ClientConfig = configData.Client
 		config.ClientConfig.ConfigHash = fileHash
 		applyClientConfigDefaults(config.ClientConfig)

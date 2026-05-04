@@ -189,6 +189,10 @@ Bifrost will:
 2. Register a new client using `registration_url`
 3. Use the registered client ID for authorization
 
+<Warning>
+The `redirect_uri` is registered with the upstream provider at this point and is **locked** to Bifrost's current client URL (`mcp_external_client_url`, or the `Host` header if unset). If you later change Bifrost's public URL, the upstream provider will reject the authorize call with **"Invalid redirect URI"**. To recover, clear the stored client credentials for this MCP server so Bifrost re-runs Dynamic Client Registration with the new URL.
+</Warning>
+
 #### OAuth Discovery
 
 Bifrost can automatically discover OAuth endpoints from your MCP server's metadata:
