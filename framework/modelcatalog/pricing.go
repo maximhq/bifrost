@@ -177,7 +177,11 @@ type costInput struct {
 	videoSeconds        *int
 	ocrProcessedPages   *int
 	ocrIsAnnotated      *bool
-	tier                serviceTier
+	// containerIdentifierString, when non-empty, replaces the actual requested/resolved
+	// model names during pricing lookup. Used for request types whose cost is not
+	// tied to a specific model. Currently only used for container creates.
+	containerIdentifierString string
+	tier                      serviceTier
 }
 
 // GetPricingEntryForModel returns the pricing data
@@ -266,6 +270,14 @@ func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCac
 	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
 }
 
+// computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.
+func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) float64 {
+	if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
+		return 0
+	}
+	return *pricing.CodeInterpreterCostPerSession
+}
+
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
 func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scopes PricingLookupScopes) float64 {
 	extraFields := result.GetExtraFields()
@@ -287,15 +299,23 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 	}
 
 	// If no usage data at all, nothing to price
-	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil {
+	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
 		return 0
 	}
 
 	// Normalize stream request types to their base type for pricing lookup
 	requestType = normalizeStreamRequestType(requestType)
 
+	// When a pricing model override is set, use it in place of the actual requested/resolved
+	// model names during pricing lookup (e.g. container creates always look up "container").
+	lookupModel, lookupResolved := originalModelRequested, resolvedModelUsed
+	if input.containerIdentifierString != "" {
+		lookupModel = input.containerIdentifierString
+		lookupResolved = input.containerIdentifierString
+	}
+
 	// Resolve pricing entry with deployment fallback
-	pricing := mc.resolvePricing(provider, originalModelRequested, resolvedModelUsed, requestType, scopes)
+	pricing := mc.resolvePricing(provider, lookupModel, lookupResolved, requestType, scopes)
 	if pricing == nil {
 		return 0
 	}
@@ -318,6 +338,8 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
 	case schemas.OCRRequest:
 		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
+	case schemas.ContainerCreateRequest:
+		return computeContainerCreationCost(pricing)
 	default:
 		return 0
 	}
@@ -402,6 +424,13 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		input.ocrProcessedPages = &pages
 		isAnnotated := result.OCRResponse.DocumentAnnotation != nil && *result.OCRResponse.DocumentAnnotation != ""
 		input.ocrIsAnnotated = &isAnnotated
+
+	case result.ContainerCreateResponse != nil:
+		if memLimit := result.ContainerCreateResponse.MemoryLimit; memLimit != "" {
+			input.containerIdentifierString = "container-" + memLimit
+		} else {
+			input.containerIdentifierString = "container"
+		}
 	}
 
 	return input
@@ -1221,6 +1250,24 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
 		if ok {
 			return &pricing, true
+		}
+	}
+
+	// Lookup fallback chain for container_create:
+	// 1. Try chat mode for the same model (e.g. "container-1g" in chat mode)
+	// 2. Try the base "container" model in chat mode (default rate when no memory-specific entry exists)
+	if requestType == schemas.ContainerCreateRequest {
+		mc.logger.Debug("primary lookup failed, trying chat mode for container create pricing")
+		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+		if ok {
+			return &pricing, true
+		}
+		if model != "container" {
+			mc.logger.Debug("memory-specific container pricing not found, falling back to base container entry")
+			pricing, ok = mc.pricingData[makeKey("container", provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			if ok {
+				return &pricing, true
+			}
 		}
 	}
 

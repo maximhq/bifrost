@@ -599,6 +599,7 @@ export function LogDetailView({
     resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
   const isContainer = isContainerOperation(log.object);
+  const showTabs = !isContainer;
   const isPassthrough = isPassthroughOperation(log.object);
   const passthroughParams = isPassthrough
     ? (log.params as {
@@ -1574,18 +1575,20 @@ export function LogDetailView({
           )}
         </div>
       </details>
-      <Tabs defaultValue="messages" className="gap-2">
+      <Tabs defaultValue={showTabs ? "messages" : "plugins"} className="gap-2">
         <TabsList className="bg-muted/60 h-10 w-fit">
-          <TabsTrigger value="messages" className="px-3">
-            Messages
-            {log.input_history?.length ? (
-              <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-                {log.input_history.length + (log.output_message ? 1 : 0)}
-              </span>
-            ) : null}
-          </TabsTrigger>
+          {showTabs && (
+            <TabsTrigger value="messages" className="px-3">
+              Messages
+              {log.input_history?.length ? (
+                <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+                  {log.input_history.length + (log.output_message ? 1 : 0)}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          )}
 
-          {!isPassthrough && !log.list_models_output && (
+          {showTabs && !isPassthrough && !log.list_models_output && (
             <TabsTrigger value="tools" className="px-3">
               Tools
               {log.params?.tools?.length ? (
@@ -1595,14 +1598,16 @@ export function LogDetailView({
               ) : null}
             </TabsTrigger>
           )}
-          <TabsTrigger value="routing" className="px-3">
-            Routing
-            {log.routing_engine_logs ? (
-              <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-                {log.routing_engine_logs.split("\n").filter(Boolean).length}
-              </span>
-            ) : null}
-          </TabsTrigger>
+          {showTabs && (
+            <TabsTrigger value="routing" className="px-3">
+              Routing
+              {log.routing_engine_logs ? (
+                <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+                  {log.routing_engine_logs.split("\n").filter(Boolean).length}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="plugins" className="px-3">
             Plugin Logs
             {pluginLogCount > 0 ? (
@@ -2506,7 +2511,7 @@ export function LogDetailView({
           )}
           {rawResponse && log.status !== "processing" && (
             <>
-              <div className="text-muted-foreground text-[12px]">
+              <div className="text-muted-foreground text-[12px] pt-4">
                 Raw Response from{" "}
                 <span className="text-foreground font-medium capitalize">
                   {log.provider}
