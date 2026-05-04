@@ -159,6 +159,10 @@ func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model strin
 		// Set total tokens same as prompt tokens for embeddings
 		bifrostResp.Usage.TotalTokens = bifrostResp.Usage.PromptTokens
 	}
+	if geminiResp.Usage != nil {
+		bifrostResp.Usage.PromptTokens = int(geminiResp.Usage.PromptTokenCount)
+		bifrostResp.Usage.TotalTokens = int(geminiResp.Usage.TotalTokenCount)
+	}
 
 	return bifrostResp
 }
