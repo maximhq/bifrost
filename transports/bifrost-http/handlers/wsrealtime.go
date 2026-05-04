@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -200,7 +201,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		Provider: providerKey,
 		KeyID:    key.ID,
 		Endpoint: wsURL,
-	}, rtProvider.RealtimeHeaders(key))
+	}, mapToHTTPHeader(rtProvider.RealtimeHeaders(key)))
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))
 		return
@@ -650,6 +651,14 @@ func extractRealtimeSubprotocolAPIKey(ctx *fasthttp.RequestCtx) string {
 		}
 	}
 	return ""
+}
+
+func mapToHTTPHeader(headers map[string]string) http.Header {
+	merged := http.Header{}
+	for key, value := range headers {
+		merged.Set(key, value)
+	}
+	return merged
 }
 
 func newRealtimeWireBifrostError(status int, code, message string) *schemas.BifrostError {

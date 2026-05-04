@@ -26,11 +26,11 @@ type PoolKey struct {
 // Pool manages a pool of upstream WebSocket connections keyed by (provider, keyID, endpoint).
 // Idle connections are cached for reuse. Connections exceeding max lifetime are discarded.
 type Pool struct {
-	mu       sync.Mutex
-	idle     map[PoolKey][]*UpstreamConn
-	inFlight int
-	probing  int                    // connections temporarily removed from idle for heartbeat validation
-	probingPerKey map[PoolKey]int   // per-key probing count for MaxIdlePerKey enforcement
+	mu            sync.Mutex
+	idle          map[PoolKey][]*UpstreamConn
+	inFlight      int
+	probing       int             // connections temporarily removed from idle for heartbeat validation
+	probingPerKey map[PoolKey]int // per-key probing count for MaxIdlePerKey enforcement
 
 	config *schemas.WSPoolConfig
 
@@ -58,7 +58,7 @@ func NewPool(config *schemas.WSPoolConfig) *Pool {
 // Get retrieves an idle connection for the given key, or dials a new one.
 // The returned connection is removed from the idle pool and must be returned
 // via Return or discarded via Discard.
-func (p *Pool) Get(key PoolKey, headers map[string]string) (*UpstreamConn, error) {
+func (p *Pool) Get(key PoolKey, headers http.Header) (*UpstreamConn, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -181,7 +181,7 @@ func (p *Pool) Close() {
 
 // dial establishes a new WebSocket connection to the upstream endpoint
 // identified by key, forwarding the supplied HTTP headers during the handshake.
-func (p *Pool) dial(key PoolKey, headers map[string]string) (*UpstreamConn, error) {
+func (p *Pool) dial(key PoolKey, headers http.Header) (*UpstreamConn, error) {
 	wsConn, resp, err := Dial(key.Endpoint, headers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", key.Endpoint, wrapHandshakeError(resp, err))

@@ -8,14 +8,17 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
+	"github.com/valyala/fasthttp"
 )
 
 type testWSHandlerStore struct {
 	allowDirectKeys bool
+	matcher         *lib.HeaderMatcher
 }
 
 func (s testWSHandlerStore) ShouldAllowDirectKeys() bool {
@@ -23,7 +26,7 @@ func (s testWSHandlerStore) ShouldAllowDirectKeys() bool {
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
-	return nil
+	return s.matcher
 }
 
 func (s testWSHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
@@ -125,4 +128,135 @@ func TestCreateBifrostContextFromAuth_EmptyBaggageSessionIDIgnored(t *testing.T)
 	if got := ctx.Value(schemas.BifrostContextKeyParentRequestID); got != nil {
 		t.Fatalf("parent request id should be unset, got %#v", got)
 	}
+}
+
+func TestCreateBifrostContextFromAuth_ForwardsPrefixedHeaders(t *testing.T) {
+	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, &authHeaders{
+		headers: map[string][]string{
+			"x-bf-eh-originator": {"my-test-client"},
+			"x-bf-eh-x-trace-id": {"abc-123"},
+			"x-bf-eh-cookie":     {"blocked"},
+		},
+	})
+	defer cancel()
+
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		t.Fatal("expected websocket extra headers in context")
+	}
+	assert.Equal(t, []string{"my-test-client"}, extraHeaders["originator"])
+	assert.Equal(t, []string{"abc-123"}, extraHeaders["x-trace-id"])
+	assert.NotContains(t, extraHeaders, "cookie")
+}
+
+func TestCreateBifrostContextFromAuth_AppliesHeaderFilterAndDirectAllowlist(t *testing.T) {
+	matcher := lib.NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+		Allowlist: []string{"originator", "anthropic-*"},
+		Denylist:  []string{"anthropic-secret"},
+	})
+	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{matcher: matcher}, &authHeaders{
+		headers: map[string][]string{
+			"x-bf-eh-originator":       {"allowed-prefix"},
+			"x-bf-eh-x-trace-id":       {"blocked-by-allowlist"},
+			"anthropic-beta":           {"allowed-direct"},
+			"anthropic-secret":         {"blocked-by-denylist"},
+			"x-bf-eh-anthropic-secret": {"blocked-prefix-denylist"},
+		},
+	})
+	defer cancel()
+
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		t.Fatal("expected websocket extra headers in context")
+	}
+	assert.Equal(t, []string{"allowed-prefix"}, extraHeaders["originator"])
+	assert.Equal(t, []string{"allowed-direct"}, extraHeaders["anthropic-beta"])
+	assert.NotContains(t, extraHeaders, "x-trace-id")
+	assert.NotContains(t, extraHeaders, "anthropic-secret")
+}
+
+func TestCaptureAuthHeaders_PreservesDuplicateHeaderValues(t *testing.T) {
+	var req fasthttp.Request
+	req.Header.Set("Host", "example.test")
+	req.Header.Add("x-bf-eh-x-trace-id", "trace-a")
+	req.Header.Add("x-bf-eh-x-trace-id", "trace-b")
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	auth := captureAuthHeaders(ctx)
+	assert.Equal(t, []string{"trace-a", "trace-b"}, auth.headers["x-bf-eh-x-trace-id"])
+}
+
+func TestCreateBifrostContextFromAuth_PreservesMultipleForwardedHeaderValues(t *testing.T) {
+	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, &authHeaders{
+		headers: map[string][]string{
+			"x-bf-eh-x-trace-id": {"trace-a", "trace-b"},
+		},
+	})
+	defer cancel()
+
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		t.Fatal("expected websocket extra headers in context")
+	}
+	assert.Equal(t, []string{"trace-a", "trace-b"}, extraHeaders["x-trace-id"])
+}
+
+func TestCreateBifrostContextFromAuth_BlocksWebSocketHandshakeForwardedHeaders(t *testing.T) {
+	matcher := lib.NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+		Allowlist: []string{"*"},
+	})
+	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{matcher: matcher}, &authHeaders{
+		headers: map[string][]string{
+			"x-bf-eh-upgrade":                {"websocket"},
+			"x-bf-eh-sec-websocket-protocol": {"realtime"},
+			"sec-websocket-extensions":       {"permessage-deflate"},
+			"x-bf-eh-originator":             {"safe"},
+		},
+	})
+	defer cancel()
+
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		t.Fatal("expected websocket extra headers in context")
+	}
+	assert.Equal(t, []string{"safe"}, extraHeaders["originator"])
+	assert.NotContains(t, extraHeaders, "upgrade")
+	assert.NotContains(t, extraHeaders, "sec-websocket-protocol")
+	assert.NotContains(t, extraHeaders, "sec-websocket-extensions")
+}
+
+func TestMergeWebSocketHeaders_ForwardedHeadersOverrideProviderHeadersAndPreserveValues(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"originator":    {"my-test-client"},
+		"authorization": {"Bearer malicious"},
+		"x-static":      {"client-value-1", "client-value-2"},
+	})
+
+	merged := mergeWebSocketHeaders(ctx, map[string]string{
+		"Authorization": "Bearer provider-key",
+		"x-static":      "provider-value",
+	})
+
+	assert.Equal(t, []string{"my-test-client"}, merged.Values("originator"))
+	assert.Equal(t, []string{"Bearer provider-key"}, merged.Values("Authorization"))
+	assert.Equal(t, []string{"client-value-1", "client-value-2"}, merged.Values("x-static"))
+	assert.NotContains(t, merged.Values("Authorization"), "Bearer malicious")
+}
+
+func TestHasWebSocketForwardedHeaders(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	assert.False(t, hasWebSocketForwardedHeaders(ctx))
+
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"authorization": {"Bearer malicious"},
+	})
+	assert.False(t, hasWebSocketForwardedHeaders(ctx))
+
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"x-trace-id": {"abc-123"},
+	})
+	assert.True(t, hasWebSocketForwardedHeaders(ctx))
 }
