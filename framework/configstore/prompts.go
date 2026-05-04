@@ -134,19 +134,17 @@ func (s *RDBConfigStore) DeleteFolder(ctx context.Context, id string) error {
 
 // GetPrompts gets all prompts, optionally filtered by folder ID.
 //
-// When the caller's context carries a *VisibilityFilter, the query is
-// narrowed to prompts the caller is allowed to see (user_id IN UserIDs OR
-// team_id IN TeamIDs).
+// When ctx carries a QueryScope, the query is narrowed to prompts the
+// caller is allowed to see.
 func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error) {
 	var prompts []tables.TablePrompt
-	query := s.DB().WithContext(ctx).
+	query := s.ScopedDB(ctx).
 		Preload("Folder").
 		Order("created_at DESC")
 
 	if folderID != nil {
 		query = query.Where("folder_id = ?", *folderID)
 	}
-	query = applyPromptVisibility(ctx, query)
 
 	if err := query.Find(&prompts).Error; err != nil {
 		return nil, err
@@ -172,13 +170,12 @@ func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]ta
 
 // GetPromptByID gets a prompt by ID with latest version.
 //
-// When the caller's context carries a *VisibilityFilter, a prompt that
-// exists but falls outside the filter returns ErrNotFound so URL guessing
-// cannot distinguish "hidden" from "absent".
+// When ctx carries a QueryScope, a prompt that exists but falls
+// outside the scope returns ErrNotFound so URL guessing cannot
+// distinguish "hidden" from "absent".
 func (s *RDBConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error) {
 	var prompt tables.TablePrompt
-	q := s.DB().WithContext(ctx).Preload("Folder")
-	q = applyPromptVisibility(ctx, q)
+	q := s.ScopedDB(ctx).Preload("Folder")
 	if err := q.First(&prompt, "prompts.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -202,9 +199,15 @@ func (s *RDBConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.
 	return &prompt, nil
 }
 
-// CreatePrompt creates a new prompt
-func (s *RDBConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
-	return s.DB().WithContext(ctx).Create(prompt).Error
+// CreatePrompt creates a new prompt. The optional tx allows callers to
+// chain the insert with follow-up writes in a single transaction (used
+// by the enterprise wrapper to atomically stamp ownership columns).
+func (s *RDBConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	return db.WithContext(ctx).Create(prompt).Error
 }
 
 // UpdatePrompt updates a prompt

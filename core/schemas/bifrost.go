@@ -262,7 +262,8 @@ const (
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
 	BifrostContextKeyUserID                              BifrostContextKey = "bifrost-user-id"                    // string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyUserName                            BifrostContextKey = "bifrost-user-name"                  // string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyVisibilityFilterProvider            BifrostContextKey = "bifrost-visibility-filter-provider" // VisibilityFilterProvider (callable that returns the filter for a given Entity; set by upstream middleware - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyQueryScope                          BifrostContextKey = "bifrost-query-scope"                // configstore.QueryScope (func that mutates a query; set by upstream wrapper - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyVisibilityFilterProvider            BifrostContextKey = "bifrost-visibility-filter-provider" // DEPRECATED: replaced by BifrostContextKeyQueryScope. Will be removed once all callers migrate.
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"

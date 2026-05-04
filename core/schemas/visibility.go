@@ -13,15 +13,21 @@ type Entity string
 // row-level visibility filtering. Add a new constant only when a query
 // helper for a new table is introduced.
 const (
-	EntityVirtualKey   Entity = "virtual_key"
-	EntityPrompt       Entity = "prompt"
-	EntityLog          Entity = "log"
-	EntityRoutingRule  Entity = "routing_rule"
-	EntityUser         Entity = "user"
-	EntityRole         Entity = "role"
-	EntityTeam         Entity = "team"
-	EntityBusinessUnit Entity = "business_unit"
-	EntityCustomer     Entity = "customer"
+	EntityVirtualKey       Entity = "virtual_key"
+	EntityPrompt           Entity = "prompt"
+	EntityLog              Entity = "log"
+	EntityRoutingRule      Entity = "routing_rule"
+	EntityUser             Entity = "user"
+	EntityRole             Entity = "role"
+	EntityTeam             Entity = "team"
+	EntityBusinessUnit     Entity = "business_unit"
+	EntityCustomer         Entity = "customer"
+	EntityAuditLog         Entity = "audit_log"
+	EntityAccessProfile    Entity = "access_profile"
+	EntityAPIKey           Entity = "api_key"
+	EntityMCPToolGroup     Entity = "mcp_tool_group"
+	EntityPromptDeployment Entity = "prompt_deployment"
+	EntityProvider         Entity = "provider"
 )
 
 // RoutingScopeMatch is a single (scope, scope_id) pair the caller is
@@ -50,14 +56,14 @@ type RoutingScopeMatch struct {
 // Each dimension lines up with a real column on the target table:
 //
 //   - UserIDs         → table.user_id  OR  governance_users.id (when
-//                       scoping the users table itself)
+//     scoping the users table itself)
 //   - TeamIDs         → table.team_id  (logs / prompts / VKs)
 //   - OwnTeamIDs      → governance_teams.id (when scoping the teams
-//                       table itself; populated from the principal's own
-//                       team membership for both own-data and team-data)
+//     table itself; populated from the principal's own
+//     team membership for both own-data and team-data)
 //   - VirtualKeyIDs   → governance_virtual_keys.id (when scoping the
-//                       virtual_keys table itself) or table.virtual_key_id
-//                       (when scoping logs)
+//     virtual_keys table itself) or table.virtual_key_id
+//     (when scoping logs)
 //   - RoutingScopes   → routing_rules.(scope, scope_id) tuples
 //   - RoleIDs         → enterprise_governance_roles.id
 //   - BusinessUnitIDs → governance_business_units.id
