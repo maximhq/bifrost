@@ -35,10 +35,12 @@ type VertexError struct {
 	} `json:"error"`
 }
 
-// vertexClientPool provides a pool/cache for authenticated Vertex HTTP clients.
-// This avoids creating and authenticating clients for every request.
-// Uses sync.Map for atomic operations without explicit locking.
-var vertexClientPool sync.Map
+// vertexTokenSourcePool caches oauth2.TokenSource instances keyed by a hash of
+// the auth credentials. The Google TokenSource internally handles token refresh
+// and expiry, so caching the source avoids re-parsing credentials JSON and
+// re-creating the credentials object on every request.
+// Entries are evicted by removeVertexClient on 401/403 or token-acquisition errors.
+var vertexTokenSourcePool sync.Map
 
 // vertexLocationsPathRe matches /locations/{region} in Vertex API paths for region replacement.
 var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
@@ -53,22 +55,28 @@ var vertexBodyProjectsRe = regexp.MustCompile(`(["/])projects/[^/"]+`)
 // that need expanding to the full Vertex resource path.
 var vertexShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
 
-// getClientKey generates a unique key for caching authenticated clients.
+// defaultCredentialsCacheKey is the sentinel pool key used when AuthCredentials
+// is empty and we fall back to google.FindDefaultCredentials.
+const defaultCredentialsCacheKey = "__default_credentials__"
+
+// getClientKey generates a unique key for caching token sources.
 // It uses a hash of the auth credentials for security.
 func getClientKey(authCredentials string) string {
+	if authCredentials == "" {
+		return defaultCredentialsCacheKey
+	}
 	hash := sha256.Sum256([]byte(authCredentials))
 	return hex.EncodeToString(hash[:])
 }
 
-// removeVertexClient removes a specific client from the pool.
+// removeVertexClient evicts a cached token source from the pool.
 // This should be called when:
 // - API returns authentication/authorization errors (401, 403)
-// - Auth client creation fails
-// - Network errors that might indicate credential issues
-// This ensures we don't keep using potentially invalid clients.
+// - Token acquisition fails (tokenSource.Token() error)
+// This forces the next request to re-create the token source from scratch.
 func removeVertexClient(authCredentials string) {
 	clientKey := getClientKey(authCredentials)
-	vertexClientPool.Delete(clientKey)
+	vertexTokenSourcePool.Delete(clientKey)
 }
 
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
@@ -113,11 +121,20 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
 // getAuthTokenSource returns an authenticated token source for Vertex AI API requests.
-// It uses the default credentials if no auth credentials are provided.
-// It uses the JWT config if auth credentials are provided.
-// It returns an error if the token source creation fails.
+// Token sources are cached in vertexTokenSourcePool keyed by a hash of the auth
+// credentials. The Google oauth2.TokenSource handles token refresh and expiry
+// internally, so caching the source is safe and avoids re-parsing credentials
+// on every request.
 func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	authCredentials := key.VertexKeyConfig.AuthCredentials
+	clientKey := getClientKey(authCredentials.GetValue())
+
+	// Fast path: return cached token source.
+	if cached, ok := vertexTokenSourcePool.Load(clientKey); ok {
+		return cached.(oauth2.TokenSource), nil
+	}
+
+	// Slow path: create a new token source and cache it.
 	var tokenSource oauth2.TokenSource
 	if authCredentials.GetValue() == "" {
 		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
@@ -161,7 +178,11 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 		}
 		tokenSource = conf.TokenSource
 	}
-	return tokenSource, nil
+
+	// Cache the token source. If another goroutine raced and stored first, use
+	// that one — both are equally valid, but sharing maximises token reuse.
+	actual, _ := vertexTokenSourcePool.LoadOrStore(clientKey, tokenSource)
+	return actual.(oauth2.TokenSource), nil
 }
 
 // GetProviderKey returns the provider identifier for Vertex.
