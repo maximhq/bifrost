@@ -3,6 +3,7 @@ module github.com/maximhq/bifrost/plugins/compat
 go 1.26.2
 
 require (
+	github.com/bytedance/sonic v1.15.0
 	github.com/maximhq/bifrost/core v1.5.9
 	github.com/maximhq/bifrost/framework v1.3.9
 )
@@ -47,7 +48,6 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect

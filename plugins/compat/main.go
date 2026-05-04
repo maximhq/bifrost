@@ -5,6 +5,7 @@
 package compat
 
 import (
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -17,6 +18,25 @@ type Config struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+}
+
+// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type config struct {
+		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams       *bool `json:"should_drop_params"`
+		ShouldConvertParams    *bool `json:"should_convert_params"`
+	}
+	var s config
+	if err := sonic.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	c.ConvertTextToChat = s.ConvertTextToChat == nil || *s.ConvertTextToChat
+	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
+	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
+	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	return nil
 }
 
 // IsEnabled returns true if any compat feature is enabled
@@ -81,7 +101,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
 
 	modifiedReq := req
-	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
+	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
 		modifiedReq = cloneBifrostReq(req)
 	}
 	p.droppedParams = nil
