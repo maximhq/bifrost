@@ -51,6 +51,9 @@ DB_VERIFY=""
 DB_URL="${BIFROST_DB_URL:-}"
 LOGS_DB_URL="${BIFROST_LOGS_DB_URL:-}"
 DB_CONFIG_PATH=""
+SEED_ENV_PATH="${BIFROST_E2E_SEED_ENV:-}"
+EXPECTED_PATH="${BIFROST_E2E_SEED_EXPECTED:-}"
+EXTRA_COLLECTIONS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -83,15 +86,51 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --db-url)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --db-url requires a value${NC}"
+                exit 1
+            fi
             DB_URL="$2"
             shift 2
             ;;
         --logs-db-url)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --logs-db-url requires a value${NC}"
+                exit 1
+            fi
             LOGS_DB_URL="$2"
             shift 2
             ;;
         --config-path)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --config-path requires a value${NC}"
+                exit 1
+            fi
             DB_CONFIG_PATH="$2"
+            shift 2
+            ;;
+        --extra-collection)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --extra-collection requires a path${NC}"
+                exit 1
+            fi
+            EXTRA_COLLECTIONS+=("$2")
+            shift 2
+            ;;
+        --seed-env)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --seed-env requires a path${NC}"
+                exit 1
+            fi
+            SEED_ENV_PATH="$2"
+            shift 2
+            ;;
+        --expected)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --expected requires a path${NC}"
+                exit 1
+            fi
+            EXPECTED_PATH="$2"
             shift 2
             ;;
         --help)
@@ -111,6 +150,11 @@ while [[ $# -gt 0 ]]; do
             echo "                      SQLite:     sqlite:///path/to/file.db"
             echo "  --config-path <p>   Path to Bifrost config.json for auto DB detection"
             echo "                      (default: ./config.json; also reads BIFROST_CONFIG_PATH env)"
+            echo "  --extra-collection <p>"
+            echo "                      Merge an additional Postman collection into this API run."
+            echo "                      Intended for enterprise-only API e2e coverage from another repo."
+            echo "  --seed-env <p>      Load generated seed dotenv values and pass them to Newman."
+            echo "  --expected <p>      Load generated DAC expected-manifest JSON for assertions."
             echo "  --help              Show this help message"
             echo ""
             echo "Examples:"
@@ -127,6 +171,18 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "${BIFROST_API_EXTRA_COLLECTION:-}" ]; then
+    EXTRA_COLLECTIONS+=("$BIFROST_API_EXTRA_COLLECTION")
+fi
+
+if [ -z "$SEED_ENV_PATH" ] && [ -f "$API_DIR/generated/seed.env" ]; then
+    SEED_ENV_PATH="$API_DIR/generated/seed.env"
+fi
+
+if [ -z "$EXPECTED_PATH" ] && [ -f "$API_DIR/generated/dac-expected.json" ]; then
+    EXPECTED_PATH="$API_DIR/generated/dac-expected.json"
+fi
 
 if { [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-0}" = "1" ]; } && [[ "$REPORTERS" != *"htmlextra"* ]]; then
     REPORTERS="${REPORTERS},htmlextra"
@@ -156,6 +212,15 @@ echo -e "Configuration:"
 echo -e "  Collection: ${YELLOW}$COLLECTION${NC}"
 echo -e "  Reports:    ${YELLOW}$REPORT_DIR${NC}"
 echo -e "  Verbose:    ${YELLOW}$([ -n "$VERBOSE" ] && echo "enabled" || echo "disabled")${NC}"
+if [ ${#EXTRA_COLLECTIONS[@]} -gt 0 ]; then
+    echo -e "  Extensions: ${YELLOW}${EXTRA_COLLECTIONS[*]}${NC}"
+fi
+if [ -n "$SEED_ENV_PATH" ]; then
+    echo -e "  Seed Env:   ${YELLOW}$SEED_ENV_PATH${NC}"
+fi
+if [ -n "$EXPECTED_PATH" ]; then
+    echo -e "  Expected:   ${YELLOW}$EXPECTED_PATH${NC}"
+fi
 if [ -n "$DB_VERIFY" ]; then
     if [ -n "$DB_URL" ]; then
         echo -e "  DB Verify:  ${YELLOW}enabled (url: $DB_URL)${NC}"
@@ -245,6 +310,20 @@ echo ""
 echo -e "${GREEN}Running tests...${NC}"
 echo ""
 
+if [ ${#EXTRA_COLLECTIONS[@]} -gt 0 ]; then
+    MERGED_COLLECTION="$REPORT_DIR/api-management-with-extensions.postman_collection.json"
+    merge_cmd=(node "$SCRIPT_DIR/merge-collections.mjs" --source "$COLLECTION" --out "$MERGED_COLLECTION")
+    for extra_collection in "${EXTRA_COLLECTIONS[@]}"; do
+        if [ ! -f "$extra_collection" ]; then
+            echo -e "${RED}Error: Extra collection file not found: $extra_collection${NC}"
+            exit 1
+        fi
+        merge_cmd+=(--extra "$extra_collection")
+    done
+    "${merge_cmd[@]}"
+    COLLECTION="$MERGED_COLLECTION"
+fi
+
 # Add dbverify reporter if requested
 if [ -n "$DB_VERIFY" ]; then
     REPORTERS="$REPORTERS,dbverify"
@@ -261,6 +340,79 @@ fi
 
 # Build Newman command
 cmd=(newman run "$COLLECTION" --timeout-script 120000 --timeout 900000 -r "$REPORTERS")
+
+# Parsed seed env entries live here, not in the runner's shell namespace.
+# Decoupling the data keyspace from the script's own variables (PATH, COLLECTION,
+# NODE_OPTIONS, etc.) prevents a seed file entry from silently overriding them.
+declare -A seed_env_values=()
+
+if [ -n "$SEED_ENV_PATH" ]; then
+    if [ ! -f "$SEED_ENV_PATH" ]; then
+        echo -e "${RED}Error: seed env file not found: $SEED_ENV_PATH${NC}"
+        exit 1
+    fi
+    # Parse seed env file as data, never source it. Sourcing would execute
+    # any RHS command substitution (e.g. FOO=$(id)); see WriteEnvFile in
+    # framework/e2eseed/seed.go which single-quotes values via quoteEnv.
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        if [[ "$line" != *=* ]]; then
+            echo -e "${RED}Error: invalid seed env line (missing '='): $line${NC}"
+            exit 1
+        fi
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo -e "${RED}Error: invalid variable name in seed env: $key${NC}"
+            exit 1
+        fi
+        # Unwrap outer single quotes written by quoteEnv and undo its '\''-escape.
+        if [[ "$value" == \'*\' ]]; then
+            value="${value:1:${#value}-2}"
+            value="${value//\'\"\'\"\'/\'}"
+        fi
+        seed_env_values["$key"]="$value"
+    done < "$SEED_ENV_PATH"
+fi
+
+add_env_var_if_set() {
+    local name="$1"
+    local value="${seed_env_values[$name]:-}"
+    if [ -n "$value" ]; then
+        cmd+=(--env-var "$name=$value")
+    fi
+}
+
+for seed_var in \
+    e2e_seed_prefix \
+    enterprise_dac_model \
+    enterprise_dac_visible_virtual_key \
+    enterprise_dac_hidden_virtual_key \
+    enterprise_dac_reader_api_key \
+    enterprise_dac_all_api_key \
+    enterprise_dac_own_api_key \
+    enterprise_dac_outside_api_key \
+    e2e_seed_team_tiggings \
+    e2e_seed_team_outside \
+    e2e_seed_user_tiggings \
+    e2e_seed_user_outside \
+    e2e_seed_vk_user_team \
+    e2e_seed_vk_outside \
+    e2e_seed_enterprise_users \
+    e2e_seed_access_profiles \
+    e2e_seed_access_profile_budgets; do
+    add_env_var_if_set "$seed_var"
+done
+
+if [ -n "$EXPECTED_PATH" ]; then
+    if [ ! -f "$EXPECTED_PATH" ]; then
+        echo -e "${RED}Error: expected manifest file not found: $EXPECTED_PATH${NC}"
+        exit 1
+    fi
+    EXPECTED_JSON="$(node -e 'const fs=require("fs"); const p=process.argv[1]; process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(p,"utf8"))));' "$EXPECTED_PATH")"
+    cmd+=(--env-var "e2e_seed_expected=$EXPECTED_JSON")
+fi
 
 # Override plugin_path with resolved absolute path so Create Plugin / Get Plugin use the built .so
 # env-var takes precedence over collection variables in Newman's resolution order
