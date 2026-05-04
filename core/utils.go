@@ -118,14 +118,16 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 }
 
 // validateRequest validates the given request.
+//
+// Provider emptiness is intentionally not checked here. Plugins (PreLLMHook)
+// can set the provider via req.UpdateProvider before dispatch, so the empty-
+// provider check is deferred to tryRequest / tryStreamRequest which run after
+// the plugin pipeline.
 func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
-	provider, model, _ := req.GetRequestFields()
-	if provider == "" {
-		return newBifrostErrorFromMsg("provider is required")
-	}
+	_, model, _ := req.GetRequestFields()
 	if isModelRequired(req.RequestType) && model == "" {
 		return newBifrostErrorFromMsg("model is required")
 	}

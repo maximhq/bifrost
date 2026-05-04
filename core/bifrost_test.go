@@ -3357,6 +3357,135 @@ func TestProviderOverride(t *testing.T) {
 			t.Errorf("fallback used primary override key %q; ProviderOverride was not cleared", primaryOverrideValue)
 		}
 	})
+
+	t.Run("EmptyProviderResolvedByPlugin", func(t *testing.T) {
+		// Verifies that a request with Provider == "" reaches the plugin pipeline
+		// instead of being rejected up-front. The HTTP transport leaves Provider
+		// empty when the client's model string carries no known prefix and isn't
+		// in the model catalog; plugins are then expected to resolve the provider
+		// via req.UpdateProvider before dispatch.
+		const overrideKey = "sk-empty-provider-deferred-key"
+
+		cap := &safeCapture{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cap.recordAuth(r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		account := NewMockAccount()
+		plugin := newProviderSwitchPlugin(schemas.OpenAI, overrideKey, server.URL)
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			// Provider intentionally empty — plugin resolves it.
+			Model: "gpt-4o",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed (empty-provider request should reach plugin): %v", bifrostErr.Error.Message)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		wantAuth := "Bearer " + overrideKey
+		if got := cap.Auth(); got != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q (plugin did not run)", got, wantAuth)
+		}
+	})
+
+	t.Run("EmptyProviderNotResolvedByPlugin_Fails", func(t *testing.T) {
+		// Negative case: when the plugin pipeline does NOT set a provider, the
+		// post-plugin check in tryRequest must fail loud rather than reach a
+		// provider with an empty key.
+		account := NewMockAccount()
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Model: "gpt-4o",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr == nil {
+			t.Fatal("expected error when no plugin sets the provider")
+		}
+		if !strings.Contains(bifrostErr.Error.Message, "provider is required") {
+			t.Errorf("expected 'provider is required' error, got: %s", bifrostErr.Error.Message)
+		}
+	})
+}
+
+// TestValidateRequest_DefersProviderCheck verifies that validateRequest does NOT
+// reject empty-provider requests. The empty-provider check is intentionally
+// deferred to tryRequest / tryStreamRequest so PreLLMHook plugins get a chance
+// to resolve the provider via req.UpdateProvider before dispatch.
+func TestValidateRequest_DefersProviderCheck(t *testing.T) {
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+
+	t.Run("empty provider passes validation", func(t *testing.T) {
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Model: "gpt-4o",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+			},
+		}
+		if err := validateRequest(req); err != nil {
+			t.Errorf("validateRequest rejected empty-provider request: %v", err.Error.Message)
+		}
+	})
+
+	t.Run("missing model still rejected", func(t *testing.T) {
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+			},
+		}
+		err := validateRequest(req)
+		if err == nil {
+			t.Fatal("validateRequest accepted missing model — model check regressed")
+		}
+		if !strings.Contains(err.Error.Message, "model is required") {
+			t.Errorf("expected 'model is required', got: %s", err.Error.Message)
+		}
+	})
+
+	t.Run("nil request rejected", func(t *testing.T) {
+		err := validateRequest(nil)
+		if err == nil {
+			t.Fatal("validateRequest accepted nil request")
+		}
+		if !strings.Contains(err.Error.Message, "bifrost request cannot be nil") {
+			t.Errorf("unexpected error message: %s", err.Error.Message)
+		}
+	})
 }
 
 // keyBaseURLPlugin is a test helper plugin that injects a static API key and base URL
