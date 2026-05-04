@@ -28,7 +28,6 @@ import {
   Settings,
   Settings2Icon,
   ShieldCheck,
-  ShieldUser,
   Shuffle,
   SlidersHorizontal,
   Telescope,
@@ -38,7 +37,7 @@ import {
   UserRoundCheck,
   Users,
   Wallet,
-  WalletCards,
+  WalletCards
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -58,7 +57,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { IS_ENTERPRISE, TRIAL_EXPIRY } from "@/lib/constants/config";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import {
   useGetCoreConfigQuery,
   useGetLatestReleaseQuery,
@@ -71,7 +70,6 @@ import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { differenceInDays } from "date-fns";
 import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -252,15 +250,14 @@ const SidebarItemView = ({
 
   const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-    isHighlighted
-      ? "bg-sidebar-accent text-accent-foreground border-primary/20"
-      : isActive || isAnySubItemActive
-        ? "bg-sidebar-accent text-primary border-primary/20"
-        : item.hasAccess
-          ? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-          : "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-  } `;
+  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+    ? "bg-sidebar-accent text-accent-foreground border-primary/20"
+    : isActive || isAnySubItemActive
+      ? "bg-sidebar-accent text-primary border-primary/20"
+      : item.hasAccess
+        ? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+        : "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+    } `;
 
   const innerContent = (
     <div className="flex w-full items-center justify-between">
@@ -455,15 +452,14 @@ const SidebarItemView = ({
               ? subItemHref.startsWith(highlightedUrl)
               : false;
             const SubItemIcon = subItem.icon;
-            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-              isSubItemHighlighted
-                ? "bg-sidebar-accent text-accent-foreground"
-                : isSubItemActive
-                  ? "bg-sidebar-accent text-primary font-medium"
-                  : subItem.hasAccess === false
-                    ? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-                    : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-            }`;
+            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+              ? "bg-sidebar-accent text-accent-foreground"
+              : isSubItemActive
+                ? "bg-sidebar-accent text-primary font-medium"
+                : subItem.hasAccess === false
+                  ? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+                  : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+              }`;
             const subInner = (
               <div className="flex w-full items-center gap-2">
                 {SubItemIcon && (
@@ -835,14 +831,14 @@ export default function AppSidebar() {
       },
       ...(isDbConnected
         ? [
-            {
-              title: "Prompt Repository",
-              url: "/workspace/prompt-repo",
-              icon: FolderGit,
-              description: "Prompt repository",
-              hasAccess: hasPromptRepositoryAccess,
-            },
-          ]
+          {
+            title: "Prompt Repository",
+            url: "/workspace/prompt-repo",
+            icon: FolderGit,
+            description: "Prompt repository",
+            hasAccess: hasPromptRepositoryAccess,
+          },
+        ]
         : []),
       {
         title: "Evals",
@@ -889,14 +885,14 @@ export default function AppSidebar() {
           },
           ...(IS_ENTERPRISE
             ? [
-                {
-                  title: "Proxy",
-                  url: "/workspace/config/proxy",
-                  icon: Globe,
-                  description: "Proxy configuration",
-                  hasAccess: hasSettingsAccess,
-                },
-              ]
+              {
+                title: "Proxy",
+                url: "/workspace/config/proxy",
+                icon: Globe,
+                description: "Proxy configuration",
+                hasAccess: hasSettingsAccess,
+              },
+            ]
             : []),
           {
             title: "API Keys",
@@ -1253,14 +1249,6 @@ export default function AppSidebar() {
     }
   };
 
-  const trialDaysRemaining = useMemo(() => {
-    if (IS_ENTERPRISE && TRIAL_EXPIRY) {
-      const daysRemaining = differenceInDays(new Date(TRIAL_EXPIRY), new Date());
-      return daysRemaining > 0 ? daysRemaining : 0;
-    }
-    return null;
-  }, []);
-
   const { state: sidebarState, toggleSidebar } = useSidebar();
 
   return (
@@ -1429,16 +1417,6 @@ export default function AppSidebar() {
           </div>
           <div className="mx-auto flex flex-col items-center gap-1 group-data-[collapsible=icon]:hidden">
             <div className="font-mono text-xs">{version ?? ""}</div>
-            {trialDaysRemaining !== null && (
-              <div
-                className={cn(
-                  "text-xs",
-                  trialDaysRemaining < 3 ? "text-red-500" : "text-muted-foreground",
-                )}
-              >
-                {trialDaysRemaining} {trialDaysRemaining === 1 ? "day" : "days"} remaining
-              </div>
-            )}
           </div>
         </div>
       </SidebarContent>

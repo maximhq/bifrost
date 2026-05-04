@@ -295,6 +295,22 @@ div.content-container:has(.no-border-parent) {
 	@apply border-0!;
 }
 
+/* // trial-notification-banner style*/
+
+#trial-notification-banner {
+	width: calc(100% + 80px);
+	margin-left: -40px;
+}
+
+div.content-container:has(.no-padding-parent) #trial-notification-banner {
+	width: 100%;
+	margin-left: 0;
+}
+
+div.content-container:has(.no-border-parent) #trial-notification-banner {
+	border: 1px solid transparent;
+}
+
 /* ReactFlow Controls — follow Bifrost colour schema */
 
 .react-flow__controls {
