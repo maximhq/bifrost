@@ -24,6 +24,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
@@ -64,6 +65,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	const [vkConfigs, setVKConfigs] = useState<MCPVKConfig[]>([]);
 	const [vkConfigsDirty, setVKConfigsDirty] = useState(false);
 	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>((mcpClient.config.allowed_extra_headers || []).join(", "));
+	const [oauthFlow, setOauthFlow] = useState<{
+		authorizeUrl: string;
+		oauthConfigId: string;
+		mcpClientId: string;
+		isPerUserOauth?: boolean;
+	} | null>(null);
 	// Persists names for newly added VKs so they survive search result changes
 	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
 
@@ -103,6 +110,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		],
 		[allToolNames],
 	);
+	const supportsOAuthCredentialUpdate =
+		mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
 	const addVKConfig = (vkId: string) => {
 		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
@@ -148,8 +157,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
+			oauth_config: undefined,
 		},
 	});
+	const isDisabled = form.watch("disabled");
 
 	// Reset form when mcpClient changes
 	useEffect(() => {
@@ -165,12 +176,16 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
+			oauth_config: undefined,
 		});
 	}, [form, mcpClient]);
 
 	const onSubmit = async (data: MCPClientUpdateSchema) => {
 		try {
-			await updateMCPClient({
+			const oauthClientID = data.oauth_config?.client_id?.trim() || "";
+			const oauthClientSecret = data.oauth_config?.client_secret?.trim() || "";
+			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && (oauthClientID.length > 0 || oauthClientSecret.length > 0);
+			const response = await updateMCPClient({
 				id: mcpClient.config.client_id,
 				data: {
 					name: data.name,
@@ -184,9 +199,25 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					tool_pricing: data.tool_pricing,
 					tool_sync_interval: data.tool_sync_interval ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
+					oauth_config: shouldRotateOAuthCredentials
+						? {
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret || undefined,
+							}
+						: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
 			}).unwrap();
+
+			if (response.status === "pending_oauth" && response.authorize_url) {
+				setOauthFlow({
+					authorizeUrl: response.authorize_url,
+					oauthConfigId: response.oauth_config_id,
+					mcpClientId: response.mcp_client_id,
+					isPerUserOauth: mcpClient.config.auth_type === "per_user_oauth",
+				});
+				return;
+			}
 
 			toast({
 				title: "Success",
@@ -452,7 +483,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											<FormControl>
 												<Switch
 													checked={field.value === true}
-													onCheckedChange={field.onChange}
+													onCheckedChange={(checked) => {
+														field.onChange(checked);
+														if (checked) {
+															form.setValue("oauth_config", undefined);
+														}
+													}}
 													data-testid="mcpclient-disabled-switch"
 												/>
 											</FormControl>
@@ -571,41 +607,69 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									)}
 								/>
 							</div>
-							{/* Client Configuration */}
-							<div className="space-y-4">
-								<h3 className="font-semibold">Configuration</h3>
-								<div className="rounded-sm border">
-									<div className="bg-muted/50 text-muted-foreground border-b px-6 py-2 text-xs font-medium">Client ConnectionConfig</div>
-									<CodeEditor
-										className="z-0 w-full"
-										shouldAdjustInitialHeight={true}
-										maxHeight={300}
-										wrap={true}
-										code={JSON.stringify(
-											(() => {
-												const {
-													client_id: _client_id,
-													name: _name,
-													tools_to_execute: _tools_to_execute,
-													headers: _headers,
-													...rest
-												} = mcpClient.config;
-												return rest;
-											})(),
-											null,
-											2,
-										)}
-										lang="json"
-										readonly={true}
-										options={{
-											scrollBeyondLastLine: false,
-											collapsibleBlocks: true,
-											lineNumbers: "off",
-											alwaysConsumeMouseWheel: false,
-										}}
-									/>
+							{supportsOAuthCredentialUpdate ? (
+								<div className="space-y-4">
+									<h3 className="font-semibold">OAuth Credentials</h3>
+									{isDisabled ? (
+										<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+											<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+											<p>
+												OAuth credentials cannot be rotated while the client is disabled. Re-enable the client to update credentials.
+											</p>
+										</div>
+									) : (
+										<p className="text-muted-foreground text-sm">
+											Update OAuth client credentials only. Connection type, auth type, and connection URL cannot be changed.
+										</p>
+									)}
+									<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+										<FormField
+											control={form.control}
+											name="oauth_config.client_id"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>Client ID</FormLabel>
+													<FormControl>
+														<Input
+															data-testid="mcpclient-input-oauth-client-id"
+															placeholder="Enter new OAuth client ID"
+															disabled={isDisabled}
+															{...field}
+															value={field.value || ""}
+														/>
+													</FormControl>
+													{!isDisabled && (
+														<p className="text-muted-foreground text-xs">
+															Leave empty to keep existing credentials unchanged.
+														</p>
+													)}
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="oauth_config.client_secret"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>Client Secret</FormLabel>
+													<FormControl>
+														<Input
+															data-testid="mcpclient-input-oauth-client-secret"
+															type="password"
+															placeholder="Enter new OAuth client secret"
+															disabled={isDisabled}
+															{...field}
+															value={field.value || ""}
+														/>
+													</FormControl>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+									</div>
 								</div>
-							</div>
+							) : null}
 							{/* Tools Section */}
 							<div className="space-y-4 pb-10">
 								<div className="flex items-center justify-between">
@@ -1030,6 +1094,24 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					</form>
 				</Form>
 			</SheetContent>
+			{oauthFlow && (
+				<OAuth2Authorizer
+					open={!!oauthFlow}
+					onClose={() => setOauthFlow(null)}
+					onSuccess={() => {
+						toast({ title: "Success", description: "MCP client OAuth credentials updated successfully" });
+						onSubmitSuccess();
+						onClose();
+					}}
+					onError={(error) => {
+						toast({ title: "Error", description: error, variant: "destructive" });
+					}}
+					authorizeUrl={oauthFlow.authorizeUrl}
+					oauthConfigId={oauthFlow.oauthConfigId}
+					mcpClientId={oauthFlow.mcpClientId}
+					isPerUserOauth={oauthFlow.isPerUserOauth}
+				/>
+			)}
 		</Sheet>
 	);
 }

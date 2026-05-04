@@ -47,6 +47,12 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 // Returns:
 //   - error: Any error that occurred during reconnection
 func (m *MCPManager) ReconnectClient(id string) error {
+	// Acquire per-client reconnect/update guard before reading config snapshot.
+	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+		return fmt.Errorf("reconnect already in progress for this client")
+	}
+	defer m.reconnectingClients.Delete(id)
+
 	m.mu.Lock()
 	client, ok := m.clientMap[id]
 	if !ok {
@@ -61,14 +67,6 @@ func (m *MCPManager) ReconnectClient(id string) error {
 	}
 	config := client.ExecutionConfig
 	m.mu.Unlock()
-
-	// Guard against concurrent reconnects for the same client from any caller
-	// (health monitor, manual API call, etc.). LoadOrStore is atomic — whichever
-	// caller arrives second gets the "already in progress" error immediately.
-	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
-		return fmt.Errorf("reconnect already in progress for this client")
-	}
-	defer m.reconnectingClients.Delete(id)
 
 	// Reconnect using the client's configuration
 	// Retry logic is handled internally by connectToMCPClient
@@ -347,6 +345,11 @@ func (m *MCPManager) DisableClient(id string) error {
 	if id == BifrostMCPClientKey {
 		return fmt.Errorf("cannot disable internal bifrost client")
 	}
+	// Use LoadOrStore (not Load) so the check and the sentinel insertion are atomic.
+	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
+	}
+	defer m.reconnectingClients.Delete(id)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -482,6 +485,11 @@ func (m *MCPManager) EnableClient(id string) error {
 // Returns:
 //   - error: Any error that occurred during client update or tool retrieval
 func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error {
+	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
+	}
+	defer m.reconnectingClients.Delete(id)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -506,8 +514,25 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	if updatedConfig.InProcessServer != nil && updatedConfig.InProcessServer != client.ExecutionConfig.InProcessServer {
 		return fmt.Errorf("in-process server cannot be updated for client %s", id)
 	}
+	// Normalize empty AuthType to "headers" — both are semantically identical
+	oldAuthType := client.ExecutionConfig.AuthType
+	if oldAuthType == "" {
+		oldAuthType = schemas.MCPAuthTypeHeaders
+	}
+	newAuthType := updatedConfig.AuthType
+	if newAuthType == "" {
+		newAuthType = schemas.MCPAuthTypeHeaders
+	}
+	if newAuthType != oldAuthType {
+		return fmt.Errorf("auth_type cannot be updated for client %s", id)
+	}
 
 	oldName := client.ExecutionConfig.Name
+
+	oauthConfigID := client.ExecutionConfig.OauthConfigID
+	if updatedConfig.OauthConfigID != nil {
+		oauthConfigID = updatedConfig.OauthConfigID
+	}
 
 	// Create a new config struct (immutable pattern) to avoid race conditions
 	// with concurrent reads. Any snapshot holding the old ExecutionConfig pointer
@@ -519,7 +544,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		ConnectionString: client.ExecutionConfig.ConnectionString,
 		StdioConfig:      client.ExecutionConfig.StdioConfig,
 		AuthType:         client.ExecutionConfig.AuthType,
-		OauthConfigID:    client.ExecutionConfig.OauthConfigID,
+		OauthConfigID:    oauthConfigID,
 		State:            client.ExecutionConfig.State,
 		InProcessServer:  client.ExecutionConfig.InProcessServer,
 		ConfigHash:       client.ExecutionConfig.ConfigHash,
@@ -571,6 +596,73 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 
 		// Also update the client Name field
 		client.Name = updatedConfig.Name
+	}
+
+	return nil
+}
+
+// UpdateClientConnection updates auth-related fields (headers) for an existing MCP client by
+// closing the current connection and establishing a new one so the new credentials are verified
+// before being committed. Non-credential metadata (name, tools, etc.) is preserved from the
+// current execution config.
+//
+// On failure the clientMap entry is left in Disconnected state but its ExecutionConfig is restored
+// to the previous value, allowing the health monitor to recover the client using the old credentials.
+//
+// Parameters:
+//   - id: ID of the client whose credentials should be updated
+//   - newConfig: Partial config carrying the updated auth fields (Headers). All other fields
+//     are ignored and taken from the current execution config.
+//
+// Returns:
+//   - error: Any connection error; nil on success
+func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) error {
+	if newConfig == nil {
+		return fmt.Errorf("newConfig must not be nil")
+	}
+	// Hold the per-client reconnect guard for the entire read + long reconnect so
+	// UpdateClient/DisableClient cannot mutate ExecutionConfig while a failed reconnect
+	// restores the pre-attempt snapshot.
+	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+		return fmt.Errorf("reconnect already in progress for this client")
+	}
+	defer m.reconnectingClients.Delete(id)
+
+	m.mu.RLock()
+	client, ok := m.clientMap[id]
+	if !ok {
+		m.mu.RUnlock()
+		return fmt.Errorf("client %s not found", id)
+	}
+	// Per-user OAuth clients have no persistent connection — reconnect is not applicable.
+	if client.ExecutionConfig != nil && client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+		m.mu.RUnlock()
+		return fmt.Errorf("connection update is not supported for per_user_oauth clients")
+	}
+	if client.ExecutionConfig == nil {
+		m.mu.RUnlock()
+		return fmt.Errorf("client %s has no execution config; cannot update connection", id)
+	}
+	// Snapshot old execution config and build the merged config while still holding the
+	// read lock so the struct copy is consistent with what the map currently holds.
+	oldConfig := client.ExecutionConfig
+	mergedConfig := *oldConfig
+	if newConfig.Headers != nil {
+		mergedConfig.Headers = maps.Clone(newConfig.Headers)
+	}
+	if newConfig.OauthConfigID != nil {
+		mergedConfig.OauthConfigID = newConfig.OauthConfigID
+	}
+	m.mu.RUnlock()
+
+	// connectToMCPClient will close the current connection and create a new clientMap entry.
+	if err := m.connectToMCPClient(&mergedConfig); err != nil {
+		m.mu.Lock()
+		if cs, exists := m.clientMap[id]; exists {
+			cs.ExecutionConfig = oldConfig
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("failed to reconnect with updated credentials: %w", err)
 	}
 
 	return nil

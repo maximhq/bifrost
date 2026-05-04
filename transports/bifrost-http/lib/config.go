@@ -4611,6 +4611,67 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	return nil
 }
 
+// UpdateMCPClientConnection updates the auth credentials (headers) for an existing MCP client.
+// It delegates the actual reconnection (with the new credentials) to the Bifrost client.
+func (c *Config) UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
+	if c.client == nil {
+		return fmt.Errorf("bifrost client not set")
+	}
+
+	c.muMCP.RLock()
+	if c.MCPConfig == nil {
+		c.muMCP.RUnlock()
+		return fmt.Errorf("in-memory MCPConfig absent; cannot update MCP client connection")
+	}
+	found := false
+	for _, cc := range c.MCPConfig.ClientConfigs {
+		if cc == nil {
+			continue
+		}
+		if cc.ID == id {
+			found = true
+			break
+		}
+	}
+	c.muMCP.RUnlock()
+	if !found {
+		return fmt.Errorf("MCP client %s not found in in-memory MCP config", id)
+	}
+
+	// Attempt the credential swap on the runtime side first.
+	// If this fails, nothing in our in-memory config has changed.
+	if err := c.client.UpdateMCPClientConnection(id, newConfig); err != nil {
+		return fmt.Errorf("failed to update MCP client credentials: %w", err)
+	}
+
+	// Reconnect succeeded — mirror the new credentials into the in-memory config
+	// so that subsequent reads of MCPConfig reflect the live state.
+	c.muMCP.Lock()
+	defer c.muMCP.Unlock()
+	if c.MCPConfig != nil {
+		found := false
+		for _, cc := range c.MCPConfig.ClientConfigs {
+			if cc == nil {
+				continue
+			}
+			if cc.ID == id {
+				found = true
+				if newConfig.Headers != nil {
+					cc.Headers = maps.Clone(newConfig.Headers)
+				}
+				if newConfig.OauthConfigID != nil {
+					cc.OauthConfigID = newConfig.OauthConfigID
+				}
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("MCP client %s not found in in-memory config after successful reconnect", id)
+		}
+	}
+	return nil
+}
+
 // RemoveMCPClient removes an MCP client from the configuration.
 // This method is called when an MCP client is removed via the HTTP API.
 //

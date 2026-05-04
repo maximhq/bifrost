@@ -112,6 +112,10 @@ Use OAuth 2.0 for secure, user-based authentication with automatic token refresh
 - Admin-managed third-party connections
 - Compliance with OAuth 2.0 standards
 
+<Note>
+For existing MCP clients, the edit flow supports rotating OAuth credentials (`client_id` and `client_secret`) while preserving the same client ID. Connection type, auth type, and connection URL remain immutable after creation.
+</Note>
+
 #### Per-User OAuth
 
 Use per-user OAuth when each end-user should access the upstream service under their own account (e.g., each user's personal Notion workspace or GitHub repos). Bifrost acts as an OAuth 2.1 Authorization Server - users authenticate through a consent flow and their tokens are stored per-identity.

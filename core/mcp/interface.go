@@ -59,6 +59,10 @@ type MCPManagerInterface interface {
 	// UpdateClient updates an existing MCP client configuration
 	UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error
 
+	// UpdateClientConnection reconnects an existing MCP client using updated
+	// auth-related connection fields (for example, headers and OAuth config).
+	UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) error
+
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
 

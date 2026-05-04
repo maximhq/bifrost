@@ -5,9 +5,11 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -26,6 +28,8 @@ type MCPManager interface {
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
+	// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
+	UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
 	ReconnectMCPClient(ctx context.Context, id string) error
 	DisableMCPClient(ctx context.Context, id string) error
 	EnableMCPClient(ctx context.Context, id string) error
@@ -401,6 +405,7 @@ type MCPClientUpdateRequest struct {
 	VKConfigs          *[]MCPVKConfigRequest `json:"vk_configs,omitempty"`
 	ToolsToExecute     *schemas.WhiteList    `json:"tools_to_execute,omitempty"`
 	ToolsToAutoExecute *schemas.WhiteList    `json:"tools_to_auto_execute,omitempty"`
+	OauthConfig        *OAuthConfigRequest   `json:"oauth_config,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -721,6 +726,23 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
+	// connection_type and auth_type and connection string are permanently immutable
+	if req.ConnectionType != "" && req.ConnectionType != string(existingConfig.ConnectionType) {
+		SendError(ctx, fasthttp.StatusBadRequest, "connection_type cannot be changed for an existing MCP client")
+		return
+	}
+	if req.AuthType != "" && req.AuthType != string(existingConfig.AuthType) {
+		SendError(ctx, fasthttp.StatusBadRequest, "auth_type cannot be changed for an existing MCP client")
+		return
+	}
+	if req.ConnectionString != nil && !req.ConnectionString.Equals(existingConfig.ConnectionString) {
+		SendError(ctx, fasthttp.StatusBadRequest, "connection_string cannot be changed for an existing MCP client")
+		return
+	}
+	if req.StdioConfig != nil && !stdioConfigsEqual(req.StdioConfig, existingConfig.StdioConfig) {
+		SendError(ctx, fasthttp.StatusBadRequest, "stdio_config cannot be changed for an existing MCP client")
+		return
+	}
 
 	// Resolve tools_to_execute and tools_to_auto_execute.
 	resolvedToolsToExecute := existingConfig.ToolsToExecute
@@ -753,10 +775,85 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
 		return
 	}
+
+	shouldRotateOAuthConfig := req.OauthConfig != nil && (existingConfig.AuthType == schemas.MCPAuthTypeOauth || existingConfig.AuthType == schemas.MCPAuthTypePerUserOauth)
+	oauthClientID := ""
+	oauthClientSecret := ""
+	oauthAuthorizeURL := ""
+	oauthTokenURL := ""
+	oauthRegistrationURL := ""
+	oauthScopes := []string{}
+	if req.OauthConfig != nil && !shouldRotateOAuthConfig {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth_config can only be updated for MCP clients using auth_type 'oauth' or 'per_user_oauth'")
+		return
+	}
+	if shouldRotateOAuthConfig && req.Disabled {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth credentials cannot be rotated while disabling a client; send these as two separate requests")
+		return
+	}
+	if shouldRotateOAuthConfig {
+		oauthClientID = strings.TrimSpace(req.OauthConfig.ClientID)
+		oauthClientSecret = strings.TrimSpace(req.OauthConfig.ClientSecret)
+		oauthAuthorizeURL = strings.TrimSpace(req.OauthConfig.AuthorizeURL)
+		oauthTokenURL = strings.TrimSpace(req.OauthConfig.TokenURL)
+		oauthRegistrationURL = strings.TrimSpace(req.OauthConfig.RegistrationURL)
+		oauthScopes = req.OauthConfig.Scopes
+		if oauthClientID == "" && oauthClientSecret == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "oauth_config.client_id or oauth_config.client_secret is required when updating OAuth credentials")
+			return
+		}
+		var existingOauthConfig *configstoreTables.TableOauthConfig
+		if existingConfig.OauthConfigID != nil && *existingConfig.OauthConfigID != "" {
+			existingOauthConfig, err = h.store.ConfigStore.GetOauthConfigByID(ctx, *existingConfig.OauthConfigID)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing OAuth config: %v", err))
+				return
+			}
+			if existingOauthConfig != nil {
+				if oauthAuthorizeURL == "" {
+					oauthAuthorizeURL = strings.TrimSpace(existingOauthConfig.AuthorizeURL)
+				}
+				if oauthTokenURL == "" {
+					oauthTokenURL = strings.TrimSpace(existingOauthConfig.TokenURL)
+				}
+				if oauthRegistrationURL == "" && existingOauthConfig.RegistrationURL != nil {
+					oauthRegistrationURL = strings.TrimSpace(*existingOauthConfig.RegistrationURL)
+				}
+				if len(oauthScopes) == 0 && strings.TrimSpace(existingOauthConfig.Scopes) != "" {
+					var existingScopes []string
+					if err := json.Unmarshal([]byte(existingOauthConfig.Scopes), &existingScopes); err != nil {
+						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to parse existing OAuth scopes: %v", err))
+						return
+					}
+					oauthScopes = existingScopes
+				}
+			}
+		}
+
+		if oauthClientID == "" {
+			if existingOauthConfig == nil || strings.TrimSpace(existingOauthConfig.ClientID) == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, "existing OAuth client_id not found; provide oauth_config.client_id")
+				return
+			}
+			oauthClientID = strings.TrimSpace(existingOauthConfig.ClientID)
+		}
+
+		requiresDiscoveryOrRegistration := oauthClientID == "" || oauthAuthorizeURL == "" || oauthTokenURL == ""
+		if requiresDiscoveryOrRegistration && (existingConfig.ConnectionString == nil || existingConfig.ConnectionString.GetValue() == "") {
+			SendError(ctx, fasthttp.StatusBadRequest, "existing connection_string is required when OAuth discovery or dynamic registration is needed")
+			return
+		}
+	}
 	// Merge redacted values - preserve old values if incoming values are redacted and unchanged
 	merged := mergeMCPRedactedValues(&req.TableMCPClient, existingConfig, h.store.RedactMCPClientConfig(existingConfig))
 	req.TableMCPClient = *merged
-	// Save existing DB config before update so we can rollback if memory update fails
+
+	hasHeadersChange := !headersEqual(req.Headers, existingConfig.Headers)
+
+	clientWillBeDisabled := req.Disabled || existingConfig.Disabled
+	isPerUserOAuth := existingConfig.AuthType == schemas.MCPAuthTypePerUserOauth
+	willAttemptReconnect := hasHeadersChange && !clientWillBeDisabled && !isPerUserOAuth
+
 	var oldDBConfig *configstoreTables.TableMCPClient
 	if h.store.ConfigStore != nil {
 		var err error
@@ -766,15 +863,20 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	// Persist changes to config store.
+
 	req.TableMCPClient.ToolsToExecute = resolvedToolsToExecute
 	req.TableMCPClient.ToolsToAutoExecute = resolvedToolsToAutoExecute
+	dbUpdateRecord := req.TableMCPClient
+	if willAttemptReconnect && oldDBConfig != nil {
+		dbUpdateRecord.Headers = oldDBConfig.Headers
+	}
 	if h.store.ConfigStore != nil {
-		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &req.TableMCPClient); err != nil {
+		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
 			return
 		}
 	}
+
 	toolSyncInterval := mcp.DefaultToolSyncInterval
 	if req.ToolSyncInterval != 0 {
 		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
@@ -789,6 +891,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
+	headersForTrack1 := req.Headers
+	if willAttemptReconnect {
+		headersForTrack1 = existingConfig.Headers
+	}
 	schemasConfig := &schemas.MCPClientConfig{
 		ID:                    req.ClientID,
 		Name:                  req.Name,
@@ -798,7 +904,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		StdioConfig:           existingConfig.StdioConfig,
 		ToolsToExecute:        resolvedToolsToExecute,
 		ToolsToAutoExecute:    resolvedToolsToAutoExecute,
-		Headers:               req.Headers,
+		Headers:               headersForTrack1,
 		AllowedExtraHeaders:   req.AllowedExtraHeaders,
 		AuthType:              existingConfig.AuthType,
 		OauthConfigID:         existingConfig.OauthConfigID,
@@ -810,7 +916,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update MCP client config in memory (always — applies name/tools/header changes,
-	// and also triggers disable/enable lifecycle if the Disabled flag toggled)
 	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
 		// Rollback DB update to keep DB and memory in sync
 		if h.store.ConfigStore != nil && oldDBConfig != nil {
@@ -917,6 +1022,82 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	if willAttemptReconnect {
+		newCredsConfig := &schemas.MCPClientConfig{
+			Headers: req.TableMCPClient.Headers,
+		}
+		if err := h.mcpManager.UpdateMCPClientConnection(ctx, id, newCredsConfig); err != nil {
+			logger.Error(fmt.Sprintf(
+				"[PARTIAL SUCCESS] Non-credential fields for MCP client %s were updated successfully "+
+					"but the credential (headers) update failed — old headers retained: %v",
+				id, err,
+			))
+			SendJSON(ctx, map[string]any{
+				"status":           "partial_success",
+				"message":          "Non-credential fields updated successfully. Credential (headers) update failed — old headers are retained.",
+				"credential_error": err.Error(),
+			})
+			return
+		}
+
+		dbUpdateRecord.Headers = req.TableMCPClient.Headers
+		if h.store.ConfigStore != nil {
+			if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
+				logger.Error(fmt.Sprintf(
+					"[PARTIAL SUCCESS] MCP client %s reconnected with new headers but failed to persist them to DB: %v. "+
+						"Headers are live but will revert on restart.",
+					id, err,
+				))
+				SendJSON(ctx, map[string]any{
+					"status":            "partial_success",
+					"message":           "MCP client reconnected with new headers but the DB update failed — headers are live but will revert on restart.",
+					"persistence_error": err.Error(),
+				})
+				return
+			}
+		}
+	}
+
+	if shouldRotateOAuthConfig {
+		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+		serverURL := ""
+		if existingConfig.ConnectionString != nil {
+			serverURL = existingConfig.ConnectionString.GetValue()
+		}
+		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
+			ClientID:        oauthClientID,
+			ClientSecret:    oauthClientSecret,
+			AuthorizeURL:    oauthAuthorizeURL,
+			TokenURL:        oauthTokenURL,
+			RegistrationURL: oauthRegistrationURL,
+			RedirectURI:     redirectURI,
+			Scopes:          oauthScopes,
+			ServerURL:       serverURL,
+		})
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+			return
+		}
+
+		pendingConfig := *schemasConfig
+		pendingConfig.OauthConfigID = &flowInitiation.OauthConfigID
+		pendingConfig.Headers = req.Headers
+		if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store pending MCP client update: %v", err))
+			return
+		}
+
+		SendJSON(ctx, map[string]any{
+			"status":          "pending_oauth",
+			"message":         "MCP client updated. OAuth re-authorization is required to apply credential rotation.",
+			"oauth_config_id": flowInitiation.OauthConfigID,
+			"authorize_url":   flowInitiation.AuthorizeURL,
+			"expires_at":      flowInitiation.ExpiresAt,
+			"mcp_client_id":   req.ClientID,
+		})
+		return
+	}
+
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client edited successfully",
@@ -977,6 +1158,49 @@ func validateAllowedExtraHeaders(allowedExtraHeaders schemas.WhiteList) error {
 		return fmt.Errorf("invalid allowed_extra_headers: %w", err)
 	}
 	return nil
+}
+
+// stdioConfigsEqual returns true when a and b represent the same STDIO configuration.
+// A nil config is only equal to another nil config.
+func stdioConfigsEqual(a, b *schemas.MCPStdioConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Command != b.Command {
+		return false
+	}
+	if len(a.Args) != len(b.Args) || len(a.Envs) != len(b.Envs) {
+		return false
+	}
+	for i, arg := range a.Args {
+		if b.Args[i] != arg {
+			return false
+		}
+	}
+	for i, env := range a.Envs {
+		if b.Envs[i] != env {
+			return false
+		}
+	}
+	return true
+}
+
+// headersEqual returns true when two header maps represent the same set of name→value pairs.
+func headersEqual(a, b map[string]schemas.EnvVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok {
+			return false
+		}
+		avCopy := av
+		if !avCopy.Equals(&bv) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExecute schemas.WhiteList) error {
@@ -1051,6 +1275,48 @@ func mergeMCPRedactedValues(incoming *configstoreTables.TableMCPClient, oldRaw, 
 	return merged
 }
 
+// updateMCPClientWithRetry calls mcpManager.UpdateMCPClient with a short retry loop
+func (h *MCPHandler) updateMCPClientWithRetry(ctx context.Context, id string, config *schemas.MCPClientConfig) error {
+	const maxAttempts = 3
+	const retryDelay = 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = h.mcpManager.UpdateMCPClient(ctx, id, config)
+		if lastErr == nil {
+			return nil
+		}
+		if !strings.Contains(lastErr.Error(), "reconnect") || attempt == maxAttempts {
+			return lastErr
+		}
+		logger.Warn(fmt.Sprintf("[OAuth Complete] UpdateMCPClient attempt %d/%d for client %s blocked by in-flight reconnect; retrying in %s: %v",
+			attempt, maxAttempts, id, retryDelay, lastErr))
+		time.Sleep(retryDelay)
+	}
+	return lastErr
+}
+
+// updateMCPClientConnectionWithRetry calls mcpManager.UpdateMCPClientConnection with a short retry loop.
+func (h *MCPHandler) updateMCPClientConnectionWithRetry(ctx context.Context, id string, config *schemas.MCPClientConfig) error {
+	const maxAttempts = 3
+	const retryDelay = 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = h.mcpManager.UpdateMCPClientConnection(ctx, id, config)
+		if lastErr == nil {
+			return nil
+		}
+		if !strings.Contains(lastErr.Error(), "reconnect") || attempt == maxAttempts {
+			return lastErr
+		}
+		logger.Warn(fmt.Sprintf("[OAuth Complete] UpdateMCPClientConnection attempt %d/%d for client %s blocked by in-flight reconnect; retrying in %s: %v",
+			attempt, maxAttempts, id, retryDelay, lastErr))
+		time.Sleep(retryDelay)
+	}
+	return lastErr
+}
+
 // completeMCPClientOAuth handles POST /api/mcp/client/{id}/complete-oauth - Complete MCP client creation after OAuth authorization
 // The {id} parameter is the oauth_config_id returned from the initial addMCPClient call
 func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
@@ -1096,6 +1362,17 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// If pending config points to an existing client, this is an OAuth credential update.
+	var existingDBConfig *configstoreTables.TableMCPClient
+	if h.store.ConfigStore != nil {
+		existingDBConfig, err = h.store.ConfigStore.GetMCPClientByID(ctx, mcpClientConfig.ID)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing mcp client config: %v", err))
+			return
+		}
+	}
+	isUpdateFlow := existingDBConfig != nil
+
 	// Handle per-user OAuth completion: verify connection with admin's temp token,
 	// discover tools, create client (without persistent connection), discard token.
 	if mcpClientConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
@@ -1120,7 +1397,113 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		mcpClientConfig.DiscoveredTools = tools
 		mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
 
-		// Persist MCP client config in config store (BeforeSave hook serializes DiscoveredTools)
+		if isUpdateFlow {
+			oldDBConfig := *existingDBConfig
+			updateReq := &configstoreTables.TableMCPClient{
+				ClientID:                  mcpClientConfig.ID,
+				Name:                      mcpClientConfig.Name,
+				IsCodeModeClient:          mcpClientConfig.IsCodeModeClient,
+				ConnectionType:            string(mcpClientConfig.ConnectionType),
+				ConnectionString:          mcpClientConfig.ConnectionString,
+				StdioConfig:               mcpClientConfig.StdioConfig,
+				AuthType:                  string(mcpClientConfig.AuthType),
+				OauthConfigID:             mcpClientConfig.OauthConfigID,
+				ToolsToExecute:            mcpClientConfig.ToolsToExecute,
+				ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
+				Headers:                   mcpClientConfig.Headers,
+				AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
+				IsPingAvailable:           mcpClientConfig.IsPingAvailable,
+				ToolPricing:               mcpClientConfig.ToolPricing,
+				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+				AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
+				DiscoveredTools:           mcpClientConfig.DiscoveredTools,
+				DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
+				Disabled:                  mcpClientConfig.Disabled,
+			}
+			if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, updateReq); err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update MCP config: %v", err))
+				return
+			}
+			if err := h.updateMCPClientWithRetry(ctx, mcpClientConfig.ID, mcpClientConfig); err != nil {
+				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
+					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+				}
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update MCP client: %v", err))
+				return
+			}
+		} else {
+			// Persist MCP client config in config store (BeforeSave hook serializes DiscoveredTools)
+			if h.store.ConfigStore != nil {
+				if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
+					return
+				}
+			}
+
+			// Add MCP client to manager (skips connection for per_user_oauth)
+			if err := h.mcpManager.AddMCPClient(ctx, mcpClientConfig); err != nil {
+				// Clean up DB entry on failure
+				if h.store.ConfigStore != nil {
+					if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, mcpClientConfig.ID); delErr != nil {
+						logger.Error(fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", delErr))
+						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", delErr))
+						return
+					}
+				}
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
+				return
+			}
+		}
+
+		// Set discovered tools on the client
+		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
+
+		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
+		message := fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", len(tools))
+		if isUpdateFlow {
+			message = fmt.Sprintf("OAuth credentials updated and verified successfully. %d tools discovered.", len(tools))
+		}
+		SendJSON(ctx, map[string]any{"status": "success", "message": message, "tools_count": len(tools)})
+		return
+	}
+
+	// Standard server-level OAuth completion
+	if isUpdateFlow {
+		oldDBConfig := *existingDBConfig
+		updateReq := &configstoreTables.TableMCPClient{
+			ClientID:                  mcpClientConfig.ID,
+			Name:                      mcpClientConfig.Name,
+			IsCodeModeClient:          mcpClientConfig.IsCodeModeClient,
+			ConnectionType:            string(mcpClientConfig.ConnectionType),
+			ConnectionString:          mcpClientConfig.ConnectionString,
+			StdioConfig:               mcpClientConfig.StdioConfig,
+			AuthType:                  string(mcpClientConfig.AuthType),
+			OauthConfigID:             mcpClientConfig.OauthConfigID,
+			ToolsToExecute:            mcpClientConfig.ToolsToExecute,
+			ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
+			Headers:                   mcpClientConfig.Headers,
+			AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
+			IsPingAvailable:           mcpClientConfig.IsPingAvailable,
+			ToolPricing:               mcpClientConfig.ToolPricing,
+			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+			AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
+			DiscoveredTools:           mcpClientConfig.DiscoveredTools,
+			DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
+			Disabled:                  mcpClientConfig.Disabled,
+		}
+		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, updateReq); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update MCP config: %v", err))
+			return
+		}
+		if err := h.updateMCPClientConnectionWithRetry(ctx, mcpClientConfig.ID, mcpClientConfig); err != nil {
+			if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
+				logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+			}
+			logger.Error(fmt.Sprintf("Failed to reconnect MCP client after OAuth DB update for client %s: %v", mcpClientConfig.ID, err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client with updated OAuth credentials: %v", err))
+			return
+		}
+	} else {
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
@@ -1128,45 +1511,17 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
-		// Add MCP client to manager (skips connection for per_user_oauth)
+		// Add MCP client to Bifrost and connect
 		if err := h.mcpManager.AddMCPClient(ctx, mcpClientConfig); err != nil {
-			// Clean up DB entry on failure
 			if h.store.ConfigStore != nil {
 				if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, mcpClientConfig.ID); delErr != nil {
-					logger.Error(fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", delErr))
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", delErr))
-					return
+					logger.Warn(fmt.Sprintf("Failed to rollback MCP client config after add failure: %v", delErr))
 				}
 			}
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
+			logger.Error(fmt.Sprintf("[OAuth Complete] Failed to connect MCP client: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 			return
 		}
-
-		// Set discovered tools on the client
-		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
-
-		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
-		SendJSON(ctx, map[string]any{
-			"status":      "success",
-			"message":     fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", len(tools)),
-			"tools_count": len(tools),
-		})
-		return
-	}
-
-	// Standard server-level OAuth completion
-	if h.store.ConfigStore != nil {
-		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
-			return
-		}
-	}
-
-	// Add MCP client to Bifrost (this will save to database and connect)
-	if err := h.mcpManager.AddMCPClient(ctx, mcpClientConfig); err != nil {
-		logger.Error(fmt.Sprintf("[OAuth Complete] Failed to connect MCP client: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
-		return
 	}
 
 	// Clear pending MCP client config from oauth_config (cleanup)
@@ -1176,8 +1531,9 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	}
 
 	logger.Debug(fmt.Sprintf("[OAuth Complete] MCP client connected successfully: %s", mcpClientConfig.ID))
-	SendJSON(ctx, map[string]any{
-		"status":  "success",
-		"message": "MCP client connected successfully with OAuth",
-	})
+	message := "MCP client connected successfully with OAuth"
+	if isUpdateFlow {
+		message = "MCP client OAuth credentials updated successfully"
+	}
+	SendJSON(ctx, map[string]any{"status": "success", "message": message})
 }

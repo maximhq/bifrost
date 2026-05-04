@@ -1114,6 +1114,12 @@ export const mcpClientUpdateSchema = z.object({
       },
       { message: "Wildcard '*' cannot be combined with specific header names" },
     ),
+  oauth_config: z
+    .object({
+      client_id: z.string().trim().min(1, "OAuth Client ID cannot be empty").optional(),
+      client_secret: z.string().trim().min(1, "OAuth Client Secret cannot be empty").optional(),
+    })
+    .optional(),
 });
 
 // Global proxy type schema

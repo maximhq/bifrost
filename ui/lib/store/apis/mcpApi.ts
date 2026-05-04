@@ -10,6 +10,7 @@ import {
 import { baseApi } from "./baseApi";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
+type UpdateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 
 export const mcpApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -49,7 +50,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Update existing MCP client
-		updateMCPClient: builder.mutation<any, { id: string; data: UpdateMCPClientRequest }>({
+		updateMCPClient: builder.mutation<UpdateMCPClientResponse, { id: string; data: UpdateMCPClientRequest }>({
 			query: ({ id, data }) => ({
 				url: `/mcp/client/${id}`,
 				method: "PUT",
@@ -57,7 +58,11 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
-					await queryFulfilled;
+					const { data: response } = await queryFulfilled;
+					if (response.status === "pending_oauth") {
+						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
+						return;
+					}
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;

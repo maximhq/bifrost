@@ -1509,6 +1509,22 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal tool_pricing: %w", err)
 		}
+		discoveredToolsJSON := ""
+		if clientConfig.DiscoveredTools != nil {
+			data, marshalErr := json.Marshal(clientConfig.DiscoveredTools)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal discovered_tools: %w", marshalErr)
+			}
+			discoveredToolsJSON = string(data)
+		}
+		toolNameMappingJSON := ""
+		if clientConfig.DiscoveredToolNameMapping != nil {
+			data, marshalErr := json.Marshal(clientConfig.DiscoveredToolNameMapping)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal tool_name_mapping: %w", marshalErr)
+			}
+			toolNameMappingJSON = string(data)
+		}
 
 		headersJSONStr := string(headersJSON)
 		if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
@@ -1536,6 +1552,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		if encrypt.IsEnabled() {
 			updates["encryption_status"] = encryptionStatusEncrypted
+		}
+		if clientConfigCopy.OauthConfigID != nil {
+			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
+		}
+		if discoveredToolsJSON != "" {
+			updates["discovered_tools_json"] = discoveredToolsJSON
+		}
+		if toolNameMappingJSON != "" {
+			updates["tool_name_mapping_json"] = toolNameMappingJSON
 		}
 		// Config-file driven reconciliation passes ConfigHash. In this mode we should
 		// also sync connection/auth metadata from config.json and persist the hash.

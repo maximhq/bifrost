@@ -25,6 +25,12 @@ export interface OAuthConfig {
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
 }
 
+/** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */
+export interface OAuthConfigUpdate {
+	client_id?: string;
+	client_secret?: string;
+}
+
 export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
@@ -108,6 +114,7 @@ export interface UpdateMCPClientRequest {
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
+	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 
