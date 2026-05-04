@@ -7,7 +7,7 @@ import (
 )
 
 // dropUnsupportedParams removes unsupported model parameters from a request in place.
-func dropUnsupportedParams(req *schemas.BifrostRequest, supportedParams []string) []string {
+func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, supportedParams []string) []string {
 	if req == nil {
 		return nil
 	}
@@ -237,6 +237,9 @@ func dropUnsupportedParams(req *schemas.BifrostRequest, supportedParams []string
 			dropped = append(dropped, "top_p")
 		}
 	}
+
+	ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, isSupported["assistant_prefill"])
+
 	return dropped
 }
 

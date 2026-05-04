@@ -14,14 +14,26 @@ func cloneBifrostReq(req *schemas.BifrostRequest) *schemas.BifrostRequest {
 
 	cloned := *req
 
-	if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
-		cloned.TextCompletionRequest.Params = cloneTextCompletionParameters(req.TextCompletionRequest.Params)
+	if req.TextCompletionRequest != nil {
+		textReq := *req.TextCompletionRequest
+		cloned.TextCompletionRequest = &textReq
+		if req.TextCompletionRequest.Params != nil {
+			cloned.TextCompletionRequest.Params = cloneTextCompletionParameters(req.TextCompletionRequest.Params)
+		}
 	}
-	if req.ChatRequest != nil && req.ChatRequest.Params != nil {
-		cloned.ChatRequest.Params = cloneChatParameters(req.ChatRequest.Params)
+	if req.ChatRequest != nil {
+		chatReq := *req.ChatRequest
+		cloned.ChatRequest = &chatReq
+		if req.ChatRequest.Params != nil {
+			cloned.ChatRequest.Params = cloneChatParameters(req.ChatRequest.Params)
+		}
 	}
-	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
-		cloned.ResponsesRequest.Params = cloneResponsesParameters(req.ResponsesRequest.Params)
+	if req.ResponsesRequest != nil {
+		responsesReq := *req.ResponsesRequest
+		cloned.ResponsesRequest = &responsesReq
+		if req.ResponsesRequest.Params != nil {
+			cloned.ResponsesRequest.Params = cloneResponsesParameters(req.ResponsesRequest.Params)
+		}
 	}
 
 	return &cloned

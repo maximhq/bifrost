@@ -125,7 +125,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		_, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
 			if supportedParams := p.modelCatalog.GetSupportedParameters(model); supportedParams != nil {
-				droppedParams := dropUnsupportedParams(modifiedReq, supportedParams)
+				droppedParams := dropUnsupportedParams(ctx, modifiedReq, supportedParams)
 				if len(droppedParams) > 0 {
 					p.droppedParams = droppedParams
 				}

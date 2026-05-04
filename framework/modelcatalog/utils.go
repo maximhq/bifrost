@@ -386,6 +386,7 @@ type modelParametersParseResult struct {
 	ModelParameters    []struct {
 		ID string `json:"id"`
 	} `json:"model_parameters,omitempty"`
+	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
 	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
 	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
@@ -420,6 +421,11 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 
 	// From supports_* boolean flags
+	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
+		// not an actual model parameter; if present, trailing assistant messages
+		// for anthropic and bedrock's anthropic models will not be trimmed
+		addParam("assistant_prefill")
+	}
 	if parsed.SupportsFunctionCalling != nil && *parsed.SupportsFunctionCalling {
 		addParam("tools")
 	}
