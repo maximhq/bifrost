@@ -218,6 +218,16 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
+	// output_config.effort — model-gated per
+	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
+	// outside the supported set return: "This model does not support the
+	// effort parameter."
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(model) {
+		req.OutputConfig.Effort = nil
+		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
+			req.OutputConfig = nil
+		}
+	}
 	if req.InferenceGeo != nil && !features.InferenceGeo {
 		req.InferenceGeo = nil
 	}
@@ -440,6 +450,23 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
+	// output_config.effort — model-gated per
+	// https://platform.claude.com/docs/en/build-with-claude/effort.
+	// Mirrors the typed path; same cleanup of an empty parent.
+	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
+		!SupportsEffortParameter(model) {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
+		}
+		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw output_config: %w", err)
+			}
+		}
+	}
+
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control.scope")
@@ -623,6 +650,37 @@ func SupportsNativeEffort(model string) bool {
 	}
 	return strings.Contains(model, "4-5") || strings.Contains(model, "4.5") ||
 		strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
+}
+
+// SupportsEffortParameter returns true if the model accepts the
+// output_config.effort parameter. Per
+// https://platform.claude.com/docs/en/build-with-claude/effort the supported
+// set is: Claude Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, and Opus 4.5.
+// All other models reject effort with a 400:
+//
+//	"This model does not support the effort parameter."
+//
+// This is intentionally separate from SupportsAdaptiveThinking: a model can
+// support the effort knob without supporting adaptive thinking (Opus 4.5),
+// and adaptive thinking is a distinct surface (thinking.type:"adaptive")
+// from effort. Future models may shift either flag independently.
+func SupportsEffortParameter(model string) bool {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "mythos") {
+		return true
+	}
+	if strings.Contains(m, "haiku") {
+		return false
+	}
+	if strings.Contains(m, "opus") {
+		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
+			strings.Contains(m, "4-7") || strings.Contains(m, "4.7")
+	}
+	if strings.Contains(m, "sonnet") {
+		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
+	}
+	return false
 }
 
 // SupportsFastMode returns true if the model supports speed:"fast" (research

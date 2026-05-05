@@ -500,8 +500,8 @@ func TestTableOauthConfig_EncryptDecrypt(t *testing.T) {
 
 	config := &TableOauthConfig{
 		ID:           "oauth-cfg-1",
-		ClientID:     "client-id-public",
-		ClientSecret: "super-secret-client-secret",
+		ClientID:     schemas.NewEnvVar("client-id-public"),
+		ClientSecret: schemas.NewEnvVar("super-secret-client-secret"),
 		RedirectURI:  "https://example.com/callback",
 		State:        "csrf-state-token",
 		CodeVerifier: "pkce-code-verifier-secret",
@@ -923,7 +923,7 @@ func TestTableOauthConfig_UpdatePreservesDecryption(t *testing.T) {
 
 	config := &TableOauthConfig{
 		ID:           "oauth-cfg-update",
-		ClientSecret: "original-secret",
+		ClientSecret: schemas.NewEnvVar("original-secret"),
 		RedirectURI:  "https://example.com/callback",
 		State:        "csrf-update",
 		ExpiresAt:    time.Now().Add(15 * time.Minute),
@@ -934,7 +934,7 @@ func TestTableOauthConfig_UpdatePreservesDecryption(t *testing.T) {
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-update").Error)
 	assert.Equal(t, "original-secret", found.ClientSecret)
 
-	found.ClientSecret = "rotated-secret"
+	found.ClientSecret = schemas.NewEnvVar("rotated-secret")
 	require.NoError(t, db.Save(&found).Error)
 
 	var found2 TableOauthConfig
@@ -1372,7 +1372,7 @@ func TestTableOauthConfig_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 
 	cfg := &TableOauthConfig{
 		ID:           "cfg-dis-1",
-		ClientSecret: "client-secret-plain",
+		ClientSecret: schemas.NewEnvVar("client-secret-plain"),
 		CodeVerifier: "verifier-plain",
 		RedirectURI:  "https://example.com/cb",
 		State:        "csrf-state",

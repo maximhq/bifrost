@@ -2661,11 +2661,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 							errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 							if marshalErr != nil {
 								cancel()
+								for range streamChan {
+								}
 								return
 							}
 							// Return error event and stop streaming
 							reader.SendError(errorJSON)
 							cancel()
+							for range streamChan {
+							}
 							return
 						}
 						// Else add warn log and continue
@@ -2795,6 +2799,12 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 				if !sent {
 					cancel() // Client disconnected, cancel upstream stream
+					// Drain remaining chunks so the provider goroutine's defer
+					// (HandleStreamCancellation -> PostLLMHook -> storeOrEnqueueEntry) finishes
+					// before our own defer fires traceCompleter. Without this, Inject runs
+					// against an empty pendingLogsToInject and the cancellation log is orphaned.
+					for range streamChan {
+					}
 					return
 				}
 			}

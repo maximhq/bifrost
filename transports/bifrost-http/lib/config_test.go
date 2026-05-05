@@ -428,6 +428,14 @@ func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *go
 	return fn(nil)
 }
 
+func (m *MockConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) RunMigration(context.Context, func(context.Context, *gorm.DB) error) error {
 	return nil
 }
@@ -1121,9 +1129,6 @@ func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.Table
 }
 
 // OAuth config
-func (m *MockConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
-	return nil, nil
-}
 
 func (m *MockConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {
 	return nil, nil

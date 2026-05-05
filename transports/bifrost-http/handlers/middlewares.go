@@ -1063,7 +1063,6 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			if parentSpanID != "" {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
 			}
-
 			// Store a trace completion callback for streaming handlers to use.
 			// Accepts transport plugin logs as a parameter so it never reads from
 			// ctx.UserValue — ctx may be recycled by the time this runs in a goroutine.
@@ -1088,6 +1087,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				}
 			}
 			defer func() {
+				// Check if trace completion is deferred (for streaming requests)
+				// If deferred, the streaming handler will complete the trace after stream ends
+				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+					return
+				}
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())

@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -49,7 +50,7 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -126,7 +127,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 		)),
 	)
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	resultA, err := ToAnthropicChatRequest(ctx, makeReq(propsA))
 	if err != nil {
@@ -185,7 +186,7 @@ func TestToAnthropicChatRequest_NestedProperties_Preserved(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -278,7 +279,7 @@ func TestToAnthropicChatRequest_ToolInputKeyOrderPreservation(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -370,7 +371,7 @@ func TestToBifrostChatResponse_MultipleTextBlocksWithThinking(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result := response.ToBifrostChatResponse(ctx)
 
@@ -431,7 +432,7 @@ func TestToBifrostChatResponse_SingleTextBlockNoThinking(t *testing.T) {
 		Usage:      &AnthropicUsage{InputTokens: 10, OutputTokens: 5},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result := response.ToBifrostChatResponse(ctx)
 
@@ -477,7 +478,7 @@ func TestToAnthropicChatRequest_BoundaryMismatchFallback(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -548,7 +549,7 @@ func TestToAnthropicChatRequest_NormalFlowUnchanged(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -608,7 +609,7 @@ func TestToAnthropicChatRequest_Opus47_StripsTemperatureTopPTopK(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -633,14 +634,14 @@ func TestToAnthropicChatRequest_NonOpus47_PreservesTemperature(t *testing.T) {
 		Provider: schemas.Anthropic,
 		Model:    "claude-opus-4-6-20250514",
 		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
 		},
 		Params: &schemas.ChatParameters{
 			Temperature: &temp,
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -659,15 +660,15 @@ func TestToAnthropicChatRequest_Opus47_ReasoningMaxTokens_AdaptiveOnly(t *testin
 		Provider: schemas.Anthropic,
 		Model:    "claude-opus-4-7-20260401",
 		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("think")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
 		},
 		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: schemas.Ptr(8192),
+			MaxCompletionTokens: new(8192),
 			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -692,15 +693,15 @@ func TestToAnthropicChatRequest_NonOpus47_ReasoningMaxTokens_EnabledWithBudget(t
 		Provider: schemas.Anthropic,
 		Model:    "claude-opus-4-6-20250514",
 		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("think")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
 		},
 		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: schemas.Ptr(8192),
+			MaxCompletionTokens: new(8192),
 			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
 		},
 	}
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
 	if err != nil {
@@ -725,10 +726,10 @@ func TestToAnthropicChatRequest_Opus47_ReasoningEffort_AdaptiveWithEffort(t *tes
 		Provider: schemas.Anthropic,
 		Model:    "claude-opus-4-7-20260401",
 		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("think")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
 		},
 		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: schemas.Ptr(8192),
+			MaxCompletionTokens: new(8192),
 			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
 		},
 	}

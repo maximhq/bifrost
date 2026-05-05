@@ -925,14 +925,14 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 	})
 
 	t.Run("passthrough_computer_use_header_prevents_auto_inject", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		// Simulate passthrough setting an older computer-use header
 		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 			"anthropic-beta": {AnthropicComputerUseBetaHeader20250124},
 		})
 		req := &AnthropicMessageRequest{
 			Tools: []AnthropicTool{{
-				Type: schemas.Ptr(AnthropicToolTypeComputer20251124),
+				Type: new(AnthropicToolTypeComputer20251124),
 				Name: string(AnthropicToolNameComputer),
 			}},
 		}
@@ -949,7 +949,7 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 	})
 
 	t.Run("no_passthrough_allows_auto_inject", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
 			MCPServers: []AnthropicMCPServerV2{{URL: "http://example.com"}},
 		}
@@ -1895,7 +1895,7 @@ func TestAnthropicToolUnmarshalJSON_MCPToolset(t *testing.T) {
 func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
 	rawBody := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"fallbacks":["claude-haiku-4-5"],"temperature":0.7}`)
 
-	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 	request := &schemas.BifrostResponsesRequest{
@@ -2021,6 +2021,224 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 	}
 }
 
+// TestSupportsEffortParameter pins the helper against the explicit doc list
+// at https://platform.claude.com/docs/en/build-with-claude/effort:
+// "Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+func TestSupportsEffortParameter(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Supported per docs.
+		{"claude-mythos-preview", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.7-20260401", true},
+		{"claude-opus-4-6", true},
+		{"claude-opus-4.6-20250514", true},
+		{"claude-sonnet-4-6", true},
+		{"claude-sonnet-4.6-20250514", true},
+		{"claude-opus-4-5", true},
+		{"claude-opus-4.5-20251101", true},
+		{"claude-opus-4-5-20251101", true},
+		// Bedrock + Vertex IDs for supported models keep the substring shape.
+		{"anthropic.claude-opus-4-7-v1", true},
+		{"global.anthropic.claude-sonnet-4-6", true},
+		{"claude-opus-4-7@20260401", true},
+		// Not supported - the failing case from the upstream 400.
+		{"claude-haiku-4-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"claude-haiku-4-6-20250514", false},
+		// Sonnet < 4.6 not in the supported list.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
+		{"claude-sonnet-4-20250514", false},
+		// Opus < 4.5 not in the supported list.
+		{"claude-opus-4-1", false},
+		{"claude-opus-4-1-20250805", false},
+		{"claude-opus-4-20250514", false},
+		// Pre-4 generation.
+		{"claude-3-5-sonnet-20241022", false},
+		{"claude-3-opus", false},
+		// Defensive cases.
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := SupportsEffortParameter(tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsEffortParameter(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedAnthropicFields_EffortGating exercises the typed path:
+// effort is removed for non-supporting models and the empty parent is cleaned
+// up; supporting models keep the effort value untouched.
+func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
+	highEffort := "high"
+	mediumEffort := "medium"
+
+	tests := []struct {
+		name       string
+		model      string
+		req        *AnthropicMessageRequest
+		wantEffort *string
+		wantOCNil  bool
+	}{
+		{
+			name:  "haiku 4.5 strips effort and drops empty output_config",
+			model: "claude-haiku-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: nil,
+			wantOCNil:  true,
+		},
+		{
+			name:  "opus 4.5 keeps effort (SupportsNativeEffort)",
+			model: "claude-opus-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &mediumEffort},
+			},
+			wantEffort: &mediumEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "sonnet 4.6 keeps effort",
+			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "opus 4.7 keeps effort",
+			model: "claude-opus-4-7",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "sonnet 4.5 strips effort",
+			model: "claude-sonnet-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: nil,
+			wantOCNil:  true,
+		},
+		{
+			name:  "haiku 4.5 strips effort but preserves sibling Format",
+			model: "claude-haiku-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{
+					Effort: &highEffort,
+					Format: json.RawMessage(`{"type":"json_schema"}`),
+				},
+			},
+			wantEffort: nil,
+			wantOCNil:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stripUnsupportedAnthropicFields(tt.req, schemas.Anthropic, tt.model)
+			if tt.wantOCNil {
+				if tt.req.OutputConfig != nil {
+					t.Fatalf("expected OutputConfig nil, got %+v", tt.req.OutputConfig)
+				}
+				return
+			}
+			if tt.req.OutputConfig == nil {
+				t.Fatalf("expected OutputConfig non-nil")
+			}
+			gotEffort := tt.req.OutputConfig.Effort
+			switch {
+			case tt.wantEffort == nil && gotEffort != nil:
+				t.Errorf("expected Effort nil, got %q", *gotEffort)
+			case tt.wantEffort != nil && gotEffort == nil:
+				t.Errorf("expected Effort %q, got nil", *tt.wantEffort)
+			case tt.wantEffort != nil && gotEffort != nil && *tt.wantEffort != *gotEffort:
+				t.Errorf("expected Effort %q, got %q", *tt.wantEffort, *gotEffort)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_EffortGating exercises the raw-bytes
+// path. Same gating semantics as the typed path; verifies the JSON delete
+// also drops an empty output_config parent.
+func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
+	tests := []struct {
+		name           string
+		model          string
+		body           string
+		wantHasEffort  bool
+		wantHasOCField bool
+	}{
+		{
+			name:           "haiku 4.5 strips effort and drops parent",
+			model:          "claude-haiku-4-5",
+			body:           `{"model":"claude-haiku-4-5","output_config":{"effort":"high"}}`,
+			wantHasEffort:  false,
+			wantHasOCField: false,
+		},
+		{
+			name:           "opus 4.5 keeps effort",
+			model:          "claude-opus-4-5",
+			body:           `{"model":"claude-opus-4-5","output_config":{"effort":"high"}}`,
+			wantHasEffort:  true,
+			wantHasOCField: true,
+		},
+		{
+			name:           "sonnet 4.6 keeps effort",
+			model:          "claude-sonnet-4-6",
+			body:           `{"model":"claude-sonnet-4-6","output_config":{"effort":"medium"}}`,
+			wantHasEffort:  true,
+			wantHasOCField: true,
+		},
+		{
+			name:           "haiku 4.5 strips effort but keeps sibling format",
+			model:          "claude-haiku-4-5",
+			body:           `{"model":"claude-haiku-4-5","output_config":{"effort":"high","format":{"type":"json_schema"}}}`,
+			wantHasEffort:  false,
+			wantHasOCField: true,
+		},
+		{
+			name:           "model fallback - haiku 4.5 inferred from body when arg empty",
+			model:          "",
+			body:           `{"model":"claude-haiku-4-5-20251001","output_config":{"effort":"high"}}`,
+			wantHasEffort:  false,
+			wantHasOCField: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripUnsupportedFieldsFromRawBody([]byte(tt.body), schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			haveEffort := providerUtils.JSONFieldExists(out, "output_config.effort")
+			if haveEffort != tt.wantHasEffort {
+				t.Errorf("output_config.effort present=%v, want %v; body=%s", haveEffort, tt.wantHasEffort, string(out))
+			}
+			haveOC := providerUtils.JSONFieldExists(out, "output_config")
+			if haveOC != tt.wantHasOCField {
+				t.Errorf("output_config present=%v, want %v; body=%s", haveOC, tt.wantHasOCField, string(out))
+			}
+		})
+	}
+}
+
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -2067,7 +2285,7 @@ func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 			AddMissingBetaHeadersToContext(ctx, tt.req, tt.provider)
 
 			var headers []string

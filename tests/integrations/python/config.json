@@ -295,14 +295,14 @@
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "./config.db"
+      "path": "../../tests/integrations/python/config.db"
     }
   },
   "logs_store": {
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "./logs.db"
+      "path": "../../tests/integrations/python/logs.db"
     }
   },
   "governance": {
