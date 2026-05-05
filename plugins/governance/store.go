@@ -266,6 +266,21 @@ func (gs *LocalGovernanceStore) UpsertBudgetConfig(ctx context.Context, budgetID
 // DeleteBudget deletes a budget from the local store.
 func (gs *LocalGovernanceStore) DeleteBudget(ctx context.Context, budgetID string) {
 	gs.budgets.Delete(budgetID)
+	// Clean up LastDB baselines so the gossip delta doesn't carry stale entries.
+	gs.LastDBUsagesBudgetsMu.Lock()
+	delete(gs.LastDBUsagesBudgets, budgetID)
+	gs.LastDBUsagesBudgetsMu.Unlock()
+}
+
+// SetBudgetDBBaseline records the DB-authoritative usage for a budget so that
+// gossip delta calculations (CurrentUsage - LastDBUsage) start from the correct
+// base. Must be called whenever a budget with non-zero usage is loaded into
+// memory outside of the initial loadFromDatabase path (e.g., access-profile
+// propagation that preserves usage under a new ID).
+func (gs *LocalGovernanceStore) SetBudgetDBBaseline(budgetID string, currentUsage float64) {
+	gs.LastDBUsagesBudgetsMu.Lock()
+	gs.LastDBUsagesBudgets[budgetID] = currentUsage
+	gs.LastDBUsagesBudgetsMu.Unlock()
 }
 
 // LoadRateLimit loads a rate limit by its ID from the local store.
@@ -313,6 +328,27 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 // DeleteRateLimit deletes a rate limit from the local store.
 func (gs *LocalGovernanceStore) DeleteRateLimit(ctx context.Context, rateLimitID string) {
 	gs.rateLimits.Delete(rateLimitID)
+	// Clean up LastDB baselines so the gossip delta doesn't carry stale entries.
+	gs.LastDBUsagesRateLimitsTokensMu.Lock()
+	delete(gs.LastDBUsagesTokensRateLimits, rateLimitID)
+	gs.LastDBUsagesRateLimitsTokensMu.Unlock()
+	gs.LastDBUsagesRateLimitsRequestsMu.Lock()
+	delete(gs.LastDBUsagesRequestsRateLimits, rateLimitID)
+	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
+}
+
+// SetRateLimitDBBaseline records the DB-authoritative usage for a rate limit so
+// that gossip delta calculations (TokenCurrentUsage - LastDBTokenUsage) start
+// from the correct base. Must be called whenever a rate limit with non-zero
+// usage is loaded into memory outside of the initial loadFromDatabase path
+// (e.g., access-profile propagation that preserves usage under a new ID).
+func (gs *LocalGovernanceStore) SetRateLimitDBBaseline(rateLimitID string, tokenUsage int64, requestUsage int64) {
+	gs.LastDBUsagesRateLimitsTokensMu.Lock()
+	gs.LastDBUsagesTokensRateLimits[rateLimitID] = tokenUsage
+	gs.LastDBUsagesRateLimitsTokensMu.Unlock()
+	gs.LastDBUsagesRateLimitsRequestsMu.Lock()
+	gs.LastDBUsagesRequestsRateLimits[rateLimitID] = requestUsage
+	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 }
 
 // BumpBudgetUsage atomically increments CurrentUsage on the budget identified
@@ -2278,7 +2314,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 		// Delete removed multi-budgets
 		for _, oldBudget := range existingVK.Budgets {
 			if !allNewBudgetIDs[oldBudget.ID] {
-				gs.budgets.Delete(oldBudget.ID)
+				gs.DeleteBudget(ctx, oldBudget.ID)
 			}
 		}
 
@@ -2297,9 +2333,15 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 			}
 			// Update the rate limit in the main rateLimits sync.Map
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+			// Clean up old rate limit if ID changed (e.g., after AP propagation
+			// creates a fresh UUID). Without this the orphaned entry leaks memory
+			// and its stale usage pollutes gossip baselines.
+			if existingVK.RateLimit != nil && existingVK.RateLimit.ID != clone.RateLimit.ID {
+				gs.DeleteRateLimit(ctx, existingVK.RateLimit.ID)
+			}
 		} else if existingVK.RateLimit != nil {
 			// Rate limit was removed from the virtual key, delete it from memory
-			gs.rateLimits.Delete(existingVK.RateLimit.ID)
+			gs.DeleteRateLimit(ctx, existingVK.RateLimit.ID)
 		}
 		if clone.ProviderConfigs != nil {
 			// Create a map of existing provider configs by ID for fast lookup
@@ -2307,6 +2349,17 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 			if existingVK.ProviderConfigs != nil {
 				for _, existingPC := range existingVK.ProviderConfigs {
 					existingProviderConfigs[existingPC.ID] = existingPC
+				}
+			}
+
+			// Collect all new rate limit IDs from new provider configs
+			allNewRateLimitIDs := make(map[string]bool)
+			if clone.RateLimit != nil {
+				allNewRateLimitIDs[clone.RateLimit.ID] = true
+			}
+			for _, pc := range clone.ProviderConfigs {
+				if pc.RateLimit != nil {
+					allNewRateLimitIDs[pc.RateLimit.ID] = true
 				}
 			}
 
@@ -2327,7 +2380,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				} else {
 					// Rate limit was removed from provider config, delete it from memory if it existed
 					if existingPC, exists := existingProviderConfigs[pc.ID]; exists && existingPC.RateLimit != nil {
-						gs.rateLimits.Delete(existingPC.RateLimit.ID)
+						gs.DeleteRateLimit(ctx, existingPC.RateLimit.ID)
 						clone.ProviderConfigs[i].RateLimit = nil
 					}
 				}
@@ -2346,8 +2399,22 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				if existingPC, exists := existingProviderConfigs[pc.ID]; exists {
 					for _, oldBudget := range existingPC.Budgets {
 						if !allNewBudgetIDs[oldBudget.ID] {
-							gs.budgets.Delete(oldBudget.ID)
+							gs.DeleteBudget(ctx, oldBudget.ID)
 						}
+					}
+				}
+			}
+			// Clean up orphaned rate limits and budgets from old provider configs
+			// whose IDs changed (e.g., AP propagation replaces all configs with
+			// new DB row IDs). Without this, stale entries leak memory and
+			// pollute gossip baselines.
+			for _, oldPC := range existingVK.ProviderConfigs {
+				if oldPC.RateLimit != nil && !allNewRateLimitIDs[oldPC.RateLimit.ID] {
+					gs.DeleteRateLimit(ctx, oldPC.RateLimit.ID)
+				}
+				for _, oldBudget := range oldPC.Budgets {
+					if !allNewBudgetIDs[oldBudget.ID] {
+						gs.DeleteBudget(ctx, oldBudget.ID)
 					}
 				}
 			}
@@ -2375,22 +2442,22 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 		if vk.ID == vkID {
 			// Delete budgets
 			for _, b := range vk.Budgets {
-				gs.budgets.Delete(b.ID)
+				gs.DeleteBudget(ctx, b.ID)
 			}
 
 			// Delete associated rate limit if exists
 			if vk.RateLimitID != nil {
-				gs.rateLimits.Delete(*vk.RateLimitID)
+				gs.DeleteRateLimit(ctx, *vk.RateLimitID)
 			}
 
 			// Delete provider config budgets and rate limits
 			if vk.ProviderConfigs != nil {
 				for _, pc := range vk.ProviderConfigs {
 					for _, b := range pc.Budgets {
-						gs.budgets.Delete(b.ID)
+						gs.DeleteBudget(ctx, b.ID)
 					}
 					if pc.RateLimitID != nil {
-						gs.rateLimits.Delete(*pc.RateLimitID)
+						gs.DeleteRateLimit(ctx, *pc.RateLimitID)
 					}
 				}
 			}
@@ -2460,7 +2527,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 		}
 		for id := range existingBudgetIDs {
 			if _, stillThere := nextBudgetIDs[id]; !stillThere {
-				gs.budgets.Delete(id)
+				gs.DeleteBudget(ctx, id)
 			}
 		}
 
@@ -2477,9 +2544,13 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 				}
 			}
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
+			if existingTeam.RateLimit != nil && existingTeam.RateLimit.ID != clone.RateLimit.ID {
+				gs.DeleteRateLimit(ctx, existingTeam.RateLimit.ID)
+			}
 		} else if existingTeam.RateLimit != nil {
 			// Rate limit was removed from the team, delete it from memory
-			gs.rateLimits.Delete(existingTeam.RateLimit.ID)
+			gs.DeleteRateLimit(ctx, existingTeam.RateLimit.ID)
 		}
 
 		gs.teams.Store(team.ID, &clone)
@@ -2499,11 +2570,11 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 		if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
 			// Delete all associated budgets
 			for _, b := range team.Budgets {
-				gs.budgets.Delete(b.ID)
+				gs.DeleteBudget(ctx, b.ID)
 			}
 			// Delete associated rate limit if exists
 			if team.RateLimitID != nil {
-				gs.rateLimits.Delete(*team.RateLimitID)
+				gs.DeleteRateLimit(ctx, *team.RateLimitID)
 			}
 		}
 	}
@@ -2568,9 +2639,13 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 				}
 			}
 			gs.budgets.Store(clone.Budget.ID, clone.Budget)
+			// Clean up old budget if ID changed (e.g., UUID rotation on propagation)
+			if existingCustomer.Budget != nil && existingCustomer.Budget.ID != clone.Budget.ID {
+				gs.DeleteBudget(ctx, existingCustomer.Budget.ID)
+			}
 		} else if existingCustomer.Budget != nil {
 			// Budget was removed from the customer, delete it from memory
-			gs.budgets.Delete(existingCustomer.Budget.ID)
+			gs.DeleteBudget(ctx, existingCustomer.Budget.ID)
 		}
 
 		// Handle rate limit updates with consistent logic
@@ -2586,9 +2661,13 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 				}
 			}
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
+			if existingCustomer.RateLimit != nil && existingCustomer.RateLimit.ID != clone.RateLimit.ID {
+				gs.DeleteRateLimit(ctx, existingCustomer.RateLimit.ID)
+			}
 		} else if existingCustomer.RateLimit != nil {
 			// Rate limit was removed from the customer, delete it from memory
-			gs.rateLimits.Delete(existingCustomer.RateLimit.ID)
+			gs.DeleteRateLimit(ctx, existingCustomer.RateLimit.ID)
 		}
 
 		gs.customers.Store(customer.ID, &clone)
@@ -2607,11 +2686,11 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 		if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
 			// Delete associated budget if exists
 			if customer.BudgetID != nil {
-				gs.budgets.Delete(*customer.BudgetID)
+				gs.DeleteBudget(ctx, *customer.BudgetID)
 			}
 			// Delete associated rate limit if exists
 			if customer.RateLimitID != nil {
-				gs.rateLimits.Delete(*customer.RateLimitID)
+				gs.DeleteRateLimit(ctx, *customer.RateLimitID)
 			}
 		}
 	}
@@ -2736,12 +2815,12 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 		if mc.ID == mcID {
 			// Delete associated budget if exists
 			if mc.BudgetID != nil {
-				gs.budgets.Delete(*mc.BudgetID)
+				gs.DeleteBudget(ctx, *mc.BudgetID)
 			}
 
 			// Delete associated rate limit if exists
 			if mc.RateLimitID != nil {
-				gs.rateLimits.Delete(*mc.RateLimitID)
+				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
 			}
 
 			gs.modelConfigs.Delete(key)
@@ -2799,12 +2878,12 @@ func (gs *LocalGovernanceStore) DeleteProviderInMemory(ctx context.Context, prov
 		if provider, ok := providerValue.(*configstoreTables.TableProvider); ok && provider != nil {
 			// Delete associated budget if exists
 			if provider.BudgetID != nil {
-				gs.budgets.Delete(*provider.BudgetID)
+				gs.DeleteBudget(ctx, *provider.BudgetID)
 			}
 
 			// Delete associated rate limit if exists
 			if provider.RateLimitID != nil {
-				gs.rateLimits.Delete(*provider.RateLimitID)
+				gs.DeleteRateLimit(ctx, *provider.RateLimitID)
 			}
 		}
 	}
