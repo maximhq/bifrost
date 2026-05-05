@@ -11,7 +11,6 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -76,11 +75,6 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 		s.applyPricingData(pricingData)
 	}
 
-	// Populate provider-utils model params cache from any max_output_tokens
-	// fields in the pricing entries so providers can read those without a
-	// separate model-parameters sync round-trip.
-	s.populateModelParamsFromPricing(pricingData)
-
 	if s.logger != nil {
 		s.logger.Debug("successfully synced %d pricing records", len(pricingData))
 	}
@@ -124,7 +118,6 @@ func (s *Store) LoadFromURLIntoMemory(ctx context.Context) error {
 		return fmt.Errorf("failed to load pricing data from URL: %w", err)
 	}
 	s.applyPricingData(pricingData)
-	s.populateModelParamsFromPricing(pricingData)
 	return nil
 }
 
@@ -214,35 +207,4 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 	}
 
 	return pricingData, nil
-}
-
-// populateModelParamsFromPricing seeds the provider-utils model params cache
-// from pricing entries so providers can look up model params without a
-// separate model-parameters sync. Two fields land on distinct keys:
-//   - max_output_tokens under the bare model name (callers pass bare names).
-//   - bifrost_overrides under the full provider-prefixed datasheet key so the
-//     same model on different providers stays distinct. When the datasheet key
-//     is already unprefixed, both fields land on the same entry.
-func (s *Store) populateModelParamsFromPricing(pricingData map[string]Entry) {
-	modelParamsEntries := make(map[string]providerUtils.ModelParams)
-	for modelKey, entry := range pricingData {
-		if entry.MaxOutputTokens != nil {
-			modelName := extractModelName(modelKey)
-			existing := modelParamsEntries[modelName]
-			existing.MaxOutputTokens = entry.MaxOutputTokens
-			modelParamsEntries[modelName] = existing
-		}
-		if !isEmptyBifrostOverrides(&entry.BifrostOverrides) {
-			ov := entry.BifrostOverrides
-			existing := modelParamsEntries[modelKey]
-			existing.BifrostOverrides = &ov
-			modelParamsEntries[modelKey] = existing
-		}
-	}
-	if len(modelParamsEntries) > 0 {
-		providerUtils.BulkSetModelParams(modelParamsEntries)
-		if s.logger != nil {
-			s.logger.Debug("populated %d model params entries from pricing datasheet", len(modelParamsEntries))
-		}
-	}
 }

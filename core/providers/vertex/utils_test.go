@@ -197,16 +197,18 @@ func TestGetVertexPublisherModelURL(t *testing.T) {
 }
 
 func TestGetVertexModelAwareAPIHost(t *testing.T) {
-	// Seed the model params cache with vertex_ai/ prefix (matches how model-parameters are stored)
-	providerUtils.SetModelParams("vertex_ai/claude-opus-4-7", providerUtils.ModelParams{
+	// Seed the capability cache under (model, Vertex), the key IsVertexMultiRegionOnlyModel resolves.
+	multiRegionKey := providerUtils.CapabilityCacheKey("claude-opus-4-7", schemas.Vertex)
+	singleRegionKey := providerUtils.CapabilityCacheKey("claude-sonnet-4-5", schemas.Vertex)
+	providerUtils.SetModelCapability(multiRegionKey, &schemas.ModelCapabilities{
 		IsVertexMultiRegionOnly: schemas.Ptr(true),
 	})
-	providerUtils.SetModelParams("vertex_ai/claude-sonnet-4-5", providerUtils.ModelParams{
+	providerUtils.SetModelCapability(singleRegionKey, &schemas.ModelCapabilities{
 		IsVertexMultiRegionOnly: schemas.Ptr(false),
 	})
 	t.Cleanup(func() {
-		providerUtils.DeleteModelParams("vertex_ai/claude-opus-4-7")
-		providerUtils.DeleteModelParams("vertex_ai/claude-sonnet-4-5")
+		providerUtils.DeleteModelCapability(multiRegionKey)
+		providerUtils.DeleteModelCapability(singleRegionKey)
 	})
 
 	tests := []struct {
@@ -305,12 +307,13 @@ func TestGetVertexModelAwareAPIHost(t *testing.T) {
 }
 
 func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
-	// Seed the model params cache with vertex_ai/ prefix (matches how model-parameters are stored)
-	providerUtils.SetModelParams("vertex_ai/claude-opus-4-7", providerUtils.ModelParams{
+	// Seed the capability cache under (model, Vertex), the key IsVertexMultiRegionOnlyModel resolves.
+	multiRegionKey := providerUtils.CapabilityCacheKey("claude-opus-4-7", schemas.Vertex)
+	providerUtils.SetModelCapability(multiRegionKey, &schemas.ModelCapabilities{
 		IsVertexMultiRegionOnly: schemas.Ptr(true),
 	})
 	t.Cleanup(func() {
-		providerUtils.DeleteModelParams("vertex_ai/claude-opus-4-7")
+		providerUtils.DeleteModelCapability(multiRegionKey)
 	})
 
 	tests := []struct {

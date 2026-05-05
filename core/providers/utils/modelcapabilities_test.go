@@ -4,122 +4,168 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func intPtr(v int) *int { return &v }
+func capsWithMax(v int) *schemas.ModelCapabilities {
+	return &schemas.ModelCapabilities{MaxOutputTokens: new(v)}
+}
 
-func TestModelParamsCacheGetSet(t *testing.T) {
-	cache := newModelParamsCache(10)
+func TestCapabilitiesCacheStoreLookup(t *testing.T) {
+	cache := newModelCapabilitiesCache(10)
 
-	cache.Set("claude-sonnet-4-20250514", ModelParams{MaxOutputTokens: intPtr(8192)})
-	val, ok := cache.Get("claude-sonnet-4-20250514")
-	if !ok || val.MaxOutputTokens == nil || *val.MaxOutputTokens != 8192 {
+	cache.store("claude-sonnet-4-20250514", capsWithMax(8192), 0)
+	val, ok := cache.lookup("claude-sonnet-4-20250514", 0)
+	if !ok || val == nil || *val.MaxOutputTokens != 8192 {
 		t.Errorf("expected 8192, got %+v (ok=%v)", val, ok)
 	}
 }
 
-func TestModelParamsCacheMiss(t *testing.T) {
-	cache := newModelParamsCache(10)
+func TestCapabilitiesCacheMiss(t *testing.T) {
+	cache := newModelCapabilitiesCache(10)
 
-	val, ok := cache.Get("nonexistent-model")
-	if ok || val.MaxOutputTokens != nil {
+	val, ok := cache.lookup("nonexistent-model", 0)
+	if ok || val != nil {
 		t.Errorf("expected miss, got %+v (ok=%v)", val, ok)
 	}
 }
 
-func TestModelParamsCacheUpdate(t *testing.T) {
-	cache := newModelParamsCache(10)
+// A tombstone is present-but-nil: found reports true so the caller knows the
+// lookup was already resolved and must not re-query.
+func TestCapabilitiesCacheTombstoneIsFound(t *testing.T) {
+	cache := newModelCapabilitiesCache(10)
 
-	cache.Set("claude-sonnet-4", ModelParams{MaxOutputTokens: intPtr(8192)})
-	cache.Set("claude-sonnet-4", ModelParams{MaxOutputTokens: intPtr(16384)})
+	cache.store("absent-model", nil, 0)
+	val, ok := cache.lookup("absent-model", 0)
+	if !ok {
+		t.Error("tombstone should report found so the miss handler is not re-invoked")
+	}
+	if val != nil {
+		t.Errorf("tombstone should carry a nil record, got %+v", val)
+	}
+}
 
-	val, ok := cache.Get("claude-sonnet-4")
-	if !ok || val.MaxOutputTokens == nil || *val.MaxOutputTokens != 16384 {
+// An entry written under an older generation reads as a miss, which is how a
+// datasheet reload invalidates the whole cache without walking it.
+func TestCapabilitiesCacheGenerationInvalidates(t *testing.T) {
+	cache := newModelCapabilitiesCache(10)
+
+	cache.store("model-a", capsWithMax(8192), 1)
+	if _, ok := cache.lookup("model-a", 2); ok {
+		t.Error("entry from an older generation should read as a miss")
+	}
+	// The stale entry is dropped rather than left to occupy a slot.
+	if cache.order.Len() != 0 {
+		t.Errorf("stale entry should be evicted on read, got %d entries", cache.order.Len())
+	}
+}
+
+func TestCapabilitiesCacheUpdate(t *testing.T) {
+	cache := newModelCapabilitiesCache(10)
+
+	cache.store("claude-sonnet-4", capsWithMax(8192), 0)
+	cache.store("claude-sonnet-4", capsWithMax(16384), 0)
+
+	val, ok := cache.lookup("claude-sonnet-4", 0)
+	if !ok || val == nil || *val.MaxOutputTokens != 16384 {
 		t.Errorf("expected 16384 after update, got %+v (ok=%v)", val, ok)
 	}
 }
 
-func TestModelParamsCacheEviction(t *testing.T) {
-	cache := newModelParamsCache(3)
+func TestCapabilitiesCacheEviction(t *testing.T) {
+	cache := newModelCapabilitiesCache(3)
 
-	cache.Set("model-a", ModelParams{MaxOutputTokens: intPtr(1000)})
-	cache.Set("model-b", ModelParams{MaxOutputTokens: intPtr(2000)})
-	cache.Set("model-c", ModelParams{MaxOutputTokens: intPtr(3000)})
+	cache.store("model-a", capsWithMax(1000), 0)
+	cache.store("model-b", capsWithMax(2000), 0)
+	cache.store("model-c", capsWithMax(3000), 0)
 	// This should evict model-a (oldest insertion)
-	cache.Set("model-d", ModelParams{MaxOutputTokens: intPtr(4000)})
+	cache.store("model-d", capsWithMax(4000), 0)
 
-	if _, ok := cache.Get("model-a"); ok {
+	if _, ok := cache.lookup("model-a", 0); ok {
 		t.Error("model-a should have been evicted")
 	}
-	if val, ok := cache.Get("model-b"); !ok || *val.MaxOutputTokens != 2000 {
+	if val, ok := cache.lookup("model-b", 0); !ok || *val.MaxOutputTokens != 2000 {
 		t.Errorf("model-b should still exist, got %+v (ok=%v)", val, ok)
 	}
-	if val, ok := cache.Get("model-d"); !ok || *val.MaxOutputTokens != 4000 {
+	if val, ok := cache.lookup("model-d", 0); !ok || *val.MaxOutputTokens != 4000 {
 		t.Errorf("model-d should exist, got %+v (ok=%v)", val, ok)
 	}
 }
 
-func TestModelParamsCacheBulkSet(t *testing.T) {
-	cache := newModelParamsCache(100)
+// Capacity 0 means unbounded, which is what the no-config-store mode needs:
+// with no miss handler nothing can refill an evicted entry.
+func TestCapabilitiesCacheUnboundedCapacity(t *testing.T) {
+	cache := newModelCapabilitiesCache(0)
 
-	entries := map[string]ModelParams{
-		"claude-sonnet-4":  {MaxOutputTokens: intPtr(8192)},
-		"claude-opus-4":    {MaxOutputTokens: intPtr(4096)},
-		"gpt-4o":           {MaxOutputTokens: intPtr(16384)},
-		"gemini-2.0-flash": {MaxOutputTokens: intPtr(8192)},
+	for i := range 5000 {
+		cache.store(fmt.Sprintf("model-%d", i), capsWithMax(i), 0)
 	}
-	cache.BulkSet(entries)
+	if cache.order.Len() != 5000 {
+		t.Errorf("capacity 0 should never evict, got %d entries", cache.order.Len())
+	}
+}
+
+func TestCapabilitiesCacheBulkStore(t *testing.T) {
+	cache := newModelCapabilitiesCache(100)
+
+	entries := map[string]*schemas.ModelCapabilities{
+		"claude-sonnet-4":  capsWithMax(8192),
+		"claude-opus-4":    capsWithMax(4096),
+		"gpt-4o":           capsWithMax(16384),
+		"gemini-2.0-flash": capsWithMax(8192),
+	}
+	cache.bulkStore(entries, 0)
 
 	for model, expected := range entries {
-		val, ok := cache.Get(model)
+		val, ok := cache.lookup(model, 0)
 		if !ok || *val.MaxOutputTokens != *expected.MaxOutputTokens {
-			t.Errorf("BulkSet: model %s expected %d, got %+v (ok=%v)", model, *expected.MaxOutputTokens, val, ok)
+			t.Errorf("bulkStore: model %s expected %d, got %+v (ok=%v)", model, *expected.MaxOutputTokens, val, ok)
 		}
 	}
 }
 
-func TestModelParamsCacheBulkSetOverflow(t *testing.T) {
-	cache := newModelParamsCache(3)
+func TestCapabilitiesCacheBulkStoreOverflow(t *testing.T) {
+	cache := newModelCapabilitiesCache(3)
 
-	entries := map[string]ModelParams{
-		"model-1": {MaxOutputTokens: intPtr(1000)},
-		"model-2": {MaxOutputTokens: intPtr(2000)},
-		"model-3": {MaxOutputTokens: intPtr(3000)},
-		"model-4": {MaxOutputTokens: intPtr(4000)},
-		"model-5": {MaxOutputTokens: intPtr(5000)},
-	}
-	cache.BulkSet(entries)
+	cache.bulkStore(map[string]*schemas.ModelCapabilities{
+		"model-1": capsWithMax(1000),
+		"model-2": capsWithMax(2000),
+		"model-3": capsWithMax(3000),
+		"model-4": capsWithMax(4000),
+		"model-5": capsWithMax(5000),
+	}, 0)
 
 	if cache.order.Len() != 3 {
-		t.Errorf("expected 3 entries after overflow BulkSet, got %d", cache.order.Len())
+		t.Errorf("expected 3 entries after overflow bulkStore, got %d", cache.order.Len())
 	}
 }
 
-func TestModelParamsCacheBulkSetUpdate(t *testing.T) {
-	cache := newModelParamsCache(10)
+func TestCapabilitiesCacheBulkStoreUpdate(t *testing.T) {
+	cache := newModelCapabilitiesCache(10)
 
-	cache.Set("claude-sonnet-4", ModelParams{MaxOutputTokens: intPtr(4096)})
-	cache.BulkSet(map[string]ModelParams{
-		"claude-sonnet-4": {MaxOutputTokens: intPtr(8192)},
-	})
+	cache.store("claude-sonnet-4", capsWithMax(4096), 0)
+	cache.bulkStore(map[string]*schemas.ModelCapabilities{
+		"claude-sonnet-4": capsWithMax(8192),
+	}, 0)
 
-	val, ok := cache.Get("claude-sonnet-4")
+	val, ok := cache.lookup("claude-sonnet-4", 0)
 	if !ok || *val.MaxOutputTokens != 8192 {
-		t.Errorf("BulkSet should update existing entry, got %+v (ok=%v)", val, ok)
+		t.Errorf("bulkStore should update existing entry, got %+v (ok=%v)", val, ok)
 	}
 }
 
-func TestModelParamsCacheConcurrency(t *testing.T) {
-	cache := newModelParamsCache(100)
+func TestCapabilitiesCacheConcurrency(t *testing.T) {
+	cache := newModelCapabilitiesCache(100)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			model := fmt.Sprintf("model-%d", i)
-			cache.Set(model, ModelParams{MaxOutputTokens: intPtr(i * 1000)})
-			cache.Get(model)
+			cache.store(model, capsWithMax(i*1000), 0)
+			cache.lookup(model, 0)
 		}(i)
 	}
 	wg.Wait()
@@ -129,89 +175,43 @@ func TestModelParamsCacheConcurrency(t *testing.T) {
 	}
 }
 
-func TestGetMaxOutputTokens(t *testing.T) {
-	cache := getModelParamsCache()
-	cache.Set("test-max-output", ModelParams{MaxOutputTokens: intPtr(16384)})
-
-	val, ok := GetMaxOutputTokens("test-max-output")
-	if !ok || val != 16384 {
-		t.Errorf("expected 16384, got %d (ok=%v)", val, ok)
-	}
-
-	val, ok = GetMaxOutputTokens("missing-model-get")
-	if ok || val != 0 {
-		t.Errorf("expected miss, got %d (ok=%v)", val, ok)
-	}
-}
-
-func TestGetMaxOutputTokensNilField(t *testing.T) {
-	cache := getModelParamsCache()
-	cache.Set("test-nil-field", ModelParams{})
-
-	val, ok := GetMaxOutputTokens("test-nil-field")
-	if ok || val != 0 {
-		t.Errorf("expected miss for nil MaxOutputTokens, got %d (ok=%v)", val, ok)
-	}
-}
-
 func TestGetMaxOutputTokensOrDefault(t *testing.T) {
-	cache := getModelParamsCache()
-	cache.Set("test-or-default", ModelParams{MaxOutputTokens: intPtr(16384)})
+	key := CapabilityCacheKey("test-or-default", schemas.Anthropic)
+	SetModelCapability(key, capsWithMax(16384))
+	t.Cleanup(func() { DeleteModelCapability(key) })
 
-	val := GetMaxOutputTokensOrDefault("test-or-default", 4096)
+	val := GetMaxOutputTokensOrDefault(schemas.Anthropic, "test-or-default", 4096)
 	if val != 16384 {
 		t.Errorf("expected cached value 16384, got %d", val)
 	}
 
-	val = GetMaxOutputTokensOrDefault("missing-model-default", 4096)
+	val = GetMaxOutputTokensOrDefault(schemas.OpenAI, "missing-model-default", 4096)
 	if val != 4096 {
 		t.Errorf("expected default 4096 for missing non-claude model, got %d", val)
 	}
 }
 
-func TestCacheMissHandler(t *testing.T) {
-	cache := newModelParamsCache(10)
-	called := false
-	cache.cacheMissHandler = func(model string) *ModelParams {
-		called = true
-		if model == "db-model" {
-			return &ModelParams{MaxOutputTokens: intPtr(32000)}
+func TestCapabilitiesCacheFetchDedupes(t *testing.T) {
+	cache := newModelCapabilitiesCache(10)
+	calls := 0
+	handler := func(rowKey string) *schemas.ModelCapabilities {
+		calls++
+		if rowKey == "db-model" {
+			return capsWithMax(32000)
 		}
 		return nil
 	}
 
-	// Miss handler returns a value → should be cached
-	val, ok := cache.Get("db-model")
-	if !ok || val.MaxOutputTokens == nil || *val.MaxOutputTokens != 32000 {
-		t.Errorf("expected 32000 from miss handler, got %+v (ok=%v)", val, ok)
+	got := cache.fetch("db-model", handler)
+	if got == nil || *got.MaxOutputTokens != 32000 {
+		t.Errorf("expected 32000 from miss handler, got %+v", got)
 	}
-	if !called {
-		t.Error("miss handler was not called")
-	}
-
-	// Verify it was cached (handler should not be called again)
-	called = false
-	val, ok = cache.Get("db-model")
-	if !ok || *val.MaxOutputTokens != 32000 {
-		t.Errorf("expected cached 32000, got %+v (ok=%v)", val, ok)
-	}
-	if called {
-		t.Error("miss handler should not be called for cached entry")
+	if calls != 1 {
+		t.Errorf("expected 1 handler call, got %d", calls)
 	}
 
-	// Miss handler returns nil → should return false
-	val, ok = cache.Get("unknown-model")
-	if ok {
-		t.Errorf("expected miss for unknown model, got %+v", val)
-	}
-}
-
-func TestCacheMissHandlerNil(t *testing.T) {
-	cache := newModelParamsCache(10)
-	// No handler registered
-	val, ok := cache.Get("any-model")
-	if ok {
-		t.Errorf("expected miss with nil handler, got %+v", val)
+	if got := cache.fetch("unknown-model", handler); got != nil {
+		t.Errorf("expected nil for unknown model, got %+v", got)
 	}
 }
 
