@@ -172,7 +172,6 @@ const (
 	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
-	BifrostContextKeyDirectKey         BifrostContextKey = "bifrost-direct-key"    // Key struct
 
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
 	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.

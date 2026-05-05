@@ -60,8 +60,6 @@ type StreamChunkInterceptor interface {
 // This interface allows handlers to access only the configuration they need
 // without depending on the entire ConfigStore, improving testability and decoupling.
 type HandlerStore interface {
-	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
-	ShouldAllowDirectKeys() bool
 	// GetHeaderMatcher returns the precompiled header matcher for header filtering
 	GetHeaderMatcher() *HeaderMatcher
 	// GetProvidersForModel returns the list of providers that can serve a given model.
@@ -320,7 +318,6 @@ var DefaultClientConfig = configstore.ClientConfig{
 	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	EnforceAuthOnInference:          false,
-	AllowDirectKeys:                 false,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
 	WhitelistedRoutes:               []string{},
@@ -3244,14 +3241,6 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 }
 
 // HandlerStore interface implementation
-
-// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
-// Note: This method doesn't use locking for performance. In rare cases during
-// config updates, it may return stale data, but this is acceptable since bool
-// reads are atomic and won't cause panics.
-func (c *Config) ShouldAllowDirectKeys() bool {
-	return c.ClientConfig.AllowDirectKeys
-}
 
 // ShouldAllowPerRequestStorageOverride returns whether per-request content storage overrides are permitted.
 func (c *Config) ShouldAllowPerRequestStorageOverride() bool {

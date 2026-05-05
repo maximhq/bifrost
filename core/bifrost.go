@@ -5795,7 +5795,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if len(supportedKeys) == 0 {
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
 					} else if !canRotate {
-						// Fixed key (DirectKey, explicit ID/name, session stickiness): always
+						// Fixed key (explicit ID/name, session stickiness): always
 						// return the same key regardless of usedKeyIDs.
 						fixedKey := supportedKeys[0]
 						keyProvider = func(_ map[string]bool) (schemas.Key, error) {
@@ -7145,18 +7145,6 @@ func (bifrost *Bifrost) releaseMCPRequest(req *schemas.BifrostMCPRequest) {
 // getAllSupportedKeys retrieves all valid keys for a ListModels request.
 // allowing the provider to aggregate results from multiple keys.
 func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider) ([]schemas.Key, error) {
-	// Check if key has been set in the context explicitly
-	if ctx != nil {
-		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
-		if ok {
-			if err := validateKey(baseProviderType, &key); err != nil {
-				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
-			}
-			// If a direct key is specified, return it as a single-element slice
-			return []schemas.Key{key}, nil
-		}
-	}
-
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {
 		return nil, err
@@ -7195,18 +7183,6 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 // For batch operations, only keys with UseForBatchAPI enabled are included.
 // Model filtering: if model is specified and key has model restrictions, only include if model is in list.
 func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider, model *string, isBatchOp bool) ([]schemas.Key, error) {
-	// Check if key has been set in the context explicitly
-	if ctx != nil {
-		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
-		if ok {
-			if err := validateKey(baseProviderType, &key); err != nil {
-				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
-			}
-			// If a direct key is specified, return it as a single-element slice
-			return []schemas.Key{key}, nil
-		}
-	}
-
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {
 		return nil, err
@@ -7278,7 +7254,6 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // via the keyProvider closure built by the caller.
 //
 // canRotate=false is returned for cases where the caller must always use the same key:
-//   - DirectKey (caller-supplied key bypasses all selection)
 //   - SkipKeySelection (provider allows keyless requests; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
 //   - Session stickiness (key persisted in KV store for the session lifetime)
@@ -7287,15 +7262,6 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // canRotate=true is returned when there are two or more eligible keys and no pinning
 // or stickiness constraint is in effect.
 func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) ([]schemas.Key, bool, error) {
-	// DirectKey: caller supplied a key directly — no pool, no rotation.
-	if ctx != nil {
-		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
-			if err := validateKey(baseProviderType, &key); err != nil {
-				return nil, false, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
-			}
-			return []schemas.Key{key}, false, nil
-		}
-	}
 	// SkipKeySelection: provider allows keyless requests — return empty pool, no rotation.
 	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
 		return []schemas.Key{}, false, nil

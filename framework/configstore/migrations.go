@@ -635,6 +635,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientDisabledColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDropAllowDirectKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1015,16 +1018,17 @@ func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) erro
 	return nil
 }
 
-// migrationAddAllowDirectKeysColumn adds the allow_direct_keys column to the client config table
+// migrationAddAllowDirectKeysColumn adds the allow_direct_keys column to the client config table.
+// Use raw SQL since the struct field was removed in v1.5 when the feature was retired.
+// This column is subsequently dropped by migrationDropAllowDirectKeysColumn.
 func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_allow_direct_keys_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
-
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				if err := migrator.AddColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
 			}
@@ -1034,6 +1038,93 @@ func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropAllowDirectKeysColumn drops the allow_direct_keys column.
+// The "Allow Direct Keys" feature was retired in v1.5 — keys passed through
+// HTTP headers are no longer accepted.
+//
+// AllowDirectKeys was previously included in GenerateClientConfigHash, so
+// every existing config_hash on disk would mismatch on first v1.5 startup
+// and trigger a spurious config-reload cycle. Recompute config_hash for all
+// rows here to avoid that, mirroring migrationAddRoutingChainMaxDepthColumn.
+func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_allow_direct_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := mig.DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+					return err
+				}
+			}
+
+			var clientConfigs []tables.TableClientConfig
+			if err := tx.Find(&clientConfigs).Error; err != nil {
+				return fmt.Errorf("failed to fetch client configs for hash recompute: %w", err)
+			}
+			for _, cc := range clientConfigs {
+				if cc.ConfigHash == "" {
+					continue
+				}
+				clientConfig := ClientConfig{
+					DropExcessRequests:                    cc.DropExcessRequests,
+					InitialPoolSize:                       cc.InitialPoolSize,
+					PrometheusLabels:                      cc.PrometheusLabels,
+					EnableLogging:                         cc.EnableLogging,
+					DisableContentLogging:                 cc.DisableContentLogging,
+					AllowPerRequestContentStorageOverride: cc.AllowPerRequestContentStorageOverride,
+					AllowPerRequestRawOverride:            cc.AllowPerRequestRawOverride,
+					DisableDBPingsInHealth:                cc.DisableDBPingsInHealth,
+					LogRetentionDays:                      cc.LogRetentionDays,
+					EnforceAuthOnInference:                cc.EnforceAuthOnInference,
+					AllowedOrigins:                        cc.AllowedOrigins,
+					AllowedHeaders:                        cc.AllowedHeaders,
+					MaxRequestBodySizeMB:                  cc.MaxRequestBodySizeMB,
+					MCPAgentDepth:                         cc.MCPAgentDepth,
+					MCPToolExecutionTimeout:               cc.MCPToolExecutionTimeout,
+					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
+					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
+					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					HeaderFilterConfig:                    cc.HeaderFilterConfig,
+					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
+					RequiredHeaders:                       cc.RequiredHeaders,
+					LoggingHeaders:                        cc.LoggingHeaders,
+					WhitelistedRoutes:                     cc.WhitelistedRoutes,
+					HideDeletedVirtualKeysInFilters:       cc.HideDeletedVirtualKeysInFilters,
+					RoutingChainMaxDepth:                  cc.RoutingChainMaxDepth,
+					Compat: CompatConfig{
+						ConvertTextToChat:      cc.CompatConvertTextToChat,
+						ConvertChatToResponses: cc.CompatConvertChatToResponses,
+						ShouldDropParams:       cc.CompatShouldDropParams,
+						ShouldConvertParams:    cc.CompatShouldConvertParams,
+					},
+				}
+				newHash, err := clientConfig.GenerateClientConfigHash()
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for client config %d: %w", cc.ID, err)
+				}
+				if err := tx.Model(&cc).Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for client config %d: %w", cc.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running drop_allow_direct_keys_column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -2417,7 +2508,6 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 							DisableContentLogging:   cc.DisableContentLogging,
 							LogRetentionDays:        cc.LogRetentionDays,
 							EnforceGovernanceHeader: cc.EnforceGovernanceHeader,
-							AllowDirectKeys:         cc.AllowDirectKeys,
 							AllowedOrigins:          cc.AllowedOrigins,
 							MaxRequestBodySizeMB:    cc.MaxRequestBodySizeMB,
 						}
@@ -6000,7 +6090,6 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 						DisableDBPingsInHealth:          cc.DisableDBPingsInHealth,
 						LogRetentionDays:                cc.LogRetentionDays,
 						EnforceAuthOnInference:          cc.EnforceAuthOnInference,
-						AllowDirectKeys:                 cc.AllowDirectKeys,
 						AllowedOrigins:                  cc.AllowedOrigins,
 						AllowedHeaders:                  cc.AllowedHeaders,
 						MaxRequestBodySizeMB:            cc.MaxRequestBodySizeMB,

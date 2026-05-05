@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
-	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -155,10 +154,6 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 		hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
 		schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 
-		azureKey := ctx.Request.Header.Peek("authorization")
-		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
-		apiVersion := string(ctx.QueryArgs().Peek("api-version"))
-
 		// -----------------------------
 		// Parse deploymentPath wildcard
 		// -----------------------------
@@ -265,40 +260,6 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 				r.Provider = schemas.Azure
 			}
 		}
-
-		// -----------------------------
-		// Direct Azure Keys
-		// -----------------------------
-
-		if deploymentEndpoint == nil || azureKey == nil || !handlerStore.ShouldAllowDirectKeys() {
-			return nil
-		}
-
-		// Non-Azure providers skip direct Azure keys
-		if deploymentProviderStr != "" && deploymentProviderStr != string(schemas.Azure) {
-			return nil
-		}
-
-		azureKeyStr := string(azureKey)
-		deploymentEndpointStr := string(deploymentEndpoint)
-		apiVersionStr := apiVersion
-
-		key := schemas.Key{
-			ID:             uuid.New().String(),
-			Models:         schemas.WhiteList{"*"},
-			AzureKeyConfig: &schemas.AzureKeyConfig{},
-		}
-
-		if deploymentEndpointStr != "" && deploymentIDStr != "" && azureKeyStr != "" {
-			key.Value = *schemas.NewEnvVar(strings.TrimPrefix(azureKeyStr, "Bearer "))
-			key.AzureKeyConfig.Endpoint = *schemas.NewEnvVar(deploymentEndpointStr)
-		}
-
-		if apiVersionStr != "" {
-			key.AzureKeyConfig.APIVersion = schemas.NewEnvVar(apiVersionStr)
-		}
-
-		ctx.SetUserValue(schemas.BifrostContextKeyDirectKey, key)
 
 		return nil
 	}

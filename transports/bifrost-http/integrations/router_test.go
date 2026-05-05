@@ -104,7 +104,7 @@ func TestRequestWithSettableExtraParams_AllOpenAIRequestTypes(t *testing.T) {
 }
 
 func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 
 	var chatRoute *RouteConfig
@@ -313,7 +313,7 @@ func TestExtraParamsPassthrough_NoExtraParamsKey(t *testing.T) {
 // passes req to config.RequestConverter after the extra params block -- both
 // variables must reference the same underlying struct via pointer semantics.
 func TestExtraParamsSetViaInterfaceMutatesOriginalReq(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 
 	var chatRoute *RouteConfig

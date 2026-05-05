@@ -1,7 +1,6 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
   "client": {
-    "allow_direct_keys": false,
     "allowed_origins": [
       "*"
     ],

@@ -342,7 +342,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// and ReloadClientConfigFromConfigStore mutates the struct in place so the next request picks up the new value.
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
-	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 
 	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB

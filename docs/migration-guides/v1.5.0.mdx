@@ -521,6 +521,96 @@ Single-key, pinned (`x-bf-key-id` / `x-bf-key-name`), and session-sticky request
 
 ---
 
+## Breaking Change 13: Direct Key Bypass Removed (HTTP Gateway and Go SDK)
+
+The "Direct Key Bypass" feature has been **removed entirely** in v1.5.0, on both surfaces:
+
+- **HTTP gateway:** the `allow_direct_keys` config flag and the header pass-through (`Authorization`, `x-api-key`, `x-goog-api-key`, plus the Bedrock `x-bf-bedrock-*` and Azure `x-bf-azure-endpoint` integration paths) no longer forward keys to upstream providers.
+- **Go SDK:** the `schemas.BifrostContextKeyDirectKey` context value has been deleted, along with the documented "Direct Key (Go SDK Only)" API.
+
+**All requests must now resolve to a Bifrost-managed provider key**, either implicitly (the configured key pool plus weighted selection) or by pinning a registered key via `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` (Go SDK) or virtual keys (`sk-bf-*`, HTTP).
+
+### What changed
+
+| Field / surface | Status |
+|---|---|
+| `client.allow_direct_keys` in `config.json` | **Removed** — field is no longer recognized; ignored if present |
+| `client_config.allow_direct_keys` over `PUT /api/config` | **Removed** — field is dropped from the request payload |
+| Web UI **Settings → Security → "Allow Direct API Keys"** toggle | **Removed** |
+| `Authorization: Bearer sk-...` header → upstream provider | **No longer forwarded** as a direct key. Bearer values starting with `sk-bf-` continue to work as virtual keys |
+| `x-api-key` / `x-goog-api-key` header → upstream provider | **No longer forwarded** as a direct key |
+| `x-bf-bedrock-api-key` / `x-bf-bedrock-access-key` / `x-bf-bedrock-secret-key` / `x-bf-bedrock-session-token` / `x-bf-bedrock-region` | **No longer extracted** by the Bedrock integration |
+| `x-bf-azure-endpoint` + bare Authorization header on Azure OpenAI integration routes | **No longer extracted** as a direct Azure key |
+| Database column `config_client.allow_direct_keys` | **Auto-dropped** on first startup of v1.5.0 |
+| `schemas.BifrostContextKeyDirectKey` (Go SDK constant) | **Removed** — code referencing it will fail to compile |
+| `Bifrost.getAllSupportedKeys` / `getKeysForBatchAndFileOps` / `selectKeyFromProviderForModelWithPool` DirectKey branches | **Removed** — these no longer special-case a caller-supplied key |
+
+### How to update
+
+**1. Remove the field from `config.json`:**
+
+```diff
+{
+  "client": {
+    "enable_logging": true,
+-   "allow_direct_keys": false,
+    "allowed_origins": ["*"]
+  }
+}
+```
+
+The field is silently ignored, but leaving it in is misleading.
+
+**2. Remove the field from any REST API integration that calls `PUT /api/config`:** the field has been dropped from the `client_config` schema.
+
+**3. Migrate any HTTP caller that relied on header-passed keys:**
+
+- **For per-tenant or per-user key isolation:** create a Bifrost virtual key per tenant (with budgets, rate limits, and provider/model allow-lists) and have callers send `Authorization: Bearer sk-bf-<tenant-vk>`.
+- **For routing requests across multiple provider keys:** add the keys to Bifrost via `POST /api/providers/{provider}/keys` and let Bifrost handle weighted selection and rotation.
+- **For Bedrock callers using AWS credentials in `x-bf-bedrock-*` headers:** add a Bedrock provider key with the same credentials (`access_key`, `secret_key`, `region`, optional `session_token`) via the providers API and reference it from your virtual key.
+- **For Azure direct-key callers using `x-bf-azure-endpoint` + Authorization:** add the Azure deployment as a provider key with `azure_key_config.endpoint` and reference it from your virtual key.
+
+**4. Migrate Go SDK callers off `BifrostContextKeyDirectKey`:**
+
+The constant is gone. Replace any in-process injection with one of the following supported alternatives.
+
+**Before (no longer compiles):**
+```go
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyDirectKey, schemas.Key{
+    Value:  *schemas.NewEnvVar("sk-runtime-secret"),
+    Models: []string{"gpt-4o"},
+    Weight: 1.0,
+})
+```
+
+**After — register the key with the account, then pin by ID or name:**
+
+```go
+// In your schemas.Account implementation, return the key from GetKeysForProvider.
+// Each registered key has a stable ID and Name; reference either one from the request context.
+
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "runtime-secret")
+// or
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "<key-id-from-account>")
+```
+
+If your account is database-backed, add the key via `POST /api/providers/{provider}/keys`. If you maintain a custom in-memory `Account`, return the key from `GetKeysForProvider`. Both routes give you the same per-request pinning behaviour DirectKey provided, plus governance, rotation on retry, and per-key cost attribution.
+
+**For providers that allow keyless requests** (ambient credentials, IAM roles, etc.), `BifrostContextKeySkipKeySelection` is unchanged.
+
+### Why it was removed
+
+The direct-key path bypassed Bifrost's key management entirely, which meant:
+
+- **No governance** — virtual key budgets, rate limits, provider/model allow-lists, and routing rules were not applied to direct-key traffic
+- **No rotation or fallback** — direct keys were used as-is with no retry across alternate keys
+- **No observability attribution** — header-provided keys had a synthetic `key_id: "header-provided"` that defeated per-key cost and usage analytics
+- **Security surface area** — a misconfigured HTTP deployment could leak provider credentials through logs or proxy chains; the Go SDK equivalent had the same hazard for any caller logging context contents
+
+The supported `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` path covers the "pick a specific key per request" use case without the governance and observability gaps.
+
+---
+
 ## Opting Out: `version: 1` Compatibility Mode
 
 If you are not ready to adopt the new deny-by-default semantics, you can add a single field to `config.json` to restore v1.4.x behavior for all allow-list fields loaded from that file:
@@ -611,6 +701,10 @@ Replace `.Model` with `.RequestedModel` (and optionally `.ResolvedModel`) on any
 <Step title="Handle empty selected_key_id on terminal retry failures">
 If your code reads `selected_key_id` / `selected_key_name` from the request context or log entries to attribute failed requests, add a null/empty check and fall back to `attempt_trail` for the full per-attempt key history.
 </Step>
+
+<Step title="Migrate direct-key callers off both surfaces">
+Remove `allow_direct_keys` from `config.json` and any `PUT /api/config` payloads. Audit HTTP callers that sent provider keys in `Authorization` / `x-api-key` / `x-goog-api-key` / `x-bf-bedrock-*` / `x-bf-azure-endpoint` headers — those keys are no longer forwarded. Audit Go SDK callers for any reference to `schemas.BifrostContextKeyDirectKey` — the constant is removed and code referencing it will not compile. Replace both flavours with a Bifrost-managed provider key, optionally pinned per request via `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` (Go SDK) or a virtual key (`sk-bf-*`, HTTP).
+</Step>
 </Steps>
 
 ---
@@ -644,3 +738,11 @@ If you used `replicate_key_config.deployments`, move the mappings to the top-lev
 **Go SDK compilation errors on `ModelRequested` or `StreamAccumulatorResult.Model`**
 
 Rename to `OriginalModelRequested`/`ResolvedModelUsed` on ExtraFields, and `RequestedModel`/`ResolvedModel` on StreamAccumulatorResult.
+
+**Calls authenticating with raw provider keys started failing with auth errors**
+
+The HTTP gateway no longer extracts provider keys from `Authorization` / `x-api-key` / `x-goog-api-key` headers (or `x-bf-bedrock-*` / `x-bf-azure-endpoint` on the Bedrock and Azure integrations). Either issue a virtual key (`sk-bf-*`) per caller and have them send that, or register the provider credentials as a Bifrost-managed key and route via virtual keys. See [Breaking Change 13](#breaking-change-13-direct-key-bypass-removed-http-gateway-and-go-sdk).
+
+**Go SDK build error: `undefined: schemas.BifrostContextKeyDirectKey`**
+
+The constant is removed in v1.5.0. Register the key on your `Account` implementation (or via `POST /api/providers/{provider}/keys` if you use the database-backed config store) and pin it per request with `BifrostContextKeyAPIKeyID` or `BifrostContextKeyAPIKeyName`. See [Breaking Change 13](#breaking-change-13-direct-key-bypass-removed-http-gateway-and-go-sdk) for a before/after example.

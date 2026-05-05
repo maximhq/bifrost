@@ -763,14 +763,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}
 
-		// Set direct key from context if available
-		if ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)) != nil {
-			key, ok := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)).(schemas.Key)
-			if ok {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-			}
-		}
-
 		// Set available providers to context
 		if config.GetRequestModel != nil {
 			model, err := config.GetRequestModel(ctx, req)
@@ -2919,11 +2911,6 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	})
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
-	if directKey := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)); directKey != nil {
-		if key, ok := directKey.(schemas.Key); ok {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-		}
-	}
 
 	path := string(ctx.Path())
 	for _, prefix := range g.passthroughCfg.StripPrefix {

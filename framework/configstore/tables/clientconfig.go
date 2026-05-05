@@ -23,7 +23,6 @@ type TableClientConfig struct {
 	EnforceAuthOnInference                bool   `gorm:"default:false" json:"enforce_auth_on_inference"`
 	EnforceGovernanceHeader               bool   `gorm:"" json:"enforce_governance_header"`
 	EnforceSCIMAuth                       bool   `gorm:"default:false" json:"enforce_scim_auth"`
-	AllowDirectKeys                       bool   `gorm:"" json:"allow_direct_keys"`
 	MaxRequestBodySizeMB                  int    `gorm:"default:100" json:"max_request_body_size_mb"`
 	MCPAgentDepth                         int    `gorm:"default:10" json:"mcp_agent_depth"`
 	MCPToolExecutionTimeout               int    `gorm:"default:30" json:"mcp_tool_execution_timeout"`                    // Timeout for individual tool execution in seconds (default: 30)

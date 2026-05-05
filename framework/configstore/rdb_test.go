@@ -858,7 +858,6 @@ func TestUpdateClientConfig(t *testing.T) {
 
 	config := &ClientConfig{
 		EnableLogging:        new(true),
-		AllowDirectKeys:      true,
 		InitialPoolSize:      100,
 		LogRetentionDays:     30,
 		MaxRequestBodySizeMB: 50,

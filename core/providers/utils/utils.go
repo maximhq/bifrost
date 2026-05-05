@@ -2786,11 +2786,11 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 // CheckAndSetDefaultProvider checks if the default provider should be used based on the context.
 // It returns the default provider if it should be used, otherwise it returns an empty string.
-// Checks if the direct key is set in the context, or if key selection is skipped.
-// Or if the available providers are set in the context and the default provider is in the list.
+// Checks if key selection is skipped, or if the available providers are set in the context
+// and the default provider is in the list.
 func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
 	if ctx != nil {
-		if ctx.Value(schemas.BifrostContextKeyDirectKey) != nil || ctx.Value(schemas.BifrostContextKeySkipKeySelection) != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skip {
 			return defaultProvider
 		}
 		if ctx.Value(schemas.BifrostContextKeyAvailableProviders) != nil {

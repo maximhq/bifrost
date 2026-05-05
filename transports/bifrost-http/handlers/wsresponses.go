@@ -658,41 +658,17 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
 				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
-			} else if handlerStore != nil && handlerStore.ShouldAllowDirectKeys() {
-				key := schemas.Key{
-					ID:     "header-provided",
-					Value:  *schemas.NewEnvVar(token),
-					Models: schemas.WhiteList{"*"},
-					Weight: 1.0,
-				}
-				ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 			}
 		}
 	}
 	if auth.apiKey != "" {
 		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.apiKey)
-		} else if handlerStore != nil && handlerStore.ShouldAllowDirectKeys() {
-			key := schemas.Key{
-				ID:     "header-provided",
-				Value:  *schemas.NewEnvVar(auth.apiKey),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			}
-			ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
 	if auth.googAPIKey != "" {
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
-		} else if handlerStore != nil && handlerStore.ShouldAllowDirectKeys() {
-			key := schemas.Key{
-				ID:     "header-provided",
-				Value:  *schemas.NewEnvVar(auth.googAPIKey),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			}
-			ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
 

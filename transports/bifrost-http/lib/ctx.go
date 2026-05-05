@@ -149,13 +149,11 @@ func ParseSessionIDFromBaggage(header string) string {
 //	// session stickiness, and extra headers
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
-	allowDirectKeys := false
 	var matcher *HeaderMatcher
 	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
 	allowPerRequestStorageOverride := false
 	allowPerRequestRawOverride := false
 	if store != nil {
-		allowDirectKeys = store.ShouldAllowDirectKeys()
 		matcher = store.GetHeaderMatcher()
 		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
 		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
@@ -618,50 +616,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, baseURL+"/api/oauth/callback")
 	}
 
-	if allowDirectKeys {
-		// Extract API key from Authorization header (Bearer format), x-api-key, or x-goog-api-key header
-		var apiKey string
-
-		// TODO: fix plugin data leak
-		// Check Authorization header (Bearer format only - OpenAI style)
-		authHeader := string(ctx.Request.Header.Peek("Authorization"))
-		if authHeader != "" {
-			// Only accept Bearer token format: "Bearer ..."
-			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-				authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
-				if authHeaderValue != "" && !strings.HasPrefix(strings.ToLower(authHeaderValue), governance.VirtualKeyPrefix) {
-					apiKey = authHeaderValue
-				}
-			} else {
-				apiKey = authHeader
-			}
-		}
-
-		if apiKey == "" {
-			// Check x-api-key (Anthropic style) header if no valid Authorization header found
-			xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
-			if xAPIKey != "" && !strings.HasPrefix(strings.ToLower(xAPIKey), governance.VirtualKeyPrefix) {
-				apiKey = strings.TrimSpace(xAPIKey)
-			} else {
-				// Check x-goog-api-key (Google Gemini style) header if no valid Authorization header found
-				xGoogleAPIKey := string(ctx.Request.Header.Peek("x-goog-api-key"))
-				if xGoogleAPIKey != "" && !strings.HasPrefix(strings.ToLower(xGoogleAPIKey), governance.VirtualKeyPrefix) {
-					apiKey = strings.TrimSpace(xGoogleAPIKey)
-				}
-			}
-		}
-
-		// If we found an API key, create a Key object and store it in context
-		if apiKey != "" {
-			key := schemas.Key{
-				ID:     "header-provided", // Identifier for header-provided keys
-				Value:  *schemas.NewEnvVar(apiKey),
-				Models: schemas.WhiteList{"*"}, // Allow all models
-				Weight: 1.0,                    // Default weight
-			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-		}
-	}
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
 	return bifrostCtx, cancel

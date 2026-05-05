@@ -101,10 +101,6 @@
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"
         },
-        "allow_direct_keys": {
-          "type": "boolean",
-          "description": "Allow provider keys"
-        },
         "max_request_body_size_mb": {
           "type": "integer",
           "minimum": 1,
