@@ -754,6 +754,10 @@ func (m *MockConfigStore) GetTeam(ctx context.Context, id string) (*tables.Table
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error) {
 	return nil, nil
 }

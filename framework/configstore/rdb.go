@@ -2833,6 +2833,26 @@ func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableT
 	return &team, nil
 }
 
+// GetTeamByName retrieves a team by name. When customerID is non-empty the lookup is scoped to that customer
+func (s *RDBConfigStore) GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error) {
+	var team tables.TableTeam
+	q := s.DB().WithContext(ctx).
+		Select(teamSelectWithVKCount).
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Where("name = ?", name)
+	if customerID != "" {
+		q = q.Where("customer_id = ?", customerID)
+	}
+
+	if err := q.First(&team).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &team, nil
+}
+
 // CreateTeam creates a new team in the database.
 func (s *RDBConfigStore) CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
