@@ -635,6 +635,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientDisabledColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationUniqueTeamNames(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationDropAllowDirectKeysColumn(ctx, db); err != nil {
 		return err
 	}
@@ -7376,3 +7379,60 @@ func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error
 	return nil
 }
 
+// migrationUniqueTeamNames deduplicates governance_teams.name and adds a unique
+// index. Duplicate rows (same name, different ID) have a short UUID suffix
+// appended so no data is lost. The struct tag uniqueIndex makes GORM enforce
+// this on new rows going forward.
+func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "gov_unique_team_names",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Find all names that appear more than once.
+			type dupRow struct {
+				Name string
+			}
+			var dups []dupRow
+			if err := tx.Raw(`
+				SELECT name FROM governance_teams
+				GROUP BY name HAVING COUNT(*) > 1
+			`).Scan(&dups).Error; err != nil {
+				return fmt.Errorf("find duplicate team names: %w", err)
+			}
+
+			for _, d := range dups {
+				// oldest row keeps the original name
+				type row struct {
+					ID string
+				}
+				var rows []row
+				if err := tx.Raw(`
+					SELECT id FROM governance_teams
+					WHERE name = ?
+					ORDER BY created_at ASC, id ASC
+				`, d.Name).Scan(&rows).Error; err != nil {
+					return fmt.Errorf("fetch duplicates for %q: %w", d.Name, err)
+				}
+				for _, r := range rows[1:] {
+					newName := d.Name + "-" + r.ID[:8]
+					if err := tx.Exec(`UPDATE governance_teams SET name = ? WHERE id = ?`, newName, r.ID).Error; err != nil {
+						return fmt.Errorf("rename duplicate team %s: %w", r.ID, err)
+					}
+				}
+			}
+
+			// Add the unique index. Skip if it already exists.
+			if !tx.Migrator().HasIndex(&tables.TableTeam{}, "idx_governance_teams_name") {
+				if err := tx.Migrator().CreateIndex(&tables.TableTeam{}, "Name"); err != nil {
+					return fmt.Errorf("create unique index on governance_teams.name: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			_ = tx.Migrator().DropIndex(&tables.TableTeam{}, "idx_governance_teams_name")
+			return nil
+		},
+	})
+}
