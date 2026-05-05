@@ -2349,7 +2349,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -2971,7 +2971,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	}
 
 	// Initialize serial pagination helper (Bedrock uses PageToken for pagination)
-	helper, err := providerUtils.NewSerialListHelper(keys, request.PageToken, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.PageToken, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}

@@ -2923,7 +2923,9 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 
 	// Initialize serial pagination helper (Replicate uses cursor-based pagination)
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	// allowNativeCursorFallback=false: Replicate's cursor is a full URL, so passing an
+	// unrecognised value through would produce a malformed request rather than a clean API error.
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, false)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}

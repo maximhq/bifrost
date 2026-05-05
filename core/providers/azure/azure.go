@@ -1740,7 +1740,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -2281,7 +2281,7 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 	}
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -3093,7 +3093,7 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	helper, herr := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, herr := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if herr != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", herr)
 	}

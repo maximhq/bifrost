@@ -2754,7 +2754,7 @@ func (provider *GeminiProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	// Initialize serial pagination helper (Gemini uses PageToken for pagination)
-	helper, err := providerUtils.NewSerialListHelper(keys, request.PageToken, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.PageToken, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -3627,7 +3627,7 @@ func (provider *GeminiProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	}
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}

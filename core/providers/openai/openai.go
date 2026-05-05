@@ -4849,7 +4849,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -5419,7 +5419,7 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -5942,7 +5942,7 @@ func (provider *OpenAIProvider) ContainerList(ctx *schemas.BifrostContext, keys 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper for multi-key support
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -6400,7 +6400,7 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper for multi-key support
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}

@@ -1461,7 +1461,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper (Anthropic uses AfterID for pagination)
-	helper, err := providerUtils.NewSerialListHelper(keys, request.AfterID, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.AfterID, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -2029,7 +2029,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
