@@ -635,13 +635,22 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientDisabledColumn(ctx, db); err != nil {
 		return err
 	}
+	return nil
 	if err := migrationUniqueTeamNames(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationDropAllowDirectKeysColumn(ctx, db); err != nil {
 		return err
 	}
-	return nil
+	if err := migrationCleanupOrphanedOAuthRecords(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPClientIDToOauthConfigs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddTokenIDFKToOauthConfigs(ctx, db); err != nil {
+		return err
+	}
 }
 
 func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB) error {
@@ -7435,4 +7444,240 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 	})
+}
+
+// migrationCleanupOrphanedOAuthRecords deletes stale OAuth records that were left behind
+// by abandoned flows, failed rotations, and missing cascade deletes on MCP client removal.
+func migrationCleanupOrphanedOAuthRecords(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "cleanup_orphaned_oauth_records",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// 1. Delete oauth_user_tokens whose mcp_client_id no longer exists.
+			if err := tx.Exec(`
+				DELETE FROM oauth_user_tokens
+				WHERE mcp_client_id NOT IN (
+					SELECT client_id FROM config_mcp_clients
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to clean up orphaned oauth_user_tokens: %w", err)
+			}
+
+			// 2. Delete oauth_user_sessions whose mcp_client_id no longer exists.
+			if err := tx.Exec(`
+				DELETE FROM oauth_user_sessions
+				WHERE mcp_client_id NOT IN (
+					SELECT client_id FROM config_mcp_clients
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to clean up orphaned oauth_user_sessions: %w", err)
+			}
+
+			// 3. Delete oauth_tokens owned by orphaned oauth_configs (configs not referenced
+			//    by any MCP client). Must run before step 4 so the tokens are gone before
+			//    their parent configs are deleted.
+			if err := tx.Exec(`
+				DELETE FROM oauth_tokens
+				WHERE id IN (
+					SELECT token_id FROM oauth_configs
+					WHERE token_id IS NOT NULL
+					AND id NOT IN (
+						SELECT oauth_config_id FROM config_mcp_clients WHERE oauth_config_id IS NOT NULL
+					)
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to clean up oauth_tokens of orphaned oauth_configs: %w", err)
+			}
+
+			// 4. Delete oauth_configs that are not referenced by any MCP client AND are
+			//    not in-flight pending flows (status != 'pending' or past expiry).
+			//    Excluding pending-and-unexpired rows avoids wiping OAuth handshakes
+			//    that are actively waiting for the user to complete authorization.
+			if err := tx.Exec(`
+				DELETE FROM oauth_configs
+				WHERE id NOT IN (
+					SELECT oauth_config_id FROM config_mcp_clients WHERE oauth_config_id IS NOT NULL
+				)
+				AND NOT (status = 'pending' AND expires_at > NOW())
+			`).Error; err != nil {
+				return fmt.Errorf("failed to clean up orphaned oauth_configs: %w", err)
+			}
+
+			// 5. Catch-all: delete any oauth_tokens now unreferenced by any oauth_config
+			//    (e.g. pre-existing orphans from before this fix).
+			if err := tx.Exec(`
+				DELETE FROM oauth_tokens
+				WHERE id NOT IN (
+					SELECT token_id FROM oauth_configs WHERE token_id IS NOT NULL
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to clean up remaining orphaned oauth_tokens: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Data cleanup is irreversible.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running cleanup_orphaned_oauth_records migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientIDToOauthConfigs adds the mcp_client_id column to oauth_configs and
+// enforces proper FK constraints on all three OAuth tables that reference config_mcp_clients.
+func migrationAddMCPClientIDToOauthConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_id_to_oauth_configs_and_fks",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1. Add mcp_client_id column to oauth_configs
+			if !mg.HasColumn(&tables.TableOauthConfig{}, "mcp_client_id") {
+				if err := mg.AddColumn(&tables.TableOauthConfig{}, "MCPClientID"); err != nil {
+					return fmt.Errorf("failed to add mcp_client_id to oauth_configs: %w", err)
+				}
+			}
+
+			// 2. Backfill mcp_client_id for existing oauth_configs that are currently the
+			//    active config of an MCP client. This lets the CASCADE FK cover historical rows.
+			if err := tx.Exec(`
+				UPDATE oauth_configs
+				SET mcp_client_id = c.client_id
+				FROM config_mcp_clients c
+				WHERE c.oauth_config_id = oauth_configs.id
+				  AND oauth_configs.mcp_client_id IS NULL
+			`).Error; err != nil {
+				return fmt.Errorf("failed to backfill mcp_client_id on oauth_configs: %w", err)
+			}
+
+			// 3. FK constraints — Postgres only (SQLite lacks ALTER TABLE ADD CONSTRAINT support).
+			//    Application-level deletion code in DeleteMCPClientConfig enforces the same
+			//    invariants on SQLite.
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+
+			type fkDef struct {
+				name      string
+				table     string
+				column    string
+				refTable  string
+				refColumn string
+				onDelete  string
+			}
+
+			// newFKs are constraints that don't exist yet and need to be created.
+			newFKs := []fkDef{
+				{
+					// oauth_configs.mcp_client_id → config_mcp_clients(client_id)
+					// CASCADE: deleting an MCP client deletes its orphaned/rotation oauth_configs.
+					name:      "fk_oauth_configs_mcp_client",
+					table:     "oauth_configs",
+					column:    "mcp_client_id",
+					refTable:  "config_mcp_clients",
+					refColumn: "client_id",
+					onDelete:  "CASCADE",
+				},
+				{
+					// oauth_user_tokens.mcp_client_id → config_mcp_clients(client_id)
+					// CASCADE: deleting an MCP client deletes all per-user tokens for it.
+					name:      "fk_oauth_user_tokens_mcp_client",
+					table:     "oauth_user_tokens",
+					column:    "mcp_client_id",
+					refTable:  "config_mcp_clients",
+					refColumn: "client_id",
+					onDelete:  "CASCADE",
+				},
+				{
+					// oauth_user_sessions.mcp_client_id → config_mcp_clients(client_id)
+					// CASCADE: deleting an MCP client deletes all pending per-user sessions.
+					name:      "fk_oauth_user_sessions_mcp_client",
+					table:     "oauth_user_sessions",
+					column:    "mcp_client_id",
+					refTable:  "config_mcp_clients",
+					refColumn: "client_id",
+					onDelete:  "CASCADE",
+				},
+			}
+
+			for _, fk := range newFKs {
+				if err := tx.Exec(fmt.Sprintf(
+					"ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s(%s) ON DELETE %s",
+					fk.table, fk.name, fk.column, fk.refTable, fk.refColumn, fk.onDelete,
+				)).Error; err != nil {
+					return fmt.Errorf("failed to add FK constraint %s: %w", fk.name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				for _, constraint := range []struct{ table, name string }{
+					{"oauth_configs", "fk_oauth_configs_mcp_client"},
+					{"oauth_user_tokens", "fk_oauth_user_tokens_mcp_client"},
+					{"oauth_user_sessions", "fk_oauth_user_sessions_mcp_client"},
+				} {
+					if err := tx.Exec(fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", constraint.table, constraint.name)).Error; err != nil {
+						return fmt.Errorf("failed to drop FK %s: %w", constraint.name, err)
+					}
+				}
+			}
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableOauthConfig{}, "mcp_client_id") {
+				if err := mg.DropColumn(&tables.TableOauthConfig{}, "MCPClientID"); err != nil {
+					return fmt.Errorf("failed to drop mcp_client_id from oauth_configs: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_id_to_oauth_configs_and_fks migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTokenIDFKToOauthConfigs adds a proper FK constraint on oauth_configs.token_id
+// referencing oauth_tokens.id with ON DELETE SET NULL. This prevents dangling token_id
+// references if an oauth_token is deleted independently, while keeping the application-level
+// deletion order (token first, then config) in DeleteOauthConfig.
+func migrationAddTokenIDFKToOauthConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_token_id_fk_to_oauth_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			// ON DELETE SET NULL: if an oauth_token is deleted, null the reference on oauth_configs
+			// rather than leaving a dangling pointer.
+			if err := tx.Exec(
+				"ALTER TABLE oauth_configs ADD CONSTRAINT fk_oauth_configs_token_id " +
+					"FOREIGN KEY (token_id) REFERENCES oauth_tokens(id) ON DELETE SET NULL",
+			).Error; err != nil {
+				return fmt.Errorf("failed to add FK constraint fk_oauth_configs_token_id: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("ALTER TABLE oauth_configs DROP CONSTRAINT IF EXISTS fk_oauth_configs_token_id").Error; err != nil {
+					return fmt.Errorf("failed to drop FK fk_oauth_configs_token_id: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_token_id_fk_to_oauth_configs migration: %s", err.Error())
+	}
+	return nil
 }

@@ -532,6 +532,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			RedirectURI:     redirectURI,
 			Scopes:          req.OauthConfig.Scopes,
 			ServerURL:       req.ConnectionString.GetValue(),
+			// MCPClientID intentionally omitted: client doesn't exist in DB yet
 		})
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
@@ -615,14 +616,15 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)
 		// ClientID is optional - will be obtained via dynamic registration if not provided
 		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
-			ClientID:        req.OauthConfig.ClientID,
-			ClientSecret:    req.OauthConfig.ClientSecret,
-			AuthorizeURL:    req.OauthConfig.AuthorizeURL,
-			TokenURL:        req.OauthConfig.TokenURL,
-			RegistrationURL: req.OauthConfig.RegistrationURL,
-			RedirectURI:     redirectURI,
-			Scopes:          req.OauthConfig.Scopes,
-			ServerURL:       req.ConnectionString.GetValue(),
+			ClientID:        req.OauthConfig.ClientID,        // Optional: auto-generated if empty
+			ClientSecret:    req.OauthConfig.ClientSecret,    // Optional: for PKCE or dynamic registration
+			AuthorizeURL:    req.OauthConfig.AuthorizeURL,    // Optional: discovered if empty
+			TokenURL:        req.OauthConfig.TokenURL,        // Optional: discovered if empty
+			RegistrationURL: req.OauthConfig.RegistrationURL, // Optional: discovered if empty
+			RedirectURI:     redirectURI,                     // Use server's own callback URL
+			Scopes:          req.OauthConfig.Scopes,          // Optional: discovered if empty
+			ServerURL:       req.ConnectionString.GetValue(), // MCP server URL for OAuth discovery
+			// MCPClientID intentionally omitted: client doesn't exist in DB yet
 		})
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
@@ -1462,6 +1464,29 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// Set discovered tools on the client
 		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
 
+		// For new clients, backfill mcp_client_id on the oauth_config now that the client exists,
+		// so the CASCADE FK covers it on future MCP client deletion.
+		if !isUpdateFlow && h.store.ConfigStore != nil {
+			if oauthCfg, err := h.store.ConfigStore.GetOauthConfigByID(ctx, oauthConfigID); err == nil && oauthCfg != nil {
+				oauthCfg.MCPClientID = &mcpClientConfig.ID
+				if err := h.store.ConfigStore.UpdateOauthConfig(ctx, oauthCfg); err != nil {
+					logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to backfill mcp_client_id on oauth config %s: %v", oauthConfigID, err))
+				}
+			}
+		}
+
+		// After successful credential rotation, migrate existing user tokens/sessions to the new
+		// template config so their refresh paths continue to work, then delete the old config.
+		if isUpdateFlow && existingDBConfig.OauthConfigID != nil && *existingDBConfig.OauthConfigID != oauthConfigID {
+			oldConfigID := *existingDBConfig.OauthConfigID
+			if migrateErr := h.store.ConfigStore.MigrateOauthUserTokensToConfig(ctx, oldConfigID, oauthConfigID); migrateErr != nil {
+				logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to migrate user tokens to new OAuth config %s: %v", oauthConfigID, migrateErr))
+			}
+			if delErr := h.store.ConfigStore.DeleteOauthConfig(ctx, oldConfigID); delErr != nil {
+				logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to delete old OAuth config %s after per-user rotation: %v", oldConfigID, delErr))
+			}
+		}
+
 		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
 		message := fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", len(tools))
 		if isUpdateFlow {
@@ -1507,6 +1532,12 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client with updated OAuth credentials: %v", err))
 			return
 		}
+		// Delete old oauth config (and its token) now that the new one is live
+		if existingDBConfig.OauthConfigID != nil && *existingDBConfig.OauthConfigID != oauthConfigID {
+			if delErr := h.store.ConfigStore.DeleteOauthConfig(ctx, *existingDBConfig.OauthConfigID); delErr != nil {
+				logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to delete old OAuth config %s after rotation: %v", *existingDBConfig.OauthConfigID, delErr))
+			}
+		}
 	} else {
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
@@ -1525,6 +1556,17 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			logger.Error(fmt.Sprintf("[OAuth Complete] Failed to connect MCP client: %v", err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 			return
+		}
+	}
+
+	// For new clients, backfill mcp_client_id on the oauth_config now that the client exists,
+	// so the CASCADE FK covers it on future MCP client deletion.
+	if !isUpdateFlow && h.store.ConfigStore != nil {
+		if oauthCfg, err := h.store.ConfigStore.GetOauthConfigByID(ctx, oauthConfigID); err == nil && oauthCfg != nil {
+			oauthCfg.MCPClientID = &mcpClientConfig.ID
+			if err := h.store.ConfigStore.UpdateOauthConfig(ctx, oauthCfg); err != nil {
+				logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to backfill mcp_client_id on oauth config %s: %v", oauthConfigID, err))
+			}
 		}
 	}
 

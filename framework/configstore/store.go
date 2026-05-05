@@ -302,6 +302,8 @@ type ConfigStore interface {
 	GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error)
 	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
 	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
+	DeleteOauthConfig(ctx context.Context, id string) error
+	DeletePendingOauthConfigsByMCPClient(ctx context.Context, mcpClientID string) error
 
 	// OAuth token CRUD
 	GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error)
@@ -325,6 +327,7 @@ type ConfigStore interface {
 	UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
 	DeleteOauthUserToken(ctx context.Context, id string) error
 	DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error
+	MigrateOauthUserTokensToConfig(ctx context.Context, oldConfigID, newConfigID string) error
 
 	// Per-user OAuth Authorization Server CRUD (Bifrost as OAuth server)
 	GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error)

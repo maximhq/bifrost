@@ -1637,13 +1637,33 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 			return err
 		}
 
-		// Delete any virtual key MCP configs that reference this client
+		// Delete any virtual key MCP configs (no FK cascade covers this table)
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ID).Delete(&tables.TableVirtualKeyMCPConfig{}).Error; err != nil {
 			return err
 		}
 
-		// Delete the client (this will also handle foreign key cascades)
-		return tx.WithContext(ctx).Delete(&existingClient).Error
+		// Collect token IDs from all oauth_configs for this client before deletion.
+		// DB cascades (fk_oauth_configs_mcp_client) delete the configs themselves, but
+		// there is no cascade from oauth_configs to oauth_tokens, so we must delete tokens explicitly.
+		var tokenIDs []string
+		tx.WithContext(ctx).Model(&tables.TableOauthConfig{}).
+			Where("mcp_client_id = ? AND token_id IS NOT NULL", existingClient.ClientID).
+			Pluck("token_id", &tokenIDs)
+
+		// Delete the MCP client — DB cascades handle oauth_user_tokens, oauth_user_sessions,
+		// and oauth_configs (all keyed by mcp_client_id) on Postgres.
+		if err := tx.WithContext(ctx).Delete(&existingClient).Error; err != nil {
+			return err
+		}
+
+		// Delete orphaned oauth_tokens; no cascade reaches them from oauth_configs.
+		if len(tokenIDs) > 0 {
+			if err := tx.WithContext(ctx).Where("id IN ?", tokenIDs).Delete(&tables.TableOauthToken{}).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
 	})
 }
 
@@ -4278,6 +4298,56 @@ func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.T
 	return nil
 }
 
+// DeleteOauthConfig deletes an OAuth config and its associated token by config ID.
+func (s *RDBConfigStore) DeleteOauthConfig(ctx context.Context, id string) error {
+	return s.DB().Transaction(func(tx *gorm.DB) error {
+		var config tables.TableOauthConfig
+		if err := tx.WithContext(ctx).Where("id = ?", id).First(&config).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return fmt.Errorf("failed to find oauth config: %w", err)
+		}
+		if config.TokenID != nil {
+			if err := tx.WithContext(ctx).Where("id = ?", *config.TokenID).Delete(&tables.TableOauthToken{}).Error; err != nil {
+				return fmt.Errorf("failed to delete oauth token: %w", err)
+			}
+		}
+		if err := tx.WithContext(ctx).Delete(&config).Error; err != nil {
+			return fmt.Errorf("failed to delete oauth config: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeletePendingOauthConfigsByMCPClient deletes all oauth_configs in "pending" status for a given MCP client,
+// along with their associated tokens. Used to cancel abandoned or superseded OAuth flows before starting a new one.
+func (s *RDBConfigStore) DeletePendingOauthConfigsByMCPClient(ctx context.Context, mcpClientID string) error {
+	return s.DB().Transaction(func(tx *gorm.DB) error {
+		var configs []tables.TableOauthConfig
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ? AND status = 'pending'", mcpClientID).Find(&configs).Error; err != nil {
+			return fmt.Errorf("failed to find pending oauth configs: %w", err)
+		}
+		for _, cfg := range configs {
+			if cfg.TokenID != nil {
+				if err := tx.WithContext(ctx).Where("id = ?", *cfg.TokenID).Delete(&tables.TableOauthToken{}).Error; err != nil {
+					return fmt.Errorf("failed to delete oauth token for config %s: %w", cfg.ID, err)
+				}
+			}
+		}
+		if len(configs) > 0 {
+			ids := make([]string, len(configs))
+			for i, cfg := range configs {
+				ids[i] = cfg.ID
+			}
+			if err := tx.WithContext(ctx).Where("id IN ?", ids).Delete(&tables.TableOauthConfig{}).Error; err != nil {
+				return fmt.Errorf("failed to delete pending oauth configs: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
 // UpdateOauthToken updates an existing OAuth token
 func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
 	result := s.DB().WithContext(ctx).Save(token)
@@ -4490,6 +4560,25 @@ func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables
 		return fmt.Errorf("failed to update oauth user token: %w", result.Error)
 	}
 	return nil
+}
+
+// MigrateOauthUserTokensToConfig re-points all per-user tokens and sessions that reference
+// oldConfigID to newConfigID. Used during per-user OAuth credential rotation so that existing
+// user tokens can still be refreshed after the old template config is removed.
+func (s *RDBConfigStore) MigrateOauthUserTokensToConfig(ctx context.Context, oldConfigID, newConfigID string) error {
+	return s.DB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).Model(&tables.TableOauthUserToken{}).
+			Where("oauth_config_id = ?", oldConfigID).
+			Update("oauth_config_id", newConfigID).Error; err != nil {
+			return fmt.Errorf("failed to migrate oauth_user_tokens to new config: %w", err)
+		}
+		if err := tx.WithContext(ctx).Model(&tables.TableOauthUserSession{}).
+			Where("oauth_config_id = ?", oldConfigID).
+			Update("oauth_config_id", newConfigID).Error; err != nil {
+			return fmt.Errorf("failed to migrate oauth_user_sessions to new config: %w", err)
+		}
+		return nil
+	})
 }
 
 // DeleteOauthUserToken deletes a per-user OAuth token by its ID

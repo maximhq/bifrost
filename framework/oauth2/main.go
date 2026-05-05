@@ -458,8 +458,20 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		return nil, fmt.Errorf("failed to serialize scopes: %w", err)
 	}
 
+	// Cancel any prior pending flows for this MCP client before starting a new one.
+	// This prevents accumulation of stale pending oauth_configs from abandoned or retried flows.
+	if config.MCPClientID != "" {
+		if err := p.configStore.DeletePendingOauthConfigsByMCPClient(ctx, config.MCPClientID); err != nil {
+			logger.Warn("Failed to cancel prior pending OAuth flows for MCP client", "mcp_client_id", config.MCPClientID, "error", err)
+		}
+	}
+
 	// Create oauth_config record (using dynamically registered or user-provided client_id)
 	expiresAt := time.Now().Add(15 * time.Minute)
+	var mcpClientID *string
+	if config.MCPClientID != "" {
+		mcpClientID = &config.MCPClientID
+	}
 	oauthConfigRecord := &tables.TableOauthConfig{
 		ID:              oauthConfigID,
 		ClientID:        schemas.NewEnvVar(clientID), // May be from dynamic registration
@@ -476,6 +488,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		ServerURL:       config.ServerURL,
 		UseDiscovery:    config.UseDiscovery,
 		ExpiresAt:       expiresAt,
+		MCPClientID:     mcpClientID,
 	}
 
 	if err := p.configStore.CreateOauthConfig(ctx, oauthConfigRecord); err != nil {

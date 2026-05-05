@@ -28,6 +28,7 @@ type TableOauthConfig struct {
 	ServerURL           string          `gorm:"type:text" json:"server_url"`                     // MCP server URL for OAuth discovery
 	UseDiscovery        bool            `gorm:"default:false" json:"use_discovery"`              // Flag to enable OAuth discovery
 	MCPClientConfigJSON *string         `gorm:"type:text" json:"-"`                              // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
+	MCPClientID         *string   `gorm:"type:varchar(255);index" json:"mcp_client_id,omitempty"`            // client_id of the MCP client that initiated this flow (FK enforced via migration on Postgres)
 	EncryptionStatus    string          `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	CreatedAt           time.Time       `gorm:"index;not null" json:"created_at"`
 	UpdatedAt           time.Time       `gorm:"index;not null" json:"updated_at"`
