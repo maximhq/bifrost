@@ -228,6 +228,26 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 				IsVertexMultiRegionOnly: parsed.VertexMultiRegionOnly,
 			}
 		}
+
+		// Bifrost behaviour overrides live in the same blob. Parse them and cache
+		// under the (base model, provider) composite so providers resolve them via
+		// GetBifrostOverridesForRequest — keyed separately from the bare-model
+		// max_output_tokens entry above.
+		var ov schemas.BifrostOverrides
+		if err := json.Unmarshal(rawData, &ov); err == nil && !isEmptyBifrostOverrides(&ov) {
+			provider := gjson.GetBytes(rawData, "provider").String()
+			base := gjson.GetBytes(rawData, "base_model").String()
+			if base == "" {
+				base = extractModelName(model)
+			}
+			if provider != "" {
+				ovCopy := ov
+				key := providerUtils.OverrideCacheKey(base, schemas.ModelProvider(normalizeProvider(provider)))
+				existing := modelParamsEntries[key]
+				existing.BifrostOverrides = &ovCopy
+				modelParamsEntries[key] = existing
+			}
+		}
 	}
 
 	s.mu.Lock()

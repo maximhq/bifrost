@@ -275,7 +275,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// Speed is both provider-gated (FastMode flag) and model-gated
 	// (Opus 4.6 only per SupportsFastMode). Strip if either gate fails —
 	// Anthropic's API rejects speed:"fast" on non-Opus-4.6 models with a 400.
-	if req.Speed != nil && (!features.FastMode || !SupportsFastMode(model)) {
+	if req.Speed != nil && (!features.FastMode || !SupportsFastMode(provider, model)) {
 		req.Speed = nil
 	}
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil && !features.TaskBudgets {
@@ -289,7 +289,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
 	// outside the supported set return: "This model does not support the
 	// effort parameter."
-	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(model) {
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(provider, model) {
 		req.OutputConfig.Effort = nil
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
@@ -450,7 +450,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// speed — provider AND model gate
 	if providerUtils.JSONFieldExists(jsonBody, "speed") {
-		if !features.FastMode || !SupportsFastMode(model) {
+		if !features.FastMode || !SupportsFastMode(provider, model) {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "speed")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw speed: %w", err)
@@ -541,7 +541,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// https://platform.claude.com/docs/en/build-with-claude/effort.
 	// Mirrors the typed path; same cleanup of an empty parent.
 	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
-		!SupportsEffortParameter(model) {
+		!SupportsEffortParameter(provider, model) {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
@@ -776,19 +776,29 @@ func IsSonnet5Plus(model string) bool {
 // and the Fable/Mythos family. Use this — not IsOpus47Plus — for the thinking and
 // sampling-parameter gates so Fable is handled correctly. (Fast mode is gated
 // on IsOpus47Plus instead, since Fable does not support speed:"fast".)
-func IsAdaptiveOnlyThinkingModel(model string) bool {
+//
+// Override-aware: the datasheet flags these models with supports_sampling_params
+// == false (the sampling knobs and budget_tokens are removed together on the
+// same models), so this reads !supports_sampling_params; falls back to substring
+// detection when no override is registered.
+func IsAdaptiveOnlyThinkingModel(provider schemas.ModelProvider, model string) bool {
+	if ov := providerUtils.GetBifrostOverridesForRequest(provider, model); ov != nil && ov.SupportsSamplingParams != nil {
+		return !*ov.SupportsSamplingParams
+	}
 	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
-// SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
-// Currently supported on Claude Opus 4.5 and Opus 4.6.
-func SupportsNativeEffort(model string) bool {
-	model = strings.ToLower(model)
-	if !strings.Contains(model, "opus") {
-		return false
-	}
-	return strings.Contains(model, "4-5") || strings.Contains(model, "4.5") ||
-		strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
+// SupportsNativeEffort reports whether the model takes output_config.effort as
+// its reasoning surface WITHOUT adaptive thinking — it accepts the effort
+// parameter but predates adaptive thinking (Opus 4.5). Reached only in the
+// reasoning ladder after SupportsAdaptiveThinking, distinguishing the
+// effort+budget_tokens path from the plain budget_tokens path.
+//
+// Derived from the two override-aware helpers, so it stays datasheet-driven
+// (supports_native_effort AND supports_adaptive_thinking) with no field of its
+// own: "accepts effort" minus "supports adaptive".
+func SupportsNativeEffort(provider schemas.ModelProvider, model string) bool {
+	return SupportsEffortParameter(provider, model) && !SupportsAdaptiveThinking(provider, model)
 }
 
 // SupportsEffortParameter returns true if the model accepts the
@@ -803,8 +813,14 @@ func SupportsNativeEffort(model string) bool {
 // and adaptive thinking is a distinct surface (thinking.type:"adaptive")
 // from effort. Future models may shift either flag independently.
 //
+// Override-aware: prefers the datasheet's supports_native_effort boolean when
+// set. Falls back to substring detection on the bare model name.
+//
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
-func SupportsEffortParameter(model string) bool {
+func SupportsEffortParameter(provider schemas.ModelProvider, model string) bool {
+	if ov := providerUtils.GetBifrostOverridesForRequest(provider, model); ov != nil && ov.SupportsNativeEffort != nil {
+		return *ov.SupportsNativeEffort
+	}
 	m := strings.ToLower(model)
 	if IsFableFamily(m) || IsSonnet5Plus(m) {
 		return true
@@ -856,10 +872,18 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 // (Fable post-dates Opus 4.8; the public doc lists Opus 4.8 but Fable supports
 // it as well). No beta header is required.
 //
+// Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
+// gate, prefers the datasheet's supports_mid_conversation_system_messages
+// boolean; falls back to substring detection. The provider gate stays hardcoded
+// because a bare-model override lookup can't distinguish provider.
+//
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func SupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
 	if provider != schemas.Anthropic {
 		return false
+	}
+	if ov := providerUtils.GetBifrostOverridesForRequest(provider, model); ov != nil && ov.SupportsMidConversationSystem != nil {
+		return *ov.SupportsMidConversationSystem
 	}
 	m := strings.ToLower(model)
 	if IsFableFamily(m) {
@@ -875,7 +899,14 @@ func SupportsMidConversationSystem(provider schemas.ModelProvider, model string)
 // Beta header: fast-mode-2026-02-01.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
-func SupportsFastMode(model string) bool {
+//
+// Override-aware: prefers the datasheet's supports_speed boolean when
+// set. Falls back to substring detection on the bare model name when no
+// override is registered.
+func SupportsFastMode(provider schemas.ModelProvider, model string) bool {
+	if ov := providerUtils.GetBifrostOverridesForRequest(provider, model); ov != nil && ov.SupportsFastMode != nil {
+		return *ov.SupportsFastMode
+	}
 	if IsOpus47Plus(model) {
 		return true
 	}
@@ -890,7 +921,14 @@ func SupportsFastMode(model string) bool {
 // Fable/Mythos adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
 // coexists with the deprecated budget_tokens-based extended thinking. On Fable/Mythos
 // adaptive is always on and thinking:{type:"disabled"} is rejected (see IsFableFamily).
-func SupportsAdaptiveThinking(model string) bool {
+//
+// Override-aware: prefers the datasheet's supports_adaptive_thinking boolean
+// when set. Falls back to substring detection on the bare model name when
+// no override is registered.
+func SupportsAdaptiveThinking(provider schemas.ModelProvider, model string) bool {
+	if ov := providerUtils.GetBifrostOverridesForRequest(provider, model); ov != nil && ov.SupportsAdaptiveThinking != nil {
+		return *ov.SupportsAdaptiveThinking
+	}
 	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
 		return true
 	}
@@ -916,7 +954,20 @@ const (
 //   - Which beta header to inject (computer-use-2025-11-24 vs 2025-01-24).
 //   - Which computer_*/text_editor_* type the upstream API will accept.
 //   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
-func ComputerUseGeneration(model string) string {
+//
+// Override-aware: if the datasheet has server_tools["computer_use"] set,
+// the version is read from there directly ("computer_20251124" → new gen,
+// anything else → old gen). Falls back to substring detection when no
+// override is registered.
+func ComputerUseGeneration(provider schemas.ModelProvider, model string) string {
+	if ov := providerUtils.GetBifrostOverridesForRequest(provider, model); ov != nil {
+		if computerUse, ok := ov.ServerTools["computer_use"]; ok {
+			if computerUse == string(AnthropicToolTypeComputer20251124) {
+				return ComputerUseGen20251124
+			}
+			return ComputerUseGen20250124
+		}
+	}
 	m := strings.ToLower(model)
 	// Opus 4.7+, Sonnet 5+, and the Fable/Mythos family use the new generation.
 	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
@@ -947,7 +998,20 @@ func ComputerUseGeneration(model string) string {
 //   - Sonnet 5+ (matches IsSonnet5Plus)
 //   - Opus 4.5 / 4.6
 //   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
-func TextEditorGeneration(model string) string {
+//
+// Override-aware: if the datasheet has server_tools["text_editor"] set, the
+// generation is read from there directly ("text_editor_20250728" → new gen,
+// older versions → old gen). Falls back to substring detection when no
+// override is registered.
+func TextEditorGeneration(provider schemas.ModelProvider, model string) string {
+	if ov := providerUtils.GetBifrostOverridesForRequest(provider, model); ov != nil {
+		if textEditor, ok := ov.ServerTools["text_editor"]; ok {
+			if textEditor == string(AnthropicToolTypeTextEditor20250728) {
+				return ComputerUseGen20251124
+			}
+			return ComputerUseGen20250124
+		}
+	}
 	m := strings.ToLower(model)
 	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
 		return ComputerUseGen20251124
@@ -1151,7 +1215,7 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// supports fast mode AND the model does (Opus 4.6 only per
 	// SupportsFastMode); otherwise sending the header guarantees a 400.
 	if req.Speed != nil {
-		if (!hasProvider || features.FastMode) && SupportsFastMode(schemas.ResolveCanonicalModel(ctx, req.Model)) {
+		if (!hasProvider || features.FastMode) && SupportsFastMode(provider, schemas.ResolveCanonicalModel(ctx, req.Model)) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
@@ -1518,8 +1582,8 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 	// (type, name) pair for the model's generation. Runs before
 	// providerToolVersionRemaps so downgrades still work for non-Anthropic
 	// providers that share the schema.
-	computerGeneration := ComputerUseGeneration(model)
-	textEditorGeneration := TextEditorGeneration(model)
+	computerGeneration := ComputerUseGeneration(provider, model)
+	textEditorGeneration := TextEditorGeneration(provider, model)
 	for i, tool := range tools {
 		toolType := tool.Get("type").String()
 		baseTool := computerUseBaseTool(toolType)

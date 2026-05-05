@@ -75,7 +75,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 //
 // bash_*, memory_*, code_execution_*, and tool_search_* carry no variant
 // config — their Type + Name alone are enough, handled in the default branch.
-func convertServerToolToAnthropic(tool schemas.ChatTool, model string) (AnthropicTool, bool) {
+func convertServerToolToAnthropic(tool schemas.ChatTool, model string, provider schemas.ModelProvider) (AnthropicTool, bool) {
 	typeStr := string(tool.Type)
 	if typeStr == "" {
 		return AnthropicTool{}, false
@@ -105,9 +105,9 @@ func convertServerToolToAnthropic(tool schemas.ChatTool, model string) (Anthropi
 	// canonical {type, name} pair for the model's generation. Keeps callers
 	// from having to memorize Anthropic's per-generation tool naming matrix.
 	if baseTool := computerUseBaseTool(typeStr); baseTool != "" {
-		generation := ComputerUseGeneration(model)
+		generation := ComputerUseGeneration(provider, model)
 		if baseTool == "text_editor" {
-			generation = TextEditorGeneration(model)
+			generation = TextEditorGeneration(provider, model)
 		}
 		if wantType, wantName := NormalizedToolSpec(generation, baseTool); wantType != "" {
 			typeStr = wantType
@@ -260,7 +260,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
-		if !IsAdaptiveOnlyThinkingModel(capModel) {
+		if !IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -274,12 +274,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
 		// Opus 4.7+ and the Fable/Mythos family reject top_k with a 400 error.
 		if bifrostReq.Params.TopK != nil {
-			if !IsAdaptiveOnlyThinkingModel(capModel) {
+			if !IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 				anthropicReq.TopK = bifrostReq.Params.TopK
 			}
 		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			if !IsAdaptiveOnlyThinkingModel(capModel) {
+			if !IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 				anthropicReq.TopK = topK
 			}
 		}
@@ -462,7 +462,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
-				if converted, ok := convertServerToolToAnthropic(tool, capModel); ok {
+				if converted, ok := convertServerToolToAnthropic(tool, capModel, bifrostReq.Provider); ok {
 					tools = append(tools, converted)
 				}
 			}
@@ -508,7 +508,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if IsAdaptiveOnlyThinkingModel(capModel) {
+				if IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 				} else {
@@ -528,11 +528,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-				if SupportsAdaptiveThinking(capModel) {
+				if SupportsAdaptiveThinking(bifrostReq.Provider, capModel) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
-				} else if SupportsNativeEffort(capModel) {
+				} else if SupportsNativeEffort(bifrostReq.Provider, capModel) {
 					// Opus 4.5: native effort + budget_tokens thinking
 					setEffortOnOutputConfig(anthropicReq, effort)
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
@@ -576,7 +576,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
 				if bifrostReq.Params.Reasoning.Display != nil {
 					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
-				} else if IsAdaptiveOnlyThinkingModel(capModel) {
+				} else if IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}

@@ -53,11 +53,6 @@ type Entry struct {
 	// this field via json.Unmarshal.
 	AdditionalAttributes map[string]string `json:"-"`
 
-	// BifrostOverrides embeds per-(model, provider) behaviour overrides so the
-	// override JSON fields land at the top level, matching the flat datasheet
-	// shape from the /datasheet endpoint. No JSON tag or field-name overlap
-	// with Options.
-	schemas.BifrostOverrides
 	Options
 }
 
@@ -630,8 +625,6 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
-
-		BifrostOverrides: bifrostOverridesIfPresent(&entry.BifrostOverrides),
 	}
 }
 
@@ -722,23 +715,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}
-	// Hydrate the embedded overrides from the JSON column if present.
-	if pricing.BifrostOverrides != nil {
-		entry.BifrostOverrides = *pricing.BifrostOverrides
-	}
 	return entry
-}
-
-// bifrostOverridesIfPresent returns the override pointer only if at least one
-// field is populated, so an empty struct is never persisted to the DB column
-// when the datasheet has no bifrost-specific data for the model.
-func bifrostOverridesIfPresent(ov *schemas.BifrostOverrides) *schemas.BifrostOverrides {
-	if ov == nil || isEmptyBifrostOverrides(ov) {
-		return nil
-	}
-	// Return a copy so callers can mutate independently.
-	cp := *ov
-	return &cp
 }
 
 // isEmptyBifrostOverrides reports whether no field on the override struct is set.
@@ -762,6 +739,10 @@ func isEmptyBifrostOverrides(ov *schemas.BifrostOverrides) bool {
 		ov.SupportsContextEditing == nil &&
 		ov.SupportsContext1M == nil &&
 		ov.SupportsFastMode == nil &&
+		ov.SupportsAdaptiveThinking == nil &&
+		ov.SupportsNativeEffort == nil &&
+		ov.SupportsMidConversationSystem == nil &&
+		ov.SupportsSamplingParams == nil &&
 		ov.SupportsRedactThinking == nil &&
 		ov.SupportsTaskBudgets == nil &&
 		ov.SupportsEagerInputStreaming == nil &&

@@ -2296,9 +2296,9 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := SupportsAdaptiveThinking(tt.model)
+			got := SupportsAdaptiveThinking(schemas.Anthropic, tt.model)
 			if got != tt.expected {
-				t.Errorf("SupportsAdaptiveThinking(%q) = %v, want %v", tt.model, got, tt.expected)
+				t.Errorf("SupportsAdaptiveThinking(schemas.Anthropic, %q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2403,8 +2403,8 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			if got := IsAdaptiveOnlyThinkingModel(tt.model); got != tt.expected {
-				t.Errorf("IsAdaptiveOnlyThinkingModel(%q) = %v, want %v", tt.model, got, tt.expected)
+			if got := IsAdaptiveOnlyThinkingModel(schemas.Anthropic, tt.model); got != tt.expected {
+				t.Errorf("IsAdaptiveOnlyThinkingModel(schemas.Anthropic, %q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2488,9 +2488,9 @@ func TestSupportsFastMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := SupportsFastMode(tt.model)
+			got := SupportsFastMode(schemas.Anthropic, tt.model)
 			if got != tt.expected {
-				t.Errorf("SupportsFastMode(%q) = %v, want %v", tt.model, got, tt.expected)
+				t.Errorf("SupportsFastMode(schemas.Anthropic, %q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2552,9 +2552,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := SupportsEffortParameter(tt.model)
+			got := SupportsEffortParameter(schemas.Anthropic, tt.model)
 			if got != tt.expected {
-				t.Errorf("SupportsEffortParameter(%q) = %v, want %v", tt.model, got, tt.expected)
+				t.Errorf("SupportsEffortParameter(schemas.Anthropic, %q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -3036,9 +3036,9 @@ func TestComputerUseGeneration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
-			got := ComputerUseGeneration(tc.model)
+			got := ComputerUseGeneration(schemas.Anthropic, tc.model)
 			if got != tc.want {
-				t.Errorf("ComputerUseGeneration(%q) = %q, want %q", tc.model, got, tc.want)
+				t.Errorf("ComputerUseGeneration(schemas.Anthropic, %q) = %q, want %q", tc.model, got, tc.want)
 			}
 		})
 	}

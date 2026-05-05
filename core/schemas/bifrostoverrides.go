@@ -37,7 +37,11 @@ type BifrostOverrides struct {
 	SupportsCompaction             *bool `json:"supports_compaction,omitempty"`
 	SupportsContextEditing         *bool `json:"supports_context_editing,omitempty"`
 	SupportsContext1M              *bool `json:"supports_context_1m,omitempty"`
-	SupportsFastMode               *bool `json:"supports_fast_mode,omitempty"`
+	SupportsFastMode               *bool `json:"supports_speed,omitempty"` // datasheet emits fast mode as supports_speed
+	SupportsAdaptiveThinking       *bool `json:"supports_adaptive_thinking,omitempty"`
+	SupportsNativeEffort           *bool `json:"supports_native_effort,omitempty"`
+	SupportsMidConversationSystem  *bool `json:"supports_mid_conversation_system_messages,omitempty"`
+	SupportsSamplingParams         *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking         *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets            *bool `json:"supports_task_budgets,omitempty"`
 	SupportsEagerInputStreaming    *bool `json:"supports_eager_input_streaming,omitempty"`
@@ -145,12 +149,12 @@ type BifrostOverrides struct {
 	// UnsupportedFields["top_p"] and ConditionallyUnsupportedFields["top_p"].
 	// The wire JSON still carries `accepts_top_p` for legacy clients;
 	// Go's json decoder ignores unknown fields so this is safe.
-	AcceptsTopK            *bool `json:"accepts_top_k,omitempty"`
-	AcceptsTemperature     *bool `json:"accepts_temperature,omitempty"`
+	AcceptsTopK             *bool `json:"accepts_top_k,omitempty"`
+	AcceptsTemperature      *bool `json:"accepts_temperature,omitempty"`
 	AcceptsFrequencyPenalty *bool `json:"accepts_frequency_penalty,omitempty"`
-	AcceptsPresencePenalty *bool `json:"accepts_presence_penalty,omitempty"`
-	AcceptsStop            *bool `json:"accepts_stop,omitempty"`
-	AcceptsReasoningEffort *bool `json:"accepts_reasoning_effort,omitempty"`
+	AcceptsPresencePenalty  *bool `json:"accepts_presence_penalty,omitempty"`
+	AcceptsStop             *bool `json:"accepts_stop,omitempty"`
+	AcceptsReasoningEffort  *bool `json:"accepts_reasoning_effort,omitempty"`
 
 	// ---- Provider-rule fields duplicated per model (kept alongside UnsupportedFields) ----
 

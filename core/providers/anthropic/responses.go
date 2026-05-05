@@ -3192,7 +3192,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
-		if !IsAdaptiveOnlyThinkingModel(capModel) {
+		if !IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -3264,7 +3264,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if IsAdaptiveOnlyThinkingModel(capModel) {
+				if IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					// Preserve a co-present effort — these models support
@@ -3292,11 +3292,11 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					if *bifrostReq.Params.Reasoning.Effort != "none" {
 						effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 
-						if SupportsAdaptiveThinking(capModel) {
+						if SupportsAdaptiveThinking(bifrostReq.Provider, capModel) {
 							// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 							setEffortOnOutputConfig(anthropicReq, effort)
-						} else if SupportsNativeEffort(capModel) {
+						} else if SupportsNativeEffort(bifrostReq.Provider, capModel) {
 							// Opus 4.5: native effort + budget_tokens thinking
 							setEffortOnOutputConfig(anthropicReq, effort)
 							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
@@ -3337,7 +3337,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					} else {
 						anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 					}
-				} else if IsAdaptiveOnlyThinkingModel(capModel) {
+				} else if IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
@@ -3400,13 +3400,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
-				if !IsAdaptiveOnlyThinkingModel(capModel) {
+				if !IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 					anthropicReq.TopK = topK
 				}
 			}
 			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
 				delete(anthropicReq.ExtraParams, "speed")
-				if SupportsFastMode(capModel) {
+				if SupportsFastMode(bifrostReq.Provider, capModel) {
 					anthropicReq.Speed = speed
 				}
 			}
@@ -6832,7 +6832,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	// ResponsesToolComputerUsePreview), and bash falls through to the
 	// ResponsesToolTypeLocalShell case (no version variants).
 	if baseTool := computerUseBaseTool(string(tool.Type)); baseTool == "text_editor" {
-		if wantType, wantName := NormalizedToolSpec(TextEditorGeneration(model), baseTool); wantType != "" {
+		if wantType, wantName := NormalizedToolSpec(TextEditorGeneration(provider, model), baseTool); wantType != "" {
 			anthropicType := AnthropicToolType(wantType)
 			return &AnthropicTool{
 				Type: &anthropicType,
@@ -6867,7 +6867,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
 			computerToolType := AnthropicToolTypeComputer20250124
-			if ComputerUseGeneration(model) == ComputerUseGen20251124 {
+			if ComputerUseGeneration(provider, model) == ComputerUseGen20251124 {
 				computerToolType = AnthropicToolTypeComputer20251124
 			}
 			return &AnthropicTool{
