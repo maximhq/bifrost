@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	deepseekprovider "github.com/maximhq/bifrost/core/providers/deepseek"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,8 +80,8 @@ func TestDeepSeekChatCompletion_UsesRootChatPath(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/chat/completions", r.URL.Path)
-		require.Equal(t, "Bearer test-api-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "/chat/completions", r.URL.Path)
+		assert.Equal(t, "Bearer test-api-key", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","created":1234567890,"model":"deepseek-v4-pro","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from DeepSeek"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4,"total_tokens":9}}`)
 	}))
@@ -109,7 +110,7 @@ func TestDeepSeekListModels_UsesRootModelsPath(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/models", r.URL.Path)
+		assert.Equal(t, "/models", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"object":"list","data":[{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}]}`)
 	}))

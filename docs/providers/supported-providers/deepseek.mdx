@@ -80,9 +80,36 @@ The currently documented public models include names such as:
 - `deepseek-v4-flash`
 - `deepseek-v4-pro`
 
+Official DeepSeek docs currently use those names, while `deepseek-chat` and `deepseek-reasoner` remain legacy compatibility aliases.
+
 ---
 
-## Example Config
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Open **Model Providers** → **Configurations** → **DeepSeek**.
+2. Add a key using `env.DEEPSEEK_API_KEY`.
+3. Pick a model like `deepseek/deepseek-v4-flash` or `deepseek/deepseek-v4-pro`.
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek/deepseek-v4-pro",
+    "messages": [
+      {"role": "user", "content": "Say hello from DeepSeek"}
+    ]
+  }'
+```
+
+</Tab>
+
+<Tab title="config.json">
 
 ```json
 {
@@ -98,18 +125,9 @@ The currently documented public models include names such as:
 }
 ```
 
-## Example Request
+</Tab>
 
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek/deepseek-v4-pro",
-    "messages": [
-      {"role": "user", "content": "Say hello from DeepSeek"}
-    ]
-  }'
-```
+</Tabs>
 
 ---
 
