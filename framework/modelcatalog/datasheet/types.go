@@ -53,6 +53,11 @@ type Entry struct {
 	// this field via json.Unmarshal.
 	AdditionalAttributes map[string]string `json:"-"`
 
+	// BifrostOverrides embeds per-(model, provider) behaviour overrides so the
+	// override JSON fields land at the top level, matching the flat datasheet
+	// shape from the /datasheet endpoint. No JSON tag or field-name overlap
+	// with Options.
+	schemas.BifrostOverrides
 	Options
 }
 
@@ -625,6 +630,8 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
+
+		BifrostOverrides: bifrostOverridesIfPresent(&entry.BifrostOverrides),
 	}
 }
 
@@ -703,7 +710,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
-	return &Entry{
+	entry := &Entry{
 		BaseModel:            pricing.BaseModel,
 		Provider:             pricing.Provider,
 		Mode:                 pricing.Mode,
@@ -715,6 +722,96 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}
+	// Hydrate the embedded overrides from the JSON column if present.
+	if pricing.BifrostOverrides != nil {
+		entry.BifrostOverrides = *pricing.BifrostOverrides
+	}
+	return entry
+}
+
+// bifrostOverridesIfPresent returns the override pointer only if at least one
+// field is populated, so an empty struct is never persisted to the DB column
+// when the datasheet has no bifrost-specific data for the model.
+func bifrostOverridesIfPresent(ov *schemas.BifrostOverrides) *schemas.BifrostOverrides {
+	if ov == nil || isEmptyBifrostOverrides(ov) {
+		return nil
+	}
+	// Return a copy so callers can mutate independently.
+	cp := *ov
+	return &cp
+}
+
+// isEmptyBifrostOverrides reports whether no field on the override struct is set.
+func isEmptyBifrostOverrides(ov *schemas.BifrostOverrides) bool {
+	if ov == nil {
+		return true
+	}
+	return ov.SupportsCachePoint == nil &&
+		ov.SupportsInterleavedThinking == nil &&
+		ov.SupportsSkills == nil &&
+		ov.SupportsMCP == nil &&
+		ov.SupportsWebSearchDynamic == nil &&
+		ov.SupportsWebFetch == nil &&
+		ov.SupportsCodeExecution == nil &&
+		ov.SupportsBashTool == nil &&
+		ov.SupportsTextEditorTool == nil &&
+		ov.SupportsMemoryTool == nil &&
+		ov.SupportsToolSearch == nil &&
+		ov.SupportsFilesAPI == nil &&
+		ov.SupportsCompaction == nil &&
+		ov.SupportsContextEditing == nil &&
+		ov.SupportsContext1M == nil &&
+		ov.SupportsFastMode == nil &&
+		ov.SupportsRedactThinking == nil &&
+		ov.SupportsTaskBudgets == nil &&
+		ov.SupportsEagerInputStreaming == nil &&
+		ov.SupportsAdvancedToolUse == nil &&
+		ov.SupportsInputExamples == nil &&
+		ov.SupportsAdvisorTool == nil &&
+		ov.SupportsInferenceGeo == nil &&
+		ov.SupportsPromptCachingScope == nil &&
+		ov.SupportsReasoningContentBlocks == nil &&
+		len(ov.ServerTools) == 0 &&
+		len(ov.BetaHeaders) == 0 &&
+		len(ov.FieldNames) == 0 &&
+		len(ov.ServerToolAutoInjects) == 0 &&
+		len(ov.ServerToolImplicitBetas) == 0 &&
+		len(ov.ExtraHeaders) == 0 &&
+		len(ov.EffortRenames) == 0 &&
+		len(ov.UnsupportedFields) == 0 &&
+		len(ov.ConditionallyUnsupportedFields) == 0 &&
+		ov.Reasoning == nil &&
+		ov.Thinking == nil &&
+		ov.DefaultMaxTokens == nil &&
+		ov.MinReasoningMaxTokens == nil &&
+		ov.DropToolChoicePin == nil &&
+		ov.SyntheticStructuredOutputToolPrefix == nil &&
+		ov.SyntheticSOToolChoiceOmitted == nil &&
+		ov.RequestPath == nil &&
+		ov.OuterAnthropicBetaHeaderSkipped == nil &&
+		ov.APIVersion == nil &&
+		ov.IsVertexMultiRegionOnly == nil &&
+		ov.IsReasoningModel == nil &&
+		ov.AlwaysReasoning == nil &&
+		ov.AcceptsTopK == nil &&
+		ov.AcceptsTemperature == nil &&
+		ov.AcceptsFrequencyPenalty == nil &&
+		ov.AcceptsPresencePenalty == nil &&
+		ov.AcceptsStop == nil &&
+		ov.AcceptsReasoningEffort == nil &&
+		ov.ToolChoiceStructSupported == nil &&
+		ov.PreservesPrediction == nil &&
+		ov.AcceptsServiceTier == nil &&
+		ov.AcceptsPrediction == nil &&
+		ov.AcceptsPromptCacheKey == nil &&
+		ov.AcceptsPromptCacheRetention == nil &&
+		ov.AcceptsVerbosity == nil &&
+		ov.AcceptsStore == nil &&
+		ov.AcceptsWebSearchOptions == nil &&
+		ov.ReasoningRequired == nil &&
+		ov.AliasOf == nil &&
+		ov.RegionInferenceProfile == nil &&
+		ov.IsCohereCommandR == nil
 }
 
 // convertTableOverride converts a TablePricingOverride to an Override.

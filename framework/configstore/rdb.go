@@ -2527,6 +2527,8 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - OCR
 	"ocr_cost_per_page",
 	"annotation_cost_per_page",
+	// Bifrost behaviour overrides (datasheet-sourced, refreshed by sync)
+	"bifrost_overrides",
 }
 
 // UpsertModelPrices creates or updates a model pricing record in the database.
