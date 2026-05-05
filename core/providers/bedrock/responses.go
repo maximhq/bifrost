@@ -1814,8 +1814,6 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							})
 						}
 					} else {
-						// Non-Anthropic, non-Nova models: budget_tokens only
-						minBudgetTokens := MinimumReasoningMaxTokens
 						modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 						defaultMaxTokens := modelDefaultMaxTokens
 						if inferenceConfig.MaxTokens != nil {
@@ -1823,11 +1821,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						} else {
 							inferenceConfig.MaxTokens = schemas.Ptr(modelDefaultMaxTokens)
 						}
-						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, minBudgetTokens, defaultMaxTokens)
+						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, defaultMaxTokens)
 						if err != nil {
 							return nil, err
 						}
-						bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type":          "enabled",
 							"budget_tokens": budgetTokens,
 						})
@@ -1842,7 +1840,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							"type": "disabled",
 						})
 					} else {
-						bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",
 						})
 					}

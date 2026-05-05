@@ -184,6 +184,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		}
 	}
 
+	if req.ResponsesRequest != nil && req.ResponsesRequest.Input != nil {
+		if req.ResponsesRequest.Provider == schemas.Bedrock && !schemas.IsAnthropicModel(req.ResponsesRequest.Model) {
+			droppedKeys := applyBedrockResponsesCompatibility(req.ResponsesRequest)
+			dropped = append(dropped, droppedKeys...)
+		}
+	}
+
 	if req.ResponsesRequest != nil {
 		// all anthropic models support cache_control
 		// for bedrock models cache_control is converted to cachePoint
@@ -309,6 +316,33 @@ func dropCacheControlFromResponsesMessages(req *schemas.BifrostResponsesRequest)
 				dropped = append(dropped, fmt.Sprintf("tools[%d].cache_control", i))
 			}
 		}
+	}
+	return dropped
+}
+
+// applyBedrockResponsesCompatibility sanitizes messages for OpenAI-compatible Bedrock models:
+// - drops empty text content blocks
+// - strips reasoning signatures (Anthropic-specific, not supported by OpenAI models)
+func applyBedrockResponsesCompatibility(req *schemas.BifrostResponsesRequest) []string {
+	var dropped []string
+	for i := range req.Input {
+		msg := &req.Input[i]
+		if msg.Content == nil || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		kept := msg.Content.ContentBlocks[:0]
+		for j, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text == "" {
+				dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d]", i, j))
+				continue
+			}
+			if block.Signature != nil {
+				msg.Content.ContentBlocks[j].Signature = nil
+				dropped = append(dropped, fmt.Sprintf("input[%d].content.content_blocks[%d].signature", i, j))
+			}
+			kept = append(kept, msg.Content.ContentBlocks[j])
+		}
+		msg.Content.ContentBlocks = kept
 	}
 	return dropped
 }
