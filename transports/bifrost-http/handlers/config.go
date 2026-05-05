@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/compat"
+	"github.com/maximhq/bifrost/plugins/localcache"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -44,6 +45,7 @@ var securityHeaders = []string{
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
+	ReloadLocalCacheConfigFromConfigStore(ctx context.Context) error
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
@@ -384,6 +386,40 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	updatedConfig.Compat = newCompat
+
+	// Handle local cache plugin toggle. EnableLocalCache transitions
+	// (false→true / true→false) drive ReloadPlugin/RemovePlugin so the
+	// plugin is loaded/unloaded without a server restart. Pure config
+	// changes (TTL, threshold, etc.) flow through PUT /api/local-cache/config
+	// and mutate the shared *LocalCacheConfig pointer in place — no plugin
+	// reload involved.
+	if payload.ClientConfig.EnableLocalCache != nil {
+		newEnable := *payload.ClientConfig.EnableLocalCache
+		oldEnable := currentConfig.EnableLocalCache != nil && *currentConfig.EnableLocalCache
+		if newEnable != oldEnable {
+			if newEnable {
+				if h.store.LocalCacheConfig == nil {
+					logger.Warn("cannot enable local cache plugin: no local cache config persisted yet — call PUT /api/local-cache/config first")
+					SendError(ctx, fasthttp.StatusBadRequest, "cannot enable local cache plugin: no local cache config persisted yet — call PUT /api/local-cache/config first")
+					return
+				}
+				if err := h.configManager.ReloadPlugin(ctx, localcache.PluginName, nil, nil, nil, nil); err != nil {
+					logger.Warn("failed to load local cache plugin: %v", err)
+					SendError(ctx, fasthttp.StatusBadRequest, "Failed to load local cache plugin")
+					return
+				}
+			} else {
+				disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
+				if err := h.configManager.RemovePlugin(disabledCtx, localcache.PluginName); err != nil {
+					logger.Warn("failed to remove local cache plugin: %v", err)
+					SendError(ctx, fasthttp.StatusBadRequest, "Failed to remove local cache plugin")
+					return
+				}
+			}
+		}
+		updatedConfig.EnableLocalCache = payload.ClientConfig.EnableLocalCache
+	}
+
 	// Only update MCP fields if explicitly provided (non-zero) to avoid clearing stored values
 	if payload.ClientConfig.MCPAgentDepth > 0 {
 		updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth

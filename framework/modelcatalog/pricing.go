@@ -226,7 +226,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 		s = *scopes
 	}
 
-	// Handle semantic cache billing
+	// Handle local cache billing
 	cacheDebug := result.GetExtraFields().CacheDebug
 	if cacheDebug != nil {
 		return mc.calculateCostWithCache(result, cacheDebug, s)
@@ -235,7 +235,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.calculateBaseCost(result, s)
 }
 
-// calculateCostWithCache handles cost calculation when semantic cache debug info is present.
+// calculateCostWithCache handles cost calculation when local cache debug info is present.
 func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes PricingLookupScopes) float64 {
 	if cacheDebug.CacheHit {
 		// Direct cache hit — no LLM call, no cost

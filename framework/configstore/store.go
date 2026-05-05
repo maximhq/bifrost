@@ -127,6 +127,10 @@ type ConfigStore interface {
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
 	GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error)
 
+	// Local cache config CRUD
+	GetLocalCacheConfig(ctx context.Context) (*LocalCacheConfig, error)
+	UpdateLocalCacheConfig(ctx context.Context, config *LocalCacheConfig) error
+
 	// Logs store config CRUD
 	UpdateLogsStoreConfig(ctx context.Context, config *logstore.Config) error
 	GetLogsStoreConfig(ctx context.Context) (*logstore.Config, error)

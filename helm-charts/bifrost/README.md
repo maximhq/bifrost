@@ -57,9 +57,9 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### 2.1.7
 
-- Added semantic cache Helm layers and examples:
-  - Added Redis deployment template for semantic cache.
-  - Extended Helm values/schema coverage for semantic cache and client-config examples.
+- Added local cache Helm layers and examples:
+  - Added Redis deployment template for the local cache.
+  - Extended Helm values/schema coverage for the local cache and client-config examples.
 - Added enterprise/governance Helm support:
   - Added governance `business_units` support in Helm schema/template rendering.
   - Added deferred virtual-key/provider-config budget ordering handling in Helm rendering.
@@ -72,7 +72,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Includes unreleased `2.1.5` changes 
 - Built-in plugin versioning for DB-backed deployments:
   - Added `version` field support for built-in plugins.
-  - Added default `version: 1` for built-in plugins in `values.yaml` (`telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`).
+  - Added default `version: 1` for built-in plugins in `values.yaml` (`telemetry`, `logging`, `governance`, `maxim`, `localCache`, `otel`, `datadog`).
   - Updated `_helpers.tpl` to include plugin `version` in rendered config when set (cast as integer).
 - Updated StatefulSet PVC template labels to be immutable-safe:
   - `spec.volumeClaimTemplates.metadata.labels` now uses stable selector labels (without chart/app version labels).
@@ -433,9 +433,9 @@ postgresql:
 | `postgresql.external.enabled` | Use external PostgreSQL | `false` |
 | `postgresql.external.host` | External PostgreSQL host | `""` |
 
-### Vector Store Configuration (Semantic Caching)
+### Vector Store Configuration (Local Cache)
 
-Bifrost supports multiple vector stores for semantic caching:
+Bifrost supports multiple vector stores for the local cache:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -520,7 +520,7 @@ bifrost:
 | Telemetry | `bifrost.plugins.telemetry.enabled` | Enable metrics collection |
 | Logging | `bifrost.plugins.logging.enabled` | Enable request logging |
 | Governance | `bifrost.plugins.governance.enabled` | Enable budget management |
-| Semantic Cache | `bifrost.plugins.semanticCache.enabled` | Enable semantic caching |
+| Local Cache | `bifrost.client.enableLocalCache` | Enable the local cache plugin |
 | OTEL | `bifrost.plugins.otel.enabled` | Enable OpenTelemetry integration |
 | Maxim | `bifrost.plugins.maxim.enabled` | Enable Maxim observability |
 | Datadog | `bifrost.plugins.datadog.enabled` | Enable Datadog APM integration |
@@ -654,9 +654,9 @@ The chart includes pre-configured examples in `values-examples/`:
 | `sqlite-only.yaml` | Simple setup with SQLite (local development) |
 | `postgres-only.yaml` | PostgreSQL for config and logs |
 | `mixed-backend.yaml` | SQLite for config + PostgreSQL for logs (mixed backend) |
-| `postgres-weaviate.yaml` | PostgreSQL + Weaviate for semantic caching |
-| `postgres-redis.yaml` | PostgreSQL + Redis for semantic caching |
-| `postgres-qdrant.yaml` | PostgreSQL + Qdrant for semantic caching |
+| `postgres-weaviate.yaml` | PostgreSQL + Weaviate for the local cache |
+| `postgres-redis.yaml` | PostgreSQL + Redis for the local cache |
+| `postgres-qdrant.yaml` | PostgreSQL + Qdrant for the local cache |
 | `sqlite-weaviate.yaml` | SQLite + Weaviate |
 | `sqlite-redis.yaml` | SQLite + Redis |
 | `sqlite-qdrant.yaml` | SQLite + Qdrant |
@@ -680,7 +680,7 @@ helm install bifrost ./bifrost -f ./bifrost/values-examples/postgres-only.yaml
 For production deployments, we recommend:
 
 1. **Use PostgreSQL** for reliable data persistence
-2. **Enable semantic caching** with Weaviate, Redis, or Qdrant
+2. **Enable the local cache** with Weaviate, Redis, or Qdrant
 3. **Configure auto-scaling** for handling variable load
 4. **Set up Ingress** with TLS termination
 5. **Use external secrets** for sensitive data
@@ -735,13 +735,17 @@ bifrost:
     initialPoolSize: 1000
     allowedOrigins:
       - "https://yourdomain.com"
+    enableLocalCache: true
   plugins:
-    semanticCache:
-      enabled: true
     telemetry:
       enabled: true
     logging:
       enabled: true
+
+# Local cache plugin configuration (top-level, sibling of bifrost / vectorStore)
+localCache:
+  config:
+    dimension: 1
 ```
 
 ## Upgrading

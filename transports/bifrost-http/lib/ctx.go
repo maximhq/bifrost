@@ -19,7 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/localcache"
 	"github.com/valyala/fasthttp"
 )
 
@@ -359,7 +359,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		}
 		// Handle cache key header (x-bf-cache-key)
 		if keyStr == "x-bf-cache-key" {
-			bifrostCtx.SetValue(semanticcache.CacheKey, string(value))
+			bifrostCtx.SetValue(localcache.CacheKey, string(value))
 			return true
 		}
 		// Handle cache TTL header (x-bf-cache-ttl)
@@ -378,7 +378,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 
 			if err == nil {
-				bifrostCtx.SetValue(semanticcache.CacheTTLKey, ttlDuration)
+				bifrostCtx.SetValue(localcache.CacheTTLKey, ttlDuration)
 			}
 			// If both parsing attempts fail, we silently ignore the header and use default TTL
 			return true
@@ -393,20 +393,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 				} else if threshold > 1.0 {
 					threshold = 1.0
 				}
-				bifrostCtx.SetValue(semanticcache.CacheThresholdKey, threshold)
+				bifrostCtx.SetValue(localcache.CacheThresholdKey, threshold)
 			}
 			// If parsing fails, silently ignore the header (no context value set)
 			return true
 		}
 		// Cache type header
 		if keyStr == "x-bf-cache-type" {
-			bifrostCtx.SetValue(semanticcache.CacheTypeKey, semanticcache.CacheType(string(value)))
+			bifrostCtx.SetValue(localcache.CacheTypeKey, localcache.CacheType(string(value)))
 			return true
 		}
 		// Cache no store header
 		if keyStr == "x-bf-cache-no-store" {
 			if valueStr := string(value); valueStr == "true" {
-				bifrostCtx.SetValue(semanticcache.CacheNoStoreKey, true)
+				bifrostCtx.SetValue(localcache.CacheNoStoreKey, true)
 			}
 			return true
 		}

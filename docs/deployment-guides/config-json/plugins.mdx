@@ -1,11 +1,11 @@
 ---
 title: "Plugins"
-description: "Configure Bifrost plugins in config.json - semantic cache, OpenTelemetry, Maxim, Datadog, and custom plugins"
+description: "Configure Bifrost plugins in config.json - OpenTelemetry, Maxim, Datadog, and custom plugins"
 icon: "puzzle-piece"
 ---
 
 <Note>
-**The `plugins` array only controls explicitly opt-in plugins**: `semantic_cache`, `otel`, `maxim`, `datadog` (enterprise), and custom plugins.
+**The `plugins` array only controls explicitly opt-in plugins**:  `otel`, `maxim`, `datadog` (enterprise), and custom plugins.
 
 **Telemetry, logging, and governance are auto-loaded built-ins** - they are always active and configured via the `client` block and dedicated top-level keys, not the `plugins` array.
 </Note>
@@ -48,9 +48,9 @@ Every entry in the `plugins` array supports these common fields:
 
 <Tabs>
 
-<Tab title="Semantic Cache">
+<Tab title="Local Cache">
 
-### Semantic Cache
+### Local Cache
 
 Caches LLM responses by semantic similarity. Returns a cached response when an incoming request is semantically close enough to a previous one.
 
@@ -75,7 +75,7 @@ Requires a [vector store](/deployment-guides/config-json/storage#vector_store) t
 {
   "plugins": [
     {
-      "name": "semantic_cache",
+      "name": "local_cache",
       "enabled": true,
       "config": {
         "provider": "openai",
@@ -97,7 +97,7 @@ Requires a [vector store](/deployment-guides/config-json/storage#vector_store) t
 {
   "plugins": [
     {
-      "name": "semantic_cache",
+      "name": "local_cache",
       "enabled": true,
       "config": {
         "dimension": 1,

@@ -277,8 +277,6 @@ github.com/maximhq/bifrost/plugins/otel v1.2.7 h1:l9saTMOtNoPCHYZcwCbi8k31MFGELB
 github.com/maximhq/bifrost/plugins/otel v1.2.7/go.mod h1:5v9ciYxjmsOZR0xsFPOp+9VQ2NlXQ96PepwTGKuMUsA=
 github.com/maximhq/bifrost/plugins/prompts v1.0.7 h1:H8vf0Az1uSz2Voek3sBjrzLSVtP+I8DJTgPHzMu06eQ=
 github.com/maximhq/bifrost/plugins/prompts v1.0.7/go.mod h1:Uj2J0yMjfjFg7etd3D/vLnagWeyTZKw9xIm+6gdJ7dM=
-github.com/maximhq/bifrost/plugins/semanticcache v1.5.7 h1:2io/bSnwb5rfbhPZ/1LaD9wrFM7/B12qq1+U1ribZqY=
-github.com/maximhq/bifrost/plugins/semanticcache v1.5.7/go.mod h1:ExoKzIN06LXZA+eKxWVTaGVdnZGPy6FLRGcY/f3mS3k=
 github.com/maximhq/bifrost/plugins/telemetry v1.5.7 h1:EIHEvcU1x+tDaOYO1ddC7ljF8AGB85TboMks5vxb+Tk=
 github.com/maximhq/bifrost/plugins/telemetry v1.5.7/go.mod h1:0nf7Dpmabnyvd3SaubYCXe4IR7YbwBF9tV34oFaH3Ns=
 github.com/maximhq/maxim-go v0.2.1 h1:hCp8dQ4HsyyNC+y5HCUuY/HFD0sOnGkjL5MdYCHkgEQ=

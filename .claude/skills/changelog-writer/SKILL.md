@@ -335,7 +335,7 @@ bifrost/
 │   ├── maxim/version
 │   ├── mocker/version
 │   ├── otel/version
-│   ├── semanticcache/version
+│   ├── localcache/version
 │   └── telemetry/version
 ├── transports/
 │   ├── version              # Plain text: "1.5.0"
@@ -353,9 +353,9 @@ This is the canonical order for plugins:
 1. governance
 2. jsonparser
 3. litellmcompat
-4. logging
-5. maxim
-6. mocker
-7. otel
-8. semanticcache
+4. localcache
+5. logging
+6. maxim
+7. mocker
+8. otel
 9. telemetry

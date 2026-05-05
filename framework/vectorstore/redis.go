@@ -1284,7 +1284,7 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 
 	// Store as hash for efficient native vector search
 	if err := s.client.HSet(ctx, key, fields).Err(); err != nil {
-		return fmt.Errorf("failed to store semantic cache entry: %w", err)
+		return fmt.Errorf("failed to store local cache entry: %w", err)
 	}
 
 	return nil

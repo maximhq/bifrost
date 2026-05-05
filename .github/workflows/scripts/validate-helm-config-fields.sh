@@ -586,7 +586,8 @@ assert_field_value 'auth_config.is_enabled' '.auth_config.is_enabled' 'true'
 assert_field_value 'auth_config.disable_auth_on_inference' '.auth_config.disable_auth_on_inference' 'false'
 
 ###############################################################################
-# 6. Plugins (telemetry, logging, governance, maxim, semantic_cache, otel, datadog, custom)
+# 6. Plugins (telemetry, logging, governance, maxim, otel, datadog, custom) +
+#    top-level local_cache block (no longer a plugins[] entry as of v1.5.0)
 ###############################################################################
 echo ""
 echo -e "${CYAN}🔌 6/10 - Plugins Configuration${NC}"
@@ -596,6 +597,9 @@ cat > "$TMPDIR/values-plugins.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
+  client:
+    # Loads the local cache plugin (direct + semantic) at boot.
+    enableLocalCache: true
   plugins:
     telemetry:
       enabled: true
@@ -627,22 +631,6 @@ bifrost:
       secretRef:
         name: ""
         key: "api-key"
-    semanticCache:
-      enabled: true
-      config:
-        provider: "openai"
-        keys:
-          - "sk-embed-key"
-        embedding_model: "text-embedding-3-small"
-        dimension: 1536
-        threshold: 0.85
-        ttl: "10m"
-        conversation_history_threshold: 5
-        cache_by_model: true
-        cache_by_provider: false
-        exclude_system_prompt: true
-        cleanup_on_shutdown: true
-        vector_store_namespace: "bifrost-cache"
     otel:
       enabled: true
       config:
@@ -674,6 +662,22 @@ bifrost:
         version: 2
         config:
           key1: "val1"
+# Local cache plugin configuration (top-level, sibling of bifrost / vectorStore)
+localCache:
+  keys:
+    - "sk-embed-key"
+  config:
+    provider: "openai"
+    embedding_model: "text-embedding-3-small"
+    dimension: 1536
+    threshold: 0.85
+    ttl: "10m"
+    conversation_history_threshold: 5
+    cache_by_model: true
+    cache_by_provider: false
+    exclude_system_prompt: true
+    cleanup_on_shutdown: true
+    vector_store_namespace: "bifrost-cache"
 vectorStore:
   enabled: true
   type: weaviate
@@ -702,48 +706,48 @@ assert_field_value 'plugins: maxim name' '.plugins.[3].name' '"maxim"'
 assert_field_value 'plugins: maxim api_key' '.plugins.[3].config.api_key' '"maxim-key-123"'
 assert_field_value 'plugins: maxim log_repo_id' '.plugins.[3].config.log_repo_id' '"repo-456"'
 
-# Semantic cache plugin
-assert_field_value 'plugins: semantic_cache name' '.plugins.[4].name' '"semantic_cache"'
-assert_field_value 'plugins: semantic_cache provider' '.plugins.[4].config.provider' '"openai"'
-assert_field 'plugins: semantic_cache keys' '.plugins.[4].config.keys'
-assert_field_value 'plugins: semantic_cache embedding_model' '.plugins.[4].config.embedding_model' '"text-embedding-3-small"'
-assert_field_value 'plugins: semantic_cache dimension' '.plugins.[4].config.dimension' '1536'
-assert_field_value 'plugins: semantic_cache threshold' '.plugins.[4].config.threshold' '0.85'
-assert_field_value 'plugins: semantic_cache ttl' '.plugins.[4].config.ttl' '"10m"'
-assert_field_value 'plugins: semantic_cache conversation_history_threshold' '.plugins.[4].config.conversation_history_threshold' '5'
-assert_field_value 'plugins: semantic_cache cache_by_model' '.plugins.[4].config.cache_by_model' 'true'
-assert_field_value 'plugins: semantic_cache cache_by_provider' '.plugins.[4].config.cache_by_provider' 'false'
-assert_field_value 'plugins: semantic_cache exclude_system_prompt' '.plugins.[4].config.exclude_system_prompt' 'true'
-assert_field_value 'plugins: semantic_cache cleanup_on_shutdown' '.plugins.[4].config.cleanup_on_shutdown' 'true'
-assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4].config.vector_store_namespace' '"bifrost-cache"'
+# Local cache (top-level block, not a plugins[] entry as of v1.5.0)
+assert_field_value 'client.enable_local_cache' '.client.enable_local_cache' 'true'
+assert_field_value 'local_cache provider' '.local_cache.provider' '"openai"'
+assert_field 'local_cache keys' '.local_cache.keys'
+assert_field_value 'local_cache embedding_model' '.local_cache.embedding_model' '"text-embedding-3-small"'
+assert_field_value 'local_cache dimension' '.local_cache.dimension' '1536'
+assert_field_value 'local_cache threshold' '.local_cache.threshold' '0.85'
+assert_field_value 'local_cache ttl' '.local_cache.ttl' '"10m"'
+assert_field_value 'local_cache conversation_history_threshold' '.local_cache.conversation_history_threshold' '5'
+assert_field_value 'local_cache cache_by_model' '.local_cache.cache_by_model' 'true'
+assert_field_value 'local_cache cache_by_provider' '.local_cache.cache_by_provider' 'false'
+assert_field_value 'local_cache exclude_system_prompt' '.local_cache.exclude_system_prompt' 'true'
+assert_field_value 'local_cache cleanup_on_shutdown' '.local_cache.cleanup_on_shutdown' 'true'
+assert_field_value 'local_cache vector_store_namespace' '.local_cache.vector_store_namespace' '"bifrost-cache"'
 
-# OTEL plugin
-assert_field_value 'plugins: otel name' '.plugins.[5].name' '"otel"'
-assert_field_value 'plugins: otel service_name' '.plugins.[5].config.service_name' '"bifrost-test"'
-assert_field_value 'plugins: otel collector_url' '.plugins.[5].config.collector_url' '"otel-collector:4317"'
-assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"genai_extension"'
-assert_field_value 'plugins: otel protocol' '.plugins.[5].config.protocol' '"grpc"'
-assert_field_value 'plugins: otel metrics_enabled' '.plugins.[5].config.metrics_enabled' 'true'
-assert_field_value 'plugins: otel metrics_endpoint' '.plugins.[5].config.metrics_endpoint' '"otel-collector:4317"'
-assert_field_value 'plugins: otel metrics_push_interval' '.plugins.[5].config.metrics_push_interval' '30'
-assert_field 'plugins: otel headers' '.plugins.[5].config.headers'
-assert_field_value 'plugins: otel tls_ca_cert' '.plugins.[5].config.tls_ca_cert' '"/certs/ca.pem"'
-assert_field_value 'plugins: otel insecure' '.plugins.[5].config.insecure' 'true'
+# OTEL plugin (was index [5] when local_cache lived in plugins[]; now [4])
+assert_field_value 'plugins: otel name' '.plugins.[4].name' '"otel"'
+assert_field_value 'plugins: otel service_name' '.plugins.[4].config.service_name' '"bifrost-test"'
+assert_field_value 'plugins: otel collector_url' '.plugins.[4].config.collector_url' '"otel-collector:4317"'
+assert_field_value 'plugins: otel trace_type' '.plugins.[4].config.trace_type' '"genai_extension"'
+assert_field_value 'plugins: otel protocol' '.plugins.[4].config.protocol' '"grpc"'
+assert_field_value 'plugins: otel metrics_enabled' '.plugins.[4].config.metrics_enabled' 'true'
+assert_field_value 'plugins: otel metrics_endpoint' '.plugins.[4].config.metrics_endpoint' '"otel-collector:4317"'
+assert_field_value 'plugins: otel metrics_push_interval' '.plugins.[4].config.metrics_push_interval' '30'
+assert_field 'plugins: otel headers' '.plugins.[4].config.headers'
+assert_field_value 'plugins: otel tls_ca_cert' '.plugins.[4].config.tls_ca_cert' '"/certs/ca.pem"'
+assert_field_value 'plugins: otel insecure' '.plugins.[4].config.insecure' 'true'
 
 # Datadog plugin
-assert_field_value 'plugins: datadog name' '.plugins.[6].name' '"datadog"'
-assert_field_value 'plugins: datadog service_name' '.plugins.[6].config.service_name' '"bifrost-dd"'
-assert_field_value 'plugins: datadog agent_addr' '.plugins.[6].config.agent_addr' '"dd-agent:8126"'
-assert_field_value 'plugins: datadog env' '.plugins.[6].config.env' '"staging"'
-assert_field_value 'plugins: datadog version' '.plugins.[6].config.version' '"1.0.0"'
-assert_field 'plugins: datadog custom_tags' '.plugins.[6].config.custom_tags'
-assert_field_value 'plugins: datadog enable_traces' '.plugins.[6].config.enable_traces' 'true'
+assert_field_value 'plugins: datadog name' '.plugins.[5].name' '"datadog"'
+assert_field_value 'plugins: datadog service_name' '.plugins.[5].config.service_name' '"bifrost-dd"'
+assert_field_value 'plugins: datadog agent_addr' '.plugins.[5].config.agent_addr' '"dd-agent:8126"'
+assert_field_value 'plugins: datadog env' '.plugins.[5].config.env' '"staging"'
+assert_field_value 'plugins: datadog version' '.plugins.[5].config.version' '"1.0.0"'
+assert_field 'plugins: datadog custom_tags' '.plugins.[5].config.custom_tags'
+assert_field_value 'plugins: datadog enable_traces' '.plugins.[5].config.enable_traces' 'true'
 
 # Custom plugin
-assert_field_value 'plugins: custom name' '.plugins.[7].name' '"my-plugin"'
-assert_field_value 'plugins: custom path' '.plugins.[7].path' '"/plugins/my-plugin.so"'
-assert_field_value 'plugins: custom version' '.plugins.[7].version' '2'
-assert_field 'plugins: custom config' '.plugins.[7].config'
+assert_field_value 'plugins: custom name' '.plugins.[6].name' '"my-plugin"'
+assert_field_value 'plugins: custom path' '.plugins.[6].path' '"/plugins/my-plugin.so"'
+assert_field_value 'plugins: custom version' '.plugins.[6].version' '2'
+assert_field 'plugins: custom config' '.plugins.[6].config'
 
 ###############################################################################
 # 7. MCP Configuration

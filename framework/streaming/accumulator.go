@@ -50,7 +50,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.Timestamp = time.Time{}
 	chunk.Delta = nil
 	chunk.Cost = nil
-	chunk.SemanticCacheDebug = nil
+	chunk.LocalCacheDebug = nil
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
@@ -68,7 +68,7 @@ func (a *Accumulator) putAudioStreamChunk(chunk *AudioStreamChunk) {
 	chunk.Timestamp = time.Time{}
 	chunk.Delta = nil
 	chunk.Cost = nil
-	chunk.SemanticCacheDebug = nil
+	chunk.LocalCacheDebug = nil
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
@@ -86,7 +86,7 @@ func (a *Accumulator) putTranscriptionStreamChunk(chunk *TranscriptionStreamChun
 	chunk.Timestamp = time.Time{}
 	chunk.Delta = nil
 	chunk.Cost = nil
-	chunk.SemanticCacheDebug = nil
+	chunk.LocalCacheDebug = nil
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
@@ -104,7 +104,7 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	chunk.Timestamp = time.Time{}
 	chunk.StreamResponse = nil
 	chunk.Cost = nil
-	chunk.SemanticCacheDebug = nil
+	chunk.LocalCacheDebug = nil
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
@@ -126,7 +126,7 @@ func (a *Accumulator) putImageStreamChunk(chunk *ImageStreamChunk) {
 	chunk.ChunkIndex = 0
 	chunk.ImageIndex = 0
 	chunk.Cost = nil
-	chunk.SemanticCacheDebug = nil
+	chunk.LocalCacheDebug = nil
 	chunk.TokenUsage = nil
 	chunk.RawResponse = nil
 	a.imageStreamChunkPool.Put(chunk)

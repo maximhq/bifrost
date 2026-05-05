@@ -1020,171 +1020,128 @@ func TestValidateConfigSchema_Plugin_MissingName(t *testing.T) {
 }
 
 // =============================================================================
-// Semantic Cache Plugin Config Required Fields Tests
+// Local Cache Top-Level Config Required Fields Tests
 // =============================================================================
 
-func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
-	// Valid semantic cache plugin with provider, embedding model, and dimension. Keys are injected at runtime.
+// LocalCacheConfig schema tests exercise the top-level "local_cache" block
+// added in the v1.5.0 rename. Plugin entries no longer carry local-cache
+// config — it lives next to "client", "vector_store", and "governance" at
+// the root of config.json, so these tests live there too.
+
+func TestValidateConfigSchema_LocalCacheConfig_Valid(t *testing.T) {
 	validConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"provider": "openai",
-					"embedding_model": "text-embedding-3-small",
-					"dimension": 1536
-				}
-			}
-		]
+		"local_cache": {
+			"provider": "openai",
+			"embedding_model": "text-embedding-3-small",
+			"dimension": 1536
+		}
 	}`
 
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
-		t.Errorf("expected valid semantic cache plugin config to pass validation, got error: %v", err)
+		t.Errorf("expected valid local cache config to pass validation, got error: %v", err)
 	}
 }
 
-func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) {
-	// Missing required field: provider for semantic mode (dimension > 1)
+func TestValidateConfigSchema_LocalCacheConfig_MissingProvider(t *testing.T) {
+	// Provider+model are required for semantic mode (dimension > 1).
 	invalidConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"dimension": 1536
-				}
-			}
-		]
+		"local_cache": {
+			"dimension": 1536
+		}
 	}`
 
 	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
-		t.Error("expected config missing 'provider' in semantic cache plugin to fail validation")
+		t.Error("expected provider-backed local cache config missing 'provider' to fail validation")
 	}
 }
 
-func TestValidateConfigSchema_SemanticCachePlugin_ProviderWithoutKeys(t *testing.T) {
-	// Keys are not required at schema level for provider-backed config.
+func TestValidateConfigSchema_LocalCacheConfig_ProviderWithoutEmbeddingModel(t *testing.T) {
+	invalidConfig := `{
+		"local_cache": {
+			"provider": "openai",
+			"dimension": 1536
+		}
+	}`
+
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
+	if err == nil {
+		t.Error("expected provider-backed local cache config without embedding_model to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_LocalCacheConfig_DirectModeValid(t *testing.T) {
 	validConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"provider": "openai",
-					"embedding_model": "text-embedding-3-small",
-					"dimension": 1536
-				}
-			}
-		]
+		"local_cache": {
+			"dimension": 1
+		}
 	}`
 
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
-		t.Errorf("expected provider-backed semantic cache config without plugin keys to pass validation, got error: %v", err)
+		t.Errorf("expected direct-only local cache config to pass validation, got error: %v", err)
 	}
 }
 
-func TestValidateConfigSchema_SemanticCachePlugin_ProviderWithoutEmbeddingModel(t *testing.T) {
+func TestValidateConfigSchema_LocalCacheConfig_DirectModeWithEmbeddingModelInvalid(t *testing.T) {
 	invalidConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"provider": "openai",
-					"dimension": 1536
-				}
-			}
-		]
+		"local_cache": {
+			"dimension": 1,
+			"embedding_model": "text-embedding-3-small"
+		}
 	}`
 
 	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
-		t.Error("expected provider-backed semantic cache config without embedding_model to fail validation")
+		t.Error("expected direct-only local cache config with embedding_model to fail validation")
 	}
 }
 
-func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) {
+func TestValidateConfigSchema_LocalCacheConfig_DimensionOneWithProviderInvalid(t *testing.T) {
+	invalidConfig := `{
+		"local_cache": {
+			"provider": "openai",
+			"embedding_model": "text-embedding-3-small",
+			"dimension": 1
+		}
+	}`
+
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
+	if err == nil {
+		t.Error("expected dimension: 1 with provider in local cache config to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_LocalCacheConfig_MissingDimension(t *testing.T) {
+	invalidConfig := `{
+		"local_cache": {
+			"provider": "openai",
+			"embedding_model": "text-embedding-3-small"
+		}
+	}`
+
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
+	if err == nil {
+		t.Error("expected local cache config missing 'dimension' to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_LocalCacheConfig_EnableFlagInClient(t *testing.T) {
+	// The toggle lives on client.enable_local_cache, not on the block
+	// itself — make sure the schema accepts it there.
 	validConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"dimension": 1
-				}
-			}
-		]
+		"client": {
+			"enable_local_cache": true
+		},
+		"local_cache": {
+			"dimension": 1
+		}
 	}`
 
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
-		t.Errorf("expected direct-only semantic cache config to pass validation, got error: %v", err)
-	}
-}
-
-func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithEmbeddingModelInvalid(t *testing.T) {
-	invalidConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"dimension": 1,
-					"embedding_model": "text-embedding-3-small"
-				}
-			}
-		]
-	}`
-
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected direct-only semantic cache config with embedding_model to fail validation")
-	}
-}
-
-func TestValidateConfigSchema_SemanticCachePlugin_DimensionOneWithProviderInvalid(t *testing.T) {
-	invalidConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"provider": "openai",
-					"embedding_model": "text-embedding-3-small",
-					"dimension": 1
-				}
-			}
-		]
-	}`
-
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected dimension: 1 with provider in semantic cache plugin to fail validation")
-	}
-}
-
-func TestValidateConfigSchema_SemanticCachePlugin_MissingDimension(t *testing.T) {
-	// Missing required field: dimension
-	invalidConfig := `{
-		"plugins": [
-			{
-				"enabled": true,
-				"name": "semantic_cache",
-				"config": {
-					"provider": "openai",
-					"embedding_model": "text-embedding-3-small"
-				}
-			}
-		]
-	}`
-
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected config missing 'dimension' in semantic cache plugin to fail validation")
+		t.Errorf("expected client.enable_local_cache + direct-only local_cache to pass validation, got error: %v", err)
 	}
 }
 

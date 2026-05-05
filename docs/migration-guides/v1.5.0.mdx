@@ -521,6 +521,99 @@ Single-key, pinned (`x-bf-key-id` / `x-bf-key-name`), and session-sticky request
 
 ---
 
+## Breaking Change 14: Semantic Cache Renamed to Local Cache
+
+The plugin formerly known as `semantic_cache` has been renamed to `local_cache` to reflect the fact that it serves both direct (exact) and semantic (similarity) cache hits. The rename is mechanical — caching behavior, vector store backends, and the request-context API are unchanged.
+
+It also brings a brand-new configuration surface: a dedicated `config_local_cache` table, a top-level `local_cache` key in `config.json`, and a single REST endpoint pair (`GET`/`PUT /api/local-cache/config`). The plugin enable/disable toggle moves to a `client.enable_local_cache` flag — flipping it loads or unloads the plugin without a server restart. Pure config changes (TTL, threshold, etc.) mutate a shared pointer in place, so the running plugin observes them on the next request.
+
+### `config.json`
+
+The plugin now lives at the top level of `config.json`, alongside `vector_store` and `client`. Add `client.enable_local_cache: true` to load it on boot.
+
+**Before:**
+```json
+{
+  "vector_store": { "...": "..." },
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "local_cache",
+      "config": {
+        "dimension": 1,
+        "ttl": 300,
+        "threshold": 0.8
+      }
+    }
+  ]
+}
+```
+
+**After:**
+```json
+{
+  "client": {
+    "enable_local_cache": true
+  },
+  "vector_store": { "...": "..." },
+  "local_cache": {
+    "dimension": 1,
+    "ttl": 300,
+    "threshold": 0.8
+  }
+}
+```
+
+Existing `config_plugins['semantic_cache']` rows are auto-migrated to the new `config_local_cache` table on first boot — no manual SQL is required. The legacy plugin row is deleted after the migration.
+
+### REST API
+
+A dedicated endpoint pair replaces the generic `PUT /api/plugins/semantic_cache`:
+
+| Operation | Endpoint |
+|---|---|
+| Read current local-cache config | `GET /api/local-cache/config` |
+| Update local-cache config (live) | `PUT /api/local-cache/config` |
+| Enable/disable the plugin | `PUT /api/config` with `client.enable_local_cache` |
+
+`PUT /api/local-cache/config` mutates the running plugin's configuration in place — no plugin reload, no request drop. Structural changes (`vector_store_namespace`, `dimension`) automatically call `EnsureNamespace` so the new namespace is materialized before the next request lands.
+
+### Go SDK
+
+The plugin Go module path changed:
+
+```
+github.com/maximhq/bifrost/plugins/localcache → github.com/maximhq/bifrost/plugins/localcache
+```
+
+All public type names that referenced the plugin name (`semanticcache.Plugin`, `semanticcache.Config`, `semanticcache.PluginName`) move to the `localcache` package. The plugin name string is now `"local_cache"`. Cache-mode names — `CacheTypeDirect` and `CacheTypeSemantic` — describe the lookup *technique* and stay unchanged. Per-request context keys also rename:
+
+| Before | After |
+|---|---|
+| `"semantic_cache-key"` | `"local_cache-key"` |
+| `"semantic_cache-ttl"` | `"local_cache-ttl"` |
+| `"semantic_cache-threshold"` | `"local_cache-threshold"` |
+| `"semantic_cache-cache_type"` | `"local_cache-cache_type"` |
+| `"semantic_cache-no_store"` | `"local_cache-no_store"` |
+
+If you set these keys directly on `BifrostContext`, update them. If you use the typed helpers exported from the plugin (`localcache.CacheKey`, etc.) the upgrade is automatic.
+
+The default vector-store namespace name and the cache-entry filter property also change:
+
+- `BifrostSemanticCachePlugin` → `BifrostLocalCachePlugin`
+- `from_bifrost_semantic_cache_plugin` → `from_bifrost_local_cache_plugin`
+
+Entries written under the old defaults remain in the old namespace; the plugin no longer queries them. If you want to evict the stale data, drop the old namespace from your vector store directly.
+
+### Migration Checklist
+
+- Replace any `plugins[]` entry named `"local_cache"` in `config.json` with the top-level `local_cache` block and add `client.enable_local_cache: true`.
+- Replace `import "github.com/maximhq/bifrost/plugins/localcache"` with `"github.com/maximhq/bifrost/plugins/localcache"` in your Go code; update any direct context-key strings.
+- Update any automation that hits `PUT /api/plugins/semantic_cache` to use the new `/api/local-cache/config` endpoint.
+- If you depend on the old default namespace `BifrostSemanticCachePlugin` continuing to be queried, set `vector_store_namespace: "BifrostSemanticCachePlugin"` in the new config block to override the new default.
+
+---
+
 ## Breaking Change 13: Semantic Cache Clear API is Now Cache-ID Based
 
 The semantic cache "clear by request ID" API has been removed. Storage IDs in the cache are deterministic UUIDv5 hashes derived from the request payload (so the same prompt across many requests maps to a single cache entry), which made the previous request-ID-based delete unable to match anything written by the direct-search path.

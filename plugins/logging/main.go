@@ -228,7 +228,7 @@ type LogMessage struct {
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
-	SemanticCacheDebug *schemas.BifrostCacheDebug         // For semantic cache operations
+	LocalCacheDebug *schemas.BifrostCacheDebug         // For local cache operations
 	UpdateData         *UpdateLogData                     // For update operations
 	StreamResponse     *streaming.ProcessedStreamResponse // For streaming delta updates
 	RoutingEngineLogs  string                             // Formatted routing engine decision logs
@@ -830,7 +830,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
 	// Apply common output fields. For cache hits, prefer the cache-serve
-	// latency stamped by the semantic cache plugin over the original provider
+	// latency stamped by the local cache plugin over the original provider
 	// latency preserved in the cached response.
 	var latency int64
 	if result != nil {

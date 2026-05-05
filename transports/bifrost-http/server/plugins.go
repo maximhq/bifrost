@@ -12,7 +12,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
-	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/localcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -91,12 +91,16 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		}
 		return maxim.Init(maximConfig, logger)
 
-	case semanticcache.PluginName:
-		semanticConfig, err := MarshalPluginConfig[semanticcache.Config](pluginConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal semantic cache plugin config: %w", err)
+	case localcache.PluginName:
+		// The local cache reads its live configuration from
+		// bifrostConfig.LocalCacheConfig (a shared pointer that PUT
+		// /api/local-cache/config mutates in place). pluginConfig is
+		// ignored — config flows through the dedicated config_local_cache
+		// table, not through config_plugins.
+		if bifrostConfig.LocalCacheConfig == nil {
+			return nil, fmt.Errorf("local cache config not loaded; cannot initialize plugin")
 		}
-		return semanticcache.Init(ctx, semanticConfig, logger, bifrostConfig.VectorStore)
+		return localcache.Init(ctx, bifrostConfig.LocalCacheConfig, logger, bifrostConfig.VectorStore)
 
 	case otel.PluginName:
 		otelConfig, err := MarshalPluginConfig[otel.Config](pluginConfig)
@@ -206,14 +210,16 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(otel.PluginName, builtinPlacement, schemas.Ptr(5))
 
-	// 6. Semantic Cache (if configured in PluginConfigs)
-	semanticCacheConfig := s.getPluginConfig(semanticcache.PluginName)
-	if semanticCacheConfig != nil && semanticCacheConfig.Enabled {
-		s.registerPluginWithStatus(ctx, semanticcache.PluginName, nil, semanticCacheConfig.Config, false)
+	// 6. Local Cache (if EnableLocalCache flag is set on ClientConfig and
+	// the dedicated config_local_cache row is present). pluginConfig is nil
+	// since the plugin reads from bifrostConfig.LocalCacheConfig directly.
+	enableLocalCache := s.Config.ClientConfig.EnableLocalCache != nil && *s.Config.ClientConfig.EnableLocalCache
+	if enableLocalCache && s.Config.LocalCacheConfig != nil && s.Config.VectorStore != nil {
+		s.registerPluginWithStatus(ctx, localcache.PluginName, nil, nil, false)
 	} else {
-		s.markPluginDisabled(semanticcache.PluginName)
+		s.markPluginDisabled(localcache.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(6))
+	s.Config.SetPluginOrderInfo(localcache.PluginName, builtinPlacement, schemas.Ptr(6))
 
 	// 7. Compat (if any compat feature is enabled in ClientConfig)
 	cc := s.Config.ClientConfig.Compat

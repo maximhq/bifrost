@@ -16,11 +16,11 @@ require (
 	github.com/maximhq/bifrost/framework v1.3.7
 	github.com/maximhq/bifrost/plugins/compat v0.1.6
 	github.com/maximhq/bifrost/plugins/governance v1.5.7
+	github.com/maximhq/bifrost/plugins/localcache v1.5.7
 	github.com/maximhq/bifrost/plugins/logging v1.5.7
 	github.com/maximhq/bifrost/plugins/maxim v1.6.7
 	github.com/maximhq/bifrost/plugins/otel v1.2.7
 	github.com/maximhq/bifrost/plugins/prompts v1.0.7
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.7
 	github.com/maximhq/bifrost/plugins/telemetry v1.5.7
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/webrtc/v4 v4.2.9
@@ -208,3 +208,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+replace github.com/maximhq/bifrost/plugins/localcache => ../plugins/localcache

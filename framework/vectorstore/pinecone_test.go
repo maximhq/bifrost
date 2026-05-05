@@ -517,7 +517,7 @@ func TestPineconeStore_ErrorHandling(t *testing.T) {
 	assert.Contains(t, err.Error(), "id is required")
 }
 
-func TestPineconeStore_SemanticCacheWorkflow(t *testing.T) {
+func TestPineconeStore_LocalCacheWorkflow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration tests in short mode")
 	}
@@ -525,7 +525,7 @@ func TestPineconeStore_SemanticCacheWorkflow(t *testing.T) {
 	setup := NewPineconeTestSetup(t)
 	defer setup.Cleanup(t)
 
-	// Simulate a semantic cache workflow
+	// Simulate a local cache workflow
 	cacheEntries := []struct {
 		key       string
 		embedding []float32

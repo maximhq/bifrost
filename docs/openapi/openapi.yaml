@@ -790,6 +790,8 @@ paths:
     $ref: './paths/management/cache.yaml#/clear-by-cache-id'
   /api/cache/clear-by-key/{cacheKey}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+  /api/local-cache/config:
+    $ref: './paths/management/local_cache.yaml#/config'
 
   # Infrastructure
   /ws:

@@ -205,7 +205,7 @@
                 ]
               },
               "features/telemetry",
-              "features/semantic-caching",
+              "features/local-caching",
               {
                 "group": "Prompt Repository",
                 "icon": "folder",
@@ -704,6 +704,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/semantic-caching",
+      "destination": "/features/local-caching"
+    },
     {
       "source": "/features/fallbacks",
       "destination": "/features/retries-and-fallbacks"

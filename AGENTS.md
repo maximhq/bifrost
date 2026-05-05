@@ -98,7 +98,7 @@ bifrost/
 │   ├── governance/                # Budget, rate limiting, virtual keys, routing, RBAC
 │   ├── telemetry/                 # Prometheus metrics, push gateway
 │   ├── logging/                   # Request/response audit logging
-│   ├── semanticcache/             # Semantic response caching via vector store
+│   ├── localcache/                # Direct & Semantic response caching via vector store
 │   ├── otel/                      # OpenTelemetry tracing
 │   ├── mocker/                    # Mock responses for testing
 │   ├── jsonparser/                # JSON extraction utilities

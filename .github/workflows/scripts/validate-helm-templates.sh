@@ -178,29 +178,29 @@ echo ""
 echo -e "${CYAN}⚙️  3/6 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
-# semantic cache: direct mode (dimension: 1, no provider/keys)
-test_template "semanticCache: direct mode (dimension: 1)" \
-  --set bifrost.plugins.semanticCache.enabled=true \
-  --set bifrost.plugins.semanticCache.config.dimension=1 \
-  --set bifrost.plugins.semanticCache.config.ttl=30m \
+# local cache: direct mode (dimension: 1, no provider/keys)
+test_template "localCache: direct mode (dimension: 1)" \
+  --set bifrost.client.enableLocalCache=true \
+  --set localCache.config.dimension=1 \
+  --set localCache.config.ttl=30m \
   --set vectorStore.enabled=true \
   --set vectorStore.type=redis \
   --set vectorStore.redis.enabled=true
 
-# semantic cache: semantic mode (dimension > 1, requires provider/keys)
-test_template "semanticCache: semantic mode (dimension: 1536)" \
-  --set bifrost.plugins.semanticCache.enabled=true \
-  --set bifrost.plugins.semanticCache.config.dimension=1536 \
-  --set bifrost.plugins.semanticCache.config.provider=openai \
-  --set 'bifrost.plugins.semanticCache.config.keys[0]=sk-test' \
+# local cache: semantic mode (dimension > 1, requires provider/keys)
+test_template "localCache: semantic mode (dimension: 1536)" \
+  --set bifrost.client.enableLocalCache=true \
+  --set localCache.config.dimension=1536 \
+  --set localCache.config.provider=openai \
+  --set 'localCache.keys[0]=sk-test' \
   --set vectorStore.enabled=true \
   --set vectorStore.type=redis \
   --set vectorStore.redis.enabled=true
 
-# semantic cache: direct mode with redis + postgres
-test_template "semanticCache: direct mode + postgres" \
-  --set bifrost.plugins.semanticCache.enabled=true \
-  --set bifrost.plugins.semanticCache.config.dimension=1 \
+# local cache: direct mode with redis + postgres
+test_template "localCache: direct mode + postgres" \
+  --set bifrost.client.enableLocalCache=true \
+  --set localCache.config.dimension=1 \
   --set storage.mode=postgres \
   --set postgresql.enabled=true \
   --set postgresql.auth.password=testpass \
@@ -335,20 +335,26 @@ echo ""
 echo -e "${CYAN}🔌 5/6 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
-# Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
-# Go registry: plugins/semantic_cache/main.go defines PluginName = "semantic_cache"
-test_name="semanticCache plugin name matches Go registry (semantic_cache)"
+# Verify the local cache renders as a top-level "local_cache" block plus
+# "enable_local_cache: true" on the client (the v1.5.0 shape — no longer a
+# plugins[] entry). Go side: plugins/localcache/main.go defines
+# PluginName = "local_cache".
+test_name="localCache renders as top-level block + client.enable_local_cache toggle"
 if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \
-  --set bifrost.plugins.semanticCache.enabled=true \
-  --set bifrost.plugins.semanticCache.config.dimension=1536 \
-  --set bifrost.plugins.semanticCache.config.provider=openai \
-  --set 'bifrost.plugins.semanticCache.config.keys[0]=sk-test' \
+  --set bifrost.client.enableLocalCache=true \
+  --set localCache.config.dimension=1536 \
+  --set localCache.config.provider=openai \
+  --set 'localCache.keys[0]=sk-test' \
   --set vectorStore.enabled=true \
   --set vectorStore.type=redis \
   --set vectorStore.redis.enabled=true \
   > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '"name"[[:space:]]*:[[:space:]]*"semantic_cache"' /tmp/helm-template-output.yaml; then
+  # Both signals must be present: the top-level local_cache block and the
+  # enable_local_cache flag on the client. Without either, the plugin
+  # won't load at boot.
+  if grep -Eq '"local_cache"[[:space:]]*:' /tmp/helm-template-output.yaml \
+     && grep -Eq '"enable_local_cache"[[:space:]]*:[[:space:]]*true' /tmp/helm-template-output.yaml; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1

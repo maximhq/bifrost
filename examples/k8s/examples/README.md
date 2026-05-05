@@ -9,8 +9,8 @@ These examples are split into composable value files so you can combine them wit
 - `values-storage-postgres.yaml` - Storage layer for Postgres mode (chart-managed Postgres)
 - `values-providers.yaml` - Provider keys layer (`openai` + `anthropic`)
 - `values-client-configs.yaml` - Client settings layer (non-MCP, non-model client config options)
-- `values-semantic-search-redis.yaml` - Semantic cache + Redis vector store layer
-- `values-semantic-search-weaviate.yaml` - Semantic cache + Weaviate vector store layer
+- `values-local-cache-redis.yaml` - Local cache + Redis vector store layer
+- `values-local-cache-weaviate.yaml` - Local cache + Weaviate vector store layer
 - `values-mcp-routing.yaml` - MCP + routing layer (latest `mcp.*` globals, MCP client config, chain rule/fallback examples)
 - `values-governance-teams.yaml` - Governance base layer (budgets, rate limits, customers, teams)
 - `values-with-routing-rules-pricing.yaml` - Advanced governance layer (virtual keys, routing rules, pricing overrides, access profile)
@@ -105,27 +105,27 @@ helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   --wait \
   --timeout 5m
 
-# Semantic search stack (Redis vector store)
+# Local cache stack (Redis vector store)
 helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   --namespace "${NAMESPACE}" \
   -f examples/k8s/examples/values.yaml \
   -f examples/k8s/examples/values-storage-sqlite.yaml \
   -f examples/k8s/examples/values-providers.yaml \
-  -f examples/k8s/examples/values-semantic-search-redis.yaml \
+  -f examples/k8s/examples/values-local-cache-redis.yaml \
   --wait \
   --timeout 5m
 
-# Note: this Redis semantic layer uses Redis Stack (search-enabled) because
-# semantic cache requires FT.* commands (RediSearch module). Redis Stack
+# Note: this Redis local-cache layer uses Redis Stack (search-enabled) because
+# local cache requires FT.* commands (RediSearch module). Redis Stack
 # auto-loads search modules at startup.
 
-# Semantic search stack (Weaviate vector store)
+# Local cache stack (Weaviate vector store)
 helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   --namespace "${NAMESPACE}" \
   -f examples/k8s/examples/values.yaml \
   -f examples/k8s/examples/values-storage-sqlite.yaml \
   -f examples/k8s/examples/values-providers.yaml \
-  -f examples/k8s/examples/values-semantic-search-weaviate.yaml \
+  -f examples/k8s/examples/values-local-cache-weaviate.yaml \
   --wait \
   --timeout 5m
 
@@ -184,28 +184,28 @@ If you built a local image (for example `bifrost-local:v1.5.0-prerelease21`) and
 to run with `image.pullPolicy=Never`, use commands like:
 
 ```bash
-# Semantic search + Redis + client config (local image)
+# Local cache + Redis + client config (local image)
 helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   --namespace "${NAMESPACE}" \
   -f examples/k8s/examples/values.yaml \
   -f examples/k8s/examples/values-storage-sqlite.yaml \
   -f examples/k8s/examples/values-providers.yaml \
   -f examples/k8s/examples/values-client-configs.yaml \
-  -f examples/k8s/examples/values-semantic-search-redis.yaml \
+  -f examples/k8s/examples/values-local-cache-redis.yaml \
   --set image.repository=bifrost-local \
   --set image.tag=v1.5.0-prerelease21 \
   --set image.pullPolicy=Never \
   --wait \
   --timeout 5m
 
-# Semantic search + Weaviate + client config (local image)
+# Local cache + Weaviate + client config (local image)
 helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   --namespace "${NAMESPACE}" \
   -f examples/k8s/examples/values.yaml \
   -f examples/k8s/examples/values-storage-sqlite.yaml \
   -f examples/k8s/examples/values-providers.yaml \
   -f examples/k8s/examples/values-client-configs.yaml \
-  -f examples/k8s/examples/values-semantic-search-weaviate.yaml \
+  -f examples/k8s/examples/values-local-cache-weaviate.yaml \
   --set image.repository=bifrost-local \
   --set image.tag=v1.5.0-prerelease21 \
   --set image.pullPolicy=Never \

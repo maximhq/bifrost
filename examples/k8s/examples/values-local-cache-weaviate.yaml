@@ -1,0 +1,30 @@
+# Local cache layer using Weaviate vector store (chart-managed).
+# Merge with values.yaml + storage + providers layers.
+bifrost:
+  client:
+    enableLocalCache: true
+
+# Local cache plugin configuration (sibling of bifrost / vectorStore)
+localCache:
+  version: 1
+  # Embedding provider keys for the local cache (semantic mode only).
+  keys:
+    - "env.OPENAI_API_KEY"
+  config:
+    provider: "openai"
+    embedding_model: "text-embedding-3-small"
+    dimension: 1536
+    threshold: 0.8
+    ttl: "5m"
+    conversation_history_threshold: 3
+    cache_by_model: true
+    cache_by_provider: true
+    exclude_system_prompt: false
+    cleanup_on_shutdown: false
+    vector_store_namespace: "bifrost-local-cache"
+
+vectorStore:
+  enabled: true
+  type: weaviate
+  weaviate:
+    enabled: true

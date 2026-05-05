@@ -75,7 +75,7 @@ When creating a commit, always mention which packages/components are affected:
 [feat]: Add semantic caching plugin
 
 Changes:
-- plugins/semanticcache/ - Core caching logic
+- plugins/localcache/ - Core caching logic
 - core/bifrost.go - Plugin registration
 - transports/bifrost-http/server.go - Cache middleware integration
 
@@ -350,15 +350,15 @@ Update file
 
 ❌ **Bad:**
 ```
-[feat]: Major update to semantic cache
+[feat]: Major update to local cache
 ```
 
 ✅ **Good:**
 ```
-[feat]: Add semantic cache initialization with retry logic
+[feat]: Add local cache initialization with retry logic
 
 Changes:
-- plugins/semanticcache/ - Add retry mechanism
+- plugins/localcache/ - Add retry mechanism
 - core/bifrost.go - Register cache handler
 - docs/ - Add usage documentation
 ```

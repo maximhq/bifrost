@@ -388,6 +388,7 @@ type MockConfigStore struct {
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
 	vectorConfig     *vectorstore.Config
+	localCacheConfig *configstore.LocalCacheConfig
 	logsConfig       *logstore.Config
 	plugins          []*tables.TablePlugin
 
@@ -877,6 +878,16 @@ func (m *MockConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *v
 
 func (m *MockConfigStore) GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error) {
 	return m.vectorConfig, nil
+}
+
+// Local cache config
+func (m *MockConfigStore) GetLocalCacheConfig(ctx context.Context) (*configstore.LocalCacheConfig, error) {
+	return m.localCacheConfig, nil
+}
+
+func (m *MockConfigStore) UpdateLocalCacheConfig(ctx context.Context, config *configstore.LocalCacheConfig) error {
+	m.localCacheConfig = config
+	return nil
 }
 
 // Logs store config
@@ -18189,3 +18200,4 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	require.Empty(t, anthropicCfg.Keys[0].Models,
 		"v2 semantics: empty models must NOT be normalised")
 }
+

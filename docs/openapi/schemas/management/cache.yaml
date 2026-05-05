@@ -7,3 +7,66 @@ ClearCacheResponse:
     message:
       type: string
       example: Cache cleared successfully
+
+LocalCacheConfig:
+  type: object
+  description: |
+    Live runtime configuration for the local cache plugin. The framework
+    holds a single shared pointer that the plugin reads on every request,
+    so a successful PUT mutates behavior immediately without a plugin
+    restart. Plugin enable/disable lives separately on
+    `client.enable_local_cache` (PUT /api/config).
+  properties:
+    provider:
+      type: string
+      description: |
+        Embedding provider for semantic search (e.g. "openai"). Leave empty
+        and set `dimension: 1` for direct-only mode without a provider.
+      example: openai
+    embedding_model:
+      type: string
+      description: Embedding model name. Required when `provider` is set.
+      example: text-embedding-3-small
+    cleanup_on_shutdown:
+      type: boolean
+      description: |
+        When true, delete every entry tagged from_bifrost_local_cache_plugin
+        and drop the namespace on plugin Cleanup. Default false leaves
+        entries in place for the next process.
+    ttl:
+      type: string
+      description: |
+        Time-to-live for cached responses. Accepts a Go duration string
+        ("1m", "30s") or a JSON number in seconds.
+      example: "5m"
+    threshold:
+      type: number
+      description: Cosine similarity threshold for semantic matches (0–1).
+      example: 0.8
+    vector_store_namespace:
+      type: string
+      description: Namespace within the vector store to scope entries.
+    dimension:
+      type: integer
+      description: |
+        Embedding dimension. Use 1 for direct-only mode (no semantic search).
+        Must be > 1 when `provider` is set.
+    default_cache_key:
+      type: string
+      description: |
+        Cache key used when no per-request key is supplied. Caching is
+        disabled when both this and the per-request key are empty.
+    conversation_history_threshold:
+      type: integer
+      description: |
+        Skip caching for requests whose conversation history exceeds this
+        many messages. Default 3.
+    cache_by_model:
+      type: boolean
+      description: Include the model in the cache key. Default true.
+    cache_by_provider:
+      type: boolean
+      description: Include the provider in the cache key. Default true.
+    exclude_system_prompt:
+      type: boolean
+      description: Exclude the system prompt from the cache key. Default false.

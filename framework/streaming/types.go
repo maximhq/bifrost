@@ -52,7 +52,7 @@ type AudioStreamChunk struct {
 	Delta              *schemas.BifrostSpeechStreamResponse // The actual delta content
 	FinishReason       *string                              // If this is the final chunk
 	TokenUsage         *schemas.SpeechUsage                 // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug           // Semantic cache debug if available
+	LocalCacheDebug *schemas.BifrostCacheDebug           // Local cache debug if available
 	Cost               *float64                             // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                // Error if any
 	ChunkIndex         int                                  // Index of the chunk in the stream
@@ -65,7 +65,7 @@ type TranscriptionStreamChunk struct {
 	Delta              *schemas.BifrostTranscriptionStreamResponse // The actual delta content
 	FinishReason       *string                                     // If this is the final chunk
 	TokenUsage         *schemas.TranscriptionUsage                 // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug                  // Semantic cache debug if available
+	LocalCacheDebug *schemas.BifrostCacheDebug                  // Local cache debug if available
 	Cost               *float64                                    // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                       // Error if any
 	ChunkIndex         int                                         // Index of the chunk in the stream
@@ -79,7 +79,7 @@ type ChatStreamChunk struct {
 	FinishReason       *string                                // If this is the final chunk
 	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
+	LocalCacheDebug *schemas.BifrostCacheDebug             // Local cache debug if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
@@ -92,7 +92,7 @@ type ResponsesStreamChunk struct {
 	StreamResponse     *schemas.BifrostResponsesStreamResponse // The actual stream response
 	FinishReason       *string                                 // If this is the final chunk
 	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
+	LocalCacheDebug *schemas.BifrostCacheDebug              // Local cache debug if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
@@ -108,7 +108,7 @@ type ImageStreamChunk struct {
 	ImageIndex         int                                           // Index of the image in the stream
 	ErrorDetails       *schemas.BifrostError                         // Error if any
 	Cost               *float64                                      // Cost in dollars from pricing plugin
-	SemanticCacheDebug *schemas.BifrostCacheDebug                    // Semantic cache debug if available
+	LocalCacheDebug *schemas.BifrostCacheDebug                    // Local cache debug if available
 	TokenUsage         *schemas.ImageUsage                           // Token usage if available
 	RawResponse        *string                                       // Raw response if available
 }

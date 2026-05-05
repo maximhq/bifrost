@@ -42,7 +42,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
-	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/localcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"gorm.io/gorm"
 )
@@ -121,7 +121,7 @@ func IsBuiltinPlugin(name string) bool {
 		name == governance.PluginName ||
 		name == compat.PluginName ||
 		name == maxim.PluginName ||
-		name == semanticcache.PluginName ||
+		name == localcache.PluginName ||
 		name == otel.PluginName
 }
 
@@ -151,6 +151,7 @@ type ConfigData struct {
 	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
 	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
 	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
+	LocalCache        *configstore.LocalCacheConfig         `json:"local_cache,omitempty"`
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 }
@@ -172,6 +173,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		VectorStoreConfig json.RawMessage                       `json:"vector_store,omitempty"`
 		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
 		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
+		LocalCache        *configstore.LocalCacheConfig         `json:"local_cache,omitempty"`
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 	}
@@ -189,6 +191,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Governance = temp.Governance
+	cd.LocalCache = temp.LocalCache
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
 	// Initialize providers map if nil
@@ -262,6 +265,11 @@ type Config struct {
 	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	MCPConfig        *schemas.MCPConfig
 	GovernanceConfig *configstore.GovernanceConfig
+	// LocalCacheConfig is the live, mutable configuration for the local cache
+	// plugin. The plugin holds the same pointer; PUT /api/local-cache/config
+	// rewrites *LocalCacheConfig in place so the plugin sees fresh values
+	// on the next request without needing a Reload.
+	LocalCacheConfig *configstore.LocalCacheConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
 
@@ -529,7 +537,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadGovernanceConfig(ctx, config, &configData)
 	// 8. Auth config
 	loadAuthConfig(ctx, config, &configData)
-	// 9. Plugins
+	// 9. Local cache config (must run before loadPlugins so the boot
+	// migration from config_plugins[semantic_cache] can land before the
+	// plugin layer reads its config)
+	loadLocalCacheConfig(ctx, config, &configData)
+	// 10. Plugins
 	loadPlugins(ctx, config, &configData)
 	// 10. Framework config and pricing manager
 	initFrameworkConfig(ctx, config, &configData)
@@ -765,6 +777,128 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		// Hash matches - keep DB config (preserves UI changes)
 		logger.Debug("client config hash matches, keeping DB config")
 	}
+}
+
+// loadLocalCacheConfig loads and merges the local-cache configuration from
+// config.json with the store using hash-based reconciliation. Mirrors
+// loadClientConfig: file-side wins on hash mismatch, DB-side wins when
+// hashes match (preserving UI changes). Also performs the one-time
+// migration of legacy config_plugins[semantic_cache] rows into the new
+// dedicated config_local_cache table.
+func loadLocalCacheConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	if config.ConfigStore != nil {
+		// One-shot migration: if config_plugins still has a row keyed
+		// "semantic_cache", convert it into a config_local_cache row and
+		// delete the old plugin row. Idempotent — does nothing if the new
+		// table is already populated or the legacy row is absent.
+		if err := migrateLegacySemanticCachePluginRow(ctx, config); err != nil {
+			logger.Warn("failed to migrate legacy semantic_cache plugin row: %v", err)
+		}
+	}
+
+	var dbConfig *configstore.LocalCacheConfig
+	var err error
+	if config.ConfigStore != nil {
+		dbConfig, err = config.ConfigStore.GetLocalCacheConfig(ctx)
+		if err != nil {
+			logger.Warn("failed to get local cache config from store: %v", err)
+		}
+	}
+
+	// Case 1: No DB row — seed from file if present, otherwise leave nil
+	// (the plugin stays disabled until config arrives via the REST API).
+	if dbConfig == nil {
+		if configData.LocalCache == nil {
+			logger.Debug("local cache config not found in store or file; plugin will be disabled")
+			return
+		}
+		logger.Debug("seeding local cache config from file")
+		config.LocalCacheConfig = configData.LocalCache
+		if fileHash, hashErr := configData.LocalCache.GenerateLocalCacheConfigHash(); hashErr != nil {
+			logger.Warn("failed to generate local cache config hash: %v", hashErr)
+		} else {
+			config.LocalCacheConfig.ConfigHash = fileHash
+		}
+		if config.ConfigStore != nil {
+			if err = config.ConfigStore.UpdateLocalCacheConfig(ctx, config.LocalCacheConfig); err != nil {
+				logger.Warn("failed to seed local cache config in store: %v", err)
+			}
+		}
+		return
+	}
+
+	// Case 2: DB row exists.
+	config.LocalCacheConfig = dbConfig
+	if configData.LocalCache == nil {
+		logger.Debug("no local cache config in file, using DB config")
+		return
+	}
+	fileHash, hashErr := configData.LocalCache.GenerateLocalCacheConfigHash()
+	if hashErr != nil {
+		logger.Warn("failed to generate local cache config hash from file: %v", hashErr)
+		return
+	}
+	if dbConfig.ConfigHash != fileHash {
+		logger.Info("local cache config was updated in config.json, syncing. Note: file config takes precedence.")
+		config.LocalCacheConfig = configData.LocalCache
+		config.LocalCacheConfig.ConfigHash = fileHash
+		if config.ConfigStore != nil {
+			if err = config.ConfigStore.UpdateLocalCacheConfig(ctx, config.LocalCacheConfig); err != nil {
+				logger.Warn("failed to update local cache config in store from file: %v", err)
+			}
+		}
+	} else {
+		logger.Debug("local cache config hash matches, keeping DB config")
+	}
+}
+
+// migrateLegacySemanticCachePluginRow performs the one-time migration of a
+// pre-rename config_plugins['semantic_cache'] row into the new dedicated
+// config_local_cache table + EnableLocalCache flag. Idempotent: returns
+// nil immediately when the legacy row is absent or the new table already
+// has data.
+func migrateLegacySemanticCachePluginRow(ctx context.Context, config *Config) error {
+	if config.ConfigStore == nil {
+		return nil
+	}
+	// If the new table already has data, the migration has already run (or
+	// the user has configured the local cache via the new path).
+	existing, err := config.ConfigStore.GetLocalCacheConfig(ctx)
+	if err == nil && existing != nil {
+		return nil
+	}
+	legacy, err := config.ConfigStore.GetPlugin(ctx, "semantic_cache")
+	if err != nil || legacy == nil {
+		return nil
+	}
+	logger.Info("migrating legacy semantic_cache plugin row to config_local_cache table")
+	// The legacy ConfigJSON shape is the old plugin Config. Decode into
+	// the new LocalCacheConfig (which is field-compatible).
+	var migrated configstore.LocalCacheConfig
+	if legacy.ConfigJSON != "" {
+		if err := json.Unmarshal([]byte(legacy.ConfigJSON), &migrated); err != nil {
+			return fmt.Errorf("failed to decode legacy semantic_cache config json: %w", err)
+		}
+	}
+	if hash, hashErr := migrated.GenerateLocalCacheConfigHash(); hashErr == nil {
+		migrated.ConfigHash = hash
+	}
+	if err := config.ConfigStore.UpdateLocalCacheConfig(ctx, &migrated); err != nil {
+		return fmt.Errorf("failed to write migrated local cache config: %w", err)
+	}
+	// Carry the legacy enabled flag onto ClientConfig.EnableLocalCache so
+	// the toggle preserves user intent across the rename.
+	if config.ClientConfig != nil {
+		enabled := legacy.Enabled
+		config.ClientConfig.EnableLocalCache = &enabled
+		if err := config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+			logger.Warn("failed to persist EnableLocalCache flag during migration: %v", err)
+		}
+	}
+	if err := config.ConfigStore.DeletePlugin(ctx, "semantic_cache"); err != nil {
+		logger.Warn("failed to delete legacy semantic_cache plugin row: %v", err)
+	}
+	return nil
 }
 
 // loadProviders loads and merges providers from file with store using hash reconciliation
@@ -2630,11 +2764,6 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 					Path:      plugin.Path,
 					Placement: plugin.Placement,
 					Order:     plugin.Order,
-				}
-				if plugin.Name == semanticcache.PluginName {
-					if err := config.ValidateSemanticCacheConfig(pluginConfig); err != nil {
-						logger.Warn("failed to validate semantic cache config: %v", err)
-					}
 				}
 				config.PluginConfigs[i] = pluginConfig
 			}
@@ -4968,126 +5097,6 @@ func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.Provider
 	return nil
 }
 
-func (c *Config) ValidateSemanticCacheConfig(config *schemas.PluginConfig) error {
-	if config.Name != semanticcache.PluginName {
-		return nil
-	}
-
-	// Check if config.Config exists
-	if config.Config == nil {
-		return fmt.Errorf("semantic_cache plugin config is nil")
-	}
-
-	// Type assert config.Config to map[string]interface{}
-	configMap, ok := config.Config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
-	}
-
-	dimension, hasDimension, err := semanticCacheConfigDimension(configMap)
-	if err != nil {
-		return err
-	}
-
-	// Check if provider key exists and is a string
-	providerVal, exists := configMap["provider"]
-	if !exists {
-		if hasDimension && dimension == 1 {
-			delete(configMap, "keys")
-			delete(configMap, "embedding_model")
-			return nil
-		}
-		return fmt.Errorf("semantic_cache plugin requires 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
-	}
-
-	provider, ok := providerVal.(string)
-	if !ok {
-		return fmt.Errorf("semantic_cache plugin 'provider' field must be a string, got %T", providerVal)
-	}
-	provider = strings.TrimSpace(provider)
-	configMap["provider"] = provider
-
-	if provider == "" {
-		if hasDimension && dimension == 1 {
-			delete(configMap, "provider")
-			delete(configMap, "keys")
-			delete(configMap, "embedding_model")
-			return nil
-		}
-		return fmt.Errorf("semantic_cache plugin requires a non-empty 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
-	}
-	if !hasDimension {
-		return fmt.Errorf("semantic_cache plugin requires 'dimension' for provider-backed semantic mode. For direct-only mode, set dimension: 1 and omit provider")
-	}
-	if dimension <= 1 {
-		return fmt.Errorf("semantic_cache plugin requires 'dimension' > 1 when 'provider' is set. Use dimension: 1 only for direct-only mode without a provider")
-	}
-
-	embeddingModelVal, exists := configMap["embedding_model"]
-	if !exists {
-		return fmt.Errorf("semantic_cache plugin requires 'embedding_model' when 'provider' is set")
-	}
-	embeddingModel, ok := embeddingModelVal.(string)
-	if !ok {
-		return fmt.Errorf("semantic_cache plugin 'embedding_model' field must be a string, got %T", embeddingModelVal)
-	}
-	embeddingModel = strings.TrimSpace(embeddingModel)
-	if embeddingModel == "" {
-		return fmt.Errorf("semantic_cache plugin requires a non-empty 'embedding_model' when 'provider' is set")
-	}
-	configMap["embedding_model"] = embeddingModel
-
-	// Validate that the provider is configured in the global client (keys are inherited automatically).
-	if _, err := c.GetProviderConfigRaw(schemas.ModelProvider(provider)); err != nil {
-		return fmt.Errorf("failed to get provider config for %s: %w", provider, err)
-	}
-
-	return nil
-}
-
-func semanticCacheConfigDimension(configMap map[string]interface{}) (int, bool, error) {
-	dimensionVal, exists := configMap["dimension"]
-	if !exists {
-		return 0, false, nil
-	}
-
-	switch v := dimensionVal.(type) {
-	case int:
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
-		}
-		return v, true, nil
-	case int32:
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
-		}
-		return int(v), true, nil
-	case int64:
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
-		}
-		return int(v), true, nil
-	case float64:
-		if v != math.Trunc(v) {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be an integer, got %v", v)
-		}
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %v", v)
-		}
-		return int(v), true, nil
-	case json.Number:
-		parsed, err := v.Int64()
-		if err != nil {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be an integer, got %q", v)
-		}
-		if parsed < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", parsed)
-		}
-		return int(parsed), true, nil
-	default:
-		return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be numeric, got %T", dimensionVal)
-	}
-}
 
 func DeepCopy[T any](in T) (T, error) {
 	var out T

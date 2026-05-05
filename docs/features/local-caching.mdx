@@ -1,0 +1,715 @@
+---
+title: "Local Caching"
+description: "Cache responses locally with two complementary lookup paths: direct hash matching for exact replays and semantic similarity search for related content. Cuts cost and latency on repeated or near-duplicate requests."
+icon: "database"
+---
+
+## Overview
+
+Local caching serves repeated requests from a local store instead of re-hitting the upstream provider. It runs two complementary lookup paths: a **direct** hash match (xxhash on the request payload) for exact replays, and a **semantic** similarity search (vector embeddings + cosine threshold) for related content. Direct hits are tried first — they're the cheapest path and don't need an embedding provider — so direct-only mode is a fully usable configuration on its own.
+
+**Key Benefits:**
+- **Cost Reduction**: Avoid LLM API calls for repeated and near-duplicate requests
+- **Improved Performance**: Sub-millisecond cache retrieval vs multi-second API calls
+- **Two Modes**: Pure direct (hash-only, no embedding provider) or direct + semantic (adds vector similarity)
+- **Streaming Support**: Full streaming response caching with proper chunk ordering
+
+---
+
+## Core Features
+
+- **Two Lookup Paths**: Exact hash matching first, then semantic similarity search (when configured)
+- **Live Configuration**: All config fields mutate in-place via `PUT /api/local-cache/config` — no plugin reload, no request drop
+- **Dynamic Per-Request Overrides**: TTL, threshold, mode, and no-store via headers/context
+- **Model/Provider Isolation**: Optional cache-key composition by model and/or provider
+
+---
+
+## Vector Store Setup
+
+Local caching requires a configured vector store (used by the direct path too — for indexing entries by their deterministic UUIDv5 storage ID, not for similarity). Bifrost supports the following vector databases:
+
+<CardGroup cols={2}>
+  <Card title="Weaviate" icon="database" href="/integrations/vector-databases/weaviate">
+    Production-ready vector database with gRPC support.
+  </Card>
+  <Card title="Redis / Valkey" icon="database" href="/integrations/vector-databases/redis">
+    High-performance in-memory vector store using RediSearch-compatible APIs.
+  </Card>
+  <Card title="Qdrant" icon="database" href="/integrations/vector-databases/qdrant">
+    Rust-based vector search engine with advanced filtering.
+  </Card>
+  <Card title="Pinecone" icon="database" href="/integrations/vector-databases/pinecone">
+    Managed vector database service with serverless options.
+  </Card>
+</CardGroup>
+
+<Info>
+For detailed setup instructions and configuration options for each vector store, see the [Vector Store documentation](/architecture/framework/vector-store).
+</Info>
+
+**Quick Example (Weaviate):**
+
+<Tabs group="vector-store-setup">
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "context"
+    "github.com/maximhq/bifrost/framework/vectorstore"
+)
+
+// Configure vector store (example: Weaviate)
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeWeaviate,
+    Config: vectorstore.WeaviateConfig{
+        Scheme: "http",
+        Host:   "localhost:8080",
+    },
+}
+
+// Create vector store
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+if err != nil {
+    log.Fatal("Failed to create vector store:", err)
+}
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "host": "localhost:8080",
+      "scheme": "http"
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Local Cache Configuration
+
+The local cache uses a dedicated configuration surface — a top-level `local_cache` block in `config.json` and the matching `GET`/`PUT /api/local-cache/config` REST endpoints. The plugin enable/disable toggle lives on `client.enable_local_cache`. Flipping that flag loads or unloads the plugin without a server restart; field changes mutate the shared `*LocalCacheConfig` pointer in place so the running plugin sees them on the next request.
+
+<Tabs group="cache-config">
+
+<Tab title="Web UI">
+
+![Local Cache Plugin Configuration](../media/ui-local-cache-config.png)
+
+**Prerequisites**: A vector store must be configured and enabled in `config.json` before the toggle becomes available. An embedding-capable provider is required only for **Direct + Semantic** mode — direct-only works without one.
+
+1. **Navigate to the Config page** in the Bifrost UI and find the **Caching** section.
+
+2. **Toggle Enable Local Cache** at the top to load the plugin. This flips `client.enable_local_cache` and triggers a transparent plugin reload — no server restart required.
+
+3. **Pick a Cache Mode**:
+   - **Direct only** — pure hash matching. No embedding provider needed. Best for stable prompts and the cheapest path.
+   - **Direct + Semantic** — adds vector similarity search on top. Requires an embedding-capable provider; direct hits are still served first, semantic search only runs on direct misses.
+
+4. **Fill in the fields** that the chosen mode shows:
+
+**Embedding Provider & Model** (Direct + Semantic only):
+- **Configured Providers**: Dropdown of providers already set up in Bifrost. The selected provider's API keys are inherited automatically.
+- **Embedding Model**: The embedding model to use (e.g. `text-embedding-3-small`).
+- **Dimension**: Vector size produced by the model — must match the model exactly. Common values: `1536` for OpenAI `text-embedding-3-small`, `3072` for `text-embedding-3-large`, `768` for many Cohere/Voyage models.
+
+**Cache Settings**:
+- **TTL (seconds)**: How long cached responses are kept (default: 300 s).
+- **Similarity Threshold** (semantic mode only): Cosine similarity cutoff for a cache hit (0–1, default: 0.8).
+
+**Storage & Cache Key**:
+- **Vector Store Namespace**: Bucket/index name within the vector store. Default `BifrostLocalCachePlugin`.
+- **Default Cache Key**: Fallback partition key used when a request doesn't set `x-bf-cache-key`. Leave blank to disable caching for header-less requests.
+
+**Conversation Settings**:
+- **Conversation History Threshold**: Skip caching when the conversation has more than this many messages (default: 3).
+- **Exclude System Prompt** (toggle): Exclude system messages from cache-key generation.
+
+**Cache Key Composition**:
+- **Cache by Model**: Include the model name in the cache key (default: on).
+- **Cache by Provider**: Include the provider name in the cache key (default: on).
+
+5. Click **Save**. The change persists to `config_local_cache` and the running plugin's pointer is mutated in place.
+
+> **Heads up**: when you change the **provider**, **model**, or **dimension**, make sure the new dimension matches what the model produces — otherwise writes to the existing namespace will fail and reads will silently miss. Old data is left in the previous namespace by design (no automatic flush on dimension change).
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "client": {
+    "enable_local_cache": true
+  },
+  "vector_store": { "...": "..." },
+  "local_cache": {
+    "provider": "openai",
+    "embedding_model": "text-embedding-3-small",
+    "dimension": 1536,
+
+    "cleanup_on_shutdown": true,
+    "ttl": "5m",
+    "threshold": 0.8,
+
+    "conversation_history_threshold": 3,
+    "exclude_system_prompt": false,
+
+    "cache_by_model": true,
+    "cache_by_provider": true
+  }
+}
+```
+
+> **Note**: Provider API keys are inherited automatically from the global provider configuration. You do not need to (and cannot) specify keys inside the local-cache config.
+
+**TTL Format Options:**
+- Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
+- Numeric seconds: `300` (5 minutes), `3600` (1 hour)
+
+</Tab>
+
+<Tab title="REST API">
+
+```bash
+# Read the live config
+curl localhost:8080/api/local-cache/config
+
+# Update the live config — mutates the running plugin in place, no reload
+curl -X PUT localhost:8080/api/local-cache/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "provider": "openai",
+    "embedding_model": "text-embedding-3-small",
+    "dimension": 1536,
+    "ttl": "5m",
+    "threshold": 0.8
+  }'
+
+# Toggle the plugin on/off — flips client.enable_local_cache, triggers
+# transparent ReloadPlugin / RemovePlugin
+curl -X PUT localhost:8080/api/config \
+  -H 'Content-Type: application/json' \
+  -d '{ "client_config": { "enable_local_cache": true } }'
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "github.com/maximhq/bifrost/framework/configstore"
+    "github.com/maximhq/bifrost/plugins/localcache"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// The plugin and the framework share a *LocalCacheConfig pointer so PUT
+// /api/local-cache/config can mutate live behavior at runtime.
+cacheConfig := &configstore.LocalCacheConfig{
+    // Embedding model configuration (Direct + Semantic mode)
+    Provider:       schemas.OpenAI,
+    EmbeddingModel: "text-embedding-3-small",
+    Dimension:      1536,
+
+    // Cache behavior
+    TTL:               5 * time.Minute, // Time to live for cached responses (default: 5 minutes)
+    Threshold:         0.8,             // Cosine similarity cutoff (default: 0.8)
+    CleanUpOnShutdown: true,            // Drop entries on shutdown (default: false)
+
+    // Conversation behavior
+    ConversationHistoryThreshold: 5,                 // Skip caching if conversation has > N messages (default: 3)
+    ExcludeSystemPrompt:          bifrost.Ptr(false), // Exclude system messages from cache key (default: false)
+
+    // Advanced options
+    CacheByModel:    bifrost.Ptr(true), // Include model in cache key (default: true)
+    CacheByProvider: bifrost.Ptr(true), // Include provider in cache key (default: true)
+}
+
+plugin, err := localcache.Init(context.Background(), cacheConfig, logger, store)
+if err != nil {
+    log.Fatal("Failed to create local cache plugin:", err)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Direct-Only Mode (Embedding-Free)
+
+Direct-only mode provides exact-match caching without an embedding provider. Each request is hashed deterministically based on its normalized input, parameters, and stream flag. Identical requests are cache hits; different wording is a cache miss.
+
+Direct entries are stored and retrieved using a deterministic UUIDv5 cache ID, so repeated lookups are fast and consistent across retries, streaming responses, and restarts.
+
+**When to use direct-only mode:**
+- You only need exact-match deduplication (no fuzzy matching)
+- You cannot or do not want to call an external embedding API
+- You want the lowest possible latency with zero embedding overhead
+- Cost-sensitive environments where embedding API calls add up
+
+### Setup
+
+To run direct-only, set `dimension: 1` and omit `provider` and `embedding_model`. The plugin disables the semantic search path entirely and goes through the deterministic direct hash path.
+
+> **Important**: If you specify `dimension: 1` and also provide a `provider`, Bifrost treats the config as provider-backed semantic mode, not direct-only. To use direct-only, omit the `provider` field entirely.
+
+<Warning>
+A vector store is still required as the storage backend, even in direct-only mode (entries are indexed by their deterministic ID). See [Recommended Vector Store](#recommended-vector-store) below.
+</Warning>
+
+<Tabs group="direct-hash-setup">
+
+<Tab title="config.json">
+
+```json
+{
+  "client": {
+    "enable_local_cache": true
+  },
+  "vector_store": { "...": "..." },
+  "local_cache": {
+    "dimension": 1,
+    "ttl": "5m",
+    "cleanup_on_shutdown": true,
+    "cache_by_model": true,
+    "cache_by_provider": true
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  client:
+    enableLocalCache: true
+  localCache:
+    dimension: 1
+    ttl: "5m"
+    cleanup_on_shutdown: true
+    cache_by_model: true
+    cache_by_provider: true
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "github.com/maximhq/bifrost/framework/configstore"
+    "github.com/maximhq/bifrost/plugins/localcache"
+)
+
+cacheConfig := &configstore.LocalCacheConfig{
+    // No Provider or EmbeddingModel — direct-only mode
+    Dimension: 1, // Placeholder so stores that require vectors stay happy. Change before switching to direct + semantic mode to avoid mixed-dimension issues.
+
+    TTL:               5 * time.Minute,
+    CleanUpOnShutdown: true,
+    CacheByModel:      bifrost.Ptr(true),
+    CacheByProvider:   bifrost.Ptr(true),
+}
+
+plugin, err := localcache.Init(ctx, cacheConfig, logger, store)
+```
+
+</Tab>
+
+</Tabs>
+
+When initialized this way, all requests automatically use direct hash matching regardless of the `x-bf-cache-type` header. No embeddings are generated, and no embedding provider credentials are needed.
+
+### Recommended Vector Store
+
+**Redis/Valkey-compatible stores** are recommended for direct hash mode. They do not require vectors for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups.
+
+<Warning>
+Qdrant and Pinecone are not compatible with direct hash mode when no embedding provider is configured. These stores require a vector for every entry; the plugin's zero-vector placeholder codepath requires an initialised embedding client, so storage will fail if no provider is set. Weaviate requires a vector per entry as well and is therefore also not recommended for direct-only mode.
+</Warning>
+
+<Tabs group="direct-hash-redis">
+
+<Tab title="Helm">
+
+```yaml
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    external:
+      enabled: true
+      host: "redis-or-valkey.example.com"
+      port: 6379
+      password: "your-redis-password"
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "localhost:6379"
+    }
+  }
+}
+```
+
+<Info>
+For Valkey deployments, keep `vector_store.type` as `"redis"` and point `config.addr` to your Valkey endpoint.
+</Info>
+
+</Tab>
+
+</Tabs>
+
+### Per-Request Cache Type Override
+
+When the plugin is initialized **without** an embedding provider (direct-only mode), all requests use direct hash matching automatically. The `x-bf-cache-type` header has no effect.
+
+When the plugin is initialized **with** an embedding provider (dual-layer mode), you can force direct-only matching on specific requests using the `x-bf-cache-type: direct` header. See [Cache Type Control](#cache-type-control) for details.
+
+---
+
+## Cache Triggering
+
+<Warning>
+**Cache Key is mandatory**: The local cache only activates when a cache key is provided. Without a cache key, requests bypass caching entirely.
+</Warning>
+
+<Tabs group="cache-triggering">
+
+<Tab title="Go SDK">
+Must set cache key in request context:
+
+```go
+// This request WILL be cached
+ctx = context.WithValue(ctx, localcache.CacheKey, "session-123")
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
+
+// This request will NOT be cached (no context value)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
+```
+
+</Tab>
+
+<Tab title="HTTP API">
+Must set cache key in request header `x-bf-cache-key`:
+
+```bash
+# This request WILL be cached
+curl -H "x-bf-cache-key: session-123" ...
+
+# This request will NOT be cached (no header)
+curl ...
+```
+
+</Tab>
+
+</Tabs>
+
+## Per-Request Overrides
+
+Override default TTL and similarity threshold per request:
+
+<Tabs group="per-request-overrides">
+
+<Tab title="Go SDK">
+
+You can set TTL and threshold in the request context using the local cache context keys:
+
+```go
+// Go SDK: Custom TTL and threshold
+ctx = context.WithValue(ctx, localcache.CacheKey, "session-123")
+ctx = context.WithValue(ctx, localcache.CacheTTLKey, 30*time.Second)
+ctx = context.WithValue(ctx, localcache.CacheThresholdKey, 0.9)
+```
+
+</Tab>
+
+<Tab title="HTTP API">
+
+You can set TTL and threshold in the request headers `x-bf-cache-ttl` and `x-bf-cache-threshold`:
+
+```bash
+# HTTP: Custom TTL and threshold
+curl -H "x-bf-cache-key: session-123" \
+     -H "x-bf-cache-ttl: 30s" \
+     -H "x-bf-cache-threshold: 0.9" ...
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Advanced Cache Control
+
+### Cache Type Control
+
+Control which caching mechanism to use per request:
+
+<Tabs group="cache-type-control">
+
+<Tab title="Go SDK">
+
+```go
+// Use only direct hash matching (fastest)
+ctx = context.WithValue(ctx, localcache.CacheKey, "session-123")
+ctx = context.WithValue(ctx, localcache.CacheTypeKey, localcache.CacheTypeDirect)
+
+// Use only semantic similarity search
+ctx = context.WithValue(ctx, localcache.CacheKey, "session-123")  
+ctx = context.WithValue(ctx, localcache.CacheTypeKey, localcache.CacheTypeSemantic)
+
+// Default behavior: Direct + semantic fallback (if not specified)
+ctx = context.WithValue(ctx, localcache.CacheKey, "session-123")
+```
+
+</Tab>
+
+<Tab title="HTTP API">
+
+```bash
+# Direct hash matching only
+curl -H "x-bf-cache-key: session-123" \
+     -H "x-bf-cache-type: direct" ...
+
+# Semantic similarity search only  
+curl -H "x-bf-cache-key: session-123" \
+     -H "x-bf-cache-type: semantic" ...
+
+# Default: Both (if header not specified)
+curl -H "x-bf-cache-key: session-123" ...
+```
+
+</Tab>
+
+</Tabs>
+
+### No-Store Control
+
+Disable response caching while still allowing cache reads:
+
+<Tabs group="no-store-control">
+
+<Tab title="Go SDK">
+
+```go
+// Read from cache but don't store the response
+ctx = context.WithValue(ctx, localcache.CacheKey, "session-123")
+ctx = context.WithValue(ctx, localcache.CacheNoStoreKey, true)
+```
+
+</Tab>
+
+<Tab title="HTTP API">
+
+```bash
+# Read from cache but don't store response
+curl -H "x-bf-cache-key: session-123" \
+     -H "x-bf-cache-no-store: true" ...
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Conversation Configuration
+
+### History Threshold Logic
+
+The `ConversationHistoryThreshold` setting skips caching for conversations with many messages to prevent false positives:
+
+**Why this matters:**
+- **Semantic False Positives**: Long conversation histories have high probability of semantic matches with unrelated conversations due to topic overlap
+- **Direct Cache Inefficiency**: Long conversations rarely have exact hash matches, making direct caching less effective
+- **Performance**: Reduces vector store load by filtering out low-value caching scenarios
+
+```json
+{
+  "conversation_history_threshold": 3  // Skip caching if > 3 messages in conversation
+}
+```
+
+**Recommended Values:**
+- **1-2**: Very conservative (may miss valuable caching opportunities)
+- **3-5**: Balanced approach (default: 3)
+- **10+**: Cache longer conversations (higher false positive risk)  
+
+### System Prompt Handling
+
+Control whether system messages are included in cache key generation:
+
+```json  
+{
+  "exclude_system_prompt": false  // Include system messages in cache key (default)
+}
+```
+
+**When to exclude (`true`):**
+- System prompts change frequently but content is similar
+- Multiple system prompt variations for same use case
+- Focus caching on user content similarity
+
+**When to include (`false`):**
+- System prompts significantly change response behavior  
+- Each system prompt requires distinct cached responses
+- Strict response consistency requirements
+
+---
+
+## Cache Management
+
+### Cache Metadata Location
+
+When responses are served from the local cache, 3 key variables are automatically added to the response:
+
+**Location**: `response.ExtraFields.CacheDebug` (as a JSON object)
+
+**Fields**:
+- `CacheHit` (boolean): `true` if the response was served from the cache, `false` when lookup fails.
+- `HitType` (string): `"semantic"` for similarity match, `"direct"` for hash match
+- `CacheID` (string): Unique cache entry ID for management operations (present only for cache hits)
+
+
+**Semantic mode only**:
+- `ProviderUsed` (string): Provider used for the calculating semantic match embedding. (present for both cache hits and misses)
+- `ModelUsed` (string): Model used for the calculating semantic match embedding. (present for both cache hits and misses)
+- `InputTokens` (number): Number of tokens extracted from the request for the semantic match embedding calculation. (present for both cache hits and misses)
+- `Threshold` (number): Similarity threshold used for the match. (present only for cache hits)
+- `Similarity` (number): Similarity score for the match. (present only for cache hits)
+
+Example HTTP Response:
+
+```json
+{
+  "extra_fields": {
+    "cache_debug": {
+      "cache_hit": true,
+      "hit_type": "direct",
+      "cache_id": "550e8500-e29b-41d4-a725-446655440001",
+    }
+  }
+}
+
+{
+  "extra_fields": {
+    "cache_debug": {
+      "cache_hit": true,
+      "hit_type": "semantic",
+      "cache_id": "550e8500-e29b-41d4-a725-446655440001",
+      "threshold": 0.8,
+      "similarity": 0.95,
+      "provider_used": "openai",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 100
+    }
+  }
+}
+
+{
+  "extra_fields": {
+    "cache_debug": {
+      "cache_hit": false,
+      "cache_id": "550e8500-e29b-41d4-a725-446655440001",
+      "provider_used": "openai",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 20
+    }
+  }
+}
+```
+
+`cache_debug` is populated on both hits and misses. `cache_id` is the storage ID of the entry — use it to invalidate the entry later. The embedding-related fields (`provider_used`, `model_used`, `input_tokens`) are only present when semantic search actually ran.
+
+### Clear Specific Cache Entry
+
+Use the `cache_id` from `cache_debug` to clear a specific entry:
+
+<Tabs group="cache-clear">
+
+<Tab title="Go SDK">
+
+```go
+// Clear specific entry by cache ID (read from response.ExtraFields.CacheDebug.CacheID)
+err := plugin.ClearCacheForCacheID("550e8500-e29b-41d4-a725-446655440001")
+
+// Clear all entries for a cache key
+err := plugin.ClearCacheForKey("support-session-456")
+```
+
+</Tab>
+
+<Tab title="HTTP API">
+
+```bash
+# Clear specific cached entry by cache ID
+curl -X DELETE http://localhost:8080/api/cache/clear/550e8500-e29b-41d4-a725-446655440001
+
+# Clear all entries for a cache key
+curl -X DELETE http://localhost:8080/api/cache/clear-by-key/support-session-456
+```
+
+</Tab>
+
+</Tabs>
+
+### Cache Lifecycle & Cleanup
+
+The local cache automatically handles cleanup to prevent storage bloat:
+
+**Automatic Cleanup:**
+- **TTL Expiration**: Entries are automatically removed when TTL expires
+- **Shutdown Cleanup**: All cache entries are cleared from the vector store namespace and the namespace itself when Bifrost client shuts down
+- **Namespace Isolation**: Each Bifrost instance uses isolated vector store namespaces to prevent conflicts
+
+**Manual Cleanup Options:**
+- Clear specific entries by cache ID (see examples above)
+- Clear all entries for a cache key
+- Restart Bifrost to clear all cache data
+
+<Warning>
+The local cache namespace and all its cache entries are deleted when Bifrost client shuts down **only if `cleanup_on_shutdown` is set to `true`**. By default (`cleanup_on_shutdown: false`), cache data persists between restarts. DO NOT use the plugin's namespace for external purposes.
+</Warning>
+
+<Warning>
+**Dimension / Provider / Model Changes**: A vector store namespace can only hold vectors of **one** dimension. If you change `dimension` (or switch to an embedding `provider`/`model` that produces a different vector size), the existing namespace is **not** recreated automatically — `CreateNamespace` is a no-op when the class/collection already exists. Subsequent writes will fail (vector-size mismatch) and reads will silently miss. Before saving the change, either:
+
+- point `vector_store_namespace` at a fresh name, or
+- drop the existing class/index in your vector store, or
+- set `cleanup_on_shutdown: true` and restart so the old namespace is removed first.
+</Warning>
+
+---
+
+<Info>
+**Vector Store Requirement**: Local caching requires a configured vector store. Bifrost supports Weaviate, Redis/Valkey-compatible endpoints, Qdrant, and Pinecone. See the [Vector Store documentation](/architecture/framework/vector-store) for setup details.
+</Info>

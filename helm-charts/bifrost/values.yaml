@@ -199,6 +199,7 @@ bifrost:
     allowedOrigins:
       - "*"
     enableLogging: true
+    enableLocalCache: false
     disableContentLogging: false
     disableDbPingsInHealth: false
     logRetentionDays: 365
@@ -404,25 +405,6 @@ bifrost:
       secretRef:
         name: ""
         key: "api-key"
-
-    semanticCache:
-      enabled: false
-      version: 1
-      config:
-        # Semantic caching mode (dimension > 1): requires provider, keys, and embedding_model
-        # Direct caching mode (dimension: 1): hash-based exact matching, no embedding provider needed
-        provider: "openai"
-        keys: []
-        embedding_model: "text-embedding-3-small"
-        dimension: 1536
-        threshold: 0.8
-        ttl: "5m"
-        conversation_history_threshold: 3
-        cache_by_model: true
-        cache_by_provider: true
-        exclude_system_prompt: false
-        cleanup_on_shutdown: false
-        vector_store_namespace: ""
 
     otel:
       enabled: false
@@ -803,9 +785,37 @@ postgresql:
   metrics:
     enabled: false
 
+# Local cache plugin configuration. Loaded only when bifrost.client.enableLocalCache is true.
+# Pure config changes mutate the live plugin in place via PUT /api/local-cache/config —
+# no plugin reload, no restart. Provider-backed semantic mode requires `provider`, `keys`,
+# and `embedding_model`; direct-only mode is `dimension: 1` with no provider.
+localCache:
+  version: 1
+  # Embedding provider keys for the local cache (used in semantic mode only).
+  # Format: ["env.OPENAI_API_KEY"] or literal values.
+  keys: []
+  # Use existing Kubernetes secret for the embedding API key (takes precedence over keys).
+  secretRef:
+    name: ""
+    key: "api-key"
+  config:
+    # Semantic mode (dimension > 1): requires provider + keys + embedding_model.
+    # Direct-only mode (dimension: 1): no embedding provider needed.
+    provider: "openai"
+    embedding_model: "text-embedding-3-small"
+    dimension: 1536
+    threshold: 0.8
+    ttl: "5m"
+    conversation_history_threshold: 3
+    cache_by_model: true
+    cache_by_provider: true
+    exclude_system_prompt: false
+    cleanup_on_shutdown: false
+    vector_store_namespace: ""
+
 # Vector store configuration
 vectorStore:
-  # Enable vector store for semantic caching
+  # Enable vector store for the local cache plugin
   enabled: false
   type: none # Options: none, weaviate, redis, qdrant
 

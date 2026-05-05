@@ -26,7 +26,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/prompts"
-	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/localcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
@@ -59,6 +59,8 @@ type ServerCallbacks interface {
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
+	// Local cache related callbacks
+	ReloadLocalCacheConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
@@ -717,6 +719,34 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	return nil
 }
 
+// ReloadLocalCacheConfigFromConfigStore re-reads the local-cache config from
+// the database and mutates *s.Config.LocalCacheConfig in place. The local
+// cache plugin holds the same pointer, so the next request observes the
+// new values without needing a plugin Reload. An absent row is treated as
+// "config cleared" and the existing pointer is left untouched (toggling
+// the plugin off via EnableLocalCache is the right path for that, not
+// zeroing the config struct).
+func (s *BifrostHTTPServer) ReloadLocalCacheConfigFromConfigStore(ctx context.Context) error {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return fmt.Errorf("config store not found")
+	}
+	dbConfig, err := s.Config.ConfigStore.GetLocalCacheConfig(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to get local cache config: %v", err)
+	}
+	if dbConfig == nil {
+		return nil
+	}
+	if s.Config.LocalCacheConfig == nil {
+		s.Config.LocalCacheConfig = dbConfig
+		return nil
+	}
+	// In-place mutation through the shared pointer — the running plugin
+	// observes the new values on its next read with no restart.
+	*s.Config.LocalCacheConfig = *dbConfig
+	return nil
+}
+
 // ReloadClientConfigFromConfigStore reloads the client config from config store
 func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Context) error {
 	if s.Config == nil || s.Config.ConfigStore == nil {
@@ -1007,8 +1037,8 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 		return s.updatePluginErrorStatus(name, "loading", err)
 	}
 	// Wire the embedding executor on the new instance before syncing.
-	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
-		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	if localCachePlugin, ok := plugin.(*localcache.Plugin); ok {
+		localCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
@@ -1103,9 +1133,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		}
 	}
 	var cacheHandler *handlers.CacheHandler
-	semanticCachePlugin, _ := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
-	if semanticCachePlugin != nil {
-		cacheHandler = handlers.NewCacheHandler(semanticCachePlugin)
+	localCachePlugin, _ := lib.FindPluginAs[*localcache.Plugin](s.Config, localcache.PluginName)
+	if localCachePlugin != nil {
+		cacheHandler = handlers.NewCacheHandler(localCachePlugin)
 	}
 	var promptsReloader handlers.PromptCacheReloader
 	if promptsPlugin, err := lib.FindPluginAs[handlers.PromptCacheReloader](s.Config, s.getPromptsPluginName()); err == nil && promptsPlugin != nil {
@@ -1126,6 +1156,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
+	localCacheHandler := handlers.NewLocalCacheHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
 	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, promptsReloader)
@@ -1134,6 +1165,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
+	localCacheHandler.RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
 	// OAuth metadata + per-user OAuth endpoints (no auth middleware — must be publicly accessible)
 	oauthMetadataHandler := handlers.NewOAuthMetadataHandler(s.Config)
@@ -1434,10 +1466,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.APIMiddleware())
 		}
 	}
-	// Add semantic cache plugin embedding request executor if it exists
-	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
-	if err == nil && semanticCachePlugin != nil {
-		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	// Add local cache plugin embedding request executor if it exists
+	localCachePlugin, err := lib.FindPluginAs[*localcache.Plugin](s.Config, localcache.PluginName)
+	if err == nil && localCachePlugin != nil {
+		localCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
 	// Register routes
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)

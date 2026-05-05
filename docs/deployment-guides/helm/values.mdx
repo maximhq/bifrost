@@ -611,7 +611,7 @@ bifrost:
       envVar: "OPENAI_API_KEY"
 
   plugins:
-    semanticCache:
+    # local_cache moved out of plugins; see localCache top-level
       enabled: true
       config:
         provider: "openai"

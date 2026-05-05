@@ -64,6 +64,11 @@
           "type": "boolean",
           "description": "Enable request/response logging"
         },
+        "enable_local_cache": {
+          "type": "boolean",
+          "description": "Enable the local cache plugin (direct hash matching + semantic similarity search). Requires the top-level local_cache block and a configured vector store.",
+          "default": false
+        },
         "disable_content_logging": {
           "type": "boolean",
           "description": "Disable logging of sensitive content (inputs, outputs, embeddings, etc.)"
@@ -1168,6 +1173,128 @@
       },
       "additionalProperties": false
     },
+    "local_cache": {
+      "type": "object",
+      "description": "Local cache plugin configuration. Loaded only when client.enable_local_cache is true. Mutating this block at runtime via PUT /api/local-cache/config takes effect on the next request — the running plugin reads the same struct via a shared pointer.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Embedding provider for semantic similarity search. Required when dimension > 1; omit it (and set dimension: 1) for direct-only mode.",
+          "enum": [
+            "",
+            "openai",
+            "anthropic",
+            "gemini",
+            "bedrock",
+            "azure",
+            "cohere",
+            "mistral",
+            "groq",
+            "ollama",
+            "openrouter",
+            "vertex",
+            "cerebras",
+            "vllm",
+            "parasail",
+            "perplexity",
+            "replicate",
+            "sgl",
+            "huggingface"
+          ]
+        },
+        "embedding_model": {
+          "type": "string",
+          "description": "Embedding model name. Required when provider is set; not allowed in direct-only mode."
+        },
+        "cleanup_on_shutdown": {
+          "type": "boolean",
+          "description": "Delete every entry tagged from_bifrost_local_cache_plugin and drop the namespace on plugin Cleanup. Default false leaves entries in place for the next process."
+        },
+        "ttl": {
+          "description": "Time-to-live for cached responses. Accepts a duration string ('5m', '1h') or seconds as an integer. Default 5 minutes.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "threshold": {
+          "type": "number",
+          "description": "Cosine similarity threshold for semantic matches (0–1). Default 0.8.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "vector_store_namespace": {
+          "type": "string",
+          "description": "Namespace within the vector store to scope entries. Default BifrostLocalCachePlugin."
+        },
+        "dimension": {
+          "type": "integer",
+          "description": "Embedding dimension. Use 1 for direct-only mode (no semantic search). Must be > 1 when provider is set.",
+          "minimum": 1
+        },
+        "default_cache_key": {
+          "type": "string",
+          "description": "Cache key used when no per-request key is supplied. Caching is disabled when both this and the per-request key are empty."
+        },
+        "conversation_history_threshold": {
+          "type": "integer",
+          "description": "Skip caching for requests whose conversation history exceeds this many messages. Default 3.",
+          "minimum": 0
+        },
+        "cache_by_model": {
+          "type": "boolean",
+          "description": "Include the model in the cache key. Default true."
+        },
+        "cache_by_provider": {
+          "type": "boolean",
+          "description": "Include the provider in the cache key. Default true."
+        },
+        "exclude_system_prompt": {
+          "type": "boolean",
+          "description": "Exclude the system prompt from the cache key. Default false."
+        }
+      },
+      "required": ["dimension"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["provider"]
+          },
+          "then": {
+            "required": ["provider", "embedding_model"],
+            "properties": {
+              "dimension": {
+                "type": "integer",
+                "minimum": 2
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": ["embedding_model"]
+            },
+            "properties": {
+              "dimension": {
+                "const": 1
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
     "plugins": {
       "type": "array",
       "description": "Plugins configuration",
@@ -1181,7 +1308,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, otel, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -1389,142 +1516,6 @@
                     }
                   },
                   "required": ["api_key"],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "properties": {
-                "name": {
-                  "const": "semantic_cache"
-                }
-              }
-            },
-            "then": {
-              "required": ["config"],
-              "properties": {
-                "config": {
-                  "type": "object",
-                  "description": "Configuration for the semantic cache plugin",
-                  "properties": {
-                    "provider": {
-                      "type": "string",
-                      "minLength": 1,
-                      "description": "Provider to use for generating embeddings. Required for semantic search; omit it for direct hash mode with dimension: 1.",
-                      "enum": [
-                        "openai",
-                        "anthropic",
-                        "gemini",
-                        "bedrock",
-                        "azure",
-                        "cohere",
-                        "mistral",
-                        "groq",
-                        "ollama",
-                        "openrouter",
-                        "vertex",
-                        "cerebras",
-                        "vllm",
-                        "parasail",
-                        "perplexity",
-                        "replicate",
-                        "sgl",
-                        "huggingface"
-                      ]
-                    },
-                    "embedding_model": {
-                      "type": "string",
-                      "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
-                    },
-                    "cleanup_on_shutdown": {
-                      "type": "boolean",
-                      "description": "Clean up cache on shutdown (default: false)"
-                    },
-                    "ttl": {
-                      "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
-                      "oneOf": [
-                        {
-                          "type": "string",
-                          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$"
-                        },
-                        {
-                          "type": "integer",
-                          "minimum": 0
-                        }
-                      ]
-                    },
-                    "threshold": {
-                      "type": "number",
-                      "description": "Cosine similarity threshold for semantic matching (default: 0.8)",
-                      "minimum": 0,
-                      "maximum": 1
-                    },
-                    "vector_store_namespace": {
-                      "type": "string",
-                      "description": "Namespace for vector store (optional)"
-                    },
-                    "dimension": {
-                      "type": "integer",
-                      "description": "Dimension for vector store embeddings. Use 1 for direct (hash-based) caching without an embedding provider.",
-                      "minimum": 1
-                    },
-                    "default_cache_key": {
-                      "type": "string",
-                      "description": "Default cache key used when no per-request key is provided. When set, all requests without an explicit x-bf-cache-key header will use this value and be cached automatically."
-                    },
-                    "conversation_history_threshold": {
-                      "type": "integer",
-                      "description": "Skip caching for requests with more than this number of messages in conversation history (default: 3)",
-                      "minimum": 0
-                    },
-                    "cache_by_model": {
-                      "type": "boolean",
-                      "description": "Include model in cache key (default: true)"
-                    },
-                    "cache_by_provider": {
-                      "type": "boolean",
-                      "description": "Include provider in cache key (default: true)"
-                    },
-                    "exclude_system_prompt": {
-                      "type": "boolean",
-                      "description": "Exclude system prompt in cache key (default: false)"
-                    }
-                  },
-                  "required": ["dimension"],
-                  "allOf": [
-                    {
-                      "if": {
-                        "properties": {
-                          "provider": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": ["provider"]
-                      },
-                      "then": {
-                        "required": ["provider", "embedding_model"],
-                        "properties": {
-                          "dimension": {
-                            "type": "integer",
-                            "minimum": 2
-                          }
-                        }
-                      },
-                      "else": {
-                        "not": {
-                          "required": ["embedding_model"]
-                        },
-                        "properties": {
-                          "dimension": {
-                            "const": 1
-                          }
-                        }
-                      }
-                    }
-                  ],
                   "additionalProperties": false
                 }
               }

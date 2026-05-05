@@ -3,7 +3,7 @@ package handlers
 import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/localcache"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -21,13 +21,13 @@ type CacheHandler struct {
 }
 
 func NewCacheHandler(plugin schemas.LLMPlugin) *CacheHandler {
-	semanticCachePlugin, ok := plugin.(*semanticcache.Plugin)
+	localCachePlugin, ok := plugin.(*localcache.Plugin)
 	if !ok {
-		logger.Fatal("Cache handler requires a semantic cache plugin")
+		logger.Fatal("Cache handler requires a local cache plugin")
 	}
 
 	return &CacheHandler{
-		plugin: semanticCachePlugin,
+		plugin: localCachePlugin,
 	}
 }
 

@@ -245,21 +245,22 @@ make test-core PROVIDER=openai TESTCASE=TestName/SubTest
 
 ```mdx
 ---
-title: "Semantic Caching"
+title: "Local Caching"
 description: "Intelligent response caching based on semantic similarity"
 icon: "database"
 ---
 
 ## Overview
 
-Semantic caching intelligently caches responses...
+Local caching covers both direct hash matching and semantic similarity search...
 
 ## Configuration
 
 ```yaml
-plugins:
-  semantic_cache:
-    enabled: true
+client:
+  enable_local_cache: true
+local_cache:
+  dimension: 1
 ```
 
 <Note>

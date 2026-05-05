@@ -70,7 +70,7 @@ fi
 
 # Vector store
 echo ""
-echo "3. Do you need vector store for semantic caching?"
+echo "3. Do you need a vector store for the local cache (direct + semantic)?"
 read -p "Enable vector store? (y/n): " vector_choice
 
 if [[ "$vector_choice" =~ ^[Yy]$ ]]; then
@@ -356,18 +356,27 @@ cat >> "$OUTPUT_FILE" <<EOF
 EOF
 
 if [[ "$VECTOR_ENABLED" == "true" ]]; then
+    # Append client toggle and top-level local_cache block. The local cache
+    # is no longer a config_plugins entry — it's a sibling of bifrost +
+    # vectorStore at the root, with its load gated by client.enableLocalCache.
     cat >> "$OUTPUT_FILE" <<EOF
-    
-    semanticCache:
-      enabled: true
-      config:
-        provider: "openai"
-        keys:
-          - "sk-..."  # Add your OpenAI key for embeddings
-        embeddingModel: "text-embedding-3-small"
-        dimension: 1536
-        threshold: 0.8
-        ttl: "5m"
+
+# Patch the client toggle for the local cache plugin (idempotent shim — if
+# you already set enableLocalCache above, remove this snippet by hand).
+bifrost:
+  client:
+    enableLocalCache: true
+
+# Local cache plugin configuration
+localCache:
+  keys:
+    - "sk-..."  # Add your OpenAI key for embeddings
+  config:
+    provider: "openai"
+    embedding_model: "text-embedding-3-small"
+    dimension: 1536
+    threshold: 0.8
+    ttl: "5m"
 EOF
 fi
 

@@ -1,6 +1,6 @@
 ---
 title: "Plugins"
-description: "Configure Bifrost plugins in Helm - telemetry, logging, semantic cache, OpenTelemetry, Datadog, governance, and custom plugins"
+description: "Configure Bifrost plugins in Helm - telemetry, logging, OpenTelemetry, Datadog, governance, and custom plugins"
 icon: "puzzle-piece"
 ---
 
@@ -9,13 +9,13 @@ Plugins are configured under `bifrost.plugins`. Each plugin is independently ena
 <Note>
 **Telemetry, logging, and governance are auto-loaded built-ins** - they are always active and do not need to be explicitly enabled. Their configuration lives in `bifrost.client.*` and `bifrost.governance.*`, not in the `plugins` block.
 
-The `plugins` block controls the opt-in plugins: `semanticCache`, `otel`, `datadog`, `maxim`, and custom plugins.
+The `plugins` block controls the opt-in plugins: `localCache`, `otel`, `datadog`, `maxim`, and custom plugins.
 </Note>
 
 ```yaml
 bifrost:
   plugins:
-    semanticCache:
+    # local_cache moved out of plugins; see localCache top-level
       enabled: false
     otel:
       enabled: false
@@ -32,7 +32,7 @@ helm install bifrost bifrost/bifrost \
 # Or upgrade to enable a plugin without touching other values
 helm upgrade bifrost bifrost/bifrost \
   --reuse-values \
-  --set bifrost.plugins.semanticCache.enabled=true
+  --set bifrost.client.enableLocalCache=true
 ```
 
 ---
@@ -155,9 +155,9 @@ Define virtual keys, budgets, rate limits, and routing rules in `bifrost.governa
 
 </Tab>
 
-<Tab title="Semantic Cache">
+<Tab title="Local Cache">
 
-### Semantic Cache
+### Local Cache
 
 Caches LLM responses using vector similarity so semantically equivalent prompts return cached answers.
 
@@ -167,28 +167,28 @@ Two modes:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `bifrost.plugins.semanticCache.enabled` | Enable semantic caching | `false` |
-| `bifrost.plugins.semanticCache.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
-| `bifrost.plugins.semanticCache.config.provider` | Embedding provider | `"openai"` |
-| `bifrost.plugins.semanticCache.config.embedding_model` | Embedding model name | `"text-embedding-3-small"` |
-| `bifrost.plugins.semanticCache.config.dimension` | Embedding dimension (`1` = direct/hash mode) | `1536` |
-| `bifrost.plugins.semanticCache.config.threshold` | Cosine similarity threshold (0–1) | `0.8` |
-| `bifrost.plugins.semanticCache.config.ttl` | Cache entry TTL (Go duration) | `"5m"` |
-| `bifrost.plugins.semanticCache.config.conversation_history_threshold` | Number of past messages to include in cache key | `3` |
-| `bifrost.plugins.semanticCache.config.cache_by_model` | Include model name in cache key | `true` |
-| `bifrost.plugins.semanticCache.config.cache_by_provider` | Include provider name in cache key | `true` |
-| `bifrost.plugins.semanticCache.config.exclude_system_prompt` | Exclude system prompt from cache key | `false` |
-| `bifrost.plugins.semanticCache.config.cleanup_on_shutdown` | Delete cache data on pod shutdown | `false` |
+| `bifrost.client.enableLocalCache` | Enable the local cache plugin | `false` |
+| `bifrost.localCache.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
+| `bifrost.localCache.config.provider` | Embedding provider | `"openai"` |
+| `bifrost.localCache.config.embedding_model` | Embedding model name | `"text-embedding-3-small"` |
+| `bifrost.localCache.config.dimension` | Embedding dimension (`1` = direct/hash mode) | `1536` |
+| `bifrost.localCache.config.threshold` | Cosine similarity threshold (0–1) | `0.8` |
+| `bifrost.localCache.config.ttl` | Cache entry TTL (Go duration) | `"5m"` |
+| `bifrost.localCache.config.conversation_history_threshold` | Number of past messages to include in cache key | `3` |
+| `bifrost.localCache.config.cache_by_model` | Include model name in cache key | `true` |
+| `bifrost.localCache.config.cache_by_provider` | Include provider name in cache key | `true` |
+| `bifrost.localCache.config.exclude_system_prompt` | Exclude system prompt from cache key | `false` |
+| `bifrost.localCache.config.cleanup_on_shutdown` | Delete cache data on pod shutdown | `false` |
 
 **Semantic mode (with OpenAI embeddings + Weaviate):**
 
 ```bash
-kubectl create secret generic semantic-cache-secret \
+kubectl create secret generic local-cache-secret \
   --from-literal=openai-key='sk-your-openai-embedding-key'
 ```
 
 ```yaml
-# semantic-cache-values.yaml
+# local-cache-values.yaml
 image:
   tag: "v1.4.11"
 
@@ -202,12 +202,12 @@ vectorStore:
 
 bifrost:
   plugins:
-    semanticCache:
+    # local_cache moved out of plugins; see localCache top-level
       enabled: true
       config:
         provider: "openai"
         keys:
-          - value: "env.SEMANTIC_CACHE_OPENAI_KEY"
+          - value: "env.LOCAL_CACHE_OPENAI_KEY"
             weight: 1
         embedding_model: "text-embedding-3-small"
         dimension: 1536
@@ -218,14 +218,14 @@ bifrost:
         cache_by_provider: true
 
   providerSecrets:
-    semantic-cache-key:
-      existingSecret: "semantic-cache-secret"
+    local-cache-key:
+      existingSecret: "local-cache-secret"
       key: "openai-key"
-      envVar: "SEMANTIC_CACHE_OPENAI_KEY"
+      envVar: "LOCAL_CACHE_OPENAI_KEY"
 ```
 
 ```bash
-helm install bifrost bifrost/bifrost -f semantic-cache-values.yaml
+helm install bifrost bifrost/bifrost -f local-cache-values.yaml
 ```
 
 **Direct / hash mode** (no embedding provider needed):
@@ -233,7 +233,7 @@ helm install bifrost bifrost/bifrost -f semantic-cache-values.yaml
 ```yaml
 bifrost:
   plugins:
-    semanticCache:
+    # local_cache moved out of plugins; see localCache top-level
       enabled: true
       config:
         dimension: 1          # triggers hash-based exact matching
@@ -523,7 +523,7 @@ bifrost:
       config:
         is_vk_mandatory: true
 
-    semanticCache:
+    # local_cache moved out of plugins; see localCache top-level
       enabled: true
       config:
         provider: "openai"

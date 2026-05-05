@@ -1,6 +1,6 @@
 // Plugins types that match the Go backend structures
 
-export const SEMANTIC_CACHE_PLUGIN = "semantic_cache";
+export const LOCAL_CACHE_PLUGIN = "local_cache";
 export const MAXIM_PLUGIN = "maxim";
 
 export type PluginType = "llm" | "mcp" | "http";

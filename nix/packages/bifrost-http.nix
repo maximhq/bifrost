@@ -21,10 +21,10 @@ let
     replace github.com/maximhq/bifrost/framework => ../framework
     replace github.com/maximhq/bifrost/plugins/governance => ../plugins/governance
     replace github.com/maximhq/bifrost/plugins/compat => ../plugins/compat
+    replace github.com/maximhq/bifrost/plugins/localcache => ../plugins/localcache
     replace github.com/maximhq/bifrost/plugins/logging => ../plugins/logging
     replace github.com/maximhq/bifrost/plugins/maxim => ../plugins/maxim
     replace github.com/maximhq/bifrost/plugins/otel => ../plugins/otel
-    replace github.com/maximhq/bifrost/plugins/semanticcache => ../plugins/semanticcache
     replace github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
     EOF
     fi

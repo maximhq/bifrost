@@ -90,7 +90,7 @@ CONFIGS_TO_TEST=(
   "withconfigstorelogsstoresqlite"
   "withdynamicplugin"
   "withobservability"
-  "withsemanticcache"
+  "withlocalcache"
   "withpostgresmcpclientsinconfig"
 )
 

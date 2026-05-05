@@ -5,6 +5,7 @@ export { baseApi, clearAuthStorage, getErrorMessage, setAuthToken } from "./base
 export * from "./configApi";
 export * from "./devApi";
 export * from "./governanceApi";
+export * from "./localCacheApi";
 export * from "./logsApi";
 export * from "./mcpApi";
 export * from "./mcpLogsApi";

@@ -200,7 +200,7 @@ updates:
     open-pull-requests-limit: 0
 
   - package-ecosystem: gomod
-    directory: /plugins/semanticcache
+    directory: /plugins/localcache
     schedule:
       interval: daily
     open-pull-requests-limit: 0

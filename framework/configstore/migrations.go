@@ -635,6 +635,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientDisabledColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddLocalCacheConfigTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7253,6 +7256,50 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB) error {
 }
 
 // migrationAddMCPClientDisabledColumn adds the disabled column to the config_mcp_clients table
+// migrationAddLocalCacheConfigTable creates the config_local_cache typed-column
+// table and adds the enable_local_cache flag column to config_client. Both
+// changes are idempotent so reruns are safe; previously-installed clusters
+// pick up the column without losing existing client config rows.
+func migrationAddLocalCacheConfigTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_local_cache_config_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableLocalCacheConfig{}) {
+				if err := mg.CreateTable(&tables.TableLocalCacheConfig{}); err != nil {
+					return fmt.Errorf("failed to create config_local_cache table: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableClientConfig{}, "enable_local_cache") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "enable_local_cache"); err != nil {
+					return fmt.Errorf("failed to add enable_local_cache column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "enable_local_cache") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "enable_local_cache"); err != nil {
+					return fmt.Errorf("failed to drop enable_local_cache column: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableLocalCacheConfig{}) {
+				if err := mg.DropTable(&tables.TableLocalCacheConfig{}); err != nil {
+					return fmt.Errorf("failed to drop config_local_cache table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_local_cache_config_table migration: %s", err.Error())
+	}
+	return nil
+}
+
 func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_mcp_client_disabled_column",

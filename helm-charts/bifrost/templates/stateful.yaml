@@ -100,12 +100,12 @@ spec:
                   name: {{ .Values.bifrost.encryptionKeySecret.name }}
                   key: {{ .Values.bifrost.encryptionKeySecret.key }}
             {{- end }}
-            {{- if and .Values.bifrost.plugins.semanticCache.enabled .Values.bifrost.plugins.semanticCache.secretRef .Values.bifrost.plugins.semanticCache.secretRef.name }}
-            - name: SEMANTIC_CACHE_API_KEY
+            {{- if and .Values.bifrost.client.enableLocalCache .Values.localCache .Values.localCache.secretRef .Values.localCache.secretRef.name }}
+            - name: LOCAL_CACHE_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.bifrost.plugins.semanticCache.secretRef.name }}
-                  key: {{ .Values.bifrost.plugins.semanticCache.secretRef.key | default "api-key" }}
+                  name: {{ .Values.localCache.secretRef.name }}
+                  key: {{ .Values.localCache.secretRef.key | default "api-key" }}
             {{- end }}
             {{- /* PostgreSQL password from existing secret */ -}}
             {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.existingSecret }}

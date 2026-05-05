@@ -470,18 +470,20 @@ fi
 echo ""
 echo "🔍 Checking required fields in plugin configs..."
 
-# Check semantic cache plugin required fields (dimension)
-# Config uses an allOf pattern on plugins array items; Helm uses conditional on semanticCache.enabled
-CONFIG_SEMCACHE_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "semantic_cache") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_SEMCACHE_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.semanticCache.then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+# Check local cache required fields (dimension). The local cache moved
+# from a config_plugins entry to a top-level block in v1.5.0, so both
+# schemas now expose it as `local_cache` (config.schema.json) /
+# `localCache` (Helm values.schema.json) at the root, not under plugins[].
+CONFIG_LOCALCACHE_REQUIRED=$(jq -r '.properties.local_cache.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_LOCALCACHE_REQUIRED=$(jq -r '.properties.localCache.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
-if [ "$CONFIG_SEMCACHE_REQUIRED" != "$HELM_SEMCACHE_REQUIRED" ]; then
-  echo "❌ Semantic cache plugin config required fields mismatch:"
-  echo "   Config: [$CONFIG_SEMCACHE_REQUIRED]"
-  echo "   Helm:   [$HELM_SEMCACHE_REQUIRED]"
+if [ "$CONFIG_LOCALCACHE_REQUIRED" != "$HELM_LOCALCACHE_REQUIRED" ]; then
+  echo "❌ Local cache config required fields mismatch:"
+  echo "   Config: [$CONFIG_LOCALCACHE_REQUIRED]"
+  echo "   Helm:   [$HELM_LOCALCACHE_REQUIRED]"
   ERRORS=$((ERRORS + 1))
 else
-  echo "✅ Semantic cache plugin config required fields match: [$CONFIG_SEMCACHE_REQUIRED]"
+  echo "✅ Local cache config required fields match: [$CONFIG_LOCALCACHE_REQUIRED]"
 fi
 
 # Check OTEL plugin required fields (collector_url, trace_type, protocol)
@@ -643,7 +645,7 @@ check_property_exists "cluster.region" ".properties.bifrost.properties.cluster.p
 echo ""
 echo "  Checking miscellaneous properties (Gap 8)..."
 check_property_exists "telemetry.custom_labels" ".properties.bifrost.properties.plugins.properties.telemetry.properties.config.properties.custom_labels" "$HELM_SCHEMA"
-check_property_exists "semanticCache.default_cache_key" ".properties.bifrost.properties.plugins.properties.semanticCache.properties.config.properties.default_cache_key" "$HELM_SCHEMA"
+check_property_exists "localCache.config.default_cache_key" ".properties.localCache.properties.config.properties.default_cache_key" "$HELM_SCHEMA"
 
 # Also verify these exist in config.schema.json
 echo ""

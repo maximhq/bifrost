@@ -121,7 +121,7 @@ variable "guardrails_config" {
 }
 
 variable "plugins" {
-  description = "Plugins configuration. Array of plugin objects (telemetry, logging, governance, maxim, semantic_cache, otel, datadog)."
+  description = "Plugins configuration. Array of plugin objects (telemetry, localcache, logging, governance, maxim, otel, datadog)."
   type        = any
   default     = null
 }

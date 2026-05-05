@@ -26,11 +26,11 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeySkipKeySelection`        | `-`                                                  | `bool`                | Skip key selection process (Go SDK only)                                                                                              |
 | `BifrostContextKeyURLPath`                 | `-`                                                  | `string`              | Custom URL path appended to provider base URL (Go SDK only)                                                                           |
 | `BifrostContextKeyUseRawRequestBody`       | `-`                                                  | `bool`                | Use raw request body (Go SDK only, requires RawRequestBody field)                                                                     |
-| `semanticcache.CacheKey`                   | `x-bf-cache-key`                                     | `string`              | Custom cache key                                                                                                                      |
-| `semanticcache.CacheTTLKey`                | `x-bf-cache-ttl`                                     | `time.Duration`       | Cache TTL (duration string or seconds)                                                                                                |
-| `semanticcache.CacheThresholdKey`          | `x-bf-cache-threshold`                               | `float64`             | Similarity threshold (0.0-1.0)                                                                                                        |
-| `semanticcache.CacheTypeKey`               | `x-bf-cache-type`                                    | `string`              | Cache type                                                                                                                            |
-| `semanticcache.CacheNoStoreKey`            | `x-bf-cache-no-store`                                | `bool`                | Prevent caching                                                                                                                       |
+| `localcache.CacheKey`                   | `x-bf-cache-key`                                     | `string`              | Custom cache key                                                                                                                      |
+| `localcache.CacheTTLKey`                | `x-bf-cache-ttl`                                     | `time.Duration`       | Cache TTL (duration string or seconds)                                                                                                |
+| `localcache.CacheThresholdKey`          | `x-bf-cache-threshold`                               | `float64`             | Similarity threshold (0.0-1.0)                                                                                                        |
+| `localcache.CacheTypeKey`               | `x-bf-cache-type`                                    | `string`              | Cache type                                                                                                                            |
+| `localcache.CacheNoStoreKey`            | `x-bf-cache-no-store`                                | `bool`                | Prevent caching                                                                                                                       |
 | `mcp-include-clients`                      | `x-bf-mcp-include-clients`                           | `[]string`            | Filter MCP clients (comma-separated).                                                                                                 |
 | `mcp-include-tools`                        | `x-bf-mcp-include-tools`                             | `[]string`            | Filter MCP tools (`clientName-toolName` format, comma-separated)                                                                      |
 | `BifrostContextKeyMCPExtraHeaders`         | _(any header in a client's `allowed_extra_headers`)_ | `map[string][]string` | Headers forwarded to MCP servers at tool execution time, filtered per-client against `allowed_extra_headers`                          |
@@ -719,18 +719,18 @@ The headers `x-bf-eh-user-id` and `x-bf-eh-tracking-id` are forwarded to the pro
 - Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
 - A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
 
-## Semantic Cache Options
+## Local Cache Options
 
 These options control semantic caching behavior.
 
 ### Cache Key
 
-**Context Key:** `semanticcache.CacheKey`
+**Context Key:** `localcache.CacheKey`
 **Header:** `x-bf-cache-key`
 **Type:** `string`
 **Required:** No
 
-Specify a custom cache key for semantic cache lookups.
+Specify a custom cache key for local cache lookups.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -748,7 +748,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 <Tab title="Go SDK">
 ```go
 ctx := context.Background()
-ctx = context.WithValue(ctx, semanticcache.CacheKey, "custom-key-123")
+ctx = context.WithValue(ctx, localcache.CacheKey, "custom-key-123")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
@@ -762,7 +762,7 @@ Input: messages,
 
 ### Cache TTL
 
-**Context Key:** `semanticcache.CacheTTLKey`
+**Context Key:** `localcache.CacheTTLKey`
 **Header:** `x-bf-cache-ttl`
 **Type:** `time.Duration` (header value: duration string like `"30s"` or `"5m"`, or seconds as integer)
 **Required:** No
@@ -785,7 +785,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 <Tab title="Go SDK">
 ```go
 ctx := context.Background()
-ctx = context.WithValue(ctx, semanticcache.CacheTTLKey, 5*time.Minute)
+ctx = context.WithValue(ctx, localcache.CacheTTLKey, 5*time.Minute)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
@@ -801,12 +801,12 @@ Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as 
 
 ### Cache Threshold
 
-**Context Key:** `semanticcache.CacheThresholdKey`
+**Context Key:** `localcache.CacheThresholdKey`
 **Header:** `x-bf-cache-threshold`
 **Type:** `float64` (range: 0.0 to 1.0)
 **Required:** No
 
-Set the similarity threshold for semantic cache matching.
+Set the similarity threshold for local cache matching.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -824,7 +824,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 <Tab title="Go SDK">
 ```go
 ctx := context.Background()
-ctx = context.WithValue(ctx, semanticcache.CacheThresholdKey, 0.85)
+ctx = context.WithValue(ctx, localcache.CacheThresholdKey, 0.85)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
@@ -838,9 +838,9 @@ Input: messages,
 
 ### Cache Type
 
-**Context Key:** `semanticcache.CacheTypeKey`
+**Context Key:** `localcache.CacheTypeKey`
 **Header:** `x-bf-cache-type`
-**Type:** `semanticcache.CacheType` (string)
+**Type:** `localcache.CacheType` (string)
 **Required:** No
 
 Specify the cache type for this request.
@@ -861,7 +861,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 <Tab title="Go SDK">
 ```go
 ctx := context.Background()
-ctx = context.WithValue(ctx, semanticcache.CacheTypeKey, semanticcache.CacheTypeSemantic)
+ctx = context.WithValue(ctx, localcache.CacheTypeKey, localcache.CacheTypeSemantic)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
@@ -875,7 +875,7 @@ Input: messages,
 
 ### Cache No Store
 
-**Context Key:** `semanticcache.CacheNoStoreKey`
+**Context Key:** `localcache.CacheNoStoreKey`
 **Header:** `x-bf-cache-no-store`
 **Type:** `bool` (header value: `"true"`)
 **Required:** No
@@ -898,7 +898,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 <Tab title="Go SDK">
 ```go
 ctx := context.Background()
-ctx = context.WithValue(ctx, semanticcache.CacheNoStoreKey, true)
+ctx = context.WithValue(ctx, localcache.CacheNoStoreKey, true)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
@@ -1237,5 +1237,5 @@ The following context keys are set by Bifrost internally.
 - **[Gateway Provider Configuration](../quickstart/gateway/provider-configuration)** - Configure providers and headers
 - **[Go SDK Context Keys](../quickstart/go-sdk/context-keys)** - Programmatic context key usage
 - **[Virtual Keys](../features/governance/virtual-keys)** - Virtual key usage and governance
-- **[Semantic Cache](../features/semantic-caching)** - Caching configuration
+- **[Local Cache](../features/local-caching)** - Caching configuration
 ```

@@ -287,6 +287,10 @@
               "type": "boolean",
               "description": "Enable request/response logging"
             },
+            "enableLocalCache": {
+              "type": "boolean",
+              "description": "Enable the local cache plugin (direct + semantic). Requires the top-level localCache block and a configured vectorStore."
+            },
             "disableContentLogging": {
               "type": "boolean",
               "description": "Disable logging of sensitive content (inputs, outputs, embeddings, etc.)"
@@ -745,109 +749,6 @@
                     }
                   }
                 ]
-              }
-            },
-            "semanticCache": {
-              "type": "object",
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "config": {
-                  "type": "object",
-                  "properties": {
-                    "provider": {
-                      "type": "string",
-                      "enum": [
-                        "openai",
-                        "anthropic",
-                        "gemini",
-                        "bedrock",
-                        "azure",
-                        "cohere",
-                        "mistral",
-                        "groq",
-                        "ollama",
-                        "openrouter",
-                        "vertex",
-                        "cerebras",
-                        "parasail",
-                        "perplexity",
-                        "sgl",
-                        "huggingface"
-                      ]
-                    },
-                    "keys": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "API keys for embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)"
-                    },
-                    "embedding_model": {
-                      "type": "string"
-                    },
-                    "dimension": {
-                      "type": "integer",
-                      "minimum": 1
-                    },
-                    "threshold": {
-                      "type": "number",
-                      "minimum": 0,
-                      "maximum": 1
-                    },
-                    "ttl": {
-                      "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
-                      "oneOf": [
-                        {
-                          "type": "string",
-                          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$"
-                        },
-                        {
-                          "type": "integer",
-                          "minimum": 0
-                        }
-                      ]
-                    },
-                    "conversation_history_threshold": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "cache_by_model": {
-                      "type": "boolean"
-                    },
-                    "cache_by_provider": {
-                      "type": "boolean"
-                    },
-                    "exclude_system_prompt": {
-                      "type": "boolean"
-                    },
-                    "cleanup_on_shutdown": {
-                      "type": "boolean"
-                    },
-                    "vector_store_namespace": {
-                      "type": "string"
-                    },
-                    "default_cache_key": {
-                      "type": "string",
-                      "description": "Default cache key for semantic cache lookups"
-                    }
-                  }
-                }
-              },
-              "if": {
-                "properties": {
-                  "enabled": {
-                    "const": true
-                  }
-                }
-              },
-              "then": {
-                "properties": {
-                  "config": {
-                    "required": ["dimension"]
-                  }
-                }
               }
             },
             "otel": {
@@ -2535,6 +2436,93 @@
               "type": "boolean"
             }
           }
+        }
+      }
+    },
+    "localCache": {
+      "type": "object",
+      "description": "Local cache plugin configuration (top-level, sibling of bifrost / vectorStore). Loaded only when bifrost.client.enableLocalCache is true.",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32767
+        },
+        "keys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "API keys for the embedding provider (required for semantic mode, not needed for direct-only mode with dimension: 1). Use secretRef instead in production."
+        },
+        "secretRef": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "",
+                "openai",
+                "anthropic",
+                "gemini",
+                "bedrock",
+                "azure",
+                "cohere",
+                "mistral",
+                "groq",
+                "ollama",
+                "openrouter",
+                "vertex",
+                "cerebras",
+                "parasail",
+                "perplexity",
+                "sgl",
+                "huggingface"
+              ]
+            },
+            "embedding_model": { "type": "string" },
+            "dimension": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "ttl": {
+              "description": "Time-to-live for cached responses (duration string like '5m' or integer seconds).",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              ]
+            },
+            "conversation_history_threshold": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_by_model": { "type": "boolean" },
+            "cache_by_provider": { "type": "boolean" },
+            "exclude_system_prompt": { "type": "boolean" },
+            "cleanup_on_shutdown": { "type": "boolean" },
+            "vector_store_namespace": { "type": "string" },
+            "default_cache_key": {
+              "type": "string",
+              "description": "Cache key used when no per-request key is supplied."
+            }
+          },
+          "required": ["dimension"]
         }
       }
     },

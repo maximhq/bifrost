@@ -9,7 +9,7 @@ import (
 )
 
 // fakeCacheClearer records calls and returns configured errors so the handler
-// branches can be exercised without a real semantic cache plugin.
+// branches can be exercised without a real local cache plugin.
 type fakeCacheClearer struct {
 	clearByID    func(string) error
 	clearByKey   func(string) error

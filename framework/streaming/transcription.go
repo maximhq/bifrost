@@ -96,8 +96,8 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
 		}
-		if lastChunk.SemanticCacheDebug != nil {
-			data.CacheDebug = lastChunk.SemanticCacheDebug
+		if lastChunk.LocalCacheDebug != nil {
+			data.CacheDebug = lastChunk.LocalCacheDebug
 		}
 	}
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
@@ -166,7 +166,7 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *schemas.Bifrost
 				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.LocalCacheDebug = result.GetExtraFields().CacheDebug
 		}
 	}
 	if addErr := a.addTranscriptionStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {

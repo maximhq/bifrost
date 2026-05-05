@@ -1,0 +1,54 @@
+config:
+  get:
+    operationId: getLocalCacheConfig
+    summary: Get local cache configuration
+    description: |
+      Returns the live local-cache configuration. Falls back to the database
+      when the in-memory pointer hasn't been hydrated (typically because the
+      plugin is currently disabled). Returns an empty object when no config
+      has been persisted yet.
+    tags:
+      - Cache
+    responses:
+      '200':
+        description: Current local-cache configuration
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/cache.yaml#/LocalCacheConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: Config store not available
+  put:
+    operationId: updateLocalCacheConfig
+    summary: Update local cache configuration
+    description: |
+      Validates and persists a new local-cache configuration. After the DB
+      write, the in-memory shared pointer is mutated in place — the running
+      plugin observes the new values on its next request without a reload.
+      Structural changes (`vector_store_namespace`, `dimension`) trigger
+      `EnsureNamespace` so the new namespace is materialized before the
+      next request lands; old namespaces are left in place by design (no
+      flush on dimension change).
+    tags:
+      - Cache
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/cache.yaml#/LocalCacheConfig'
+    responses:
+      '200':
+        description: Updated configuration
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/cache.yaml#/LocalCacheConfig'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: Config store not available

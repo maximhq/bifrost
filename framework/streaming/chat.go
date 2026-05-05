@@ -407,8 +407,8 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		if lastChunk.TokenUsage != nil {
 			data.TokenUsage = lastChunk.TokenUsage
 		}
-		if lastChunk.SemanticCacheDebug != nil {
-			data.CacheDebug = lastChunk.SemanticCacheDebug
+		if lastChunk.LocalCacheDebug != nil {
+			data.CacheDebug = lastChunk.LocalCacheDebug
 		}
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
@@ -504,7 +504,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.LocalCacheDebug = result.GetExtraFields().CacheDebug
 		}
 	} else if result != nil && result.ChatResponse != nil {
 		// Extract delta and other information
@@ -530,7 +530,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.LocalCacheDebug = result.GetExtraFields().CacheDebug
 		}
 	}
 	if addErr := a.addChatStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {

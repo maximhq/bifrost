@@ -67,7 +67,7 @@ postgresql:
         cpu: 1000m
         memory: 2Gi
 
-# Weaviate for semantic caching
+# Weaviate for the local cache
 vectorStore:
   enabled: true
   type: weaviate
@@ -99,6 +99,8 @@ bifrost:
       - "https://yourdomain.com"
       - "https://app.yourdomain.com"
     enableLogging: true
+    # Loads the local cache plugin (direct + semantic) at boot.
+    enableLocalCache: true
     maxRequestBodySizeMb: 100
   
   providers: {}
@@ -113,21 +115,21 @@ bifrost:
       enabled: true
       config: {}
     
-    semanticCache:
-      enabled: true
-      # Reference to external Kubernetes Secret for OpenAI API key
-      # Create the secret with: kubectl create secret generic bifrost-semantic-cache --from-literal=openai-key=sk-YOUR_OPENAI_KEY
-      secretRef:
-        name: "bifrost-semantic-cache"
-        key: "openai-key"
-      config:
-        provider: "openai"
-        # keys are injected from the secret via environment variable
-        embedding_model: "text-embedding-3-small"
-        dimension: 1536
-        threshold: 0.85
-        ttl: "1h"
-        conversation_history_threshold: 5
+# Local cache plugin configuration (sibling of bifrost / vectorStore)
+localCache:
+  # Reference to external Kubernetes Secret for OpenAI API key
+  # Create the secret with: kubectl create secret generic bifrost-local-cache --from-literal=openai-key=sk-YOUR_OPENAI_KEY
+  secretRef:
+    name: "bifrost-local-cache"
+    key: "openai-key"
+  config:
+    provider: "openai"
+    # keys are injected from the secret via environment variable
+    embedding_model: "text-embedding-3-small"
+    dimension: 1536
+    threshold: 0.85
+    ttl: "1h"
+    conversation_history_threshold: 5
 
 # Pod affinity for better distribution
 affinity:

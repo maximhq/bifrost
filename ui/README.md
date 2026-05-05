@@ -99,7 +99,7 @@ Extend Bifrost with powerful plugins for observability, testing, caching, and cu
 
 - [Maxim Logger](https://docs.getbifrost.ai/features/observability/maxim) - Advanced LLM observability
 - [Response Mocker](https://docs.getbifrost.ai/features/plugins/mocker) - Mock responses for testing
-- [Semantic Cache](https://docs.getbifrost.ai/features/semantic-caching) - Intelligent response caching
+- [Local Cache](https://docs.getbifrost.ai/features/local-caching) - Direct + semantic response caching
 - [OpenTelemetry](https://docs.getbifrost.ai/features/observability/otel) - Distributed tracing
 
 **[Plugin Development Guide →](https://docs.getbifrost.ai/plugins/getting-started)**

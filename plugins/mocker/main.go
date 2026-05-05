@@ -570,7 +570,7 @@ func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	// For streaming requests with a short-circuit response, mark the stream as complete
-	// This is required for plugins like semantic cache that need to know when the stream ends
+	// This is required for plugins like local cache that need to know when the stream ends
 	if shortCircuit != nil && shortCircuit.Response != nil && bifrost.IsStreamRequestType(req.RequestType) {
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	}

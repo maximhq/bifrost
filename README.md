@@ -131,7 +131,7 @@ bifrost/
 │   ├── logging/         # Request logging and analytics
 │   ├── maxim/           # Maxim's observability integration
 │   ├── mocker/          # Mock responses for testing and development
-│   ├── semanticcache/   # Intelligent response caching
+│   ├── localcache/      # Intelligent response caching
 │   └── telemetry/       # Monitoring and observability
 ├── docs/                # Documentation and guides
 └── tests/               # Comprehensive test suites

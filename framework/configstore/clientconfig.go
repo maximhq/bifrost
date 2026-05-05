@@ -50,6 +50,7 @@ type ClientConfig struct {
 	InitialPoolSize                       int                              `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
 	PrometheusLabels                      []string                         `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
 	EnableLogging                         *bool                            `json:"enable_logging"`                             // Enable logging of requests and responses
+	EnableLocalCache                      *bool                            `json:"enable_local_cache"`                         // Enable local cache plugin (direct + semantic caching)
 	DisableContentLogging                 bool                             `json:"disable_content_logging"`                    // Disable logging of content
 	AllowPerRequestContentStorageOverride bool                             `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride            bool                             `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
@@ -97,6 +98,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enableLogging:true"))
 	} else {
 		hash.Write([]byte("enableLogging:false"))
+	}
+
+	// Default for EnableLocalCache is false (off). Hash only the non-default
+	// value to avoid churning legacy hashes on upgrade.
+	if c.EnableLocalCache != nil && *c.EnableLocalCache {
+		hash.Write([]byte("enableLocalCache:true"))
 	}
 
 	if c.DisableContentLogging {

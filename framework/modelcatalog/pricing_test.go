@@ -1142,7 +1142,7 @@ func TestExtractCostInput_VideoResponseInvalidSeconds(t *testing.T) {
 // 10. Semantic cache billing (calculateCostWithCache)
 // =========================================================================
 
-func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
+func TestCalculateCost_LocalCacheDirectHit(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
@@ -1170,7 +1170,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 	assert.Equal(t, 0.0, cost)
 }
 
-func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
+func TestCalculateCost_LocalCacheSemanticHit(t *testing.T) {
 	embProvider := "openai"
 	embModel := "text-embedding-3-small"
 	embTokens := 500
@@ -1210,7 +1210,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 	assert.InDelta(t, 0.00001, cost, 1e-12)
 }
 
-func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
+func TestCalculateCost_LocalCacheMiss(t *testing.T) {
 	embProvider := "openai"
 	embModel := "text-embedding-3-small"
 	embTokens := 500
@@ -1250,7 +1250,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 	assert.InDelta(t, 0.01251, cost, 1e-12)
 }
 
-func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
+func TestCalculateCost_LocalCacheHitNoEmbeddingInfo(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
 
 	resp := &schemas.BifrostResponse{

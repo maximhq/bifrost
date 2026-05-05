@@ -1,0 +1,734 @@
+// Package localcache provides local caching integration for Bifrost.
+// The plugin caches responses via two complementary lookup paths: a direct
+// hash match (xxhash) for exact replays, and embedding-based similarity
+// search for semantically related content. It uses the VectorStore
+// abstraction for storage, with TTL management and streaming response
+// handling.
+//
+// The plugin holds a *configstore.LocalCacheConfig pointer that is shared
+// with the framework. PUT /api/local-cache/config mutates that struct in
+// place, so the plugin sees fresh values on the next request without a
+// restart.
+package localcache
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
+)
+
+// Config is an alias for configstore.LocalCacheConfig — the framework owns
+// the canonical type so a single shared pointer can be live-mutated by the
+// REST handler without going through plugin Reload. Method set (including
+// the custom TTL UnmarshalJSON) is inherited via the alias.
+type Config = configstore.LocalCacheConfig
+
+// StreamChunk is one chunk from a streaming response, retained until the
+// stream completes so it can be persisted as part of the cache entry.
+type StreamChunk struct {
+	// Timestamp records when this chunk arrived at PostLLMHook. Used by the
+	// reaper to drop accumulators stuck without a final chunk.
+	Timestamp time.Time
+	// Response is the chunk payload as delivered by the provider.
+	Response *schemas.BifrostResponse
+}
+
+// StreamAccumulator collects the chunks of a single streaming response so
+// they can be flushed as one cache entry on the final chunk.
+type StreamAccumulator struct {
+	// mu serializes Chunks/IsComplete updates across the per-chunk PostLLMHook
+	// invocations and the periodic reaper.
+	mu sync.Mutex
+	// RequestID is the BifrostContext request ID this accumulator is keyed by.
+	RequestID string
+	// StorageID is the cache entry ID the accumulated stream will be written under.
+	StorageID string
+	// Chunks holds every chunk seen so far, in arrival order.
+	Chunks []*StreamChunk
+	// LastSeenAt records the arrival time of the most recent chunk. The reaper
+	// uses this so a long-running stream isn't evicted mid-flight; first-chunk
+	// time alone would falsely flag still-active streams as abandoned.
+	LastSeenAt time.Time
+	// IsComplete is set when the final chunk has been observed; further final
+	// chunks are no-ops to keep flush idempotent.
+	IsComplete bool
+	// Embedding is the request embedding to attach to the cache entry, or nil
+	// for direct-only writes.
+	Embedding []float32
+	// Metadata is the unified metadata captured at first-chunk time and reused
+	// at flush. expires_at is locked in here, so TTL is fixed at first chunk.
+	Metadata map[string]any
+	// TTL is retained for symmetry with Metadata; the effective expiry is the
+	// expires_at value already baked into Metadata.
+	TTL time.Duration
+}
+
+// EmbeddingRequestExecutor invokes the embedding endpoint on the bifrost
+// client. The plugin calls it on cache misses to compute the request
+// embedding for semantic similarity search and storage. It mirrors the
+// signature of bifrost.Client.EmbeddingRequest.
+type EmbeddingRequestExecutor func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError)
+
+// Plugin implements schemas.LLMPlugin for semantic caching. It serves cached
+// responses via two complementary lookup paths: a direct O(1) hash match on
+// (provider, model, cache_key, request_hash, params_hash) for exact replays,
+// and an embedding-based similarity search for semantically related content.
+// Streaming responses are accumulated chunk-by-chunk and stored as a single
+// entry on the final chunk; TTL bookkeeping is per-entry via expires_at.
+type Plugin struct {
+	store                    vectorstore.VectorStore
+	config                   *Config
+	logger                   schemas.Logger
+	embeddingRequestExecutor EmbeddingRequestExecutor
+	// streamAccumulators maps request ID → its in-progress *StreamAccumulator.
+	streamAccumulators sync.Map
+	// cacheStates maps request ID → its *cacheState (see state.go) for the
+	// span between PreLLMHook and PostLLMHook.
+	cacheStates sync.Map
+	// writersWg tracks short-lived per-request goroutines (the async cache
+	// writes spawned in PostLLMHook). WaitForPendingOperations blocks on this
+	// — tests use it to flush writes before asserting on the store.
+	writersWg sync.WaitGroup
+	// cleanupWg tracks the long-running background loops (stream + cacheState
+	// reapers). Only Cleanup blocks on this, after closing stopCh.
+	cleanupWg sync.WaitGroup
+	// stopCh is closed by Cleanup to signal the background reaper loops to exit.
+	stopCh chan struct{}
+}
+
+// Plugin constants
+const (
+	PluginName                          string        = "local_cache"
+	DefaultVectorStoreNamespace         string        = "BifrostLocalCachePlugin"
+	CacheConnectionTimeout              time.Duration = 5 * time.Second
+	CreateNamespaceTimeout              time.Duration = 30 * time.Second
+	CacheSetTimeout                     time.Duration = 30 * time.Second
+	DefaultCacheTTL                     time.Duration = 5 * time.Minute
+	DefaultCacheThreshold               float64       = 0.8
+	DefaultConversationHistoryThreshold int           = 3
+)
+
+// SelectFields enumerates the properties projected back from the vector store
+// on a cache hit. params_hash and from_bifrost_local_cache_plugin are
+// filter-only (used in WHERE-style queries to narrow matches) and intentionally
+// omitted from this projection — keep them defined in VectorStoreProperties
+// below so the store creates the columns/indexes, but don't fetch them.
+var SelectFields = []string{"response", "stream_chunks", "expires_at", "cache_key", "provider", "model"}
+
+var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
+	"response": {
+		DataType:    vectorstore.VectorStorePropertyTypeString,
+		Description: "The response from the provider",
+	},
+	"stream_chunks": {
+		DataType:    vectorstore.VectorStorePropertyTypeStringArray,
+		Description: "The stream chunks from the provider",
+	},
+	"expires_at": {
+		DataType:    vectorstore.VectorStorePropertyTypeInteger,
+		Description: "The expiration time of the cache entry",
+	},
+	"cache_key": {
+		DataType:    vectorstore.VectorStorePropertyTypeString,
+		Description: "The cache key from the request",
+	},
+	"provider": {
+		DataType:    vectorstore.VectorStorePropertyTypeString,
+		Description: "The provider used for the request",
+	},
+	"model": {
+		DataType:    vectorstore.VectorStorePropertyTypeString,
+		Description: "The model used for the request",
+	},
+	"params_hash": {
+		DataType:    vectorstore.VectorStorePropertyTypeString,
+		Description: "The hash of the parameters used for the request",
+	},
+	"from_bifrost_local_cache_plugin": {
+		DataType:    vectorstore.VectorStorePropertyTypeBoolean,
+		Description: "Whether the cache entry was created by the BifrostLocalCachePlugin",
+	},
+}
+
+// Per-request context keys. Callers set these on BifrostContext before the
+// request enters Bifrost; the plugin reads them in Pre/PostLLMHook. CacheKey
+// (or Config.DefaultCacheKey) is the only one required for caching to engage.
+const (
+	CacheKey          schemas.BifrostContextKey = "local_cache-key"        // String. Required (or DefaultCacheKey) — bucket entries under a tenant/feature scope.
+	CacheTTLKey       schemas.BifrostContextKey = "local_cache-ttl"        // time.Duration. Per-request override of Config.TTL.
+	CacheThresholdKey schemas.BifrostContextKey = "local_cache-threshold"  // float64. Per-request override of the semantic similarity threshold.
+	CacheTypeKey      schemas.BifrostContextKey = "local_cache-cache_type" // CacheType. Narrow lookup to a single path (direct or semantic).
+	CacheNoStoreKey   schemas.BifrostContextKey = "local_cache-no_store"   // bool. Skip writing the response to cache (still served from cache on hit).
+)
+
+type CacheType string
+
+const (
+	CacheTypeDirect   CacheType = "direct"
+	CacheTypeSemantic CacheType = "semantic"
+)
+
+// Init validates the configuration, creates the namespace in the underlying
+// VectorStore, starts the background reaper goroutines, and returns a plugin
+// ready to be wired into the Bifrost plugin pipeline.
+//
+// Note: Init mutates *config in place to fill in defaults — TTL, Threshold,
+// CacheBy* — so the caller sees the resolved values after this returns.
+func Init(ctx context.Context, config *Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.LLMPlugin, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	if store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	if config.Dimension < 0 {
+		return nil, fmt.Errorf("dimension must be non-negative, got %d", config.Dimension)
+	}
+	if config.Provider != "" && config.Dimension <= 0 {
+		return nil, fmt.Errorf("dimension must be > 0 when provider is set (got dimension=%d, provider=%q)", config.Dimension, config.Provider)
+	}
+	// Set plugin-specific defaults
+	if config.VectorStoreNamespace == "" {
+		logger.Debug("Vector store namespace is not set, using default of %s", DefaultVectorStoreNamespace)
+		config.VectorStoreNamespace = DefaultVectorStoreNamespace
+	}
+	if config.TTL == 0 {
+		logger.Debug("TTL is not set, using default of %v", DefaultCacheTTL)
+		config.TTL = DefaultCacheTTL
+	}
+	if config.Threshold == 0 {
+		logger.Debug("Threshold is not set, using default of %v", DefaultCacheThreshold)
+		config.Threshold = DefaultCacheThreshold
+	}
+	if config.ConversationHistoryThreshold == 0 {
+		logger.Debug("Conversation history threshold is not set, using default of %d", DefaultConversationHistoryThreshold)
+		config.ConversationHistoryThreshold = DefaultConversationHistoryThreshold
+	}
+
+	// Set cache behavior defaults
+	if config.CacheByModel == nil {
+		logger.Debug("CacheByModel is not set, defaulting to true")
+		config.CacheByModel = new(true)
+	}
+	if config.CacheByProvider == nil {
+		logger.Debug("CacheByProvider is not set, defaulting to true")
+		config.CacheByProvider = new(true)
+	}
+
+	plugin := &Plugin{
+		store:  store,
+		config: config,
+		logger: logger,
+		stopCh: make(chan struct{}),
+	}
+
+	if config.Provider == "" && config.Dimension == 1 {
+		logger.Info("Starting in direct-only mode (dimension=1, no embedding provider)")
+	} else if config.Provider == "" {
+		logger.Warn("Incomplete semantic mode config: missing provider, falling back to direct search only")
+	}
+
+	createCtx, cancel := context.WithTimeout(ctx, CreateNamespaceTimeout)
+	defer cancel()
+	if err := store.CreateNamespace(createCtx, config.VectorStoreNamespace, config.Dimension, VectorStoreProperties); err != nil {
+		return nil, fmt.Errorf("failed to create namespace for local cache: %w", err)
+	}
+
+	plugin.cleanupWg.Add(1)
+	go plugin.runStreamCleanupLoop()
+
+	plugin.cleanupWg.Add(1)
+	go plugin.runCacheStateCleanupLoop()
+
+	return plugin, nil
+}
+
+// EnsureNamespace creates the vector-store namespace pointed at by the
+// current shared config. Idempotent: a no-op if the namespace already
+// exists with the requested schema, otherwise creates it. Called by the
+// REST handler after a config change so a freshly-mutated
+// VectorStoreNamespace or Dimension takes effect on the next request
+// without a plugin restart. Old namespaces are left in place — by
+// contract (per spec) we do not flush cached entries on dimension change.
+func (plugin *Plugin) EnsureNamespace(ctx context.Context) error {
+	namespace := plugin.config.VectorStoreNamespace
+	if namespace == "" {
+		namespace = DefaultVectorStoreNamespace
+	}
+	createCtx, cancel := context.WithTimeout(ctx, CreateNamespaceTimeout)
+	defer cancel()
+	return plugin.store.CreateNamespace(createCtx, namespace, plugin.config.Dimension, VectorStoreProperties)
+}
+
+// GetName returns the canonical name used for plugin identification and logging.
+func (plugin *Plugin) GetName() string {
+	return PluginName
+}
+
+// HTTPTransportPreHook is not used by the local cache plugin.
+func (plugin *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
+// HTTPTransportPostHook is not used by the local cache plugin.
+func (plugin *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
+}
+
+// HTTPTransportStreamChunkHook passes streaming chunks through unchanged.
+func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
+// PreLLMHook performs the cache lookup before the request reaches the
+// provider. It runs the direct hash path first (cheapest), falls back to
+// semantic similarity search when configured, and short-circuits the
+// pipeline with a cached response on hit. On miss, it leaves per-request
+// state on the plugin keyed by request ID for PostLLMHook to consume when
+// the upstream response arrives.
+func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	cacheKey, ok := plugin.resolveCacheKey(ctx)
+	if !ok {
+		return req, nil, nil
+	}
+
+	// Without a request ID we have nowhere to anchor per-request state. The
+	// framework always stamps this before plugin hooks run; direct callers
+	// (tests, custom integrations) must set it too.
+	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if !ok || requestID == "" {
+		return req, nil, nil
+	}
+
+	if !isLocalCacheSupportedRequestType(req.RequestType) {
+		return req, nil, nil
+	}
+
+	// Create state up front so a reused/retried request ID never inherits stale fields.
+	state := plugin.createCacheState(requestID)
+
+	if plugin.isConversationHistoryThresholdExceeded(state, req) {
+		return req, nil, nil
+	}
+
+	performDirectSearch, performSemanticSearch := plugin.resolveCacheTypes(ctx)
+
+	// Compute metadata + paramsHash once and reuse across both search paths.
+	metadata, err := plugin.buildRequestMetadataForCaching(state, req)
+	if err != nil {
+		plugin.logger.Debug("metadata build failed, caching disabled for this request: %v", err)
+		return req, nil, nil
+	}
+	paramsHash, err := hashMap(metadata)
+	if err != nil {
+		plugin.logger.Debug("params hash failed, caching disabled for this request: %v", err)
+		return req, nil, nil
+	}
+	state.ParamsHash = paramsHash
+
+	if performDirectSearch {
+		shortCircuit, err := plugin.performDirectSearch(ctx, state, req, cacheKey, metadata, paramsHash)
+		if err != nil {
+			msg := fmt.Sprintf("direct search failed (vector store unreachable?): %v", err)
+			plugin.logger.Warn(msg)
+			ctx.Log(schemas.LogLevelWarn, msg)
+		} else if shortCircuit != nil {
+			return req, shortCircuit, nil
+		}
+	}
+
+	if performSemanticSearch {
+		// Suppress semantic for ineligible cases (no executor, or request
+		// types whose input cannot itself be embedded).
+		semanticEligible := plugin.embeddingRequestExecutor != nil &&
+			req.EmbeddingRequest == nil &&
+			req.TranscriptionRequest == nil
+		if !semanticEligible {
+			plugin.setZeroVectorIfRequired(state)
+		} else {
+			shortCircuit, err := plugin.performSemanticSearch(ctx, state, req, cacheKey, paramsHash)
+			if err != nil {
+				// Embedding failures (rate-limit, auth, timeout) are
+				// operationally important — surface at Warn and on the response.
+				msg := fmt.Sprintf("semantic search skipped: %v", err)
+				plugin.logger.Warn(msg)
+				ctx.Log(schemas.LogLevelWarn, msg)
+			} else if shortCircuit != nil {
+				return req, shortCircuit, nil
+			}
+		}
+	} else if !performSemanticSearch {
+		// Direct-only mode. If the vector store requires vectors for every entry
+		// (Qdrant, Pinecone) we write a zero vector. Note: this collapses all
+		// direct-only entries onto the same point in vector space, so a
+		// semantic search across cache types under the same cache_key/params
+		// could surface them. params_hash filtering is the actual isolation.
+		plugin.setZeroVectorIfRequired(state)
+	}
+
+	return req, nil, nil
+}
+
+// resolveCacheKey returns the per-request cache key (or the configured default)
+// and a bool indicating whether the caller should proceed with caching.
+func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool) {
+	if cacheKey, ok := ctx.Value(CacheKey).(string); ok && cacheKey != "" {
+		return cacheKey, true
+	}
+	if plugin.config.DefaultCacheKey != "" {
+		return plugin.config.DefaultCacheKey, true
+	}
+	return "", false
+}
+
+// resolveCacheTypes returns whether direct and semantic search paths should
+// run for this request. Defaults both to true; an explicit CacheTypeKey on
+// the context narrows to just one.
+func (plugin *Plugin) resolveCacheTypes(ctx *schemas.BifrostContext) (direct bool, semantic bool) {
+	direct, semantic = true, true
+	ctxVal := ctx.Value(CacheTypeKey)
+	if ctxVal == nil {
+		return
+	}
+	cacheTypeVal, ok := ctxVal.(CacheType)
+	if !ok {
+		msg := fmt.Sprintf("CacheTypeKey is not a CacheType (got %T), using all available cache types", ctxVal)
+		plugin.logger.Warn(msg)
+		ctx.Log(schemas.LogLevelWarn, msg)
+		return
+	}
+	direct = cacheTypeVal == CacheTypeDirect
+	semantic = cacheTypeVal == CacheTypeSemantic
+	return
+}
+
+// setZeroVectorIfRequired writes a zero embedding placeholder when the store
+// mandates a vector per entry. See PreLLMHook for the isolation caveat.
+func (plugin *Plugin) setZeroVectorIfRequired(state *cacheState) {
+	if !plugin.store.RequiresVectors() || plugin.config.Dimension <= 0 {
+		return
+	}
+	state.Embeddings = make([]float32, plugin.config.Dimension)
+}
+
+// PostLLMHook caches the upstream response keyed by the storageID resolved
+// in PreLLMHook (deterministic directCacheID for direct hits, request UUID
+// otherwise). The store write runs in a goroutine tracked by writersWg with
+// its own background context + CacheSetTimeout, so client cancellation
+// after the response is delivered doesn't drop the cache write. Returns the
+// response unmodified — caching never alters the request flow.
+func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil {
+		// We rely on errors always arriving as the final chunk for streams, so
+		// we abort caching here without further bookkeeping. Any partial
+		// accumulator from a prior chunk gets reaped by the periodic cleanup.
+		return res, bifrostErr, nil
+	}
+
+	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if !ok {
+		return res, nil, nil
+	}
+
+	extraFields := res.GetExtraFields()
+	requestType := extraFields.RequestType
+	cacheDebug := extraFields.CacheDebug
+
+	// Final-chunk signaling for cache replays: stampCacheDebugForHit only
+	// stamps CacheDebug.CacheHit=true on the LAST replay chunk (see search.go).
+	// When we see that stamp, we set the stream-end indicator on the root ctx
+	// synchronously — same goroutine as the rest of the post-hook chain. This
+	// MUST run before shouldSkipCaching, otherwise we early-return without
+	// setting the indicator and downstream plugins (logging) never see
+	// isFinalChunk=true on the final replay chunk.
+	//
+	// Why not set the indicator from the cache replay goroutine instead? It
+	// races: the producer can advance to its next iteration (and SetValue)
+	// while the receiver is still running PostLLMHooks for the previous
+	// chunk, poisoning that chunk's IsFinalChunk read.
+	if bifrost.IsStreamRequestType(requestType) && cacheDebug != nil && cacheDebug.CacheHit {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	}
+	if plugin.shouldSkipCaching(ctx, res) {
+		return res, nil, nil
+	}
+
+	cacheKey, ok := plugin.resolveCacheKey(ctx)
+	if !ok {
+		return res, nil, nil
+	}
+	provider := extraFields.Provider
+	model := extraFields.OriginalModelRequested
+	isStream := bifrost.IsStreamRequestType(requestType)
+	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
+	state := plugin.getCacheState(requestID)
+	if state == nil || state.ParamsHash == "" {
+		// PreLLMHook bailed before computing the params hash (unsupported
+		// request type, conversation-history threshold, metadata error,
+		// etc.). Caching now would write an entry without params_hash that
+		// no future lookup can match.
+		return res, nil, nil
+	}
+
+	// Free state once the request is fully observed. For non-streams that's
+	// after this PostLLMHook returns; for streams, only on the final chunk.
+	defer func() {
+		if !isStream || isFinalChunk {
+			plugin.clearCacheState(requestID)
+		}
+	}()
+
+	// PreLLMHook short-circuited from cache; chunks here are the cached
+	// replay, not a fresh upstream response. shouldSkipCaching only catches
+	// the FINAL chunk (the only one carrying CacheDebug.CacheHit=true via
+	// stampCacheDebugForHit) — without this guard the non-final chunks
+	// would slip into addStreamingResponse and trigger a duplicate write
+	// at the same directCacheID (Weaviate 422 "id already exists").
+	if state.ShortCircuited {
+		return res, nil, nil
+	}
+
+	storageID, embedding, shouldStoreEmbeddings := plugin.resolveStorageIDAndEmbedding(ctx, state, requestID, requestType)
+
+	plugin.stampCacheDebugForMiss(state, extraFields, storageID, isStream, isFinalChunk)
+
+	cacheTTL := plugin.resolveTTL(ctx)
+	paramsHash := state.ParamsHash
+
+	embeddingToStore := embedding
+	if !shouldStoreEmbeddings {
+		embeddingToStore = nil
+	}
+
+	plugin.writersWg.Add(1)
+	go func() {
+		defer plugin.writersWg.Done()
+		cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
+		defer cancel()
+
+		unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
+		if isStream {
+			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
+				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
+			}
+		} else {
+			if err := plugin.addNonStreamingResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+				plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
+			}
+		}
+	}()
+
+	return res, nil, nil
+}
+
+// shouldSkipCaching returns true if the response cannot or should not be
+// written to the cache (large payload mode, cache hit replay, or explicit
+// no-store).
+func (plugin *Plugin) shouldSkipCaching(ctx *schemas.BifrostContext, res *schemas.BifrostResponse) bool {
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		return true
+	}
+	if isLargeResponse, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); ok && isLargeResponse {
+		return true
+	}
+	if cacheDebug := res.GetExtraFields().CacheDebug; cacheDebug != nil && cacheDebug.CacheHit {
+		return true
+	}
+	if noStore, ok := ctx.Value(CacheNoStoreKey).(bool); ok && noStore {
+		return true
+	}
+	return false
+}
+
+// resolveStorageIDAndEmbedding picks the storage ID (deterministic directCacheID
+// when direct search ran, else the request UUID) and resolves the embedding
+// from per-request state. shouldStoreEmbeddings is false for explicit
+// direct-only requests on stores that don't require vectors — those entries
+// skip the embedding column entirely.
+func (plugin *Plugin) resolveStorageIDAndEmbedding(ctx *schemas.BifrostContext, state *cacheState, requestID string, requestType schemas.RequestType) (storageID string, embedding []float32, shouldStoreEmbeddings bool) {
+	storageID = requestID
+	if state.DirectCacheID != "" {
+		storageID = state.DirectCacheID
+	}
+
+	shouldStoreEmbeddings = true
+	if cacheTypeVal, isCacheType := ctx.Value(CacheTypeKey).(CacheType); isCacheType && cacheTypeVal == CacheTypeDirect && !plugin.store.RequiresVectors() {
+		shouldStoreEmbeddings = false
+	}
+
+	isEmbeddingOrTranscription := requestType == schemas.EmbeddingRequest || requestType == schemas.TranscriptionRequest
+	needsEmbedding := shouldStoreEmbeddings && !isEmbeddingOrTranscription
+	needsZeroVector := isEmbeddingOrTranscription && plugin.store.RequiresVectors()
+
+	if needsEmbedding || needsZeroVector {
+		// embedding may still be nil — fine for direct hash matching unless the
+		// store requires vectors (in which case Add will reject downstream).
+		embedding = state.Embeddings
+	}
+	return storageID, embedding, shouldStoreEmbeddings
+}
+
+// stampCacheDebugForMiss attaches cache miss telemetry to the response. It
+// always sets CacheHit=false and CacheID to the storage ID where the entry
+// will be written, so the caller can later invalidate via ClearCacheForCacheID.
+// Embedding-cost fields (ProviderUsed/ModelUsed/InputTokens) are only stamped
+// when semantic search actually ran. For streams, only the final chunk is
+// stamped to avoid duplicating telemetry.
+func (plugin *Plugin) stampCacheDebugForMiss(state *cacheState, extraFields *schemas.BifrostResponseExtraFields, storageID string, isStream, isFinalChunk bool) {
+	if isStream && !isFinalChunk {
+		return
+	}
+	if extraFields.CacheDebug == nil {
+		extraFields.CacheDebug = &schemas.BifrostCacheDebug{}
+	}
+	cd := extraFields.CacheDebug
+	cd.CacheHit = false
+	cd.CacheID = bifrost.Ptr(storageID)
+	if state.EmbeddingsInputTokens > 0 {
+		inputTokens := state.EmbeddingsInputTokens
+		cd.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
+		cd.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
+		cd.InputTokens = &inputTokens
+	}
+}
+
+// resolveTTL returns the per-request TTL override if present, else the plugin default.
+func (plugin *Plugin) resolveTTL(ctx *schemas.BifrostContext) time.Duration {
+	if v := ctx.Value(CacheTTLKey); v != nil {
+		if ttl, ok := v.(time.Duration); ok {
+			return ttl
+		}
+		plugin.logger.Warn("TTL is not a time.Duration, using default TTL")
+	}
+	return plugin.config.TTL
+}
+
+// WaitForPendingOperations blocks until all pending cache operations (goroutines) complete.
+// This is useful in tests to ensure cache entries are stored before checking for cache hits.
+// It does NOT wait on background loops — those only exit on Cleanup.
+func (plugin *Plugin) WaitForPendingOperations() {
+	plugin.writersWg.Wait()
+}
+
+// Cleanup signals the background loops to stop and waits for in-flight cache
+// writes to drain before returning. When CleanUpOnShutdown is true, it then
+// deletes every entry tagged from_bifrost_local_cache_plugin and drops
+// the namespace — useful for ephemeral test environments. The default is to
+// leave entries in place so they can serve subsequent process restarts.
+func (plugin *Plugin) Cleanup() error {
+	close(plugin.stopCh)
+	plugin.writersWg.Wait()
+	plugin.cleanupWg.Wait()
+
+	// Final sweep: the periodic reaper only fires once per streamCleanupInterval,
+	// so any abandoned accumulator added in the window between the last tick
+	// and stopCh is still in memory. This call evicts those before we return.
+	plugin.cleanupOldStreamAccumulators()
+
+	// Only clean up cache entries if configured to do so
+	if !plugin.config.CleanUpOnShutdown {
+		plugin.logger.Debug("Cleanup on shutdown is disabled, skipping cache cleanup")
+		return nil
+	}
+
+	// Clean up all cache entries created by this plugin
+	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
+	defer cancel()
+
+	plugin.logger.Debug("Starting cleanup of cache entries...")
+
+	// Delete all cache entries created by this plugin
+	queries := []vectorstore.Query{
+		{
+			Field:    "from_bifrost_local_cache_plugin",
+			Operator: vectorstore.QueryOperatorEqual,
+			Value:    true,
+		},
+	}
+
+	results, err := plugin.store.DeleteAll(ctx, plugin.config.VectorStoreNamespace, queries)
+	if err != nil {
+		return fmt.Errorf("failed to delete cache entries: %w", err)
+	}
+
+	for _, result := range results {
+		if result.Status == vectorstore.DeleteStatusError {
+			plugin.logger.Warn("Failed to delete cache entry: %s", result.Error)
+		}
+	}
+	plugin.logger.Debug("Cleanup completed - deleted all cache entries")
+
+	if err := plugin.store.DeleteNamespace(ctx, plugin.config.VectorStoreNamespace); err != nil {
+		return fmt.Errorf("failed to delete namespace: %w", err)
+	}
+
+	return nil
+}
+
+// SetEmbeddingRequestExecutor wires up the function the plugin uses to call
+// out to the embedding provider. Must be set before the plugin starts
+// serving traffic; semantic search is silently skipped while it's nil.
+func (plugin *Plugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExecutor) {
+	plugin.embeddingRequestExecutor = executor
+}
+
+// ClearCacheForKey deletes every entry written under the given cache_key.
+// Use this to invalidate a tenant or feature scope in bulk. Per-entry
+// deletion is available via ClearCacheForCacheID.
+func (plugin *Plugin) ClearCacheForKey(cacheKey string) error {
+	queries := []vectorstore.Query{
+		{
+			Field:    "cache_key",
+			Operator: vectorstore.QueryOperatorEqual,
+			Value:    cacheKey,
+		},
+		{
+			Field:    "from_bifrost_local_cache_plugin",
+			Operator: vectorstore.QueryOperatorEqual,
+			Value:    true,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
+	defer cancel()
+	results, err := plugin.store.DeleteAll(ctx, plugin.config.VectorStoreNamespace, queries)
+	if err != nil {
+		plugin.logger.Warn("Failed to delete cache entries for key '%s': %v", cacheKey, err)
+		return err
+	}
+
+	for _, result := range results {
+		if result.Status == vectorstore.DeleteStatusError {
+			plugin.logger.Warn("Failed to delete cache entry for key %s: %s", result.ID, result.Error)
+		}
+	}
+
+	plugin.logger.Debug("Deleted all cache entries for key %s", cacheKey)
+
+	return nil
+}
+
+// ClearCacheForCacheID deletes a single cache entry by its storage ID. The
+// caller obtains the ID from BifrostResponse.ExtraFields.CacheDebug.CacheID,
+// which is stamped on both cache hits and cache misses — so the same handle
+// works whether the request wrote the entry or read it.
+func (plugin *Plugin) ClearCacheForCacheID(cacheID string) error {
+	if cacheID == "" {
+		return fmt.Errorf("cache ID is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
+	defer cancel()
+	if err := plugin.store.Delete(ctx, plugin.config.VectorStoreNamespace, cacheID); err != nil {
+		plugin.logger.Warn("Failed to delete cache entry %s: %v", cacheID, err)
+		return err
+	}
+	plugin.logger.Debug("Deleted cache entry %s", cacheID)
+	return nil
+}

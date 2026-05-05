@@ -17,6 +17,7 @@ type TableClientConfig struct {
 	HeaderFilterConfigJSON                string `gorm:"type:text" json:"-"` // JSON serialized GlobalHeaderFilterConfig
 	InitialPoolSize                       int    `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging                         *bool  `gorm:"default:true" json:"enable_logging"`
+	EnableLocalCache                      *bool  `gorm:"default:false" json:"enable_local_cache"`      // Toggles loading of the local cache plugin; when flipped, the compat-shim ReloadPlugins/RemovePlugins it
 	DisableContentLogging                 bool   `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
 	DisableDBPingsInHealth                bool   `gorm:"default:false" json:"disable_db_pings_in_health"`
 	LogRetentionDays                      int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)

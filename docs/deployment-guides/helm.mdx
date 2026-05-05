@@ -453,7 +453,7 @@ bifrost:
       version: 1
       config:
         is_vk_mandatory: true
-    semanticCache:
+    # local_cache moved out of plugins; see localCache top-level
       enabled: true
       version: 1
       config:
@@ -479,7 +479,7 @@ helm install bifrost bifrost/bifrost -f enterprise.yaml
 Next steps: jump to [Next Steps](#next-steps).
 
 <Note>
-For DB-backed deployments, built-in plugins support a top-level `version` field (for example: `telemetry`, `logging`, `governance`, `semanticCache`, `otel`, `maxim`, `datadog`). Increase this number when you want config from Helm to overwrite an older plugin record in the DB.
+For DB-backed deployments, built-in plugins support a top-level `version` field (for example: `telemetry`, `logging`, `governance`, `localCache`, `otel`, `maxim`, `datadog`). Increase this number when you want config from Helm to overwrite an older plugin record in the DB.
 </Note>
 
 ## Enterprise Support
@@ -609,7 +609,7 @@ curl http://localhost:8080/health
     SQLite, PostgreSQL, object storage for logs, vector stores
   </Card>
   <Card title="Plugins" icon="puzzle-piece" href="/deployment-guides/helm/plugins">
-    Telemetry, logging, semantic cache, OTel, Datadog, governance
+    Telemetry, logging, OTel, Datadog, governance
   </Card>
   <Card title="Governance" icon="shield" href="/deployment-guides/helm/governance">
     Budgets, rate limits, virtual keys, routing rules

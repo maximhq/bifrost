@@ -193,11 +193,11 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 		}
 	}
 
-	// Update semantic cache debug and raw response from final chunk if available
+	// Update local cache debug and raw response from final chunk if available
 	if len(acc.ImageStreamChunks) > 0 {
 		lastChunk := acc.ImageStreamChunks[len(acc.ImageStreamChunks)-1]
-		if lastChunk.SemanticCacheDebug != nil {
-			data.CacheDebug = lastChunk.SemanticCacheDebug
+		if lastChunk.LocalCacheDebug != nil {
+			data.CacheDebug = lastChunk.LocalCacheDebug
 		}
 		if lastChunk.RawResponse != nil {
 			data.RawResponse = lastChunk.RawResponse
@@ -277,7 +277,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
-			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.LocalCacheDebug = result.GetExtraFields().CacheDebug
 			chunk.FinishReason = bifrost.Ptr("completed")
 		}
 	}

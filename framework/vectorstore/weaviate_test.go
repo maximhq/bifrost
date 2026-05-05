@@ -644,7 +644,7 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 		assert.Len(t, vectorResults, 2) // Both of Alice's content
 	})
 
-	t.Run("Semantic Cache-like Workflow", func(t *testing.T) {
+	t.Run("Local Cache-like Workflow", func(t *testing.T) {
 		// Add request-response pairs with parameters
 		cacheEntries := []struct {
 			key       string

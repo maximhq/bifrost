@@ -215,6 +215,9 @@ false
 {{- if hasKey .Values.bifrost.client "enableLogging" }}
 {{- $_ := set $client "enable_logging" .Values.bifrost.client.enableLogging }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "enableLocalCache" }}
+{{- $_ := set $client "enable_local_cache" .Values.bifrost.client.enableLocalCache }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceAuthOnInference" }}
 {{- $_ := set $client "enforce_auth_on_inference" .Values.bifrost.client.enforceAuthOnInference }}
 {{- end }}
@@ -881,6 +884,59 @@ false
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
+{{- /* Local cache plugin config (top-level "local_cache" block, sibling of
+       "client" / "vector_store"). Whether the plugin loads at boot is
+       controlled by client.enable_local_cache, rendered above; this block
+       only carries the config the plugin reads via its shared pointer. */ -}}
+{{- if .Values.localCache }}
+{{- $localCache := dict }}
+{{- $inputConfig := .Values.localCache.config | default dict }}
+{{- if $inputConfig.dimension }}
+{{- $_ := set $localCache "dimension" $inputConfig.dimension }}
+{{- end }}
+{{/* Only emit embedding provider config when not in direct-only mode (dimension: 1). */}}
+{{- if ne (int ($inputConfig.dimension | default 1536)) 1 }}
+{{- if $inputConfig.provider }}
+{{- $_ := set $localCache "provider" $inputConfig.provider }}
+{{- end }}
+{{- if .Values.localCache.keys }}
+{{- $_ := set $localCache "keys" .Values.localCache.keys }}
+{{- end }}
+{{- if $inputConfig.embedding_model }}
+{{- $_ := set $localCache "embedding_model" $inputConfig.embedding_model }}
+{{- end }}
+{{- end }}
+{{- if $inputConfig.threshold }}
+{{- $_ := set $localCache "threshold" $inputConfig.threshold }}
+{{- end }}
+{{- if $inputConfig.ttl }}
+{{- $_ := set $localCache "ttl" $inputConfig.ttl }}
+{{- end }}
+{{- if $inputConfig.vector_store_namespace }}
+{{- $_ := set $localCache "vector_store_namespace" $inputConfig.vector_store_namespace }}
+{{- end }}
+{{- if $inputConfig.default_cache_key }}
+{{- $_ := set $localCache "default_cache_key" $inputConfig.default_cache_key }}
+{{- end }}
+{{- if hasKey $inputConfig "conversation_history_threshold" }}
+{{- $_ := set $localCache "conversation_history_threshold" $inputConfig.conversation_history_threshold }}
+{{- end }}
+{{- if hasKey $inputConfig "cache_by_model" }}
+{{- $_ := set $localCache "cache_by_model" $inputConfig.cache_by_model }}
+{{- end }}
+{{- if hasKey $inputConfig "cache_by_provider" }}
+{{- $_ := set $localCache "cache_by_provider" $inputConfig.cache_by_provider }}
+{{- end }}
+{{- if hasKey $inputConfig "exclude_system_prompt" }}
+{{- $_ := set $localCache "exclude_system_prompt" $inputConfig.exclude_system_prompt }}
+{{- end }}
+{{- if hasKey $inputConfig "cleanup_on_shutdown" }}
+{{- $_ := set $localCache "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
+{{- end }}
+{{- if $localCache }}
+{{- $_ := set $config "local_cache" $localCache }}
+{{- end }}
+{{- end }}
 {{- /* MCP */ -}}
 {{- if .Values.bifrost.mcp.enabled }}
 {{- $clientConfigs := list }}
@@ -1058,55 +1114,10 @@ false
 {{- if hasKey .Values.bifrost.plugins.maxim "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.maxim.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
-{{- if .Values.bifrost.plugins.semanticCache.enabled }}
-{{- $scConfig := dict }}
-{{- $inputConfig := .Values.bifrost.plugins.semanticCache.config | default dict }}
-{{- if $inputConfig.dimension }}
-{{- $_ := set $scConfig "dimension" $inputConfig.dimension }}
-{{- end }}
-{{/* Only include embedding provider config when not in direct cache mode (dimension: 1) */}}
-{{- if ne (int ($inputConfig.dimension | default 1536)) 1 }}
-{{- if $inputConfig.provider }}
-{{- $_ := set $scConfig "provider" $inputConfig.provider }}
-{{- end }}
-{{- if $inputConfig.keys }}
-{{- $_ := set $scConfig "keys" $inputConfig.keys }}
-{{- end }}
-{{- if $inputConfig.embedding_model }}
-{{- $_ := set $scConfig "embedding_model" $inputConfig.embedding_model }}
-{{- end }}
-{{- end }}
-{{- if $inputConfig.threshold }}
-{{- $_ := set $scConfig "threshold" $inputConfig.threshold }}
-{{- end }}
-{{- if $inputConfig.ttl }}
-{{- $_ := set $scConfig "ttl" $inputConfig.ttl }}
-{{- end }}
-{{- if $inputConfig.vector_store_namespace }}
-{{- $_ := set $scConfig "vector_store_namespace" $inputConfig.vector_store_namespace }}
-{{- end }}
-{{- if $inputConfig.default_cache_key }}
-{{- $_ := set $scConfig "default_cache_key" $inputConfig.default_cache_key }}
-{{- end }}
-{{- if hasKey $inputConfig "conversation_history_threshold" }}
-{{- $_ := set $scConfig "conversation_history_threshold" $inputConfig.conversation_history_threshold }}
-{{- end }}
-{{- if hasKey $inputConfig "cache_by_model" }}
-{{- $_ := set $scConfig "cache_by_model" $inputConfig.cache_by_model }}
-{{- end }}
-{{- if hasKey $inputConfig "cache_by_provider" }}
-{{- $_ := set $scConfig "cache_by_provider" $inputConfig.cache_by_provider }}
-{{- end }}
-{{- if hasKey $inputConfig "exclude_system_prompt" }}
-{{- $_ := set $scConfig "exclude_system_prompt" $inputConfig.exclude_system_prompt }}
-{{- end }}
-{{- if hasKey $inputConfig "cleanup_on_shutdown" }}
-{{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
-{{- end }}
-{{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
-{{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
-{{- $plugins = append $plugins $plugin }}
-{{- end }}
+{{- /* Local cache lives at the root of config.json (top-level "local_cache"
+       block), not inside plugins[]. The toggle is on client.enable_local_cache.
+       This block only sets the config; whether the plugin loads is controlled
+       elsewhere by the enable_local_cache flag rendered into client. */ -}}
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.otel.config | default dict }}
@@ -1262,7 +1273,7 @@ Call this template at the beginning of deployment/stateful templates
 */}}
 {{- define "bifrost.validate" -}}
 
-{{/* Validate semantic cache plugin when enabled */}}
+{{/* Validate plugin version bumps */}}
 {{- if and .Values.bifrost.plugins.telemetry.enabled (hasKey .Values.bifrost.plugins.telemetry "version") (lt (int .Values.bifrost.plugins.telemetry.version) 1) }}
 {{- fail "ERROR: bifrost.plugins.telemetry.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
 {{- end }}
@@ -1287,11 +1298,11 @@ Call this template at the beginning of deployment/stateful templates
 {{- if and .Values.bifrost.plugins.maxim.enabled (hasKey .Values.bifrost.plugins.maxim "version") (gt (int .Values.bifrost.plugins.maxim.version) 32767) }}
 {{- fail "ERROR: bifrost.plugins.maxim.version must be <= 32767." }}
 {{- end }}
-{{- if and .Values.bifrost.plugins.semanticCache.enabled (hasKey .Values.bifrost.plugins.semanticCache "version") (lt (int .Values.bifrost.plugins.semanticCache.version) 1) }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- if and .Values.bifrost.client.enableLocalCache .Values.localCache (hasKey .Values.localCache "version") (lt (int .Values.localCache.version) 1) }}
+{{- fail "ERROR: localCache.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
 {{- end }}
-{{- if and .Values.bifrost.plugins.semanticCache.enabled (hasKey .Values.bifrost.plugins.semanticCache "version") (gt (int .Values.bifrost.plugins.semanticCache.version) 32767) }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.version must be <= 32767." }}
+{{- if and .Values.bifrost.client.enableLocalCache .Values.localCache (hasKey .Values.localCache "version") (gt (int .Values.localCache.version) 32767) }}
+{{- fail "ERROR: localCache.version must be <= 32767." }}
 {{- end }}
 {{- if and .Values.bifrost.plugins.otel.enabled (hasKey .Values.bifrost.plugins.otel "version") (lt (int .Values.bifrost.plugins.otel.version) 1) }}
 {{- fail "ERROR: bifrost.plugins.otel.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
@@ -1306,15 +1317,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail "ERROR: bifrost.plugins.datadog.version must be <= 32767." }}
 {{- end }}
 
-{{/* Validate semantic cache plugin when enabled */}}
-{{- if .Values.bifrost.plugins.semanticCache.enabled }}
-{{/* When dimension is 1, direct (hash-based) caching is used — provider and keys are not required. */}}
-{{- if ne (int .Values.bifrost.plugins.semanticCache.config.dimension) 1 }}
-{{- if not .Values.bifrost.plugins.semanticCache.config.provider }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required for semantic caching. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface. For direct (hash-based) caching, set dimension: 1." }}
+{{/* Validate local cache plugin when enabled */}}
+{{- if and .Values.bifrost.client.enableLocalCache .Values.localCache .Values.localCache.config }}
+{{/* Direct-only mode (dimension: 1) doesn't require provider or keys. */}}
+{{- if ne (int .Values.localCache.config.dimension) 1 }}
+{{- if not .Values.localCache.config.provider }}
+{{- fail "ERROR: localCache.config.provider is required for semantic mode. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface. For direct-only mode, set dimension: 1." }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.semanticCache.config.keys }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.keys is required for semantic caching. Provide at least one API key for the embedding provider. For direct (hash-based) caching, set dimension: 1." }}
+{{- if and (not .Values.localCache.keys) (or (not .Values.localCache.secretRef) (not .Values.localCache.secretRef.name)) }}
+{{- fail "ERROR: localCache.keys (or localCache.secretRef.name) is required for semantic mode. Provide at least one API key for the embedding provider. For direct-only mode, set dimension: 1." }}
 {{- end }}
 {{- end }}
 {{- end }}

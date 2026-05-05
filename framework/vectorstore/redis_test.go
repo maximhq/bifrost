@@ -146,7 +146,7 @@ func (ts *RedisTestSetup) ensureNamespaceExists(t *testing.T) {
 		"response": {
 			DataType: VectorStorePropertyTypeString,
 		},
-		"from_bifrost_semantic_cache_plugin": {
+		"from_bifrost_local_cache_plugin": {
 			DataType: VectorStorePropertyTypeBoolean,
 		},
 	}
@@ -1451,7 +1451,7 @@ func TestRedisStore_CompleteUseCases(t *testing.T) {
 		assert.GreaterOrEqual(t, len(vectorResults), 1)
 	})
 
-	t.Run("Semantic Cache-like Workflow", func(t *testing.T) {
+	t.Run("Local Cache-like Workflow", func(t *testing.T) {
 		// Add request-response pairs with parameters
 		cacheEntries := []struct {
 			key       string
@@ -1466,7 +1466,7 @@ func TestRedisStore_CompleteUseCases(t *testing.T) {
 					"user":                               "u1",
 					"lang":                               "en",
 					"response":                           "answer1",
-					"from_bifrost_semantic_cache_plugin": true,
+					"from_bifrost_local_cache_plugin": true,
 				},
 			},
 			{
@@ -1477,12 +1477,12 @@ func TestRedisStore_CompleteUseCases(t *testing.T) {
 					"user":                               "u1",
 					"lang":                               "es",
 					"response":                           "answer2",
-					"from_bifrost_semantic_cache_plugin": true,
+					"from_bifrost_local_cache_plugin": true,
 				},
 			},
 		}
 
-		filterFields := []string{"request_hash", "user", "lang", "response", "from_bifrost_semantic_cache_plugin"}
+		filterFields := []string{"request_hash", "user", "lang", "response", "from_bifrost_local_cache_plugin"}
 
 		for _, entry := range cacheEntries {
 			err := setup.Store.Add(setup.ctx, TestNamespace, entry.key, entry.embedding, entry.metadata)

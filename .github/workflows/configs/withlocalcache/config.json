@@ -1,0 +1,18 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "enable_local_cache": true
+  },
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "http",
+      "host": "localhost:9000"
+    }
+  },
+  "local_cache": {
+    "dimension": 1,
+    "vector_store_namespace": "test"
+  }
+}

@@ -114,7 +114,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
                 
                 // 3. Update the log entry with the complete data
                 processingErr := retryOnNotFound(p.ctx, func() error {
-                    return p.updateStreamingLogEntry(p.ctx, logMsg.RequestID, logMsg.SemanticCacheDebug, logMsg.StreamResponse, true)
+                    return p.updateStreamingLogEntry(p.ctx, logMsg.RequestID, logMsg.LocalCacheDebug, logMsg.StreamResponse, true)
                 })
                 
                 // ... handle errors and callbacks ...

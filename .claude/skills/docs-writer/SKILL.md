@@ -43,7 +43,7 @@ Parse the feature name and map it to codebase areas. Common feature-to-directory
 | mcp | `ui/app/workspace/mcp-registry/` | `handlers/mcp.go` | `mcp` | `docs/mcp/` |
 | plugins | `ui/app/workspace/plugins/` | `handlers/plugins.go` | `plugins` | `docs/features/plugins/` |
 | logs / observability | `ui/app/workspace/logs/` | `handlers/logging.go` | `client.enable_logging` | `docs/features/observability/` |
-| semantic-caching | `ui/app/workspace/config/caching/` | `handlers/cache.go` | `plugins.semantic_cache` + `vector_store` | `docs/features/semantic-caching.mdx` |
+| local-caching | `ui/app/workspace/config/caching/` | `handlers/cache.go` + `handlers/local_cache.go` | `client.enable_local_cache` + `local_cache` + `vector_store` | `docs/features/local-caching.mdx` |
 | guardrails | `ui/app/workspace/guardrails/` | Enterprise | `guardrails_config` | `docs/enterprise/guardrails.mdx` |
 | clustering | `ui/app/workspace/cluster/` | Enterprise | `cluster_config` | `docs/enterprise/clustering.mdx` |
 | load-balancing | `ui/app/workspace/adaptive-routing/` | Enterprise | `load_balancer_config` | `docs/enterprise/adaptive-load-balancing.mdx` |

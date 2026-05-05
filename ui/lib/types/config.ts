@@ -471,6 +471,7 @@ export interface CoreConfig {
 	initial_pool_size: number;
 	prometheus_labels: string[];
 	enable_logging: boolean;
+	enable_local_cache?: boolean;
 	disable_content_logging: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
@@ -503,6 +504,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	initial_pool_size: 1000,
 	prometheus_labels: [],
 	enable_logging: true,
+	enable_local_cache: false,
 	disable_content_logging: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
@@ -527,7 +529,8 @@ export const DefaultCoreConfig: CoreConfig = {
 	routing_chain_max_depth: 10,
 };
 
-// Semantic cache configuration types
+// Local cache configuration types (covers both direct hash matching and
+// embedding-based semantic similarity search)
 interface BaseCacheConfig {
 	ttl: number;
 	threshold: number;
@@ -537,6 +540,7 @@ interface BaseCacheConfig {
 	cache_by_provider: boolean;
 	vector_store_namespace?: string;
 	default_cache_key?: string;
+	cleanup_on_shutdown?: boolean;
 	created_at?: string;
 	updated_at?: string;
 }
