@@ -162,6 +162,27 @@ export const ProviderIcons = {
 		);
 	},
 
+	deepseek: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 28 28"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<circle cx="14" cy="14" r="14" fill="#335CFF" />
+				<path
+					d="M9 8.75H14.125C17.9905 8.75 21 11.5906 21 14.875C21 18.1594 17.9905 21 14.125 21H9V8.75ZM12.0625 11.375V18.375H13.9375C16.3572 18.375 17.9375 16.934 17.9375 14.875C17.9375 12.816 16.3572 11.375 13.9375 11.375H12.0625Z"
+					fill="white"
+				/>
+			</svg>
+		);
+	},
+
 	cohere: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return (

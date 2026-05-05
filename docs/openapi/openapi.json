@@ -61045,6 +61045,7 @@
           "perplexity",
           "replicate",
           "cerebras",
+          "deepseek",
           "gemini",
           "openrouter",
           "elevenlabs",
