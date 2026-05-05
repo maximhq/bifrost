@@ -35,18 +35,14 @@ Configure the registration:
 5. Click **Register**
 
 <Tip>
-  You can add an app icon to make the application easily recognizable. The
-  Bifrost logo is available at:
-  [https://www.getmaxim.ai/bifrost/bifrost-logo-only.png](https://www.getmaxim.ai/bifrost/bifrost-logo-only.png)
+	You can add an app icon to make the application easily recognizable. The Bifrost logo is available at:
+	[https://www.getmaxim.ai/bifrost/bifrost-logo-only.png](https://www.getmaxim.ai/bifrost/bifrost-logo-only.png)
 </Tip>
 
 6. After registration, note down the following from the **Overview** page:
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-app-information.png"
-    alt="Entra App Registration Overview"
-  />
+	<img src="/media/user-provisioning/entra-app-information.png" alt="Entra App Registration Overview" />
 </Frame>
 
 | Value                       | Where to Find         |
@@ -59,9 +55,8 @@ Configure the registration:
 ## Step 2: Create App Roles (Optional)
 
 <Note>
-  This step is optional. You can create custom roles if thats the preferred way.
-  Or you can map any attribute to role/team/business unit. Role mapping is
-  required step.
+	This step is optional. You can create custom roles if that's the preferred way. Or you can map any attribute to role/team/business unit.
+	Role mapping is a required step.
 </Note>
 
 Configure roles in Entra that map to Bifrost's role hierarchy (Admin, Developer, Viewer).
@@ -71,10 +66,7 @@ Configure roles in Entra that map to Bifrost's role hierarchy (Admin, Developer,
 3. Create the following three roles:
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-create-app-roles.png"
-    alt="Entra App Roles configuration"
-  />
+	<img src="/media/user-provisioning/entra-create-app-roles.png" alt="Entra App Roles configuration" />
 </Frame>
 
 ### Viewer Role
@@ -118,10 +110,7 @@ To control which users can access Bifrost, enable assignment requirement on the 
 3. Go to **Properties**
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-enable-assignment.png"
-    alt="Entra Enterprise Application Properties"
-  />
+	<img src="/media/user-provisioning/entra-enable-assignment.png" alt="Entra Enterprise Application Properties" />
 </Frame>
 
 4. Set **Assignment required?** to **Yes**
@@ -139,10 +128,7 @@ Bifrost requires a client secret for OAuth authentication.
 3. Click **New client secret**
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-create-client-secret.png"
-    alt="Entra Enterprise Client Secrets"
-  />
+	<img src="/media/user-provisioning/entra-create-client-secret.png" alt="Entra Enterprise Client Secrets" />
 </Frame>
 
 | Field           | Value                                                  |
@@ -153,10 +139,7 @@ Bifrost requires a client secret for OAuth authentication.
 4. Click **Add**
 5. **Copy the secret value immediately** - it won't be shown again!
 
-<Warning>
-  Store the client secret securely. You'll need it for the Bifrost
-  configuration.
-</Warning>
+<Warning>Store the client secret securely. You'll need it for the Bifrost configuration.</Warning>
 
 ---
 
@@ -165,39 +148,51 @@ Bifrost requires a client secret for OAuth authentication.
 Ensure your application has the necessary permissions.
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-api-permissions.png"
-    alt="Entra Enterprise API Permissions"
-  />
+	<img src="/media/user-provisioning/entra-api-permissions.png" alt="Entra Enterprise API Permissions" />
 </Frame>
 
 1. In your app registration, go to **API permissions**
 2. Click **Add a permission**
 3. Select **Microsoft Graph**
-4. Choose **Application permissions**
-5. Add the following permissions:
+4. Choose the permission type as indicated in the next steps
+5. Add the following **Delegated** permissions (Add a permission → Microsoft Graph → **Delegated permissions**):
    - `openid`
    - `profile`
    - `email`
    - `offline_access` (for refresh tokens)
-
-6. In addition to above roles, following 4 roles are required
    - `User.Read`
+
+6. Add the following **Application** permissions (Add a permission → Microsoft Graph → **Application permissions**):
    - `User.Read.All`
    - `GroupMember.Read.All`
    - `Group.Read.All`
+   - `Application.Read.All` — required for syncing app-role-based role mappings during user import
+   - `AppRoleAssignment.ReadWrite.All` — required to read each user's app role assignments via Microsoft Graph
+
+<Warning>
+  Permission **type** matters: `openid`, `profile`, `email`, `offline_access`,
+  and `User.Read` must be **Delegated**, while `User.Read.All`,
+  `GroupMember.Read.All`, `Group.Read.All`, `Application.Read.All`, and
+  `AppRoleAssignment.ReadWrite.All` must be **Application**. The same name can
+  exist under both types — adding the wrong one will cause sign-in or sync
+  failures even though the permission appears granted.
+</Warning>
 
 7. Click **Add permissions**
-8. If required by your organization, click **Grant admin consent for [Your Organization]**
+8. Click **Grant admin consent for [Your Organization]** (this is required — without admin consent, Application permissions are not effective even though they appear in the list)
+
+<Note>
+	`Application.Read.All` and `AppRoleAssignment.ReadWrite.All` are only needed if you plan to use **app role based role mappings** (i.e.
+	mappings whose attribute is `roles`) during the bulk user sync. Login-time role mapping works from the JWT alone, but bulk sync from
+	Microsoft Graph needs these permissions to read each user's app-role assignments and resolve them to their role values (e.g. `admin`,
+	`developer`).
+</Note>
 
 ---
 
 ## Step 6: Configure Token Claims (Optional)
 
-<Note>
-  Groups and other attributes are required in the claim when you configure their
-  mapping in Bifrost.
-</Note>
+<Note>Groups and other attributes are required in the claim when you configure their mapping in Bifrost.</Note>
 
 By default, Entra includes the `roles` claim when app roles are assigned. To include group memberships for team synchronization:
 
@@ -213,10 +208,7 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 ## Step 7: Assign Users and Roles
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-user-assignments.png"
-    alt="Entra User Assignments"
-  />
+	<img src="/media/user-provisioning/entra-user-assignments.png" alt="Entra User Assignments" />
 </Frame>
 
 1. Go to **Enterprise applications** → **Bifrost Enterprise**
@@ -226,9 +218,16 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 5. Select the appropriate role (Admin, Developer, or Viewer)
 6. Click **Assign**
 
+<Warning>
+	You **must** select a role when assigning a user or group. Adding a user to the application without picking a role causes Entra to omit
+	the `roles` claim from the issued ID token, and login will be rejected with `Claim "roles" is not present in the token`. If you don't want
+	to use app roles, configure your Bifrost role mappings on the `groups` attribute instead (see [Attribute Mappings](#attribute-mappings)
+	below).
+</Warning>
+
 <Tip>
-  You can assign roles to groups for easier management. All users in a group
-  will inherit the assigned role.
+	You can assign roles to groups for easier management. All users in a group will inherit the assigned role. The group itself must be added
+	as an assignment with a role selected — adding users to a group that isn't assigned to the application will not propagate roles.
 </Tip>
 
 ---
@@ -236,19 +235,18 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 ## Step 8: Configure App Manifest
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-app-manifest.png"
-    alt="Microsoft entra app manifest"
-  />
+	<img src="/media/user-provisioning/entra-app-manifest.png" alt="Microsoft entra app manifest" />
 </Frame>
 
-You will need to make 2 changes in the app manifest
+You will need to make the following changes in the app manifest.
+
+Set the access token version to v2:
 
 ```json
-"requestedAccessTokenVersion": 2
+"accessTokenAcceptedVersion": 2
 ```
 
-and
+Add the optional `roles` and `groups` claims to the ID token:
 
 ```json
 "optionalClaims": {
@@ -271,6 +269,21 @@ and
 }
 ```
 
+Restrict the `groups` claim to groups assigned to this application (recommended):
+
+```json
+"groupMembershipClaims": "ApplicationGroup"
+```
+
+<Note>
+  Setting `groupMembershipClaims` to `"ApplicationGroup"` ensures the `groups`
+  claim only contains groups that are explicitly assigned to the Bifrost
+  Enterprise application — not every group the user belongs to tenant-wide.
+  This keeps your team and role mappings predictable and avoids leaking
+  unrelated group memberships into the token. Use `"SecurityGroup"` or
+  `"All"` only if you intentionally want broader group visibility.
+</Note>
+
 ## Step 9: Configure Bifrost
 
 Now configure Bifrost to use Microsoft Entra as the identity provider.
@@ -278,10 +291,7 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 ### Using the Bifrost UI
 
 <Frame>
-  <img
-    src="/media/user-provisioning/entra-form.png"
-    alt="Create token dialog in Entra"
-  />
+	<img src="/media/user-provisioning/entra-form.png" alt="Create token dialog in Entra" />
 </Frame>
 
 1. Navigate to **Governance** → **User Provisioning** in your Bifrost dashboard
@@ -300,10 +310,7 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 6. Toggle **Enabled** to activate the provider
 7. Click **Save Configuration**
 
-<Warning>
-  After saving, you'll need to restart your Bifrost server for the changes to
-  take effect.
-</Warning>
+<Warning>After saving, you'll need to restart your Bifrost server for the changes to take effect.</Warning>
 
 ### Configuration Reference
 
@@ -337,26 +344,17 @@ To configure attribute mappings:
 4. Repeat for each rule you need
 
 <Frame>
-  <img
-    src="/media/user-provisioning/attribute-to-entity-mapping.png"
-    alt="Attribute Mappings configuration in Bifrost"
-  />
+	<img src="/media/user-provisioning/attribute-to-entity-mapping.png" alt="Attribute Mappings configuration in Bifrost" />
 </Frame>
 
-<Note>
-  When you mark value as "*" - the claim value is mapped as is to the entity
-  name. Values comparisons are case-insensitive.
-</Note>
+<Note>When you mark value as "*" - the claim value is mapped as is to the entity name. Values comparisons are case-insensitive.</Note>
 
 ### Custom attribute mapping
 
 You can also map any custom attributes to any entity (role, team or business unit). Make sure these are configured to send back to Bifrost in token configuration.
 
 <Frame>
-  <img
-    src="/media/user-provisioning/custom-attribute-mapping.png"
-    alt="Attribute Mappings configuration in Bifrost"
-  />
+	<img src="/media/user-provisioning/custom-attribute-mapping.png" alt="Attribute Mappings configuration in Bifrost" />
 </Frame>
 
 #### Evaluation rules
@@ -366,9 +364,8 @@ You can also map any custom attributes to any entity (role, team or business uni
 - **Claim values**: Can be strings, arrays, or nested objects. Bifrost resolves dotted paths (e.g., `realm_access.roles`).
 
 <Note>
-  If a user matches multiple role mapping rules, the highest privilege role is
-  assigned. If no mapping matches, the first user to sign in receives the
-  **Admin** role, and subsequent users receive the **Viewer** role.
+	If a user matches multiple role mapping rules, the highest privilege role is assigned. If no mapping matches, the first user to sign in
+	receives the **Admin** role, and subsequent users receive the **Viewer** role.
 </Note>
 
 5. Click **Save Configuration**
@@ -409,6 +406,27 @@ You can also map any custom attributes to any entity (role, team or business uni
 - Ensure the Tenant ID matches your Azure directory
 - Verify the Client ID is correct
 - Check that the app registration is in the same tenant as your users
+
+### `Claim "roles" is not present in the token` on login
+
+This means the user signed in successfully but Entra did not emit a `roles` claim in the ID token. Bifrost rejects the login because none of your role mappings can be evaluated.
+
+Causes and fixes:
+
+- **User isn't assigned to a role at the Enterprise Application level.** Go to **Enterprise applications → Bifrost Enterprise → Users and groups**, edit the assignment, and pick a role (admin/developer/viewer). Adding a user to the app without selecting a role does not emit the `roles` claim.
+- **Role assignment is via a group that isn't itself assigned to the app.** The group needs to appear in _Users and groups_ with a role selected — Entra does not walk transitive group memberships to populate `roles`.
+- **Optional `roles` claim missing from the manifest.** Confirm Step 8 (App Manifest) lists `roles` under `optionalClaims.idToken`.
+- **Sign out and back in.** Existing sessions still carry the old token without `roles`.
+
+If you don't want to use app roles at all, switch your Bifrost mappings to use the `groups` attribute (which is already in the token) instead of `roles`. See [Attribute Mappings](#attribute-mappings).
+
+### Bulk user sync assigns Viewer instead of the mapped role
+
+If users come in via **User Provisioning → Import users** and end up on the default role (Viewer) despite having a matching app-role-based mapping configured:
+
+- Confirm the user actually has the app role assigned in Entra (**Enterprise applications → Bifrost Enterprise → Users and groups**).
+- Confirm both `Application.Read.All` and `AppRoleAssignment.ReadWrite.All` are granted **with admin consent** in Step 5. Without these, Bifrost cannot read the app role catalog or per-user assignments via Microsoft Graph, so the synthetic `roles` claim used by the importer will be empty.
+- Server logs will contain `[ENTRA-ROLES] failed to fetch app role catalog: ... 403` if the permission is missing.
 
 ---
 
