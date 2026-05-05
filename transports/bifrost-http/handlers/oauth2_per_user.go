@@ -541,9 +541,14 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 	}
 
 	// Build upstream authorize URL with PKCE.
+	resolvedClientID := templateConfig.GetResolvedClientID()
+	if strings.TrimSpace(resolvedClientID) == "" {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth client_id for config %q could not be resolved — check that the referenced environment variable is set", templateConfig.ID))
+		return
+	}
 	params := url.Values{}
 	params.Set("response_type", "code")
-	params.Set("client_id", templateConfig.ClientID)
+	params.Set("client_id", resolvedClientID)
 	params.Set("redirect_uri", redirectURI)
 	params.Set("state", state)
 	params.Set("code_challenge", codeChallenge)

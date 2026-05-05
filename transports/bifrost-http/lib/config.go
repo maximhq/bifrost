@@ -4800,6 +4800,14 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		}
 	}
 
+	// Redact OAuth client credentials
+	if config.OauthClientID != nil {
+		configCopy.OauthClientID = config.OauthClientID.Redacted()
+	}
+	if config.OauthClientSecret != nil {
+		configCopy.OauthClientSecret = config.OauthClientSecret.Redacted()
+	}
+
 	return &configCopy
 }
 

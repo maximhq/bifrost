@@ -296,6 +296,7 @@ type ConfigStore interface {
 
 	// OAuth config CRUD
 	GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error)
+	GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error)
 	GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error)
 	GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error)
 	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error

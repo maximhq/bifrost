@@ -4151,6 +4151,23 @@ func (s *RDBConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*ta
 	return &config, nil
 }
 
+// GetOauthConfigsByIDs retrieves multiple OAuth configs by their IDs in a single query.
+// Returns a map keyed by config ID for O(1) lookup.
+func (s *RDBConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error) {
+	if len(ids) == 0 {
+		return map[string]*tables.TableOauthConfig{}, nil
+	}
+	var configs []tables.TableOauthConfig
+	if err := s.DB().WithContext(ctx).Where("id IN ?", ids).Find(&configs).Error; err != nil {
+		return nil, fmt.Errorf("failed to batch-get oauth configs: %w", err)
+	}
+	result := make(map[string]*tables.TableOauthConfig, len(configs))
+	for i := range configs {
+		result[configs[i].ID] = &configs[i]
+	}
+	return result, nil
+}
+
 // GetOauthConfigByState retrieves an OAuth config by its state token
 // State is unique per OAuth flow (used for CSRF protection on callback)
 func (s *RDBConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {

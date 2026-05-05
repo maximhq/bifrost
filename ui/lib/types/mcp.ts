@@ -16,8 +16,8 @@ export interface MCPStdioConfig {
 }
 
 export interface OAuthConfig {
-	client_id: string;
-	client_secret?: string; // Optional for public clients using PKCE
+	client_id: EnvVar;
+	client_secret?: EnvVar; // Optional for public clients using PKCE
 	authorize_url?: string; // Optional, will be discovered from server_url if not provided
 	token_url?: string; // Optional, will be discovered from server_url if not provided
 	registration_url?: string; // Optional, for dynamic client registration
@@ -27,8 +27,8 @@ export interface OAuthConfig {
 
 /** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */
 export interface OAuthConfigUpdate {
-	client_id?: string;
-	client_secret?: string;
+	client_id?: EnvVar;
+	client_secret?: EnvVar;
 }
 
 export interface MCPClientConfig {
@@ -40,6 +40,8 @@ export interface MCPClientConfig {
 	stdio_config?: MCPStdioConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
+	oauth_client_id?: EnvVar;     // Redacted existing client ID (populated on GET for oauth clients)
+	oauth_client_secret?: EnvVar; // Redacted existing client secret (populated on GET for oauth clients)
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, EnvVar>;

@@ -5,6 +5,7 @@ import { Fragment } from "react";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -157,7 +158,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
-			oauth_config: undefined,
+			oauth_config: supportsOAuthCredentialUpdate
+				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
+				: undefined,
 		},
 	});
 	const isDisabled = form.watch("disabled");
@@ -176,15 +179,20 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
-			oauth_config: undefined,
+			oauth_config: supportsOAuthCredentialUpdate
+				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
+				: undefined,
 		});
 	}, [form, mcpClient]);
 
 	const onSubmit = async (data: MCPClientUpdateSchema) => {
 		try {
-			const oauthClientID = data.oauth_config?.client_id?.trim() || "";
-			const oauthClientSecret = data.oauth_config?.client_secret?.trim() || "";
-			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && (oauthClientID.length > 0 || oauthClientSecret.length > 0);
+			const oauthClientID = data.oauth_config?.client_id;
+			const oauthClientSecret = data.oauth_config?.client_secret;
+			// Only rotate when the user actually changed a credential field.
+			// dirtyFields tracks deep changes vs. the pre-populated default values.
+			const oauthDirty = !!(form.formState.dirtyFields.oauth_config?.client_id || form.formState.dirtyFields.oauth_config?.client_secret);
+			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && oauthDirty;
 			const response = await updateMCPClient({
 				id: mcpClient.config.client_id,
 				data: {
@@ -202,7 +210,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					oauth_config: shouldRotateOAuthCredentials
 						? {
 								client_id: oauthClientID,
-								client_secret: oauthClientSecret || undefined,
+								client_secret: oauthClientSecret,
 							}
 						: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
@@ -630,12 +638,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 												<FormItem className="flex flex-col gap-2">
 													<FormLabel>Client ID</FormLabel>
 													<FormControl>
-														<Input
+														<EnvVarInput
 															data-testid="mcpclient-input-oauth-client-id"
 															placeholder="Enter new OAuth client ID"
 															disabled={isDisabled}
-															{...field}
-															value={field.value || ""}
+															value={field.value}
+															onChange={field.onChange}
 														/>
 													</FormControl>
 													{!isDisabled && (
@@ -654,13 +662,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 												<FormItem className="flex flex-col gap-2">
 													<FormLabel>Client Secret</FormLabel>
 													<FormControl>
-														<Input
+														<EnvVarInput
 															data-testid="mcpclient-input-oauth-client-secret"
-															type="password"
 															placeholder="Enter new OAuth client secret"
 															disabled={isDisabled}
-															{...field}
-															value={field.value || ""}
+															hideValueWhenEnv
+															maskNonEnvValue
+															value={field.value}
+															onChange={field.onChange}
 														/>
 													</FormControl>
 													<FormMessage />

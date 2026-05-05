@@ -156,12 +156,39 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Batch-fetch OAuth configs for clients that have one (avoids N+1 queries)
+	oauthConfigsByID := make(map[string]*configstoreTables.TableOauthConfig)
+	if h.store.ConfigStore != nil {
+		oauthIDs := make([]string, 0)
+		for _, c := range configsInStore.ClientConfigs {
+			if c.OauthConfigID != nil && *c.OauthConfigID != "" {
+				oauthIDs = append(oauthIDs, *c.OauthConfigID)
+			}
+		}
+		if len(oauthIDs) > 0 {
+			fetched, err := h.store.ConfigStore.GetOauthConfigsByIDs(ctx, oauthIDs)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to fetch OAuth configs: %v", err))
+				return
+			}
+			oauthConfigsByID = fetched
+		}
+	}
+
 	// Build the final client list, including errored clients
 	clients := make([]MCPClientResponse, 0, len(configsInStore.ClientConfigs))
 
 	for _, configClient := range configsInStore.ClientConfigs {
+		// Copy to avoid mutating the in-memory store config, then populate OAuth credentials
+		configClientCopy := *configClient
+		if configClient.OauthConfigID != nil {
+			if oauthCfg, ok := oauthConfigsByID[*configClient.OauthConfigID]; ok {
+				configClientCopy.OauthClientID = oauthCfg.ClientID
+				configClientCopy.OauthClientSecret = oauthCfg.GetClientSecretAsEnvVar()
+			}
+		}
 		// Redact sensitive fields before sending to UI
-		redactedConfig := h.store.RedactMCPClientConfig(configClient)
+		redactedConfig := h.store.RedactMCPClientConfig(&configClientCopy)
 
 		vkConfigs := []MCPVKConfigResponse{}
 		for _, a := range assignmentsByClientStringID[configClient.ID] {
@@ -277,6 +304,25 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 		}
 	}
 
+	// Batch-fetch OAuth configs for clients that have one (avoids N+1 queries)
+	oauthConfigsByID := make(map[string]*configstoreTables.TableOauthConfig)
+	if h.store.ConfigStore != nil {
+		oauthIDs := make([]string, 0)
+		for _, c := range dbClients {
+			if c.OauthConfigID != nil && *c.OauthConfigID != "" {
+				oauthIDs = append(oauthIDs, *c.OauthConfigID)
+			}
+		}
+		if len(oauthIDs) > 0 {
+			fetched, err := h.store.ConfigStore.GetOauthConfigsByIDs(ctx, oauthIDs)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to fetch OAuth configs: %v", err))
+				return
+			}
+			oauthConfigsByID = fetched
+		}
+	}
+
 	// Convert DB rows to MCPClientConfig and merge with engine state
 	clients := make([]MCPClientResponse, 0, len(dbClients))
 	for _, dbClient := range dbClients {
@@ -302,6 +348,13 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			ToolPricing:           dbClient.ToolPricing,
 			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
 			Disabled:              dbClient.Disabled,
+		}
+		// Populate oauth client credentials from pre-fetched batch
+		if dbClient.OauthConfigID != nil {
+			if oauthCfg, ok := oauthConfigsByID[*dbClient.OauthConfigID]; ok {
+				clientConfig.OauthClientID = oauthCfg.ClientID
+				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsEnvVar()
+			}
 		}
 		// Enrich VK assignments using the pre-fetched batch result (no extra DB call per client)
 		vkConfigs := []MCPVKConfigResponse{}
@@ -379,12 +432,12 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 
 // OAuthConfigRequest represents OAuth configuration in the request
 type OAuthConfigRequest struct {
-	ClientID        string   `json:"client_id"`
-	ClientSecret    string   `json:"client_secret"`
-	AuthorizeURL    string   `json:"authorize_url"`
-	TokenURL        string   `json:"token_url"`
-	RegistrationURL string   `json:"registration_url"`
-	Scopes          []string `json:"scopes"`
+	ClientID        *schemas.EnvVar `json:"client_id"`
+	ClientSecret    *schemas.EnvVar `json:"client_secret"`
+	AuthorizeURL    string          `json:"authorize_url"`
+	TokenURL        string          `json:"token_url"`
+	RegistrationURL string          `json:"registration_url"`
+	Scopes          []string        `json:"scopes"`
 }
 
 // MCPClientRequest represents the full MCP client creation request with OAuth support
@@ -456,7 +509,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		if req.OauthConfig.ClientID == "" && req.ConnectionString.GetValue() == "" {
+		if !req.OauthConfig.ClientID.IsSet() && req.ConnectionString.GetValue() == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "Either client_id must be provided, or server URL must be set for OAuth discovery and dynamic client registration")
 			return
 		}
@@ -538,7 +591,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 		// Validate: Either client_id must be provided, OR we need a server URL for discovery + dynamic registration
 		// Client ID can be empty if the OAuth provider supports dynamic client registration (RFC 7591)
-		if req.OauthConfig.ClientID == "" {
+		if !req.OauthConfig.ClientID.IsSet() {
 			// If no client_id, we need server URL for discovery
 			if req.ConnectionString.GetValue() == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, "Either client_id must be provided, or server URL must be set for OAuth discovery and dynamic client registration")
@@ -555,14 +608,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)
 		// ClientID is optional - will be obtained via dynamic registration if not provided
 		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
-			ClientID:        req.OauthConfig.ClientID,        // Optional: auto-generated if empty
-			ClientSecret:    req.OauthConfig.ClientSecret,    // Optional: for PKCE or dynamic registration
-			AuthorizeURL:    req.OauthConfig.AuthorizeURL,    // Optional: discovered if empty
-			TokenURL:        req.OauthConfig.TokenURL,        // Optional: discovered if empty
-			RegistrationURL: req.OauthConfig.RegistrationURL, // Optional: discovered if empty
-			RedirectURI:     redirectURI,                     // Use server's own callback URL
-			Scopes:          req.OauthConfig.Scopes,          // Optional: discovered if empty
-			ServerURL:       req.ConnectionString.GetValue(), // MCP server URL for OAuth discovery
+			ClientID:        req.OauthConfig.ClientID,
+			ClientSecret:    req.OauthConfig.ClientSecret,
+			AuthorizeURL:    req.OauthConfig.AuthorizeURL,
+			TokenURL:        req.OauthConfig.TokenURL,
+			RegistrationURL: req.OauthConfig.RegistrationURL,
+			RedirectURI:     redirectURI,
+			Scopes:          req.OauthConfig.Scopes,
+			ServerURL:       req.ConnectionString.GetValue(),
 		})
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
@@ -777,8 +830,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	shouldRotateOAuthConfig := req.OauthConfig != nil && (existingConfig.AuthType == schemas.MCPAuthTypeOauth || existingConfig.AuthType == schemas.MCPAuthTypePerUserOauth)
-	oauthClientID := ""
-	oauthClientSecret := ""
+	var oauthClientID *schemas.EnvVar
+	var oauthClientSecret *schemas.EnvVar
 	oauthAuthorizeURL := ""
 	oauthTokenURL := ""
 	oauthRegistrationURL := ""
@@ -792,13 +845,18 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if shouldRotateOAuthConfig {
-		oauthClientID = strings.TrimSpace(req.OauthConfig.ClientID)
-		oauthClientSecret = strings.TrimSpace(req.OauthConfig.ClientSecret)
+		if req.OauthConfig.ClientID.ShouldPreserveStored() && req.OauthConfig.ClientSecret.ShouldPreserveStored() {
+			shouldRotateOAuthConfig = false
+		}
+	}
+	if shouldRotateOAuthConfig {
+		oauthClientID = req.OauthConfig.ClientID
+		oauthClientSecret = req.OauthConfig.ClientSecret
 		oauthAuthorizeURL = strings.TrimSpace(req.OauthConfig.AuthorizeURL)
 		oauthTokenURL = strings.TrimSpace(req.OauthConfig.TokenURL)
 		oauthRegistrationURL = strings.TrimSpace(req.OauthConfig.RegistrationURL)
 		oauthScopes = req.OauthConfig.Scopes
-		if oauthClientID == "" && oauthClientSecret == "" {
+		if !oauthClientID.IsSet() && !oauthClientSecret.IsSet() {
 			SendError(ctx, fasthttp.StatusBadRequest, "oauth_config.client_id or oauth_config.client_secret is required when updating OAuth credentials")
 			return
 		}
@@ -830,15 +888,20 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
-		if oauthClientID == "" {
-			if existingOauthConfig == nil || strings.TrimSpace(existingOauthConfig.ClientID) == "" {
+		if !oauthClientID.IsSet() || oauthClientID.ShouldPreserveStored() {
+			if existingOauthConfig == nil || !existingOauthConfig.ClientID.IsSet() {
 				SendError(ctx, fasthttp.StatusBadRequest, "existing OAuth client_id not found; provide oauth_config.client_id")
 				return
 			}
-			oauthClientID = strings.TrimSpace(existingOauthConfig.ClientID)
+			oauthClientID = existingOauthConfig.ClientID // preserve env var reference
+		}
+		if !oauthClientSecret.IsSet() || oauthClientSecret.ShouldPreserveStored() {
+			if existingOauthConfig != nil {
+				oauthClientSecret = existingOauthConfig.ClientSecret // preserve stored secret
+			}
 		}
 
-		requiresDiscoveryOrRegistration := oauthClientID == "" || oauthAuthorizeURL == "" || oauthTokenURL == ""
+		requiresDiscoveryOrRegistration := !oauthClientID.IsSet() || oauthAuthorizeURL == "" || oauthTokenURL == ""
 		if requiresDiscoveryOrRegistration && (existingConfig.ConnectionString == nil || existingConfig.ConnectionString.GetValue() == "") {
 			SendError(ctx, fasthttp.StatusBadRequest, "existing connection_string is required when OAuth discovery or dynamic registration is needed")
 			return
@@ -1065,8 +1128,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			serverURL = existingConfig.ConnectionString.GetValue()
 		}
 		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
-			ClientID:        oauthClientID,
-			ClientSecret:    oauthClientSecret,
+			ClientID:        oauthClientID,     // *schemas.EnvVar — preserves env var reference
+			ClientSecret:    oauthClientSecret, // *schemas.EnvVar — preserves env var reference
 			AuthorizeURL:    oauthAuthorizeURL,
 			TokenURL:        oauthTokenURL,
 			RegistrationURL: oauthRegistrationURL,
