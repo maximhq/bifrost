@@ -438,6 +438,18 @@ func (bc *BifrostContext) ReleasePluginScope() {
 	pluginScopePool.Put(bc)
 }
 
+// AddSpanAttribute adds an attribute to the span.
+// For scoped contexts, delegates to the root context via valueDelegate.
+// This is thread-safe and can be called concurrently.
+func (bc *BifrostContext) SetTraceAttribute(key string, value any) {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return
+	}
+	tr.SetAttribute(tid, key, value)
+}
+
 // Log appends a structured log entry for the current plugin scope.
 // No-op if the context is not scoped to a plugin or has no log store.
 func (bc *BifrostContext) Log(level LogLevel, msg string) {
