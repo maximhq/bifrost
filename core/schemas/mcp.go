@@ -175,6 +175,7 @@ type MCPClientConfig struct {
 	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`  // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
 	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
 	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
+	Disabled              bool               `json:"disabled"`                     // Whether the client is intentionally disabled (stops connection and workers)
 	ConfigHash            string             `json:"-"`                            // Config hash for reconciliation (not serialized)
 	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`    // Whether to allow the MCP client to run on all virtual keys
 
@@ -360,6 +361,7 @@ const (
 	MCPConnectionStateDisconnected MCPConnectionState = "disconnected"  // Client is not connected
 	MCPConnectionStateError        MCPConnectionState = "error"         // Client is in an error state, and cannot be used
 	MCPConnectionStatePendingTools MCPConnectionState = "pending_tools" // Connected but tools not yet populated
+	MCPConnectionStateDisabled     MCPConnectionState = "disabled"      // Client is intentionally disabled by the user
 )
 
 // MCPClientState represents a connected MCP client with its configuration and tools.

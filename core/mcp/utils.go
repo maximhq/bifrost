@@ -79,6 +79,12 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 
 		m.logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
 
+		// Skip intentionally disabled clients
+		if client.State == schemas.MCPConnectionStateDisabled {
+			m.logger.Debug("%s Skipping disabled MCP client %s", MCPLogPrefix, clientName)
+			continue
+		}
+
 		// Apply client filtering logic - check both ID and Name for compatibility
 		if !shouldIncludeClient(clientName, includeClients, m.logger) {
 			m.logger.Debug("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName)

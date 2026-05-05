@@ -1063,7 +1063,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:             schemas.Azure,
-		ChatModel:            "gpt-4o",
+		ChatModel:            "gpt-5-pro",
 		TextModel:            "", // Azure doesn't support text completion in newer models
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		TranscriptionModel:   "whisper-1",
@@ -1097,17 +1097,26 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageVariation:             false, // Azure does not support image variation
 			ImageVariationStream:       false, // Azure does not support streaming image variation
 			ListModels:                 true,
-			BatchCreate:                true, // Azure supports batch API
-			BatchList:                  true, // Azure supports batch API
-			BatchRetrieve:              true, // Azure supports batch API
-			BatchCancel:                true, // Azure supports batch API
-			BatchResults:               true, // Azure supports batch API
-			FileUpload:                 true, // Azure supports file API
-			FileList:                   true, // Azure supports file API
-			FileRetrieve:               true, // Azure supports file API
-			FileDelete:                 true, // Azure supports file API
-			FileContent:                true, // Azure supports file API
-			ChatAudio:                  true, // Azure supports chat audio
+			BatchCreate:                true,  // Azure supports batch API
+			BatchList:                  true,  // Azure supports batch API
+			BatchRetrieve:              true,  // Azure supports batch API
+			BatchCancel:                true,  // Azure supports batch API
+			BatchResults:               true,  // Azure supports batch API
+			FileUpload:                 true,  // Azure supports file API
+			FileList:                   true,  // Azure supports file API
+			FileRetrieve:               true,  // Azure supports file API
+			FileDelete:                 true,  // Azure supports file API
+			FileContent:                true,  // Azure supports file API
+			ChatAudio:                  true,  // Azure supports chat audio
+			ContainerCreate:            true,  // Azure supports container API
+			ContainerList:              false, // Azure hangs on this call
+			ContainerRetrieve:          true,  // Azure supports container API
+			ContainerDelete:            true,  // Azure supports container API
+			ContainerFileCreate:        true,  // Azure supports container file API
+			ContainerFileList:          true,  // Azure supports container file API
+			ContainerFileRetrieve:      true,  // Azure supports container file API
+			ContainerFileContent:       true,  // Azure supports container file API
+			ContainerFileDelete:        true,  // Azure supports container file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

@@ -59,8 +59,18 @@ type MCPManagerInterface interface {
 	// UpdateClient updates an existing MCP client configuration
 	UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error
 
+	// UpdateClientConnection reconnects an existing MCP client using updated
+	// auth-related connection fields (for example, headers and OAuth config).
+	UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) error
+
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
+
+	// DisableClient shuts down a client's connection and workers without removing it
+	DisableClient(id string) error
+
+	// EnableClient reconnects a disabled client and restarts its workers
+	EnableClient(id string) error
 
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection

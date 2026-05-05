@@ -1673,13 +1673,13 @@ type ChatCompletionTokensDetails struct {
 }
 
 type BifrostCost struct {
-	InputTokensCost     float64 `json:"input_tokens_cost,omitempty"`
-	OutputTokensCost    float64 `json:"output_tokens_cost,omitempty"`
-	ReasoningTokensCost float64 `json:"reasoning_tokens_cost,omitempty"`
-	CitationTokensCost  float64 `json:"citation_tokens_cost,omitempty"`
-	SearchQueriesCost   float64 `json:"search_queries_cost,omitempty"`
-	RequestCost         float64 `json:"request_cost,omitempty"`
-	TotalCost           float64 `json:"total_cost,omitempty"`
+	InputTokensCost             float64 `json:"input_tokens_cost,omitempty"`
+	OutputTokensCost            float64 `json:"output_tokens_cost,omitempty"`
+	ReasoningTokensCost         float64 `json:"reasoning_tokens_cost,omitempty"`
+	CitationTokensCost          float64 `json:"citation_tokens_cost,omitempty"`
+	SearchQueriesCost           float64 `json:"search_queries_cost,omitempty"`
+	RequestCost                 float64 `json:"request_cost,omitempty"`
+	TotalCost                   float64 `json:"total_cost,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.

@@ -1247,6 +1247,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
 					AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 				}
@@ -1285,6 +1286,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			IsPingAvailable:           dbClient.IsPingAvailable,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+			Disabled:                  dbClient.Disabled,
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
@@ -1369,6 +1371,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		IsPingAvailable:           dbClient.IsPingAvailable,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+		Disabled:                  dbClient.Disabled,
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
@@ -1423,6 +1426,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+			Disabled:                  clientConfigCopy.Disabled,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -1505,6 +1509,22 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal tool_pricing: %w", err)
 		}
+		discoveredToolsJSON := ""
+		if clientConfig.DiscoveredTools != nil {
+			data, marshalErr := json.Marshal(clientConfig.DiscoveredTools)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal discovered_tools: %w", marshalErr)
+			}
+			discoveredToolsJSON = string(data)
+		}
+		toolNameMappingJSON := ""
+		if clientConfig.DiscoveredToolNameMapping != nil {
+			data, marshalErr := json.Marshal(clientConfig.DiscoveredToolNameMapping)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal tool_name_mapping: %w", marshalErr)
+			}
+			toolNameMappingJSON = string(data)
+		}
 
 		headersJSONStr := string(headersJSON)
 		if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
@@ -1527,10 +1547,20 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"allow_on_all_virtual_keys":  clientConfigCopy.AllowOnAllVirtualKeys,
+			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
 		}
 		if encrypt.IsEnabled() {
 			updates["encryption_status"] = encryptionStatusEncrypted
+		}
+		if clientConfigCopy.OauthConfigID != nil {
+			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
+		}
+		if discoveredToolsJSON != "" {
+			updates["discovered_tools_json"] = discoveredToolsJSON
+		}
+		if toolNameMappingJSON != "" {
+			updates["tool_name_mapping_json"] = toolNameMappingJSON
 		}
 		// Config-file driven reconciliation passes ConfigHash. In this mode we should
 		// also sync connection/auth metadata from config.json and persist the hash.

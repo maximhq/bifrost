@@ -47,6 +47,12 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 // Returns:
 //   - error: Any error that occurred during reconnection
 func (m *MCPManager) ReconnectClient(id string) error {
+	// Acquire per-client reconnect/update guard before reading config snapshot.
+	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+		return fmt.Errorf("reconnect already in progress for this client")
+	}
+	defer m.reconnectingClients.Delete(id)
+
 	m.mu.Lock()
 	client, ok := m.clientMap[id]
 	if !ok {
@@ -61,14 +67,6 @@ func (m *MCPManager) ReconnectClient(id string) error {
 	}
 	config := client.ExecutionConfig
 	m.mu.Unlock()
-
-	// Guard against concurrent reconnects for the same client from any caller
-	// (health monitor, manual API call, etc.). LoadOrStore is atomic — whichever
-	// caller arrives second gets the "already in progress" error immediately.
-	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
-		return fmt.Errorf("reconnect already in progress for this client")
-	}
-	defer m.reconnectingClients.Delete(id)
 
 	// Reconnect using the client's configuration
 	// Retry logic is handled internally by connectToMCPClient
@@ -109,6 +107,33 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 		return fmt.Errorf("client %s already exists", config.Name)
 	}
 
+	// Disabled clients get a dormant placeholder — no connection, no workers.
+	if config.Disabled {
+		clientState := &schemas.MCPClientState{
+			Name:            config.Name,
+			ExecutionConfig: config,
+			State:           schemas.MCPConnectionStateDisabled,
+			ToolMap:         make(map[string]schemas.ChatTool),
+			ToolNameMapping: make(map[string]string),
+			ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+		}
+		// Persisted tools for per_user_oauth survive restarts in ExecutionConfig.
+		if config.AuthType == schemas.MCPAuthTypePerUserOauth && len(config.DiscoveredTools) > 0 {
+			for toolName, tool := range config.DiscoveredTools {
+				clientState.ToolMap[toolName] = tool
+			}
+			clientState.ToolNameMapping = config.DiscoveredToolNameMapping
+			if config.ConnectionString != nil {
+				url := config.ConnectionString.GetValue()
+				clientState.ConnectionInfo.ConnectionURL = &url
+			}
+		}
+		m.clientMap[config.ID] = clientState
+		m.mu.Unlock()
+		m.logger.Debug("%s MCP client '%s' registered in disabled state", MCPLogPrefix, config.Name)
+		return nil
+	}
+
 	// Create placeholder entry
 	m.clientMap[config.ID] = &schemas.MCPClientState{
 		Name:            config.Name,
@@ -141,10 +166,10 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
 				client.State = schemas.MCPConnectionStateConnected
-				m.logger.Info("%s Per-user OAuth MCP client '%s' restored with %d tools", MCPLogPrefix, config.Name, len(config.DiscoveredTools))
+				m.logger.Debug("%s Per-user OAuth MCP client '%s' restored with %d tools", MCPLogPrefix, config.Name, len(config.DiscoveredTools))
 			} else {
 				client.State = schemas.MCPConnectionStatePendingTools
-				m.logger.Info("%s Per-user OAuth MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.Name)
+				m.logger.Debug("%s Per-user OAuth MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.Name)
 			}
 		}
 		m.mu.Unlock()
@@ -306,6 +331,147 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	return nil
 }
 
+// DisableClient shuts down a client's connection, health monitor, and tool syncer
+// without removing it from the manager. The client entry is kept in clientMap with
+// state MCPConnectionStateDisabled so it can be re-enabled later.
+//
+// Parameters:
+//   - id: ID of the client to disable
+//
+// Returns:
+//   - error: Any error that occurred during disable
+func (m *MCPManager) DisableClient(id string) error {
+	// The internal in-process client must never be disabled:
+	if id == BifrostMCPClientKey {
+		return fmt.Errorf("cannot disable internal bifrost client")
+	}
+	// Use LoadOrStore (not Load) so the check and the sentinel insertion are atomic.
+	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
+	}
+	defer m.reconnectingClients.Delete(id)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	clientState, ok := m.clientMap[id]
+	if !ok {
+		return fmt.Errorf("client %s not found", id)
+	}
+	if clientState.State == schemas.MCPConnectionStateDisabled {
+		return fmt.Errorf("client %s is already disabled", clientState.ExecutionConfig.Name)
+	}
+
+	m.logger.Debug("%s Disabling MCP client '%s'", MCPLogPrefix, clientState.ExecutionConfig.Name)
+
+	m.healthMonitorManager.StopMonitoring(id)
+	m.toolSyncManager.StopSyncing(id)
+
+	if clientState.CancelFunc != nil {
+		clientState.CancelFunc()
+		clientState.CancelFunc = nil
+	}
+	if clientState.Conn != nil {
+		if err := clientState.Conn.Close(); err != nil {
+			m.logger.Error("%s Failed to close connection for MCP client '%s': %v", MCPLogPrefix, clientState.ExecutionConfig.Name, err)
+		}
+		clientState.Conn = nil
+	}
+
+	// Per-user OAuth clients have no persistent connection — their ToolMap holds
+	// tools discovered via OAuth that can only be recovered by re-running the OAuth
+	// flow. Preserve the ToolMap so re-enabling restores tools immediately.
+	if clientState.ExecutionConfig.AuthType != schemas.MCPAuthTypePerUserOauth {
+		clientState.ToolMap = make(map[string]schemas.ChatTool)
+		clientState.ToolNameMapping = make(map[string]string)
+	}
+	clientState.State = schemas.MCPConnectionStateDisabled
+	clientState.ExecutionConfig.Disabled = true
+	m.logger.Debug("%s MCP client '%s' disabled successfully", MCPLogPrefix, clientState.ExecutionConfig.Name)
+	return nil
+}
+
+// EnableClient re-enables a previously disabled MCP client by reconnecting it
+// and restarting its health monitor and tool syncer.
+//
+// Parameters:
+//   - id: ID of the client to enable
+//
+// Returns:
+//   - error: Any error that occurred during enable or connection
+func (m *MCPManager) EnableClient(id string) error {
+	m.mu.Lock()
+	clientState, ok := m.clientMap[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("client %s not found", id)
+	}
+	if clientState.State != schemas.MCPConnectionStateDisabled {
+		m.mu.Unlock()
+		return fmt.Errorf("client %s is not disabled (current state: %s)", clientState.ExecutionConfig.Name, clientState.State)
+	}
+
+	clientState.ExecutionConfig.Disabled = false
+	configCopy := clientState.ExecutionConfig
+	m.mu.Unlock()
+
+	m.logger.Debug("%s Enabling MCP client '%s'", MCPLogPrefix, configCopy.Name)
+
+	// Per-user OAuth clients have no persistent connection — auth is per-request.
+	// Mirror the AddClient early-return path: just restore the runtime state based
+	// on whether tools were previously discovered.
+	if configCopy.AuthType == schemas.MCPAuthTypePerUserOauth {
+		m.mu.Lock()
+		if cs, exists := m.clientMap[id]; exists {
+			if len(cs.ToolMap) > 0 {
+				cs.State = schemas.MCPConnectionStateConnected
+			} else {
+				cs.State = schemas.MCPConnectionStatePendingTools
+			}
+		}
+		m.mu.Unlock()
+		m.logger.Debug("%s Per-user OAuth MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
+		return nil
+	}
+
+	// Guard against concurrent reconnects for the same client from any caller
+	// (health monitor, manual API call, etc.). LoadOrStore is atomic — whichever
+	// caller arrives second gets the "already in progress" error immediately.
+	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+		return fmt.Errorf("reconnect already in progress for this client")
+	}
+	defer m.reconnectingClients.Delete(id)
+
+	if err := m.connectToMCPClient(configCopy); err != nil {
+		// Connection failed — leave the entry as Disconnected so the health monitor can
+		// recover it, but only if the client has not been disabled in the meantime.
+		m.mu.Lock()
+		alreadyDisabled := false
+		if cs, exists := m.clientMap[id]; exists {
+			if cs.State == schemas.MCPConnectionStateDisabled {
+				alreadyDisabled = true
+			} else {
+				cs.State = schemas.MCPConnectionStateDisconnected
+			}
+		}
+		m.mu.Unlock()
+
+		if !alreadyDisabled {
+			isPingAvailable := true
+			if configCopy.IsPingAvailable != nil {
+				isPingAvailable = *configCopy.IsPingAvailable
+			}
+			monitor := NewClientHealthMonitor(m, id, DefaultHealthCheckInterval, isPingAvailable, m.logger)
+			m.healthMonitorManager.StartMonitoring(monitor)
+		}
+
+		return fmt.Errorf("failed to connect MCP client '%s': %w", configCopy.Name, err)
+	}
+
+	m.logger.Debug("%s MCP client '%s' enabled successfully", MCPLogPrefix, configCopy.Name)
+	return nil
+}
+
 // UpdateClient updates an existing MCP client's configuration and refreshes its tool list.
 // It updates the client's execution config with new settings and retrieves updated tools
 // from the MCP server if the client is connected.
@@ -319,6 +485,11 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 // Returns:
 //   - error: Any error that occurred during client update or tool retrieval
 func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error {
+	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
+	}
+	defer m.reconnectingClients.Delete(id)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -343,8 +514,25 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	if updatedConfig.InProcessServer != nil && updatedConfig.InProcessServer != client.ExecutionConfig.InProcessServer {
 		return fmt.Errorf("in-process server cannot be updated for client %s", id)
 	}
+	// Normalize empty AuthType to "headers" — both are semantically identical
+	oldAuthType := client.ExecutionConfig.AuthType
+	if oldAuthType == "" {
+		oldAuthType = schemas.MCPAuthTypeHeaders
+	}
+	newAuthType := updatedConfig.AuthType
+	if newAuthType == "" {
+		newAuthType = schemas.MCPAuthTypeHeaders
+	}
+	if newAuthType != oldAuthType {
+		return fmt.Errorf("auth_type cannot be updated for client %s", id)
+	}
 
 	oldName := client.ExecutionConfig.Name
+
+	oauthConfigID := client.ExecutionConfig.OauthConfigID
+	if updatedConfig.OauthConfigID != nil {
+		oauthConfigID = updatedConfig.OauthConfigID
+	}
 
 	// Create a new config struct (immutable pattern) to avoid race conditions
 	// with concurrent reads. Any snapshot holding the old ExecutionConfig pointer
@@ -356,7 +544,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		ConnectionString: client.ExecutionConfig.ConnectionString,
 		StdioConfig:      client.ExecutionConfig.StdioConfig,
 		AuthType:         client.ExecutionConfig.AuthType,
-		OauthConfigID:    client.ExecutionConfig.OauthConfigID,
+		OauthConfigID:    oauthConfigID,
 		State:            client.ExecutionConfig.State,
 		InProcessServer:  client.ExecutionConfig.InProcessServer,
 		ConfigHash:       client.ExecutionConfig.ConfigHash,
@@ -371,6 +559,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		IsPingAvailable:       updatedConfig.IsPingAvailable,
 		ToolSyncInterval:      updatedConfig.ToolSyncInterval,
 		AllowOnAllVirtualKeys: updatedConfig.AllowOnAllVirtualKeys,
+		Disabled:              updatedConfig.Disabled,
 	}
 
 	// Atomically replace the config pointer
@@ -407,6 +596,73 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 
 		// Also update the client Name field
 		client.Name = updatedConfig.Name
+	}
+
+	return nil
+}
+
+// UpdateClientConnection updates auth-related fields (headers) for an existing MCP client by
+// closing the current connection and establishing a new one so the new credentials are verified
+// before being committed. Non-credential metadata (name, tools, etc.) is preserved from the
+// current execution config.
+//
+// On failure the clientMap entry is left in Disconnected state but its ExecutionConfig is restored
+// to the previous value, allowing the health monitor to recover the client using the old credentials.
+//
+// Parameters:
+//   - id: ID of the client whose credentials should be updated
+//   - newConfig: Partial config carrying the updated auth fields (Headers). All other fields
+//     are ignored and taken from the current execution config.
+//
+// Returns:
+//   - error: Any connection error; nil on success
+func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) error {
+	if newConfig == nil {
+		return fmt.Errorf("newConfig must not be nil")
+	}
+	// Hold the per-client reconnect guard for the entire read + long reconnect so
+	// UpdateClient/DisableClient cannot mutate ExecutionConfig while a failed reconnect
+	// restores the pre-attempt snapshot.
+	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+		return fmt.Errorf("reconnect already in progress for this client")
+	}
+	defer m.reconnectingClients.Delete(id)
+
+	m.mu.RLock()
+	client, ok := m.clientMap[id]
+	if !ok {
+		m.mu.RUnlock()
+		return fmt.Errorf("client %s not found", id)
+	}
+	// Per-user OAuth clients have no persistent connection — reconnect is not applicable.
+	if client.ExecutionConfig != nil && client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+		m.mu.RUnlock()
+		return fmt.Errorf("connection update is not supported for per_user_oauth clients")
+	}
+	if client.ExecutionConfig == nil {
+		m.mu.RUnlock()
+		return fmt.Errorf("client %s has no execution config; cannot update connection", id)
+	}
+	// Snapshot old execution config and build the merged config while still holding the
+	// read lock so the struct copy is consistent with what the map currently holds.
+	oldConfig := client.ExecutionConfig
+	mergedConfig := *oldConfig
+	if newConfig.Headers != nil {
+		mergedConfig.Headers = maps.Clone(newConfig.Headers)
+	}
+	if newConfig.OauthConfigID != nil {
+		mergedConfig.OauthConfigID = newConfig.OauthConfigID
+	}
+	m.mu.RUnlock()
+
+	// connectToMCPClient will close the current connection and create a new clientMap entry.
+	if err := m.connectToMCPClient(&mergedConfig); err != nil {
+		m.mu.Lock()
+		if cs, exists := m.clientMap[id]; exists {
+			cs.ExecutionConfig = oldConfig
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("failed to reconnect with updated credentials: %w", err)
 	}
 
 	return nil
@@ -540,6 +796,15 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 
 	// Initialize or validate client entry
 	if existingClient, exists := m.clientMap[config.ID]; exists {
+		// If the client is disabled and the caller is not explicitly re-enabling it
+		// (EnableClient sets config.Disabled = false before calling here; ReconnectClient
+		// and the health-monitor path leave it as-is), bail out now — before we overwrite
+		// the Disabled entry — so the Disabled state is preserved.
+		if existingClient.State == schemas.MCPConnectionStateDisabled && config.Disabled {
+			m.mu.Unlock()
+			return fmt.Errorf("client %s is disabled", config.Name)
+		}
+
 		// Client entry exists from config, check for existing connection, if it does then close
 		if existingClient.CancelFunc != nil {
 			existingClient.CancelFunc()
@@ -729,6 +994,23 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 
 	// Verify client still exists (could have been cleaned up during heavy operations)
 	if client, exists := m.clientMap[config.ID]; exists {
+		// If the client was disabled while we were doing the whole connection process
+		// roll back the newly established connection and abort — do not overwrite the Disabled state.
+		// This is a rare edge case where the client was disabled while we were doing the whole connection process
+		if client.State == schemas.MCPConnectionStateDisabled {
+			m.mu.Unlock()
+			if (config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO) && cancel != nil {
+				cancel()
+			}
+			if externalClient != nil {
+				if closeErr := externalClient.Close(); closeErr != nil {
+					m.logger.Warn("%s Failed to close external client during disable rollback: %v", MCPLogPrefix, closeErr)
+				}
+			}
+			m.logger.Debug("%s [%s] Client was disabled during connection setup; rolling back", MCPLogPrefix, config.Name)
+			return fmt.Errorf("client %s was disabled during connection setup", config.Name)
+		}
+
 		// Store the external client connection and details
 		client.Conn = externalClient
 		client.ConnectionInfo = connectionInfo
@@ -774,9 +1056,12 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
 		externalClient.OnConnectionLost(func(err error) {
 			m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, config.Name, err)
-			// Update state to disconnected
+			// Update state to disconnected, but never overwrite a disabled state.
+			// DisableClient calls Conn.Close() while holding m.mu; the SSE library
+			// fires OnConnectionLost after the lock is released, by which point
+			// State is already Disabled — do not clobber it.
 			m.mu.Lock()
-			if client, exists := m.clientMap[config.ID]; exists {
+			if client, exists := m.clientMap[config.ID]; exists && client.State != schemas.MCPConnectionStateDisabled {
 				client.State = schemas.MCPConnectionStateDisconnected
 			}
 			m.mu.Unlock()
