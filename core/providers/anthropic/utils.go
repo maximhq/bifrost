@@ -616,7 +616,14 @@ func IsOpus47(model string) bool {
 
 // SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
 // Currently supported on Claude Opus 4.5 and Opus 4.6.
+//
+// Override-aware: prefers the datasheet's reasoning.field when set
+// ("output_config.effort" → true). Falls back to substring detection on
+// the bare model name when no override is registered.
 func SupportsNativeEffort(model string) bool {
+	if ov := providerUtils.GetBifrostOverrides(model); ov != nil && ov.Reasoning != nil && ov.Reasoning.Field != nil {
+		return *ov.Reasoning.Field == "output_config.effort"
+	}
 	model = strings.ToLower(model)
 	if !strings.Contains(model, "opus") {
 		return false
@@ -631,7 +638,14 @@ func SupportsNativeEffort(model string) bool {
 // Beta header: fast-mode-2026-02-01.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
+//
+// Override-aware: prefers the datasheet's supports_fast_mode boolean when
+// set. Falls back to substring detection on the bare model name when no
+// override is registered.
 func SupportsFastMode(model string) bool {
+	if ov := providerUtils.GetBifrostOverrides(model); ov != nil && ov.SupportsFastMode != nil {
+		return *ov.SupportsFastMode
+	}
 	model = strings.ToLower(model)
 	if !strings.Contains(model, "opus") {
 		return false
@@ -643,7 +657,14 @@ func SupportsFastMode(model string) bool {
 // Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, and Claude Opus 4.7+.
 // On Opus 4.7+ adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
 // coexists with the deprecated budget_tokens-based extended thinking.
+//
+// Override-aware: prefers the datasheet's reasoning.style ("adaptive" → true)
+// when set. Falls back to substring detection on the bare model name when
+// no override is registered.
 func SupportsAdaptiveThinking(model string) bool {
+	if ov := providerUtils.GetBifrostOverrides(model); ov != nil && ov.Reasoning != nil && ov.Reasoning.Style != nil {
+		return *ov.Reasoning.Style == "adaptive"
+	}
 	if IsOpus47(model) {
 		return true
 	}
@@ -669,7 +690,20 @@ const (
 //   - Which beta header to inject (computer-use-2025-11-24 vs 2025-01-24).
 //   - Which computer_*/text_editor_* type the upstream API will accept.
 //   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
+//
+// Override-aware: if the datasheet has server_tools["computer_use"] set,
+// the version is read from there directly ("computer_20251124" → new gen,
+// anything else → old gen). Falls back to substring detection when no
+// override is registered.
 func ComputerUseGeneration(model string) string {
+	if ov := providerUtils.GetBifrostOverrides(model); ov != nil {
+		if computerUse, ok := ov.ServerTools["computer_use"]; ok {
+			if computerUse == string(AnthropicToolTypeComputer20251124) {
+				return ComputerUseGen20251124
+			}
+			return ComputerUseGen20250124
+		}
+	}
 	m := strings.ToLower(model)
 	// Opus 4.7+ falls into the new generation.
 	if IsOpus47(m) {
@@ -699,7 +733,20 @@ func ComputerUseGeneration(model string) string {
 //   - Opus 4.7+ (matches IsOpus47)
 //   - Opus 4.5 / 4.6
 //   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
+//
+// Override-aware: if the datasheet has server_tools["text_editor"] set, the
+// generation is read from there directly ("text_editor_20250728" → new gen,
+// older versions → old gen). Falls back to substring detection when no
+// override is registered.
 func TextEditorGeneration(model string) string {
+	if ov := providerUtils.GetBifrostOverrides(model); ov != nil {
+		if textEditor, ok := ov.ServerTools["text_editor"]; ok {
+			if textEditor == string(AnthropicToolTypeTextEditor20250728) {
+				return ComputerUseGen20251124
+			}
+			return ComputerUseGen20250124
+		}
+	}
 	m := strings.ToLower(model)
 	if IsOpus47(m) {
 		return ComputerUseGen20251124
