@@ -216,17 +216,27 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 	return pricingData, nil
 }
 
-// populateModelParamsFromPricing extracts max_output_tokens from pricing
-// entries and seeds the provider-utils model params cache so providers can
-// look up max output tokens without a separate model-parameters sync.
+// populateModelParamsFromPricing seeds the provider-utils model params cache
+// from pricing entries so providers can look up model params without a
+// separate model-parameters sync. Two fields land on distinct keys:
+//   - max_output_tokens under the bare model name (callers pass bare names).
+//   - bifrost_overrides under the full provider-prefixed datasheet key so the
+//     same model on different providers stays distinct. When the datasheet key
+//     is already unprefixed, both fields land on the same entry.
 func (s *Store) populateModelParamsFromPricing(pricingData map[string]Entry) {
 	modelParamsEntries := make(map[string]providerUtils.ModelParams)
 	for modelKey, entry := range pricingData {
 		if entry.MaxOutputTokens != nil {
 			modelName := extractModelName(modelKey)
-			modelParamsEntries[modelName] = providerUtils.ModelParams{
-				MaxOutputTokens: entry.MaxOutputTokens,
-			}
+			existing := modelParamsEntries[modelName]
+			existing.MaxOutputTokens = entry.MaxOutputTokens
+			modelParamsEntries[modelName] = existing
+		}
+		if !isEmptyBifrostOverrides(&entry.BifrostOverrides) {
+			ov := entry.BifrostOverrides
+			existing := modelParamsEntries[modelKey]
+			existing.BifrostOverrides = &ov
+			modelParamsEntries[modelKey] = existing
 		}
 	}
 	if len(modelParamsEntries) > 0 {
