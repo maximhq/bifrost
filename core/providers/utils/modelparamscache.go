@@ -13,8 +13,15 @@ const DefaultModelParamsCacheSize = 2048
 // ModelParams holds cached parameters for a model.
 // Add new fields here as more model-level parameters need caching.
 type ModelParams struct {
-	MaxOutputTokens    *int
+	MaxOutputTokens         *int
 	IsVertexMultiRegionOnly *bool // true when model is only available on Vertex multi-region pool endpoints (rep.googleapis.com)
+
+	// BifrostOverrides carries per-(model, provider) manipulation hints
+	// sourced from the bifrost datasheet. Populated from the same fetch
+	// path that supplies MaxOutputTokens. nil when the datasheet has no
+	// bifrost-specific overrides for the model. Callers should fall back
+	// to the existing hardcoded helpers when this is nil.
+	BifrostOverrides *schemas.BifrostOverrides
 }
 
 type modelParamsCacheEntry struct {
@@ -259,6 +266,107 @@ func IsVertexMultiRegionOnlyModel(model string) bool {
 		return false
 	}
 	return *params.IsVertexMultiRegionOnly
+}
+
+// GetBifrostOverrides returns the cached bifrost overrides for a model key,
+// or nil on cache miss / no overrides. Callers must pass the
+// provider-prefixed model key as it appears in the datasheet:
+//
+//   - "claude-opus-4-7"                       — Anthropic native
+//   - "anthropic.claude-opus-4-7-...-v1:0"    — Bedrock canonical
+//   - "us.anthropic.claude-...-v1:0"          — Bedrock regional alias
+//   - "azure/claude-opus-4-7"                 — Azure
+//   - "vertex_ai/claude-opus-4-7"             — Vertex Anthropic
+//   - "vertex_ai/gemini-2.5-pro"              — Vertex Gemini
+//
+// Returns nil so callers can fall back to existing hardcoded helpers when
+// the datasheet has no entry yet (e.g. brand-new model not in the seed).
+//
+// Most call sites should prefer GetBifrostOverridesForRequest, which
+// understands per-provider key conventions and tries the right keys
+// automatically.
+func GetBifrostOverrides(modelKey string) *schemas.BifrostOverrides {
+	params, ok := GetModelParams(modelKey)
+	if !ok || params.BifrostOverrides == nil {
+		return nil
+	}
+	return params.BifrostOverrides
+}
+
+// GetBifrostOverridesForRequest looks up bifrost overrides for a (provider,
+// model) pair, trying the conventional datasheet keys for that provider.
+//
+// Lookup precedence (first hit wins):
+//
+//  1. The model string verbatim. Already-prefixed inputs like
+//     "anthropic.claude-opus-4-7-...-v1:0" or "us.anthropic.claude-..."
+//     match the datasheet key directly.
+//  2. Provider-conventional prefix, picked by family on Bedrock:
+//     - Bedrock + Claude    → "anthropic.<model>"
+//     - Bedrock + Llama     → "meta.<model>"
+//     - Bedrock + Mistral   → "mistral.<model>"
+//     - Bedrock + Nova/etc. → "amazon.<model>"
+//     - Vertex              → "vertex_ai/<model>" (Anthropic-on-Vertex
+//       uses bare keys which are already covered by (1))
+//     - Azure               → "azure/<model>"
+//
+// Returns nil on miss so callers can fall back to existing hardcoded helpers.
+func GetBifrostOverridesForRequest(provider schemas.ModelProvider, model string) *schemas.BifrostOverrides {
+	if model == "" {
+		return nil
+	}
+
+	// (1) Verbatim. Bedrock and Vertex callers typically pass already-
+	// prefixed model strings ("anthropic.claude-...", "us.anthropic....",
+	// "claude-...@20251101"). Anthropic native passes the bare name which
+	// also matches the datasheet key.
+	if ov := GetBifrostOverrides(model); ov != nil {
+		return ov
+	}
+
+	// (2) Provider-conventional prefix. Useful when a caller passes a bare
+	// model name and the datasheet has it stored under a provider prefix.
+	for _, candidate := range candidateBifrostOverrideKeys(provider, model) {
+		if ov := GetBifrostOverrides(candidate); ov != nil {
+			return ov
+		}
+	}
+
+	return nil
+}
+
+// candidateBifrostOverrideKeys returns the provider-conventional datasheet
+// keys to try for a bare model name (after the verbatim lookup misses).
+// Order matters — the most likely match comes first. Used by
+// GetBifrostOverridesForRequest.
+func candidateBifrostOverrideKeys(provider schemas.ModelProvider, model string) []string {
+	switch provider {
+	case schemas.Vertex:
+		return []string{"vertex_ai/" + model}
+	case schemas.Azure:
+		return []string{"azure/" + model}
+	case schemas.Bedrock:
+		// Bedrock prefixes are family-stamped on the datasheet:
+		//   anthropic.<...>-v1:0   for Claude
+		//   meta.<...>-v1:0        for Llama
+		//   mistral.<...>-v1:0     for Mistral / Codestral
+		//   amazon.<...>           for Nova / Titan
+		//   ai21.<...>             for Jamba
+		//   cohere.<...>           for Command R / Embed
+		//   stability.<...>        for Stable Diffusion
+		switch {
+		case schemas.IsAnthropicModel(model):
+			return []string{"anthropic." + model}
+		case schemas.IsLlamaModel(model):
+			return []string{"meta." + model}
+		case schemas.IsMistralModel(model):
+			return []string{"mistral." + model}
+		case schemas.IsNovaModel(model):
+			return []string{"amazon." + model}
+		}
+		return nil
+	}
+	return nil
 }
 
 // normalizeClaudeModelName extracts the base Claude model name from
