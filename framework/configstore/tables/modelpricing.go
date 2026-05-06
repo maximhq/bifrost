@@ -91,6 +91,12 @@ type TableModelPricing struct {
 	// Costs - OCR
 	OCRCostPerPage        *float64 `gorm:"default:null;column:ocr_cost_per_page" json:"ocr_cost_per_page,omitempty"`
 	AnnotationCostPerPage *float64 `gorm:"default:null;column:annotation_cost_per_page" json:"annotation_cost_per_page,omitempty"`
+
+	// Bifrost-specific behaviour overrides sourced from the datasheet.
+	// Stored as a single JSON-serialized column so the schema can grow
+	// without DB migrations for every new field. nil if the datasheet
+	// has no overrides for this (model, provider) pair.
+	BifrostOverrides *schemas.BifrostOverrides `gorm:"type:text;serializer:json;default:null;column:bifrost_overrides" json:"bifrost_overrides,omitempty"`
 }
 
 // TableName sets the table name for each model

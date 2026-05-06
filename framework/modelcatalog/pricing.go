@@ -18,6 +18,11 @@ const (
 
 // PricingEntry represents a single model's pricing information.
 // Field names and JSON tags match the datasheet schema exactly.
+//
+// Bifrost-specific behaviour overrides (server tools, beta headers,
+// reasoning shape, etc.) are embedded via schemas.BifrostOverrides so the
+// JSON fields land at the top level — matching the flat datasheet shape
+// produced by bifrost-website's /datasheet endpoint.
 type PricingEntry struct {
 	BaseModel string `json:"base_model,omitempty"`
 	Provider  string `json:"provider"`
@@ -28,6 +33,7 @@ type PricingEntry struct {
 	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
 	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
 
+	schemas.BifrostOverrides
 	PricingOptions
 }
 

@@ -87,18 +87,37 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 	return nil
 }
 
-// populateModelParamsFromPricing extracts max_output_tokens from pricing entries
-// and populates the model params cache so that providers can look up max output
-// tokens without a separate model-parameters sync.
+// populateModelParamsFromPricing extracts per-model parameters from pricing
+// entries and populates the model params cache so that providers can look
+// them up without a separate sync.
+//
+// Two distinct cache keys per model where applicable:
+//   - max_output_tokens: stored under the bare model name (existing behaviour;
+//     callers like GetMaxOutputTokensOrDefault pass bare names).
+//   - bifrost_overrides: stored under the FULL provider-prefixed datasheet
+//     key (e.g. "anthropic.claude-opus-4-7", "vertex_ai/claude-opus-4-7")
+//     so GetBifrostOverrides() can distinguish the same model on different
+//     providers.
+//
+// When the datasheet key is already unprefixed (e.g. raw "claude-opus-4-7"
+// for Anthropic native), both fields land on the same entry.
 func (mc *ModelCatalog) populateModelParamsFromPricing(pricingData map[string]PricingEntry) {
 	modelParamsEntries := make(map[string]providerUtils.ModelParams)
 	for modelKey, entry := range pricingData {
+		// max_output_tokens under stripped name (existing behaviour).
 		if entry.MaxOutputTokens != nil {
 			modelName := extractModelName(modelKey)
-			params := providerUtils.ModelParams{
-				MaxOutputTokens: entry.MaxOutputTokens,
-			}
-			modelParamsEntries[modelName] = params
+			existing := modelParamsEntries[modelName]
+			existing.MaxOutputTokens = entry.MaxOutputTokens
+			modelParamsEntries[modelName] = existing
+		}
+		// bifrost overrides under full provider-prefixed key. Only push if
+		// any field is set so the cache isn't bloated with empty structs.
+		if !isEmptyBifrostOverrides(&entry.BifrostOverrides) {
+			ov := entry.BifrostOverrides
+			existing := modelParamsEntries[modelKey]
+			existing.BifrostOverrides = &ov
+			modelParamsEntries[modelKey] = existing
 		}
 	}
 	if len(modelParamsEntries) > 0 {

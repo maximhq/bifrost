@@ -635,7 +635,41 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientDisabledColumn(ctx, db); err != nil {
 		return err
 	}
+  if err := migrationAddBifrostOverridesColumn(ctx, db); err != nil {
+    return err
+  }
 	return nil
+}
+
+// migrationAddBifrostOverridesColumn adds the bifrost_overrides column to the
+// governance_model_pricing table. This is a single nullable JSON column that
+// stores per-(model, provider) behaviour overrides sourced from the bifrost
+// datasheet (server tools, beta headers, reasoning shape, etc.).
+func migrationAddBifrostOverridesColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_bifrost_overrides_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableModelPricing{}, "bifrost_overrides") {
+				if err := mg.AddColumn(&tables.TableModelPricing{}, "bifrost_overrides"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableModelPricing{}, "bifrost_overrides") {
+				if err := mg.DropColumn(&tables.TableModelPricing{}, "bifrost_overrides"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
 }
 
 func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB) error {
