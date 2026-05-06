@@ -745,6 +745,7 @@ type ResponsesOutputMessageContentRefusal struct {
 type ResponsesToolMessage struct {
 	CallID    *string                           `json:"call_id,omitempty"` // Common call ID for tool calls and outputs
 	Name      *string                           `json:"name,omitempty"`    // Common name field for tool calls
+	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`

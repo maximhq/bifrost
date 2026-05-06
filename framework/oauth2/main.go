@@ -130,8 +130,8 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 	newTokenResponse, err := p.exchangeRefreshToken(
 		ctx,
 		oauthConfig.TokenURL,
-		oauthConfig.ClientID,
-		oauthConfig.ClientSecret,
+		oauthConfig.GetResolvedClientID(),
+		oauthConfig.GetResolvedClientSecret(),
 		token.RefreshToken,
 	)
 	if err != nil {
@@ -408,7 +408,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 
 	// Dynamic Client Registration (RFC 7591)
 	// If client_id is NOT provided, attempt dynamic registration
-	clientID := config.ClientID
+	clientID := config.ClientID // storage value — may be "env.MY_VAR" reference or plain ID
 	clientSecret := config.ClientSecret
 
 	if clientID == "" {
@@ -462,8 +462,8 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	expiresAt := time.Now().Add(15 * time.Minute)
 	oauthConfigRecord := &tables.TableOauthConfig{
 		ID:              oauthConfigID,
-		ClientID:        clientID, // May be from dynamic registration
-		ClientSecret:    clientSecret,
+		ClientID:        schemas.NewEnvVar(clientID), // May be from dynamic registration
+		ClientSecret:    schemas.NewEnvVar(clientSecret),
 		AuthorizeURL:    authorizeURL,
 		TokenURL:        tokenURL,
 		RegistrationURL: registrationURL,
@@ -482,17 +482,21 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		return nil, fmt.Errorf("failed to create oauth config: %w", err)
 	}
 
+	// Resolve env var reference to actual value for use in the authorize URL.
+	// The reference ("env.MY_VAR") is stored in DB; the resolved value is sent to the provider.
+	resolvedClientID := schemas.NewEnvVar(clientID).GetValue()
+
 	// Build authorize URL with PKCE (using dynamically registered or user-provided client_id)
 	authURL := p.buildAuthorizeURLWithPKCE(
 		authorizeURL,
-		clientID, // May be from dynamic registration
+		resolvedClientID,
 		config.RedirectURI,
 		state,
 		codeChallenge,
 		scopes,
 	)
 
-	logger.Debug("OAuth flow initiated successfully: oauth_config_id: %s, client_id: %s", oauthConfigID, clientID)
+	logger.Debug("OAuth flow initiated successfully: oauth_config_id: %s, client_id: %s", oauthConfigID, resolvedClientID)
 
 	return &schemas.OAuth2FlowInitiation{
 		OauthConfigID: oauthConfigID,
@@ -524,8 +528,8 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	// Log token exchange attempt for debugging
 	logger.Debug("Attempting token exchange",
 		"token_url", oauthConfig.TokenURL,
-		"client_id", oauthConfig.ClientID,
-		"has_client_secret", oauthConfig.ClientSecret != "",
+		"client_id", oauthConfig.GetResolvedClientID(),
+		"has_client_secret", oauthConfig.GetResolvedClientSecret() != "",
 		"has_pkce_verifier", oauthConfig.CodeVerifier != "")
 
 	// Exchange code for tokens with PKCE verifier
@@ -533,8 +537,8 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		ctx,
 		oauthConfig.TokenURL,
 		code,
-		oauthConfig.ClientID,
-		oauthConfig.ClientSecret,
+		oauthConfig.GetResolvedClientID(),
+		oauthConfig.GetResolvedClientSecret(),
 		oauthConfig.RedirectURI,
 		oauthConfig.CodeVerifier, // PKCE verifier
 	)
@@ -543,7 +547,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
 		logger.Error("Token exchange failed",
 			"error", err.Error(),
-			"client_id", oauthConfig.ClientID,
+			"client_id", oauthConfig.GetResolvedClientID(),
 			"token_url", oauthConfig.TokenURL)
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
@@ -871,7 +875,7 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	// Build authorize URL with PKCE
 	authURL := p.buildAuthorizeURLWithPKCE(
 		templateConfig.AuthorizeURL,
-		templateConfig.ClientID,
+		templateConfig.GetResolvedClientID(),
 		redirectURI,
 		state,
 		codeChallenge,
@@ -926,8 +930,8 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		ctx,
 		templateConfig.TokenURL,
 		code,
-		templateConfig.ClientID,
-		templateConfig.ClientSecret,
+		templateConfig.GetResolvedClientID(),
+		templateConfig.GetResolvedClientSecret(),
 		redirectURI,
 		session.CodeVerifier,
 	)
@@ -1087,8 +1091,8 @@ func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToke
 	newTokenResponse, err := p.exchangeRefreshToken(
 		ctx,
 		templateConfig.TokenURL,
-		templateConfig.ClientID,
-		templateConfig.ClientSecret,
+		templateConfig.GetResolvedClientID(),
+		templateConfig.GetResolvedClientSecret(),
 		token.RefreshToken,
 	)
 	if err != nil {

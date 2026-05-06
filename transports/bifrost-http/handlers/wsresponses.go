@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -111,7 +112,7 @@ type authHeaders struct {
 	apiKey        string
 	googAPIKey    string
 	baggage       string
-	extraHeaders  map[string]string
+	headers       map[string][]string
 }
 
 // captureAuthHeaders captures the auth headers from the request.
@@ -122,15 +123,12 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
 		googAPIKey:    string(ctx.Request.Header.Peek("x-goog-api-key")),
 		baggage:       string(ctx.Request.Header.Peek("baggage")),
-		extraHeaders:  make(map[string]string),
+		headers:       make(map[string][]string),
 	}
 
 	for key, value := range ctx.Request.Header.All() {
-		k := string(key)
-		lk := strings.ToLower(k)
-		if strings.HasPrefix(lk, "x-bf-") {
-			ah.extraHeaders[k] = string(value)
-		}
+		k := strings.ToLower(string(key))
+		ah.headers[k] = append(ah.headers[k], string(value))
 	}
 	return ah
 }
@@ -262,23 +260,36 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 	wsURL := wsProvider.WebSocketResponsesURL(key)
 	upstream := session.Upstream()
+	upstreamFromPool := true
 
-	// Validate the pinned upstream matches the current request's provider/key
+	// Validate the pinned upstream matches the current request's provider/key.
+	hasForwardedHeaders := hasWebSocketForwardedHeaders(ctx)
 	if upstream != nil && !upstream.IsClosed() &&
-		(upstream.Provider() != req.Provider || upstream.KeyID() != key.ID) {
+		(upstream.Provider() != req.Provider || upstream.KeyID() != key.ID || hasForwardedHeaders) {
 		h.pool.Discard(upstream)
 		session.SetUpstream(nil)
 		upstream = nil
 	}
 
-	// If no upstream connection pinned, get one from the pool or dial
-	if upstream == nil || upstream.IsClosed() {
-		headers := wsProvider.WebSocketHeaders(key)
+	// If request-scoped headers are present, do not use the shared pool: pooling
+	// those dials either leaks metadata across clients or explodes pool key cardinality.
+	if hasForwardedHeaders {
+		headers := mergeWebSocketHeaders(ctx, wsProvider.WebSocketHeaders(key))
+		upstream, err = bfws.DialUpstream(wsURL, headers, req.Provider, key.ID)
+		if err != nil {
+			logger.Warn("failed to dial upstream WS connection for %s with forwarded headers: %v, falling back to HTTP bridge", req.Provider, err)
+			return false
+		}
+		upstreamFromPool = false
+		defer upstream.Close()
+	} else if upstream == nil || upstream.IsClosed() {
 		poolKey := bfws.PoolKey{
 			Provider: req.Provider,
 			KeyID:    key.ID,
 			Endpoint: wsURL,
 		}
+
+		headers := mergeWebSocketHeaders(ctx, wsProvider.WebSocketHeaders(key))
 
 		upstream, err = h.pool.Get(poolKey, headers)
 		if err != nil {
@@ -286,6 +297,15 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			return false
 		}
 		session.SetUpstream(upstream)
+	}
+
+	closeUpstream := func() {
+		if upstreamFromPool {
+			h.pool.Discard(upstream)
+		} else if upstream != nil {
+			upstream.Close()
+		}
+		session.SetUpstream(nil)
 	}
 
 	// Run plugin pre-hooks before forwarding to upstream
@@ -320,8 +340,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	// Forward the raw event to upstream
 	if err := upstream.WriteMessage(ws.TextMessage, rawEvent); err != nil {
 		logger.Warn("upstream WS write failed for %s: %v, falling back to HTTP bridge", req.Provider, err)
-		h.pool.Discard(upstream)
-		session.SetUpstream(nil)
+		closeUpstream()
 		return false
 	}
 
@@ -336,8 +355,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		if err := upstream.SetReadDeadline(time.Now().Add(streamIdleTimeout)); err != nil {
 			// Fail closed: if we can't arm the idle timeout, don't risk hanging forever.
 			logger.Warn("failed to set upstream WS read deadline for %s: %v, treating as terminal", req.Provider, err)
-			h.pool.Discard(upstream)
-			session.SetUpstream(nil)
+			closeUpstream()
 			finalizeTerminalPostHooks(newBifrostError(502, "upstream_connection_error", "failed to arm upstream read deadline"))
 			writeWSError(session, 502, "upstream_connection_error", "upstream websocket connection error")
 			return true
@@ -347,16 +365,14 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		if readErr != nil {
 			if isWSReadTimeout(readErr) {
 				logger.Warn("upstream WS idle timeout for %s after %s", req.Provider, streamIdleTimeout)
-				h.pool.Discard(upstream)
-				session.SetUpstream(nil)
+				closeUpstream()
 				finalizeTerminalPostHooks(newBifrostError(504, "upstream_timeout", "upstream websocket stream timed out"))
 				writeWSError(session, 504, "upstream_timeout", "upstream websocket stream timed out")
 				return true
 			}
 
 			logger.Warn("upstream WS read failed for %s: %v, falling back to HTTP bridge", req.Provider, readErr)
-			h.pool.Discard(upstream)
-			session.SetUpstream(nil)
+			closeUpstream()
 			if !forwardedAny {
 				return false
 			}
@@ -385,16 +401,14 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 			_, postErr := hooks.PostHookRunner(ctx, resp, nil)
 			if postErr != nil {
-				h.pool.Discard(upstream)
-				session.SetUpstream(nil)
+				closeUpstream()
 				writeWSBifrostError(session, postErr)
 				return true
 			}
 		}
 
 		if writeErr := session.WriteMessage(msgType, data); writeErr != nil {
-			h.pool.Discard(upstream)
-			session.SetUpstream(nil)
+			closeUpstream()
 			// Only finalize post-hooks if they haven't already run for this chunk.
 			// When isTerminal && streamResp != nil, PostHookRunner already ran above (line 366),
 			// so calling finalizeTerminalPostHooks again would double-fire the end-of-stream signal.
@@ -626,6 +640,9 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 // createBifrostContextFromAuth builds a BifrostContext from the auth headers captured during upgrade.
 func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeaders) (*schemas.BifrostContext, context.CancelFunc) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	if auth == nil {
+		return ctx, cancel
+	}
 
 	if sessionID := lib.ParseSessionIDFromBaggage(auth.baggage); sessionID != "" {
 		ctx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
@@ -641,7 +658,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
 				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
-			} else if handlerStore.ShouldAllowDirectKeys() {
+			} else if handlerStore != nil && handlerStore.ShouldAllowDirectKeys() {
 				key := schemas.Key{
 					ID:     "header-provided",
 					Value:  *schemas.NewEnvVar(token),
@@ -655,7 +672,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	if auth.apiKey != "" {
 		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.apiKey)
-		} else if handlerStore.ShouldAllowDirectKeys() {
+		} else if handlerStore != nil && handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
 				Value:  *schemas.NewEnvVar(auth.apiKey),
@@ -668,7 +685,7 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	if auth.googAPIKey != "" {
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
-		} else if handlerStore.ShouldAllowDirectKeys() {
+		} else if handlerStore != nil && handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
 				Value:  *schemas.NewEnvVar(auth.googAPIKey),
@@ -680,25 +697,89 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 	}
 
 	// Forward x-bf-* headers
-	for k, v := range auth.extraHeaders {
-		lk := strings.ToLower(k)
-		switch {
-		case lk == "x-bf-vk":
-			// Already handled above
-		case lk == "x-bf-api-key":
-			ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, v)
-		case strings.HasPrefix(lk, "x-bf-eh-"):
-			suffix := strings.TrimPrefix(lk, "x-bf-eh-")
-			existing, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string]string)
-			if existing == nil {
-				existing = make(map[string]string)
+	matcher := (*lib.HeaderMatcher)(nil)
+	if handlerStore != nil {
+		matcher = handlerStore.GetHeaderMatcher()
+	}
+	extraHeaders := make(map[string][]string)
+	for k, values := range auth.headers {
+		for _, v := range values {
+			switch {
+			case k == "x-bf-vk":
+				// Already handled above
+			case k == "x-bf-api-key":
+				ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, v)
+			case strings.HasPrefix(k, "x-bf-eh-"):
+				addForwardedHeader(extraHeaders, matcher, strings.TrimPrefix(k, "x-bf-eh-"), v)
+			case matcher != nil && matcher.HasAllowlist() && matcher.MatchesAllow(k):
+				if !strings.HasPrefix(k, "x-bf-") && !isSecurityDeniedExtraHeader(k) && !matcher.MatchesDeny(k) {
+					extraHeaders[k] = append(extraHeaders[k], v)
+				}
 			}
-			existing[suffix] = v
-			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, existing)
 		}
+	}
+	if len(extraHeaders) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
 
 	return ctx, cancel
+}
+
+func addForwardedHeader(extraHeaders map[string][]string, matcher *lib.HeaderMatcher, name string, value string) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || isSecurityDeniedExtraHeader(name) {
+		return
+	}
+	if matcher != nil && !matcher.ShouldAllow(name) {
+		return
+	}
+	extraHeaders[name] = append(extraHeaders[name], value)
+}
+
+func isSecurityDeniedExtraHeader(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(name, "sec-websocket-") {
+		return true
+	}
+	switch name {
+	case "authorization", "proxy-authorization", "cookie", "host", "content-length", "connection", "transfer-encoding",
+		"upgrade", "origin", "x-api-key", "x-goog-api-key", "x-bf-api-key", "x-bf-api-key-id", "x-bf-vk":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeWebSocketHeaders(ctx *schemas.BifrostContext, providerHeaders map[string]string) http.Header {
+	merged := http.Header{}
+	for key, value := range providerHeaders {
+		merged.Set(key, value)
+	}
+	if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+		for key, values := range extraHeaders {
+			if len(values) == 0 || isSecurityDeniedExtraHeader(key) {
+				continue
+			}
+			merged.Del(key)
+			for _, value := range values {
+				merged.Add(key, value)
+			}
+		}
+	}
+	return merged
+}
+
+func hasWebSocketForwardedHeaders(ctx *schemas.BifrostContext) bool {
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		return false
+	}
+	for key, values := range extraHeaders {
+		if len(values) > 0 && !isSecurityDeniedExtraHeader(key) {
+			return true
+		}
+	}
+	return false
 }
 
 // executeHTTPBridge runs the response through the existing streaming inference pipeline.

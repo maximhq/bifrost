@@ -35,10 +35,12 @@ type VertexError struct {
 	} `json:"error"`
 }
 
-// vertexClientPool provides a pool/cache for authenticated Vertex HTTP clients.
-// This avoids creating and authenticating clients for every request.
-// Uses sync.Map for atomic operations without explicit locking.
-var vertexClientPool sync.Map
+// vertexTokenSourcePool caches oauth2.TokenSource instances keyed by a hash of
+// the auth credentials. The Google TokenSource internally handles token refresh
+// and expiry, so caching the source avoids re-parsing credentials JSON and
+// re-creating the credentials object on every request.
+// Entries are evicted by removeVertexClient on 401/403 or token-acquisition errors.
+var vertexTokenSourcePool sync.Map
 
 // vertexLocationsPathRe matches /locations/{region} in Vertex API paths for region replacement.
 var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
@@ -53,22 +55,28 @@ var vertexBodyProjectsRe = regexp.MustCompile(`(["/])projects/[^/"]+`)
 // that need expanding to the full Vertex resource path.
 var vertexShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
 
-// getClientKey generates a unique key for caching authenticated clients.
+// defaultCredentialsCacheKey is the sentinel pool key used when AuthCredentials
+// is empty and we fall back to google.FindDefaultCredentials.
+const defaultCredentialsCacheKey = "__default_credentials__"
+
+// getClientKey generates a unique key for caching token sources.
 // It uses a hash of the auth credentials for security.
 func getClientKey(authCredentials string) string {
+	if authCredentials == "" {
+		return defaultCredentialsCacheKey
+	}
 	hash := sha256.Sum256([]byte(authCredentials))
 	return hex.EncodeToString(hash[:])
 }
 
-// removeVertexClient removes a specific client from the pool.
+// removeVertexClient evicts a cached token source from the pool.
 // This should be called when:
 // - API returns authentication/authorization errors (401, 403)
-// - Auth client creation fails
-// - Network errors that might indicate credential issues
-// This ensures we don't keep using potentially invalid clients.
+// - Token acquisition fails (tokenSource.Token() error)
+// This forces the next request to re-create the token source from scratch.
 func removeVertexClient(authCredentials string) {
 	clientKey := getClientKey(authCredentials)
-	vertexClientPool.Delete(clientKey)
+	vertexTokenSourcePool.Delete(clientKey)
 }
 
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
@@ -113,11 +121,20 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
 // getAuthTokenSource returns an authenticated token source for Vertex AI API requests.
-// It uses the default credentials if no auth credentials are provided.
-// It uses the JWT config if auth credentials are provided.
-// It returns an error if the token source creation fails.
+// Token sources are cached in vertexTokenSourcePool keyed by a hash of the auth
+// credentials. The Google oauth2.TokenSource handles token refresh and expiry
+// internally, so caching the source is safe and avoids re-parsing credentials
+// on every request.
 func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	authCredentials := key.VertexKeyConfig.AuthCredentials
+	clientKey := getClientKey(authCredentials.GetValue())
+
+	// Fast path: return cached token source.
+	if cached, ok := vertexTokenSourcePool.Load(clientKey); ok {
+		return cached.(oauth2.TokenSource), nil
+	}
+
+	// Slow path: create a new token source and cache it.
 	var tokenSource oauth2.TokenSource
 	if authCredentials.GetValue() == "" {
 		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
@@ -161,7 +178,11 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 		}
 		tokenSource = conf.TokenSource
 	}
-	return tokenSource, nil
+
+	// Cache the token source. If another goroutine raced and stored first, use
+	// that one — both are equally valid, but sharing maximises token reuse.
+	actual, _ := vertexTokenSourcePool.LoadOrStore(clientKey, tokenSource)
+	return actual.(oauth2.TokenSource), nil
 }
 
 // GetProviderKey returns the provider identifier for Vertex.
@@ -358,6 +379,40 @@ func (provider *VertexProvider) TextCompletionStream(ctx *schemas.BifrostContext
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
+// inlineDocumentURLs replaces document content blocks carrying a remote URL
+// source with inline base64 bytes by fetching each URL. Required because
+// Anthropic-on-Vertex does not accept URL-source documents (unlike direct
+// Anthropic). Mutates the request in place; safe to call when no document
+// blocks are present. The ctx is propagated to each fetch so request
+// cancellation/deadlines abort in-flight downloads.
+func inlineDocumentURLs(ctx context.Context, request *schemas.BifrostChatRequest) error {
+	if request == nil || request.Input == nil {
+		return nil
+	}
+	for mi := range request.Input {
+		msg := &request.Input[mi]
+		if msg.Content == nil || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for bi := range msg.Content.ContentBlocks {
+			block := &msg.Content.ContentBlocks[bi]
+			if block.File == nil || block.File.FileURL == nil || *block.File.FileURL == "" {
+				continue
+			}
+			mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
+			if err != nil {
+				return err
+			}
+			block.File.FileData = &encoded
+			if mediaType != "" && block.File.FileType == nil {
+				block.File.FileType = &mediaType
+			}
+			block.File.FileURL = nil
+		}
+	}
+	return nil
+}
+
 // ChatCompletion performs a chat completion request to the Vertex API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -372,6 +427,11 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			var err error
 
 			if schemas.IsAnthropicModel(request.Model) {
+				// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+				// Inline any URL documents to base64 before the converter runs.
+				if err := inlineDocumentURLs(ctx, request); err != nil {
+					return nil, fmt.Errorf("failed to inline document URLs for vertex/claude: %w", err)
+				}
 				// Use centralized Anthropic converter
 				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
 				if convErr != nil {
@@ -461,7 +521,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
 	if schemas.IsAnthropicModel(request.Model) && jsonBody != nil {
-		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex)
+		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, request.Model)
 		if remapErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 		}
@@ -679,6 +739,11 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
 				var extraParams map[string]interface{}
+				// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+				// Inline any URL documents to base64 before the converter runs.
+				if err := inlineDocumentURLs(ctx, request); err != nil {
+					return nil, fmt.Errorf("failed to inline document URLs for vertex/claude: %w", err)
+				}
 				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
 				if convErr != nil {
 					return nil, convErr
@@ -731,7 +796,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// Remap unsupported tool versions for Vertex streaming (handles raw passthrough bodies)
 		if jsonData != nil {
 			var remapErr error
-			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex)
+			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex, request.Model)
 			if remapErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 			}

@@ -1205,6 +1205,9 @@ const (
 	AnthropicToolNameWebFetch        AnthropicToolName = "web_fetch"
 	AnthropicToolNameBash            AnthropicToolName = "bash"
 	AnthropicToolNameTextEditor      AnthropicToolName = "str_replace_based_edit_tool"
+	// AnthropicToolNameTextEditorLegacy is the name required for text_editor_20250124
+	// and text_editor_20250429. Newer text_editor_20250728+ use AnthropicToolNameTextEditor.
+	AnthropicToolNameTextEditorLegacy AnthropicToolName = "str_replace_editor"
 	AnthropicToolNameCodeExecution   AnthropicToolName = "code_execution"
 	AnthropicToolNameMemory          AnthropicToolName = "memory"
 	AnthropicToolNameToolSearchBM25  AnthropicToolName = "tool_search_tool_bm25"

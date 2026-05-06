@@ -79,7 +79,6 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 		}
 		otelSpans = append(otelSpans, otelSpan)
 	}
-
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
 			Attributes: p.getResourceAttributes(),

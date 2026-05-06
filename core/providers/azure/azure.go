@@ -2660,49 +2660,827 @@ func (provider *AzureProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
 
-// ContainerCreate is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostContainerCreateRequest) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerCreateRequest, provider.GetProviderKey())
+// buildContainerURL constructs the Azure container API URL.
+// Container endpoints are not per-deployment, so they use the openai/v1 prefix directly.
+func (provider *AzureProvider) buildContainerURL(key schemas.Key, path string) string {
+	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
+	return fmt.Sprintf("%s/openai/v1%s?api-version=%s", endpoint, path, AzureAPIVersionPreview)
 }
 
-// ContainerList is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerListRequest) (*schemas.BifrostContainerListResponse, *schemas.BifrostError) {
+// ContainerCreate creates a new container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerCreateRequest) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.Name == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: name is required", nil)
+	}
+	if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
+	reqBody := map[string]interface{}{"name": request.Name}
+	if request.ExpiresAfter != nil {
+		reqBody["expires_after"] = map[string]interface{}{
+			"anchor":  request.ExpiresAfter.Anchor,
+			"minutes": request.ExpiresAfter.Minutes,
+		}
+	}
+	if len(request.FileIDs) > 0 {
+		reqBody["file_ids"] = request.FileIDs
+	}
+	if request.MemoryLimit != "" {
+		reqBody["memory_limit"] = request.MemoryLimit
+	}
+	if len(request.Metadata) > 0 {
+		reqBody["metadata"] = request.Metadata
+	}
+	for k, v := range request.ExtraParams {
+		if _, exists := reqBody[k]; !exists {
+			reqBody[k] = v
+		}
+	}
+
+	jsonBody, err := providerUtils.MarshalSorted(reqBody)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildContainerURL(key, "/containers"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBody(jsonBody)
+
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
+		return nil, openai.ParseOpenAIError(resp)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	responseBody := append([]byte(nil), body...)
+	var containerResp struct {
+		ID           string                         `json:"id"`
+		Object       string                         `json:"object"`
+		Name         string                         `json:"name"`
+		CreatedAt    int64                          `json:"created_at"`
+		Status       schemas.ContainerStatus        `json:"status"`
+		ExpiresAfter *schemas.ContainerExpiresAfter `json:"expires_after"`
+		LastActiveAt *int64                         `json:"last_active_at"`
+		MemoryLimit  string                         `json:"memory_limit"`
+		Metadata     map[string]string              `json:"metadata"`
+	}
+
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &containerResp, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := &schemas.BifrostContainerCreateResponse{
+		ID:           containerResp.ID,
+		Object:       containerResp.Object,
+		Name:         containerResp.Name,
+		CreatedAt:    containerResp.CreatedAt,
+		Status:       containerResp.Status,
+		ExpiresAfter: containerResp.ExpiresAfter,
+		LastActiveAt: containerResp.LastActiveAt,
+		MemoryLimit:  containerResp.MemoryLimit,
+		Metadata:     containerResp.Metadata,
+		ExtraFields:  schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+	}
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
+}
+
+// ContainerList lists containers via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerListRequest) (*schemas.BifrostContainerListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerListRequest, provider.GetProviderKey())
 }
 
-// ContainerRetrieve is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerRetrieveRequest) (*schemas.BifrostContainerRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerRetrieveRequest, provider.GetProviderKey())
+// ContainerRetrieve retrieves a specific container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerRetrieveRequest) (*schemas.BifrostContainerRetrieveResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.ContainerID == "" {
+		return nil, providerUtils.NewBifrostOperationError("container_id is required", nil)
+	}
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.buildContainerURL(key, "/containers/"+url.PathEscape(request.ContainerID)))
+		req.Header.SetMethod(http.MethodGet)
+
+		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		if resp.StatusCode() >= 400 {
+			lastErr = openai.ParseOpenAIError(resp)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+		if decodeErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr)
+			continue
+		}
+		responseBody := append([]byte(nil), body...)
+		var containerResp struct {
+			ID           string                         `json:"id"`
+			Object       string                         `json:"object"`
+			Name         string                         `json:"name"`
+			CreatedAt    int64                          `json:"created_at"`
+			Status       schemas.ContainerStatus        `json:"status"`
+			ExpiresAfter *schemas.ContainerExpiresAfter `json:"expires_after"`
+			LastActiveAt *int64                         `json:"last_active_at"`
+			MemoryLimit  string                         `json:"memory_limit"`
+			Metadata     map[string]string              `json:"metadata"`
+		}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &containerResp, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		response := &schemas.BifrostContainerRetrieveResponse{
+			ID:           containerResp.ID,
+			Object:       containerResp.Object,
+			Name:         containerResp.Name,
+			CreatedAt:    containerResp.CreatedAt,
+			Status:       containerResp.Status,
+			ExpiresAfter: containerResp.ExpiresAfter,
+			LastActiveAt: containerResp.LastActiveAt,
+			MemoryLimit:  containerResp.MemoryLimit,
+			Metadata:     containerResp.Metadata,
+			ExtraFields:  schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		return response, nil
+	}
+	return nil, lastErr
 }
 
-// ContainerDelete is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerDeleteRequest) (*schemas.BifrostContainerDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerDeleteRequest, provider.GetProviderKey())
+// ContainerDelete deletes a container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerDeleteRequest) (*schemas.BifrostContainerDeleteResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.ContainerID == "" {
+		return nil, providerUtils.NewBifrostOperationError("container_id is required", nil)
+	}
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.buildContainerURL(key, "/containers/"+url.PathEscape(request.ContainerID)))
+		req.Header.SetMethod(http.MethodDelete)
+		req.Header.SetContentType("application/json")
+
+		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		if resp.StatusCode() >= 400 {
+			lastErr = openai.ParseOpenAIError(resp)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+		if decodeErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr)
+			continue
+		}
+		responseBody := append([]byte(nil), body...)
+		var deleteResp struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Deleted bool   `json:"deleted"`
+		}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &deleteResp, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		response := &schemas.BifrostContainerDeleteResponse{
+			ID:          deleteResp.ID,
+			Object:      deleteResp.Object,
+			Deleted:     deleteResp.Deleted,
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		return response, nil
+	}
+	return nil, lastErr
 }
 
-// ContainerFileCreate is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerFileCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostContainerFileCreateRequest) (*schemas.BifrostContainerFileCreateResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileCreateRequest, provider.GetProviderKey())
+// ContainerFileCreate uploads a file to a container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerFileCreateRequest) (*schemas.BifrostContainerFileCreateResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.ContainerID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
+	}
+	if len(request.File) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: file is required", nil)
+	}
+	if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "file")
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to create multipart form", err)
+	}
+	if _, err = part.Write(request.File); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write file to multipart form", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to close multipart form", err)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID))))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.SetBody(body.Bytes())
+
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() >= 400 {
+		return nil, openai.ParseOpenAIError(resp)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+
+	var fileResp struct {
+		ID          string `json:"id"`
+		Object      string `json:"object"`
+		Bytes       int64  `json:"bytes"`
+		CreatedAt   int64  `json:"created_at"`
+		ContainerID string `json:"container_id"`
+		Path        string `json:"path"`
+		Source      string `json:"source"`
+	}
+
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &fileResp, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := &schemas.BifrostContainerFileCreateResponse{
+		ID:          fileResp.ID,
+		Object:      fileResp.Object,
+		Bytes:       fileResp.Bytes,
+		CreatedAt:   fileResp.CreatedAt,
+		ContainerID: fileResp.ContainerID,
+		Path:        fileResp.Path,
+		Source:      fileResp.Source,
+		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+	}
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = "<REDACTED>"
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
 }
 
-// ContainerFileList is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerFileList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileListRequest) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileListRequest, provider.GetProviderKey())
+// ContainerFileList lists files in a container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileListRequest) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.ContainerID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
+	}
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	helper, herr := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	if herr != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", herr)
+	}
+
+	key, nativeCursor, ok := helper.GetCurrentKey()
+	if !ok {
+		return &schemas.BifrostContainerFileListResponse{Object: "list", Data: []schemas.ContainerFileObject{}, HasMore: false}, nil
+	}
+	if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
+	requestURL := provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID)))
+	queryParams := url.Values{}
+	if request.Limit > 0 {
+		queryParams.Set("limit", fmt.Sprintf("%d", request.Limit))
+	}
+	if nativeCursor != "" {
+		queryParams.Set("after", nativeCursor)
+	}
+	if request.Order != nil {
+		queryParams.Set("order", *request.Order)
+	}
+	if len(queryParams) > 0 {
+		requestURL += "&" + queryParams.Encode()
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() >= 400 {
+		return nil, openai.ParseOpenAIError(resp)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+
+	var listResp struct {
+		Object  string                        `json:"object"`
+		Data    []schemas.ContainerFileObject `json:"data"`
+		FirstID *string                       `json:"first_id"`
+		LastID  *string                       `json:"last_id"`
+		HasMore bool                          `json:"has_more"`
+	}
+
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &listResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	cursorID := ""
+	if listResp.LastID != nil {
+		cursorID = *listResp.LastID
+	}
+	nextCursor, hasMore := helper.BuildNextCursor(listResp.HasMore, cursorID)
+
+	response := &schemas.BifrostContainerFileListResponse{
+		Object:      listResp.Object,
+		Data:        listResp.Data,
+		FirstID:     listResp.FirstID,
+		LastID:      listResp.LastID,
+		HasMore:     hasMore,
+		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+	}
+	if nextCursor != "" {
+		response.After = &nextCursor
+	}
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
 }
 
-// ContainerFileRetrieve is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerFileRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileRetrieveRequest) (*schemas.BifrostContainerFileRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileRetrieveRequest, provider.GetProviderKey())
+// ContainerFileRetrieve retrieves file metadata from a container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileRetrieveRequest) (*schemas.BifrostContainerFileRetrieveResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.ContainerID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
+	}
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
+	}
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.Header.SetMethod(http.MethodGet)
+
+		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		if resp.StatusCode() >= 400 {
+			lastErr = openai.ParseOpenAIError(resp)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		var fileResp struct {
+			ID          string `json:"id"`
+			Object      string `json:"object"`
+			Bytes       int64  `json:"bytes"`
+			CreatedAt   int64  `json:"created_at"`
+			ContainerID string `json:"container_id"`
+			Path        string `json:"path"`
+			Source      string `json:"source"`
+		}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &fileResp, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		response := &schemas.BifrostContainerFileRetrieveResponse{
+			ID:          fileResp.ID,
+			Object:      fileResp.Object,
+			Bytes:       fileResp.Bytes,
+			CreatedAt:   fileResp.CreatedAt,
+			ContainerID: fileResp.ContainerID,
+			Path:        fileResp.Path,
+			Source:      fileResp.Source,
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		return response, nil
+	}
+	return nil, lastErr
 }
 
-// ContainerFileContent is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerFileContent(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileContentRequest) (*schemas.BifrostContainerFileContentResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileContentRequest, provider.GetProviderKey())
+// ContainerFileContent retrieves the binary content of a file from a container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileContentRequest) (*schemas.BifrostContainerFileContentResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.ContainerID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
+	}
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
+	}
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files/%s/content", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.Header.SetMethod(http.MethodGet)
+
+		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		if resp.StatusCode() >= 400 {
+			lastErr = openai.ParseOpenAIError(resp)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		contentType := string(resp.Header.ContentType())
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+			continue
+		}
+
+		response := &schemas.BifrostContainerFileContentResponse{
+			Content:     append([]byte(nil), body...),
+			ContentType: contentType,
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = map[string]string{
+				"container_id": request.ContainerID,
+				"file_id":      request.FileID,
+			}
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = "<REDACTED>"
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		return response, nil
+	}
+	return nil, lastErr
 }
 
-// ContainerFileDelete is not supported by the Azure provider.
-func (provider *AzureProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+// ContainerFileDelete deletes a file from a container via Azure's OpenAI API.
+func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
+	}
+	if request.ContainerID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
+	}
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
+	}
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.Header.SetMethod(http.MethodDelete)
+
+		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+		if resp.StatusCode() >= 400 {
+			lastErr = openai.ParseOpenAIError(resp)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		var deleteResp struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Deleted bool   `json:"deleted"`
+		}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &deleteResp, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		response := &schemas.BifrostContainerFileDeleteResponse{
+			ID:          deleteResp.ID,
+			Object:      deleteResp.Object,
+			Deleted:     deleteResp.Deleted,
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		return response, nil
+	}
+	return nil, lastErr
 }
 
 // Passthrough forwards a raw request to Azure's API without any transformation.

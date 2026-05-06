@@ -97,6 +97,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "video_generation"
 	case schemas.OCRRequest:
 		baseType = "ocr"
+	case schemas.ContainerCreateRequest:
+		baseType = "container_create"
 	}
 
 	return baseType
