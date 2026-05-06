@@ -90,6 +90,10 @@ var ignoreGoFields = map[string]string{
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
+	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
+	// populated on GET from the oauth_configs table, never accepted as config.json input.
+	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items|oauth_client_secret": "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are

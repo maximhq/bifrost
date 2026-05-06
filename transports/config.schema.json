@@ -4294,6 +4294,21 @@
             },
             "realtime": {
               "type": "boolean"
+            },
+            "cached_content_create": {
+              "type": "boolean"
+            },
+            "cached_content_list": {
+              "type": "boolean"
+            },
+            "cached_content_retrieve": {
+              "type": "boolean"
+            },
+            "cached_content_update": {
+              "type": "boolean"
+            },
+            "cached_content_delete": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
