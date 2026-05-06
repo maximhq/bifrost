@@ -5675,13 +5675,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Step 1: compute effective value for each flag (provider config ← per-request override).
 		effectiveSendBackReq := config.SendBackRawRequest
 		allowRawOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
-		if allowRawOverride {
+		passthroughOverridePresent, _ := req.Context.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+
+		if allowRawOverride || passthroughOverridePresent {
 			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
 				effectiveSendBackReq = override
 			}
 		}
 		effectiveSendBackResp := config.SendBackRawResponse
-		if allowRawOverride {
+		if allowRawOverride || passthroughOverridePresent {
 			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
 				effectiveSendBackResp = override
 			}
