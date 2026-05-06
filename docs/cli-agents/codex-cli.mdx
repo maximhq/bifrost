@@ -40,7 +40,7 @@ Always run `codex` from the same terminal session where you exported variables, 
 
 ## Using Non-OpenAI models
 
-Codex CLI defaults to [websocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) for the Responses API and automatically falls back to HTTPS if the websocket connection fails. Currently non-OpenAI are not supported via the Websocket mode. If you are using non-OpenAI models, you must enable HTTPs mode.
+Codex CLI defaults to [websocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) for the Responses API and automatically falls back to HTTPS if the WebSocket connection fails. Non-OpenAI models are not supported in WebSocket mode, because in this mode, the server is expected to maintain the conversation context. If you are using non-OpenAI models, you must enable HTTPS mode.
 
 To enable https for Codex CLI by default, add these settings in your `config.toml`: 
 
