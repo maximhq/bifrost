@@ -15801,6 +15801,8 @@ var excludedGoFields = map[string]map[string]bool{
 		"is_code_mode_client":   true, // Internal
 		"auth_type":             true, // Internal
 		"oauth_config_id":       true, // Internal
+		"oauth_client_id":       true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_client_secret":   true, // Response-only: populated on GET from oauth config, not stored
 		"is_ping_available":     true, // Runtime state
 		"tool_sync_interval":    true, // Internal
 		"tool_pricing":          true, // Internal
