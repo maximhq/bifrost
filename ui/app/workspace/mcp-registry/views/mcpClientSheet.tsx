@@ -111,8 +111,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		],
 		[allToolNames],
 	);
-	const supportsOAuthCredentialUpdate =
-		mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
+	const supportsOAuthCredentialUpdate = false;
+	// mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
 	const addVKConfig = (vkId: string) => {
 		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
