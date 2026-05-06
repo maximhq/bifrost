@@ -307,7 +307,7 @@ curl -X DELETE localhost:8080/api/providers/openai/keys/key-2
 
 ---
 
-## Breaking Change 8: Compact Plugin Restructured
+## Breaking Change 8: Compat Plugin Restructured
 
 The `enable_litellm_fallbacks` option has been removed and replaced with three granular options.
 
@@ -765,7 +765,7 @@ Ensure no list mixes `"*"` with specific values (e.g., `["*", "gpt-4o"]`) and no
 Stop sending `keys` in provider create/update payloads and stop reading `keys` from provider responses. Use `/api/providers/{provider}/keys` for all key operations.
 </Step>
 
-<Step title="Update compact plugin config">
+<Step title="Update compat plugin config">
 Replace `enable_litellm_fallbacks` with the appropriate combination of `convert_text_to_chat`, `convert_chat_to_responses`, and `should_drop_params`.
 </Step>
 
