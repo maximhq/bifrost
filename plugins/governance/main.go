@@ -346,12 +346,42 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
 	hasRoutingRules := p.store.HasRoutingRules(ctx)
 
-	if strings.Contains(req.Path, "passthrough") {
+	// If no virtual key and no routing rules configured, skip all processing
+	if virtualKeyValue == nil && !hasRoutingRules {
 		return nil, nil
 	}
 
-	// If no virtual key and no routing rules configured, skip all processing
-	if virtualKeyValue == nil && !hasRoutingRules {
+	// Only unmarshal if we have VK or routing rules
+	var payload map[string]any
+	var virtualKey *configstoreTables.TableVirtualKey
+	var ok bool
+	var needsMarshal bool
+
+	// Process virtual key if provided
+	if virtualKeyValue != nil {
+		virtualKey, ok = p.store.GetVirtualKey(ctx, *virtualKeyValue)
+		if !ok || virtualKey == nil || !virtualKey.IsActive {
+			return nil, nil
+		}
+	}
+
+	// Attaching team and customer based on the virtual key
+	if virtualKey != nil {
+		if virtualKey.TeamID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
+		}
+		if virtualKey.Team != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
+		}
+		if virtualKey.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
+		}
+		if virtualKey.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
+		}
+	}
+
+	if strings.Contains(req.Path, "passthrough") {
 		return nil, nil
 	}
 
@@ -363,12 +393,6 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		}
 		return p.governLargePayload(ctx, req, virtualKeyValue, hasRoutingRules)
 	}
-
-	// Only unmarshal if we have VK or routing rules
-	var payload map[string]any
-	var virtualKey *configstoreTables.TableVirtualKey
-	var ok bool
-	var needsMarshal bool
 
 	contentType := req.CaseInsensitiveHeaderLookup("Content-Type")
 	lowerCT := strings.ToLower(contentType)
@@ -397,30 +421,6 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		if err != nil {
 			p.logger.Error("failed to unmarshal request body: %v", err)
 			return nil, nil
-		}
-	}
-
-	// Process virtual key if provided
-	if virtualKeyValue != nil {
-		virtualKey, ok = p.store.GetVirtualKey(ctx, *virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActive {
-			return nil, nil
-		}
-	}
-
-	// Attaching team and customer based on the virtual key
-	if virtualKey != nil {
-		if virtualKey.TeamID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
-		}
-		if virtualKey.Team != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
-		}
-		if virtualKey.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
-		}
-		if virtualKey.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
 		}
 	}
 
