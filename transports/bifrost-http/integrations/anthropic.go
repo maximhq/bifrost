@@ -297,7 +297,7 @@ func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.Bifrost
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
 // If it is, it attaches the raw request body for direct use by the provider.
 // It also checks for anthropic oauth headers and sets the bifrost context.
-func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req any) error {
 	hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx, req)
 
 	var provider schemas.ModelProvider
@@ -326,6 +326,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	// Check if anthropic oauth headers are present
 	if shouldUsePassthrough(bifrostCtx, provider, model, "") {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 		if !isAnthropicAPIKeyAuth(ctx) && (provider == schemas.Anthropic || provider == "") {

@@ -631,6 +631,20 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// when the same context is reused across multiple requests
 	paramsHash, _ := ctx.Value(requestParamsHashKey).(string)
 
+	// Snapshot the response synchronously for the non-streaming cache path.
+	// Marshaling inside the cache goroutine races with the framework returning
+	// res upstream and downstream consumers mutating it (CacheDebug, etc.).
+	// Streaming uses a chunk accumulator that snapshots per-chunk separately.
+	var singleResponseData []byte
+	if !bifrost.IsStreamRequestType(requestType) {
+		var marshalErr error
+		singleResponseData, marshalErr = json.Marshal(res)
+		if marshalErr != nil {
+			plugin.logger.Warn("%s Failed to snapshot response for caching: %v", PluginLoggerPrefix, marshalErr)
+			return res, nil, nil
+		}
+	}
+
 	// Cache everything in a unified VectorEntry asynchronously to avoid blocking the response
 	plugin.waitGroup.Add(1)
 	go func() {
@@ -654,7 +668,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 				plugin.logger.Warn("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err)
 			}
 		} else {
-			if err := plugin.addSingleResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+			if err := plugin.addSingleResponse(cacheCtx, storageID, singleResponseData, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
 				plugin.logger.Warn("%s Failed to cache single response: %v", PluginLoggerPrefix, err)
 			}
 		}
