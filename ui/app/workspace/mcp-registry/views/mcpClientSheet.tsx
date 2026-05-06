@@ -111,8 +111,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		],
 		[allToolNames],
 	);
-	const supportsOAuthCredentialUpdate =
-		mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
+	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
 	const addVKConfig = (vkId: string) => {
 		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
@@ -481,8 +480,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
 															<p>
-																When enabled, the client's connection, health monitor, and tool syncer are shut down. Tools from this
-																client will not be available for inference until it is re-enabled.
+																When enabled, the client's connection, health monitor, and tool syncer are shut down. Tools from this client
+																will not be available for inference until it is re-enabled.
 															</p>
 														</TooltipContent>
 													</Tooltip>
@@ -598,9 +597,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													onBlur={() => {
 														const parsed = allowedExtraHeadersRaw.trim()
 															? allowedExtraHeadersRaw
-																.split(",")
-																.map((h) => h.trim())
-																.filter(Boolean)
+																	.split(",")
+																	.map((h) => h.trim())
+																	.filter(Boolean)
 															: [];
 														field.onChange(parsed);
 														field.onBlur();
@@ -621,9 +620,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									{isDisabled ? (
 										<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
 											<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-											<p>
-												OAuth credentials cannot be rotated while the client is disabled. Re-enable the client to update credentials.
-											</p>
+											<p>OAuth credentials cannot be rotated while the client is disabled. Re-enable the client to update credentials.</p>
 										</div>
 									) : (
 										<p className="text-muted-foreground text-sm">
@@ -647,9 +644,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														/>
 													</FormControl>
 													{!isDisabled && (
-														<p className="text-muted-foreground text-xs">
-															Leave empty to keep existing credentials unchanged.
-														</p>
+														<p className="text-muted-foreground text-xs">Leave empty to keep existing credentials unchanged.</p>
 													)}
 													<FormMessage />
 												</FormItem>

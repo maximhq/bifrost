@@ -231,9 +231,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		const submitPromise =
 			isEditing && editingRule
 				? updateRoutingRule({
-					id: editingRule.id,
-					data: payload,
-				}).unwrap()
+						id: editingRule.id,
+						data: payload,
+					}).unwrap()
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
@@ -397,10 +397,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								{((scope === "team" && teamsData.teams.length === 0) ||
 									(scope === "customer" && customersData.customers.length === 0) ||
 									(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-										<p className="text-muted-foreground text-sm">
-											No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
-										</p>
-									)}
+									<p className="text-muted-foreground text-sm">
+										No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+									</p>
+								)}
 								{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 							</div>
 						)}
@@ -482,7 +482,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
 								<div>
-									<Label>Fallbacks</Label>								<p className="text-muted-foreground text-xs mt-0.5">
+									<Label>Fallbacks</Label>{" "}
+									<p className="text-muted-foreground mt-0.5 text-xs">
 										Provider is required, but model is optional. Leave model empty to use the incoming request value.
 									</p>
 								</div>
@@ -575,7 +576,6 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							</div>
 							<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
 						</div>
-
 					</div>
 					{/* Action Buttons */}
 					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-8 py-4">

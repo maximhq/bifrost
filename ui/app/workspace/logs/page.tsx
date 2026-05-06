@@ -131,18 +131,20 @@ export default function LogsPage() {
 			missing_cost_only: urlState.missing_cost_only,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-					try {
-						return JSON.parse(urlState.metadata_filters);
-					} catch {
-						return undefined;
-					}
-				})()
+						try {
+							return JSON.parse(urlState.metadata_filters);
+						} catch {
+							return undefined;
+						}
+					})()
 				: undefined,
 			// Use a period if present
-			...(urlState.period ? { period: urlState.period } : {
-				start_time: dateUtils.toISOString(urlState.start_time),
-				end_time: dateUtils.toISOString(urlState.end_time),
-			})
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
@@ -242,7 +244,7 @@ export default function LogsPage() {
 				start_time: startTime,
 				end_time: endTime,
 				offset: 0,
-				polling: false
+				polling: false,
 			});
 		},
 		[setUrlState],
@@ -303,7 +305,7 @@ export default function LogsPage() {
 		refetch: refetchHistogram,
 	} = useGetLogsHistogramQuery(
 		{
-			filters
+			filters,
 		},
 		{
 			pollingInterval: polling ? 10000 : 0,
@@ -372,7 +374,7 @@ export default function LogsPage() {
 				setUrlState({
 					period: p,
 					offset: 0,
-					polling: true
+					polling: true,
 				});
 			} else if (from && to) {
 				setUrlState({
@@ -380,7 +382,7 @@ export default function LogsPage() {
 					end_time: Math.floor(to.getTime() / 1000),
 					offset: 0,
 					polling: false,
-					period: ""
+					period: "",
 				});
 			}
 		},

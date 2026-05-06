@@ -165,7 +165,13 @@ export default function MCPClientsTable({
 					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
 					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
 				</div>
-				<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess} data-testid="create-mcp-client-btn" aria-label="New MCP Server" className="gap-2">
+				<Button
+					onClick={handleCreate}
+					disabled={!hasCreateMCPClientAccess}
+					data-testid="create-mcp-client-btn"
+					aria-label="New MCP Server"
+					className="gap-2"
+				>
 					<Plus className="h-4 w-4" />
 					<span className="hidden sm:inline">New MCP Server</span>
 				</Button>
@@ -263,26 +269,43 @@ export default function MCPClientsTable({
 											<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 										</TableCell>
 										<TableCell>
-											<Badge variant={c.config.disabled ? "secondary" : "default"}>
-												{c.config.disabled ? "Disabled" : "Enabled"}
-											</Badge>
+											<Badge variant={c.config.disabled ? "secondary" : "default"}>{c.config.disabled ? "Disabled" : "Enabled"}</Badge>
 										</TableCell>
 										<TableCell className="space-x-2 text-right" onClick={(e) => e.stopPropagation()}>
-									<span title={isPerUserOAuth ? "Reconnect not supported for per-user OAuth clients" : c.config.disabled ? "Enable the client before reconnecting" : "Reconnect"}>
-											<Button
-												variant="ghost"
-												size="icon"
-												aria-label={isPerUserOAuth ? "Reconnect not supported for per-user OAuth clients" : c.config.disabled ? "Enable the client before reconnecting" : "Reconnect"}
-												onClick={() => handleReconnect(c)}
-												disabled={isPerUserOAuth || c.config.disabled || reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
+											<span
+												title={
+													isPerUserOAuth
+														? "Reconnect not supported for per-user OAuth clients"
+														: c.config.disabled
+															? "Enable the client before reconnecting"
+															: "Reconnect"
+												}
 											>
-												{reconnectingClients.includes(c.config.client_id) ? (
-													<Loader2 className="h-4 w-4 animate-spin" />
-												) : (
-													<RefreshCcw className="h-4 w-4" />
-												)}
-											</Button>
-										</span>
+												<Button
+													variant="ghost"
+													size="icon"
+													aria-label={
+														isPerUserOAuth
+															? "Reconnect not supported for per-user OAuth clients"
+															: c.config.disabled
+																? "Enable the client before reconnecting"
+																: "Reconnect"
+													}
+													onClick={() => handleReconnect(c)}
+													disabled={
+														isPerUserOAuth ||
+														c.config.disabled ||
+														reconnectingClients.includes(c.config.client_id) ||
+														!hasUpdateMCPClientAccess
+													}
+												>
+													{reconnectingClients.includes(c.config.client_id) ? (
+														<Loader2 className="h-4 w-4 animate-spin" />
+													) : (
+														<RefreshCcw className="h-4 w-4" />
+													)}
+												</Button>
+											</span>
 
 											<AlertDialog>
 												<AlertDialogTrigger asChild>

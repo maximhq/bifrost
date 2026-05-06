@@ -66,9 +66,7 @@ export default function TeamsTable({
 	onDialogClose,
 }: TeamsTableProps) {
 	const showTeamDialog = selectedTeamId !== null && selectedTeamId !== "";
-	const editingTeam = selectedTeamId && selectedTeamId !== "new"
-		? teams.find((t) => t.id === selectedTeamId) ?? null
-		: null;
+	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
 
 	// If a team ID is in the URL but can't be resolved (deleted or filtered out),
 	// clear it so we don't silently open the dialog in "create" mode.
@@ -122,9 +120,7 @@ export default function TeamsTable({
 		return (
 			<>
 				<TooltipProvider>
-					{showTeamDialog && (
-						<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-					)}
+					{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -134,9 +130,7 @@ export default function TeamsTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showTeamDialog && (
-					<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-				)}
+				{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
@@ -190,9 +184,7 @@ export default function TeamsTable({
 
 										// Budget calculations — any of the team's budgets exhausted
 										const teamBudgets = team.budgets ?? [];
-										const isBudgetExhausted = teamBudgets.some(
-											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
-										);
+										const isBudgetExhausted = teamBudgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -240,8 +232,7 @@ export default function TeamsTable({
 													{teamBudgets.length > 0 ? (
 														<div className="space-y-2.5">
 															{teamBudgets.map((b) => {
-																const budgetPercentage =
-																	b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
+																const budgetPercentage = b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
 																const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
 																return (
 																	<Tooltip key={b.id}>
@@ -249,9 +240,7 @@ export default function TeamsTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4">
 																					<span className="font-medium">{formatCurrency(b.max_limit)}</span>
-																					<span className="text-muted-foreground text-xs">
-																						{formatResetDuration(b.reset_duration)}
-																					</span>
+																					<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
 																				</div>
 																				<Progress
 																					value={budgetPercentage}
@@ -270,9 +259,7 @@ export default function TeamsTable({
 																			<p className="font-medium">
 																				{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 																			</p>
-																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(b.reset_duration)}
-																			</p>
+																			<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(b.reset_duration)}</p>
 																		</TooltipContent>
 																	</Tooltip>
 																);
