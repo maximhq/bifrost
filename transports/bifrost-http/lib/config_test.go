@@ -1141,6 +1141,10 @@ func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.
 	return nil
 }
 
+func (m *MockConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
 // OAuth token
 func (m *MockConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error) {
 	return nil, nil

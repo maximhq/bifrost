@@ -110,7 +110,7 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 	oauthConfigID = "test-oauth-config-id"
 	store.oauthConfigs[oauthConfigID] = &tables.TableOauthConfig{
 		ID:          oauthConfigID,
-		ClientID:    "test-client-id",
+		ClientID:    schemas.NewEnvVar("test-client-id"),
 		TokenURL:    tokenURL,
 		RedirectURI: "http://localhost/callback",
 		Scopes:      `["read"]`,
