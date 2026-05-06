@@ -488,7 +488,7 @@ func TestCreateVirtualKey(t *testing.T) {
 		ID:       "vk-test",
 		Name:     "Test Virtual Key",
 		Value:    "vk-test-value-123",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 
 	err := store.CreateVirtualKey(ctx, vk)
@@ -499,7 +499,7 @@ func TestCreateVirtualKey(t *testing.T) {
 	assert.Equal(t, "vk-test", result.ID)
 	assert.Equal(t, "Test Virtual Key", result.Name)
 	assert.Equal(t, "vk-test-value-123", result.Value)
-	assert.True(t, result.IsActive)
+	assert.True(t, result.IsActiveValue())
 }
 
 func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
@@ -533,7 +533,7 @@ func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
 		ID:          vkID,
 		Name:        "VK With References",
 		Value:       "vk-refs-value",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
 
@@ -561,7 +561,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 		ID:       "vk-1",
 		Name:     "Same Name",
 		Value:    "vk-value-1",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk1)
 	require.NoError(t, err)
@@ -570,7 +570,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 		ID:       "vk-2",
 		Name:     "Same Name", // Duplicate name
 		Value:    "vk-value-2",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk2)
 	assert.Error(t, err, "Should fail with duplicate name")
@@ -584,7 +584,7 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 		ID:       "vk-lookup",
 		Name:     "Lookup Key",
 		Value:    "vk-unique-value-xyz",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -602,21 +602,21 @@ func TestUpdateVirtualKey(t *testing.T) {
 		ID:       "vk-update",
 		Name:     "Original Name",
 		Value:    "vk-update-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
 	// Update
 	vk.Name = "Updated Name"
-	vk.IsActive = false
+	vk.IsActive = schemas.Ptr(false)
 	err = store.UpdateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
 	result, err := store.GetVirtualKey(ctx, "vk-update")
 	require.NoError(t, err)
 	assert.Equal(t, "Updated Name", result.Name)
-	assert.False(t, result.IsActive)
+	assert.False(t, result.IsActiveValue())
 }
 
 func TestDeleteVirtualKey(t *testing.T) {
@@ -627,7 +627,7 @@ func TestDeleteVirtualKey(t *testing.T) {
 		ID:       "vk-delete",
 		Name:     "Delete Me",
 		Value:    "vk-delete-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -652,7 +652,7 @@ func TestCreateVirtualKeyProviderConfig(t *testing.T) {
 		ID:       "vk-for-pc",
 		Name:     "VK For Provider Config",
 		Value:    "vk-pc-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -695,7 +695,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 		ID:       "vk-with-keys",
 		Name:     "VK With Keys",
 		Value:    "vk-keys-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -735,7 +735,7 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 		ID:       "vk-unresolved",
 		Name:     "VK Unresolved",
 		Value:    "vk-unresolved-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -777,7 +777,7 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 		ID:       "vk-update-provider-cleanup",
 		Name:     "VK Update Provider Cleanup",
 		Value:    "vk-update-provider-cleanup-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -826,7 +826,7 @@ func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
 		ID:       "vk-delete-provider-cleanup",
 		Name:     "VK Delete Provider Cleanup",
 		Value:    "vk-delete-provider-cleanup-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -1105,7 +1105,7 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 		ID:          integrationVKID,
 		Name:        "Integration Virtual Key",
 		Value:       "vk-integration-xyz",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
 	err = store.CreateVirtualKey(ctx, vk)

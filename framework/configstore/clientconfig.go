@@ -746,8 +746,8 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Description))
 	// Hash Value
 	hash.Write([]byte(vk.Value))
-	// Hash IsActive
-	if vk.IsActive {
+	// Hash IsActive (nil treated as DB default true)
+	if vk.IsActiveValue() {
 		hash.Write([]byte("isActive:true"))
 	} else {
 		hash.Write([]byte("isActive:false"))
@@ -1074,8 +1074,8 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	// Hash Description
 	hash.Write([]byte(r.Description))
 
-	// Hash Enabled
-	if r.Enabled {
+	// Hash Enabled (nil treated as DB default true)
+	if r.EnabledValue() {
 		hash.Write([]byte("enabled:true"))
 	} else {
 		hash.Write([]byte("enabled:false"))
