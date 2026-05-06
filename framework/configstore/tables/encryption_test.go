@@ -538,7 +538,7 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-empty").Error)
-	assert.Equal(t, "", found.ClientSecret)
+	assert.Equal(t, "", found.ClientSecret.GetValue())
 	assert.Equal(t, "", found.CodeVerifier)
 }
 

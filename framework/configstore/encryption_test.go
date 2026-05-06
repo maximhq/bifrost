@@ -455,7 +455,7 @@ func TestEncryptPlaintextOAuthConfigs_EncryptsAndDecryptsCorrectly(t *testing.T)
 	// GORM hooks should decrypt on read
 	var found tables.TableOauthConfig
 	require.NoError(t, db.Where("id = ?", "cfg-batch-1").First(&found).Error)
-	assert.Equal(t, "batch-client-secret", found.ClientSecret)
+	assert.Equal(t, "batch-client-secret", found.ClientSecret.GetValue())
 	assert.Equal(t, "batch-verifier", found.CodeVerifier)
 }
 

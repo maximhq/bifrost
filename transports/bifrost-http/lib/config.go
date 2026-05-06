@@ -3352,7 +3352,7 @@ func (c *Config) GetPerUserOAuthMCPClients() map[string]string {
 	}
 	result := make(map[string]string)
 	for _, client := range c.MCPConfig.ClientConfigs {
-		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth {
+		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && !client.Disabled {
 			result[client.ID] = client.Name
 		}
 	}

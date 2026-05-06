@@ -56,8 +56,15 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host.GetValue(), config.Port.GetValue(), config.User.GetValue(), config.Password.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
-	openPool := func() (*gorm.DB, error) {
-		return gorm.Open(postgres.New(postgres.Config{DSN: dsn}), &gorm.Config{
+	// Migration-only DSN. Forces pgx into simple-query protocol on the throwaway
+	// migration pool so no statement plan is ever cached server-side; that makes
+	// SQLSTATE 0A000 ("cached plan must not change result type") structurally
+	// impossible when a migration mixes DDL with subsequent SELECTs against the
+	// same table. Runtime pool keeps the default cache-statement mode.
+	migrationDSN := dsn + " default_query_exec_mode=simple_protocol"
+
+	openPool := func(connDSN string) (*gorm.DB, error) {
+		return gorm.Open(postgres.New(postgres.Config{DSN: connDSN}), &gorm.Config{
 			Logger: newGormLogger(logger),
 		})
 	}
@@ -78,7 +85,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 
 	// Throwaway pool for the version gate and schema migrations. Closing it
 	// before the runtime pool opens guarantees no cached plan survives DDL.
-	mDb, err := openPool()
+	mDb, err := openPool(migrationDSN)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +111,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}
 
 	// Runtime pool. Opens against post-migration schema.
-	db, err := openPool()
+	db, err := openPool(dsn)
 	if err != nil {
 		return nil, err
 	}
