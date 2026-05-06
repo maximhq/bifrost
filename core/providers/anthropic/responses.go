@@ -5105,10 +5105,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		anthropicTool.Description = tool.Description
 	}
 
-	// Convert parameters and strict from ToolFunction
-	if tool.ResponsesToolFunction != nil {
-		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
-	}
+	// Convert parameters from ToolFunction. OpenAI's function.strict is
+	// intentionally dropped rather than mapped to Anthropic's top-level
+	// tool.strict; Bifrost's Anthropic tool-conversion docs promise that
+	// behavior, and hosted Anthropic providers such as Vertex reject it.
 	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
 		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
 	} else {

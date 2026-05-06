@@ -78,10 +78,10 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	if tool.EagerInputStreaming != nil {
 		anthropicTool.EagerInputStreaming = tool.EagerInputStreaming
 	}
-	// ChatToolFunction.Strict is the canonical neutral slot for Anthropic's strict.
-	if tool.Function.Strict != nil {
-		anthropicTool.Strict = tool.Function.Strict
-	}
+	// OpenAI's function.strict is intentionally not forwarded as Anthropic's
+	// top-level tool.strict. The Anthropic docs for Bifrost's tool conversion
+	// specify dropping OpenAI function.strict fields, and some Anthropic-hosted
+	// providers reject tools.*.strict outright.
 	return anthropicTool
 }
 

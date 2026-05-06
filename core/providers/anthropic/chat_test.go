@@ -79,6 +79,86 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 	}
 }
 
+func TestToAnthropicChatRequest_DropsFunctionStrict(t *testing.T) {
+	strict := true
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:   "strict_openai_tool",
+					Strict: &strict,
+					Parameters: &schemas.ToolFunctionParameters{
+						Type:       "object",
+						Properties: &schemas.OrderedMap{},
+					},
+				},
+			}},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+	}
+	if result.Tools[0].Strict != nil {
+		t.Fatalf("expected OpenAI function.strict to be dropped, got %v", *result.Tools[0].Strict)
+	}
+}
+
+func TestToAnthropicResponsesRequest_DropsFunctionStrict(t *testing.T) {
+	strict := true
+	toolName := "strict_openai_tool"
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:        schemas.ResponsesToolTypeFunction,
+				Name:        &toolName,
+				Description: schemas.Ptr("strict should not reach Anthropic"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{
+					Strict: &strict,
+					Parameters: &schemas.ToolFunctionParameters{
+						Type:       "object",
+						Properties: &schemas.OrderedMap{},
+					},
+				},
+			}},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+	}
+	if result.Tools[0].Strict != nil {
+		t.Fatalf("expected OpenAI function.strict to be dropped, got %v", *result.Tools[0].Strict)
+	}
+}
+
 func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 	makeReq := func(props *schemas.OrderedMap) *schemas.BifrostChatRequest {
 		return &schemas.BifrostChatRequest{
