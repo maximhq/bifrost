@@ -12,7 +12,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
@@ -121,22 +127,21 @@ export function MCPLogDetailSheet({
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
-								<DropdownMenuItem
-									data-testid="export-log-json"
-									onClick={() => downloadAsJson(log, `mcp-log-${log.id ?? "export"}.json`)}
-								>
+								<DropdownMenuItem data-testid="export-log-json" onClick={() => downloadAsJson(log, `mcp-log-${log.id ?? "export"}.json`)}>
 									<Download className="h-4 w-4" />
 									Export as JSON
 								</DropdownMenuItem>
-								{handleDelete ? <>
-									<DropdownMenuSeparator />
-									<AlertDialogTrigger asChild>
-										<DropdownMenuItem variant="destructive">
-											<Trash2 className="h-4 w-4" />
-											Delete log
-										</DropdownMenuItem>
-									</AlertDialogTrigger>
-								</> : null}
+								{handleDelete ? (
+									<>
+										<DropdownMenuSeparator />
+										<AlertDialogTrigger asChild>
+											<DropdownMenuItem variant="destructive">
+												<Trash2 className="h-4 w-4" />
+												Delete log
+											</DropdownMenuItem>
+										</AlertDialogTrigger>
+									</>
+								) : null}
 							</DropdownMenuContent>
 						</DropdownMenu>
 						<AlertDialogContent>

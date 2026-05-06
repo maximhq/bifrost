@@ -174,7 +174,12 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 					{message.tool_calls.map((toolCall, index) => {
 						const jsonContent = JSON.stringify(toolCall, null, 2);
 						return (
-							<CollapsibleBox key={index} title={`Tool Call: ${toolCall.function?.name || `#${index + 1}`}`} onCopy={() => jsonContent} collapsedHeight={100}>
+							<CollapsibleBox
+								key={index}
+								title={`Tool Call: ${toolCall.function?.name || `#${index + 1}`}`}
+								onCopy={() => jsonContent}
+								collapsedHeight={100}
+							>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}

@@ -65,7 +65,6 @@ export default function MCPLogsPage() {
 	const selectedLogId = urlState.selected_log || null;
 	const polling = urlState.polling;
 
-
 	// Convert URL state to filters and pagination for API calls.
 	// When period is set, send it to the backend so the server computes the time window fresh
 	// on every request. For custom absolute ranges (period === "") use the stored timestamps.
@@ -79,9 +78,9 @@ export default function MCPLogsPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 		}),
 		[
 			urlState.tool_names,
@@ -211,7 +210,7 @@ export default function MCPLogsPage() {
 				setUrlState({
 					period: p,
 					offset: 0,
-					polling: true
+					polling: true,
 				});
 			} else if (from && to) {
 				setUrlState({
@@ -219,7 +218,7 @@ export default function MCPLogsPage() {
 					end_time: Math.floor(to.getTime() / 1000),
 					offset: 0,
 					polling: false,
-					period: ""
+					period: "",
 				});
 			}
 		},

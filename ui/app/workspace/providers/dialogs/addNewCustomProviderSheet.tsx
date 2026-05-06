@@ -230,12 +230,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
 								Cancel
 							</Button>
-							<Button
-								type="submit"
-								isLoading={isAddingProvider}
-								disabled={!hasProviderCreateAccess}
-								data-testid="custom-provider-save-btn"
-							>
+							<Button type="submit" isLoading={isAddingProvider} disabled={!hasProviderCreateAccess} data-testid="custom-provider-save-btn">
 								Add
 							</Button>
 						</div>

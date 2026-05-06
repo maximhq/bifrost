@@ -364,15 +364,11 @@ export function PrometheusFormFragment({
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button
-										type="submit"
-										disabled={!hasPrometheusAccess || !form.formState.isDirty}
-										isLoading={isSaving}
-									>
+									<Button type="submit" disabled={!hasPrometheusAccess || !form.formState.isDirty} isLoading={isSaving}>
 										Save Prometheus Configuration
 									</Button>
 								</TooltipTrigger>
-								{(!form.formState.isDirty) && (
+								{!form.formState.isDirty && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty && !form.formState.isValid
