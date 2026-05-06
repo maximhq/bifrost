@@ -417,9 +417,10 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	// If the columns don't exist yet, the fetch simply returns nothing
 	governanceFKs := make(map[string]tables.TableProvider)
 	var existingProviders []tables.TableProvider
+	providerTableName := tables.TableProvider{}.TableName()
 
-	if s.doesColumnExist(ctx, "providers", "budget_id") &&
-		s.doesColumnExist(ctx, "providers", "rate_limit_id") {
+	if s.doesColumnExist(ctx, providerTableName, "budget_id") &&
+		s.doesColumnExist(ctx, providerTableName, "rate_limit_id") {
 		if err := txDB.WithContext(ctx).
 			Select("name", "budget_id", "rate_limit_id").
 			Find(&existingProviders).Error; err != nil {
