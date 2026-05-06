@@ -163,6 +163,29 @@ test.describe('Routing Rules', () => {
 
       await routingRulesPage.cancelRule()
     })
+
+    test('should allow zero-weight routing target without rejecting input', async ({ routingRulesPage }) => {
+      await routingRulesPage.createBtn.click()
+      await expect(routingRulesPage.sheet).toBeVisible({ timeout: 5000 })
+
+      await routingRulesPage.nameInput.fill(`Zero Weight Rule ${Date.now()}`)
+
+      // Set the default target weight to 0
+      const weightInput = routingRulesPage.sheet.getByTestId('routing-target-0-weight-input')
+      await weightInput.clear()
+      await weightInput.fill('0')
+
+      await routingRulesPage.saveBtn.click()
+
+      // Weight = 0 must not trigger the old "must be greater than 0" rejection.
+      // The only toast shown should be the sum constraint (0 ≠ 1).
+      const toast = routingRulesPage.page.locator('[data-sonner-toast]').first()
+      await expect(toast).toBeVisible({ timeout: 5000 })
+      const toastText = await toast.textContent()
+      expect(toastText).not.toContain('greater than 0')
+
+      await routingRulesPage.cancelRule()
+    })
   })
 
   test.describe('Table Display', () => {
