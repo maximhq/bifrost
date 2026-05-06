@@ -196,7 +196,7 @@ export default function DashboardPage() {
 	const selectedMcpToolNames = useMemo(() => parseCsvParam(urlState.mcp_tool_names), [urlState.mcp_tool_names]);
 	const selectedMcpServerLabels = useMemo(() => parseCsvParam(urlState.mcp_server_labels), [urlState.mcp_server_labels]);
 
-	// Free-form / single-value sidebar inputs
+	// Free-form / multi-value sidebar inputs
 	const selectedUserIds = useMemo(() => parseCsvParam(urlState.user_ids), [urlState.user_ids]);
 	const selectedAliases = useMemo(() => parseCsvParam(urlState.aliases), [urlState.aliases]);
 
