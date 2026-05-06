@@ -787,7 +787,7 @@ func (m *MockConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *tabl
 	return nil
 }
 
-func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -1148,10 +1148,6 @@ func (m *MockConfigStore) CreateOauthConfig(ctx context.Context, config *tables.
 
 func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
 	return nil
-}
-
-func (m *MockConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error) {
-	return nil, nil
 }
 
 // OAuth token
