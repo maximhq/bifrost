@@ -824,7 +824,7 @@ Rename to `OriginalModelRequested`/`ResolvedModelUsed` on ExtraFields, and `Requ
 
 **Calls authenticating with raw provider keys started failing with auth errors**
 
-The HTTP gateway no longer extracts provider keys from `Authorization` / `x-api-key` / `x-goog-api-key` headers (or `x-bf-bedrock-*` / `x-bf-azure-endpoint` on the Bedrock and Azure integrations). Either issue a virtual key (`sk-bf-*`) per caller and have them send that, or register the provider credentials as a Bifrost-managed key and route via virtual keys. See [Breaking Change 13](#breaking-change-13-direct-key-bypass-removed-http-gateway-and-go-sdk).
+The HTTP gateway no longer extracts provider keys from `Authorization` / `x-api-key` / `x-goog-api-key` headers (or `x-bf-bedrock-*` / `x-bf-azure-endpoint` on the Bedrock and Azure integrations). Either issue a virtual key (`sk-bf-*`) per caller and have them send that, or register the provider credentials as a Bifrost-managed key and route via virtual keys. See [Breaking Change 14](#breaking-change-14-direct-key-bypass-removed-http-gateway-and-go-sdk).
 
 **Virtual Key response missing `budgets` field**
 
@@ -832,4 +832,4 @@ If you are creating Virtual Keys via the API using the old singular `budget` fie
 
 **Go SDK build error: `undefined: schemas.BifrostContextKeyDirectKey`**
 
-The constant is removed in v1.5.0. Register the key on your `Account` implementation (or via `POST /api/providers/{provider}/keys` if you use the database-backed config store) and pin it per request with `BifrostContextKeyAPIKeyID` or `BifrostContextKeyAPIKeyName`. See [Breaking Change 13](#breaking-change-13-direct-key-bypass-removed-http-gateway-and-go-sdk) for a before/after example.
+The constant is removed in v1.5.0. Register the key on your `Account` implementation (or via `POST /api/providers/{provider}/keys` if you use the database-backed config store) and pin it per request with `BifrostContextKeyAPIKeyID` or `BifrostContextKeyAPIKeyName`. See [Breaking Change 14](#breaking-change-14-direct-key-bypass-removed-http-gateway-and-go-sdk) for a before/after example.

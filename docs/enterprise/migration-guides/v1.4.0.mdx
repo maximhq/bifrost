@@ -15,18 +15,22 @@ Enterprise v1.4.0 is a major release built on top of OSS v1.5.0. It inherits eve
 
 Enterprise v1.4.0 ships with the full v1.5.0 OSS base, so every breaking change from that release applies. The largest are summarized below; see the [OSS v1.5.0 Migration Guide](/migration-guides/v1.5.0) for full before/after examples and per-field details.
 
-| # | Change | What you must do |
-|---|--------|------------------|
+| OSS # | Change | What you must do |
+|-------|--------|------------------|
 | 1 | **Empty array now means "deny all"** | Replace `[]` with `["*"]` on every `models`, `allowed_models`, `key_ids`, and `tools_to_execute` field |
 | 2 | **`allowed_keys` renamed to `key_ids`** | Rename in `config.json` and any REST API consumers; no automatic database migration |
 | 3 | **VK `provider_configs: []` is deny-by-default** | Add at least one provider config per Virtual Key |
-| 4 | **Provider Keys API separated** | Stop sending `keys` in provider create/update payloads; use `/api/providers/{provider}/keys` |
-| 5 | **Compat plugin restructured** | Replace `enable_litellm_fallbacks` with `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params` |
-| 6 | **Provider `deployments` removed** | Move Azure/Bedrock/Vertex/Replicate `deployments` maps into the top-level `aliases` field |
-| 7 | **WhiteList validation** | Lists cannot mix `["*"]` with specific values, and cannot contain duplicates |
-| 8 | **`weight` is now nullable** | Update API consumers to handle `null` |
-| 9 | **`selected_key_id` cleared on terminal retry failures** | Read `attempt_trail` for failure attribution |
-| 10 | **Direct Key Bypass removed (HTTP + Go SDK)** | Drop `allow_direct_keys` from `config.json`; migrate header-passed provider keys to Bifrost-managed keys + virtual keys; replace any Go SDK usage of `BifrostContextKeyDirectKey` with `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` |
+| 4 | **WhiteList validation** | Lists cannot mix `["*"]` with specific values, and cannot contain duplicates |
+| 5 | **`weight` is now nullable** | Update API consumers to handle `null` |
+| 6 | **VK `budget` changed to multi-budget `budgets`** | Update API integrations from singular `"budget": {...}` to `"budgets": [{...}]` on Virtual Keys and provider configs; existing budgets are migrated automatically |
+| 7 | **Provider Keys API separated** | Stop sending `keys` in provider create/update payloads; use `/api/providers/{provider}/keys` |
+| 8 | **Compat plugin restructured** | Replace `enable_litellm_fallbacks` with `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params` |
+| 9 | **Replicate image edits removed from generations endpoint** | Switch image editing calls from `/v1/images/generations` to `/v1/images/edits` on Replicate |
+| 10 | **Provider `deployments` removed** | Move Azure/Bedrock/Vertex/Replicate `deployments` maps into the top-level `aliases` field |
+| 11 | **Go SDK `ExtraFields.ModelRequested` renamed** | Replace with `OriginalModelRequested` and `ResolvedModelUsed` |
+| 12 | **Go SDK `StreamAccumulatorResult.Model` renamed** | Replace with `RequestedModel` and `ResolvedModel` |
+| 13 | **`selected_key_id` cleared on terminal retry failures** | Read `attempt_trail` for failure attribution |
+| 14 | **Direct Key Bypass removed (HTTP + Go SDK)** | Drop `allow_direct_keys` from `config.json`; migrate header-passed provider keys to Bifrost-managed keys + virtual keys; replace any Go SDK usage of `BifrostContextKeyDirectKey` with `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` |
 
 The automatic database migration on startup converts existing records to the new semantics. Only `config.json` and any REST API integrations need manual updates.
 
@@ -159,7 +163,7 @@ Snapshot your config store database (Postgres dump or SQLite file copy) before s
 </Step>
 
 <Step title="Apply the OSS v1.5.0 migration steps">
-Work through the [OSS v1.5.0 Migration Guide](/migration-guides/v1.5.0) checklist: update `models`, `allowed_models`, `key_ids`, `tools_to_execute`, rename `allowed_keys` to `key_ids`, ensure every VK has at least one provider config, migrate provider key management to dedicated endpoints, remove `allow_direct_keys`, migrate HTTP header-key callers to Bifrost-managed keys + virtual keys, migrate Go SDK `BifrostContextKeyDirectKey` callers to `BifrostContextKeyAPIKeyID`/`BifrostContextKeyAPIKeyName`, and update Go SDK references.
+Work through the [OSS v1.5.0 Migration Guide](/migration-guides/v1.5.0) checklist: update `models`, `allowed_models`, `key_ids`, `tools_to_execute`, rename `allowed_keys` to `key_ids`, migrate `budget` to `budgets` on Virtual Keys and provider configs, ensure every VK has at least one provider config, migrate provider key management to dedicated endpoints, remove `allow_direct_keys`, migrate HTTP header-key callers to Bifrost-managed keys + virtual keys, migrate Go SDK `BifrostContextKeyDirectKey` callers to `BifrostContextKeyAPIKeyID`/`BifrostContextKeyAPIKeyName`, and update Go SDK references.
 </Step>
 
 <Step title="Open the gRPC cluster port (10102/TCP) on every node">
