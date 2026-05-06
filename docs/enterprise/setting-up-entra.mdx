@@ -39,7 +39,27 @@ Configure the registration:
 	[https://www.getmaxim.ai/bifrost/bifrost-logo-only.png](https://www.getmaxim.ai/bifrost/bifrost-logo-only.png)
 </Tip>
 
-6. After registration, note down the following from the **Overview** page:
+### Enable assignment requirement on the Enterprise Application
+
+This step controls which users can access Bifrost. The toggle lives on the **Enterprise Application**, which is a different blade from the **App Registration** you just created (both share the same app name and Application ID, but they are separate entries in the Entra ID left navigation).
+
+1. From the Entra ID main menu, go to **Enterprise applications**
+2. Find and select **Bifrost Enterprise** (the service principal created automatically when you registered the app above)
+3. Go to **Properties**
+
+<Frame>
+	<img src="/media/user-provisioning/entra-enable-assignment.png" alt="Entra Enterprise Application Properties" />
+</Frame>
+
+4. Set **Assignment required?** to **Yes**
+5. Set **Enabled for users to sign-in?** to **Yes**
+6. Click **Save**
+
+---
+
+## Step 2: Capture App Registration Information
+
+Navigate to **Entra Home → App Registrations → \<your app name\> → Overview** to capture the values below.
 
 <Frame>
 	<img src="/media/user-provisioning/entra-app-information.png" alt="Entra App Registration Overview" />
@@ -50,9 +70,8 @@ Configure the registration:
 | **Application (client) ID** | Overview → Essentials |
 | **Directory (tenant) ID**   | Overview → Essentials |
 
----
 
-## Step 2: Create App Roles (Optional)
+## Step 3: Create App Roles (Optional)
 
 <Note>
 	This step is optional. You can create custom roles if that's the preferred way. Or you can map any attribute to role/team/business unit.
@@ -101,23 +120,6 @@ Configure roles in Entra that map to Bifrost's role hierarchy (Admin, Developer,
 
 ---
 
-## Step 3: Enable Assignment Required
-
-To control which users can access Bifrost, enable assignment requirement on the Enterprise Application.
-
-1. Go to **Enterprise applications** (from the main Entra ID menu)
-2. Find and select **Bifrost Enterprise**
-3. Go to **Properties**
-
-<Frame>
-	<img src="/media/user-provisioning/entra-enable-assignment.png" alt="Entra Enterprise Application Properties" />
-</Frame>
-
-4. Set **Assignment required?** to **Yes**
-5. Set **Enabled for users to sign-in?** to **Yes**
-6. Click **Save**
-
----
 
 ## Step 4: Create a Client Secret
 
@@ -166,7 +168,7 @@ Ensure your application has the necessary permissions.
    - `User.Read.All`
    - `GroupMember.Read.All`
    - `Group.Read.All`
-   - `Application.Read.All` — required for syncing app-role-based role mappings during user import
+   - `Application.Read.All` — required for syncing app-role-based role mappings during user import. If you don't want to do bulk syncing, you can skip this permission.
    - `AppRoleAssignment.ReadWrite.All` — required to read each user's app role assignments via Microsoft Graph
 
 <Warning>
@@ -190,7 +192,7 @@ Ensure your application has the necessary permissions.
 
 ---
 
-## Step 6: Configure Token Claims (Optional)
+## Step 6: Configure Token Claims
 
 <Note>Groups and other attributes are required in the claim when you configure their mapping in Bifrost.</Note>
 
@@ -240,7 +242,15 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 
 You will need to make the following changes in the app manifest.
 
-Set the access token version to v2:
+Set the access token version to v2.
+
+For the **Microsoft Graph App Manifest** (current schema, default in the Azure Portal "Manifest" blade for app registrations created or migrated after the 2023 redesign):
+
+```json
+"requestedAccessTokenVersion": 2
+```
+
+For the **AAD Graph App Manifest** (legacy schema, deprecated; only present on older app registrations that have not been migrated):
 
 ```json
 "accessTokenAcceptedVersion": 2
@@ -334,7 +344,7 @@ Attribute mappings let you translate Entra claim values into Bifrost roles, team
 - **`attributeTeamMappings`**: map a claim value to a Bifrost team
 - **`attributeBusinessUnitMappings`**: map a claim value to a Bifrost business unit
 
-These mappings work with any Entra claim - the `groups` claim from Step 5, the custom `role` claim from Step 4, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
+These mappings work with any Entra claim - the `groups` claim from Step 6, the app-role `roles` claim from Step 3, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
 
 To configure attribute mappings:
 

@@ -1087,11 +1087,6 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				}
 			}
 			defer func() {
-				// Check if trace completion is deferred (for streaming requests)
-				// If deferred, the streaming handler will complete the trace after stream ends
-				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
-					return
-				}
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())
