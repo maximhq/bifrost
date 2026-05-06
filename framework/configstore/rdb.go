@@ -411,6 +411,25 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	} else {
 		txDB = s.DB()
 	}
+	// Pre-fetch governance FK references for all existing providers in one query.
+	// ProviderConfig carries no governance fields, so without this the upsert
+	// below would write NULL into budget_id/rate_limit_id on every startup.
+	// If the columns don't exist yet, the fetch simply returns nothing
+	governanceFKs := make(map[string]tables.TableProvider)
+	var existingProviders []tables.TableProvider
+
+	if s.doesColumnExist(ctx, "providers", "budget_id") &&
+		s.doesColumnExist(ctx, "providers", "rate_limit_id") {
+		if err := txDB.WithContext(ctx).
+			Select("name", "budget_id", "rate_limit_id").
+			Find(&existingProviders).Error; err != nil {
+			return fmt.Errorf("failed to prefetch provider governance fks: %w", err)
+		}
+		for _, p := range existingProviders {
+			governanceFKs[p.Name] = p
+		}
+	}
+
 	for providerName, providerConfig := range providers {
 		dbProvider := tables.TableProvider{
 			Name:                     string(providerName),
@@ -427,7 +446,15 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			Description:              providerConfig.Description,
 		}
 
-		// Upsert provider (create or update if exists)
+		// Carry over governance FKs from the existing row so UpdateAll never
+		// overwrites them with NULL. New providers (not in governanceFKs) correctly
+		// start with nil governance — governance is never set via the file sync path.
+		if existing, ok := governanceFKs[string(providerName)]; ok {
+			dbProvider.BudgetID = existing.BudgetID
+			dbProvider.RateLimitID = existing.RateLimitID
+		}
+
+		// Upsert provider (create or update if exists).
 		if err := txDB.WithContext(ctx).Clauses(
 			clause.OnConflict{
 				Columns:   []clause.Column{{Name: "name"}},
@@ -4013,6 +4040,10 @@ func (s *RDBConfigStore) RetryOnNotFound(ctx context.Context, fn func(ctx contex
 // doesTableExist checks if a table exists in the database.
 func (s *RDBConfigStore) doesTableExist(ctx context.Context, tableName string) bool {
 	return s.DB().WithContext(ctx).Migrator().HasTable(tableName)
+}
+
+func (s *RDBConfigStore) doesColumnExist(ctx context.Context, tableName, columnName string) bool {
+	return s.DB().WithContext(ctx).Migrator().HasColumn(tableName, columnName)
 }
 
 // removeNullKeys removes null keys from the database.
