@@ -1,0 +1,2 @@
+- feat: trace attribute flow propagation through OTEL exporter
+- chore: upgraded core to v1.5.8 and framework to v1.3.8

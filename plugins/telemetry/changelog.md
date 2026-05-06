@@ -1,0 +1,2 @@
+- fix: prometheus telemetry plugin nil config handling
+- chore: upgraded core to v1.5.8 and framework to v1.3.8

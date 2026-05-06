@@ -2541,3 +2541,95 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 		})
 	}
 }
+
+// TestIsClaudeCodeRequest covers detection of Claude CLI / Claude Code clients
+// via the User-Agent stored on BifrostContext. ClaudeCLI.Matches uses a
+// case-insensitive substring check, so identifiers such as "claude-cli" should
+// match version-suffixed strings like "claude-cli/2.1.128 (external, cli)".
+func TestIsClaudeCodeRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		setUA     bool        // false: do not set the user-agent key on the context
+		userAgent interface{} // interface{} so we can also test non-string values
+		expected  bool
+	}{
+		{
+			name:      "claude-cli with version and metadata suffix",
+			setUA:     true,
+			userAgent: "claude-cli/2.1.128 (external, cli)",
+			expected:  true,
+		},
+		{
+			name:      "claude-cli older version",
+			setUA:     true,
+			userAgent: "claude-cli/1.0.0",
+			expected:  true,
+		},
+		{
+			name:      "claude-code identifier",
+			setUA:     true,
+			userAgent: "claude-code/0.5.2",
+			expected:  true,
+		},
+		{
+			name:      "claude-vscode identifier",
+			setUA:     true,
+			userAgent: "claude-vscode/0.1.0 (vscode)",
+			expected:  true,
+		},
+		{
+			name:      "uppercase CLAUDE-CLI matches case-insensitively",
+			setUA:     true,
+			userAgent: "CLAUDE-CLI/2.1.128 (external, cli)",
+			expected:  true,
+		},
+		{
+			name:      "claude-cli embedded in a larger user-agent string",
+			setUA:     true,
+			userAgent: "Mozilla/5.0 (compatible; claude-cli/2.1.128) extra-suffix",
+			expected:  true,
+		},
+		{
+			name:      "non-claude client (geminicli) does not match",
+			setUA:     true,
+			userAgent: "geminicli/0.4.1",
+			expected:  false,
+		},
+		{
+			name:      "non-claude client (python-requests) does not match",
+			setUA:     true,
+			userAgent: "python-requests/2.28.0",
+			expected:  false,
+		},
+		{
+			name:      "empty user-agent string",
+			setUA:     true,
+			userAgent: "",
+			expected:  false,
+		},
+		{
+			name:     "no user-agent set on context",
+			setUA:    false,
+			expected: false,
+		},
+		{
+			name:      "non-string value stored under the user-agent key",
+			setUA:     true,
+			userAgent: 12345,
+			expected:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			if tc.setUA {
+				ctx.SetValue(schemas.BifrostContextKeyUserAgent, tc.userAgent)
+			}
+			got := IsClaudeCodeRequest(ctx)
+			if got != tc.expected {
+				t.Errorf("IsClaudeCodeRequest() = %v, want %v (userAgent=%v)", got, tc.expected, tc.userAgent)
+			}
+		})
+	}
+}

@@ -1,0 +1,22 @@
+- feat: enforce unique `governance_teams.name` with deduplication migration
+- feat: add `GetTeamByName` lookup to config store interface and RDB
+- feat: support `parent_request_id`, `user_ids`, and `aliases` URL state propagation in logs and traces
+- feat: support optional `tx` parameter in `DeleteVirtualKey` for external transactions
+- feat: support `EnvVar` references for MCP OAuth `client_id` / `client_secret`
+- feat: edit pre-existing MCP OAuth details
+- feat: add `disabled` field to MCP clients for toggling connection
+- feat: add container creation cost support
+- feat: trace attribute flow through OTEL exporter
+- fix: use simple-query protocol for migration pools to prevent cached plan errors
+- fix: governance budgets in model providers not saving after restart
+- fix: temporarily disable OAuth credential rotation and header reconciliation
+- fix: handle per-user OAuth re-auth, refresh token expiry, and reconnection
+- fix: broadcast provider config changes to cluster for keyless providers
+- fix: cache OAuth2 token source to eliminate per-request overhead
+- fix: graceful error for invalid `after` values by letting upstream pagination handle them
+- fix: gossip baseline methods and clean up orphaned rate limits
+- fix: SSE heartbeats and defer trace completion to prevent deadlock
+- fix: streaming error log handling
+- fix: exclude `oauth_client_id` and `oauth_client_secret` from config field validation
+- fix: remove duplicate `GetOauthConfigsByIDs` from `MockConfigStore`
+- fix: update `TableOauthConfig` tests to use `schemas.NewEnvVar`

@@ -1,0 +1,6 @@
+- feat: replace single `Governance` RBAC check with granular per-resource permissions
+- feat: enforce RBAC for model provider create/update operations
+- feat: enforce RBAC on routing rules view, edit, and create
+- feat: enforce RBAC on MCP tool groups route
+- feat: remove direct key bypass from HTTP gateway and Go SDK; all keys flow through governance
+- chore: upgraded core to v1.5.8 and framework to v1.3.8

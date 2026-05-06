@@ -1,0 +1,10 @@
+- feat: add Azure container API support
+- feat: add Anthropic computer use cross-provider parity across Anthropic, Bedrock, and Vertex
+- feat: add Gemini named content cache support
+- feat: add Bedrock structured-output fallback for Converse API
+- refactor: change `IsActive` and `Enabled` fields to pointer types with nil-as-default semantics
+- fix: backfill `Model` in embedding response when provider omits it
+- fix(bedrock): omit `toolChoice.tool` on Llama for synthetic structured-output tool (thanks [@ryan-orphic](https://github.com/ryan-orphic)!)
+- fix: namespace handling in `ResponseToolMessage` for cross-provider compatibility
+- fix: forward extra headers on responses websocket upstreams
+- fix: avoid provider update stalls under high load
