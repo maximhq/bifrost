@@ -122,7 +122,7 @@ func TestToAnthropicResponsesRequest_DropsFunctionStrict(t *testing.T) {
 	strict := true
 	toolName := "strict_openai_tool"
 	bifrostReq := &schemas.BifrostResponsesRequest{
-		Provider: schemas.Vertex,
+		Provider: schemas.Anthropic,
 		Model:    "claude-sonnet-4-20250514",
 		Input: []schemas.ResponsesMessage{{
 			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
