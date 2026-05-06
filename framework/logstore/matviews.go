@@ -181,6 +181,16 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 // mv_logs_hourly. Per-row filters (content search, metadata, numeric ranges)
 // require the raw logs table.
 func canUseMatViewFilters(f SearchFilters) bool {
+	// mv_logs_hourly is bucketed by date_trunc('hour', timestamp). When the
+	// requested window doesn't align to hour boundaries, summing whole buckets
+	// over-counts the partial leading/trailing hour. Fall back to the raw table
+	// in that case so callers see exact counts.
+	if f.StartTime != nil && !f.StartTime.Truncate(time.Hour).Equal(*f.StartTime) {
+		return false
+	}
+	if f.EndTime != nil && !f.EndTime.Truncate(time.Hour).Equal(*f.EndTime) {
+		return false
+	}
 	return f.ContentSearch == "" &&
 		len(f.MetadataFilters) == 0 &&
 		len(f.RoutingEngineUsed) == 0 &&
