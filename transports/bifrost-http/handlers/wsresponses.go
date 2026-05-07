@@ -163,6 +163,25 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 	}
 }
 
+func (h *WSResponsesHandler) resolveEventModel(model string) (schemas.ModelProvider, string, error) {
+	provider, modelName := schemas.ParseModelString(model, "")
+	if modelName == "" {
+		return "", "", errModelFormat
+	}
+	if provider != "" {
+		return provider, modelName, nil
+	}
+	var getProviders func(string) []schemas.ModelProvider
+	if h != nil && h.handlerStore != nil {
+		getProviders = h.handlerStore.GetProvidersForModel
+	}
+	provider, _, err := resolveModelCatalogProvider(modelName, getProviders)
+	if err != nil {
+		return "", "", err
+	}
+	return provider, modelName, nil
+}
+
 // handleResponseCreate processes a response.create event.
 // Strategy: try native WS upstream for providers that support it, otherwise use HTTP bridge.
 // If native WS upstream fails mid-stream, falls back to HTTP bridge.
@@ -177,8 +196,8 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
-	if provider == "" || modelName == "" {
+	provider, _, err := h.resolveEventModel(event.Model)
+	if err != nil {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
 		return
 	}
@@ -550,9 +569,9 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
 func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
-	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
-	if provider == "" || modelName == "" {
-		return nil, errModelFormat
+	provider, modelName, err := h.resolveEventModel(event.Model)
+	if err != nil {
+		return nil, err
 	}
 
 	var input []schemas.ResponsesMessage

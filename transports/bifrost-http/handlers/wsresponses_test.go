@@ -17,7 +17,13 @@ import (
 )
 
 type testWSHandlerStore struct {
-	matcher *lib.HeaderMatcher
+	allowDirectKeys  bool
+	matcher          *lib.HeaderMatcher
+	providersByModel map[string][]schemas.ModelProvider
+}
+
+func (s testWSHandlerStore) ShouldAllowDirectKeys() bool {
+	return s.allowDirectKeys
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -25,7 +31,10 @@ func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 }
 
 func (s testWSHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
-	return nil
+	if s.providersByModel == nil {
+		return nil
+	}
+	return s.providersByModel[model]
 }
 
 func (s testWSHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
@@ -254,4 +263,60 @@ func TestHasWebSocketForwardedHeaders(t *testing.T) {
 		"x-trace-id": {"abc-123"},
 	})
 	assert.True(t, hasWebSocketForwardedHeaders(ctx))
+}
+
+func TestConvertEventToRequest_AutoResolvesBareModelToOpenRouter(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gemini-2.5-flash": {schemas.OpenRouter},
+			},
+		},
+	}
+
+	req, err := handler.convertEventToRequest(&schemas.WebSocketResponsesEvent{
+		Model: "gemini-2.5-flash",
+		Input: []byte(`"test"`),
+	})
+	assert.NoError(t, err)
+	if assert.NotNil(t, req) {
+		assert.Equal(t, schemas.OpenRouter, req.Provider)
+		assert.Equal(t, "gemini-2.5-flash", req.Model)
+	}
+}
+
+func TestConvertEventToRequest_AutoResolvesBareModelToCustomProvider(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gemini-2.5-flash": {"custom-provider"},
+			},
+		},
+	}
+
+	req, err := handler.convertEventToRequest(&schemas.WebSocketResponsesEvent{
+		Model: "gemini-2.5-flash",
+		Input: []byte(`"test"`),
+	})
+	assert.NoError(t, err)
+	if assert.NotNil(t, req) {
+		assert.Equal(t, schemas.ModelProvider("custom-provider"), req.Provider)
+		assert.Equal(t, "gemini-2.5-flash", req.Model)
+	}
+}
+
+func TestConvertEventToRequest_RejectsAmbiguousBareModel(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gemini-2.5-flash": {schemas.OpenRouter, "custom-provider"},
+			},
+		},
+	}
+
+	_, err := handler.convertEventToRequest(&schemas.WebSocketResponsesEvent{
+		Model: "gemini-2.5-flash",
+		Input: []byte(`"test"`),
+	})
+	assert.ErrorContains(t, err, `model "gemini-2.5-flash" is ambiguous across multiple providers: custom-provider, openrouter`)
 }
