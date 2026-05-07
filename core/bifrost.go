@@ -1866,11 +1866,12 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	if req.InputFileID == "" && len(req.Requests) == 0 {
+	hasInputBlob := req.InputBlob != nil && strings.TrimSpace(*req.InputBlob) != ""
+	if req.InputFileID == "" && len(req.Requests) == 0 && !hasInputBlob {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "either input_file_id or requests is required for batch create request",
+				Message: "either input_file_id, input_blob, or requests is required for batch create request",
 			},
 		}
 	}

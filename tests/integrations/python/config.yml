@@ -77,10 +77,10 @@ providers:
     embeddings: "text-embedding-3-small"
     image_generation: "gpt-image-1"
     thinking: "o1"
-    batch_file_upload: "gpt-4o-batch"
-    batch_list: "gpt-4o-batch"
-    batch_retrieve: "gpt-4o-batch"
-    batch_cancel: "gpt-4o-batch"
+    batch_file_upload: "gpt-4o-2"
+    batch_list: "gpt-4o-2"
+    batch_retrieve: "gpt-4o-2"
+    batch_cancel: "gpt-4o-2"
     file_upload: "gpt-4o"
     file_list: "gpt-4o"
     file_retrieve: "gpt-4o"
@@ -310,7 +310,7 @@ provider_scenarios:
     pydantic_structured_output: false
     pydanticai_streaming: false
     batch_file_upload: true
-    batch_create: false
+    batch_create: true
     batch_list: true
     batch_retrieve: true
     batch_cancel: true

@@ -134,10 +134,10 @@ type ContainerFileRequest struct {
 type CachedContentRequest struct {
 	Type            schemas.RequestType
 	CreateRequest   *schemas.BifrostCachedContentCreateRequest
-	ListRequest    *schemas.BifrostCachedContentListRequest
+	ListRequest     *schemas.BifrostCachedContentListRequest
 	RetrieveRequest *schemas.BifrostCachedContentRetrieveRequest
-	UpdateRequest  *schemas.BifrostCachedContentUpdateRequest
-	DeleteRequest  *schemas.BifrostCachedContentDeleteRequest
+	UpdateRequest   *schemas.BifrostCachedContentUpdateRequest
+	DeleteRequest   *schemas.BifrostCachedContentDeleteRequest
 }
 
 // BatchRequestConverter is a function that converts integration-specific batch requests to Bifrost format.
