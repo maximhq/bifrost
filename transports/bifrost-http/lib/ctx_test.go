@@ -14,11 +14,9 @@ import (
 
 // testHandlerStore is a minimal HandlerStore for ctx tests.
 type testHandlerStore struct {
-	allowDirectKeys bool
-	matcher         *HeaderMatcher
+	matcher *HeaderMatcher
 }
 
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                           { return s.allowDirectKeys }
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
 func (s testHandlerStore) GetProvidersForModel(_ string) []schemas.ModelProvider { return nil }
 func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor     { return nil }

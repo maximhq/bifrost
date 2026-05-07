@@ -1,0 +1,88 @@
+---
+title: "v1.4.0-prerelease3"
+description: "Enterprise v1.4.0-prerelease3"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.0-prerelease3">
+
+## Changelog
+
+This release hardens SSO/SCIM security, adds cluster synchronization for routing rules, introduces reliable replication, and picks up OSS Azure passthrough, new pricing tiers, and a set of streaming/async safety fixes.
+
+## ✨ Features
+
+- **Reliable Replication** - New replication logic for more dependable state propagation across cluster nodes
+- **Routing Rule Cluster Sync** - Routing rules now synchronize across the cluster via dedicated message handling, keeping all nodes in agreement
+- **Leader-Only Cluster Pricing Sync** - Only the cluster leader fetches pricing URLs, then broadcasts DB reloads to followers - cuts redundant fetches and keeps pricing consistent
+- **Terraform Account ID** - Account ID surfaced for Terraform integrations
+- **Azure Passthrough** - Native Azure passthrough support added upstream
+- **OAuth MCP Hints** - OAuth MCP client creation response now includes next-step hints for a smoother setup flow
+- **272k Token Tier Pricing** - Pricing support for the 272k token tier
+- **Flex & Priority Tier Pricing** - Pricing support for flex and priority service tiers
+- **Dockerfile Upgrades** - Base image and tooling upgrades across environment Dockerfiles
+
+## 🐞 Fixed
+
+- **SSO Role Enforcement** - SSO login is now denied when the user has no role claims and no matching group-to-role mapping; removed the Okta Org Auth Server special case that auto-granted Admin to the first user (security hardening)
+- **SCIM Provider Fixes** - Broad fixes across SCIM controller, mapping, and Entra/Google/Keycloak/Okta/SailPoint/Zitadel providers; new SCIM tables, migrations, and config-store wiring
+- **LB Routing for GenAI & Bedrock** - Load balancing routing fixes for GenAI and Bedrock integrations
+- **Streaming Post-Hook Race** - Fixed a race where fasthttp `RequestCtx` could be recycled before transport post-hooks finished in streaming goroutines; request/response snapshots are now captured eagerly
+- **Async User Values** - User values are now propagated through all async inference handlers and job submissions
+- **Trace Completer Safety** - Trace completer accepts transport logs as a parameter instead of reading from a potentially recycled context
+- **Async Log Store Exceptions** - Fixed exception handling in async log store jobs
+- **Model Alias Tracking** - Split `ModelRequested` into `OriginalModelRequested` and `ResolvedModelUsed` for accurate alias resolution tracking
+- **MCP Tool Discovery** - Added discovered tools and tool-name mapping columns to MCP clients
+- **Guardrails Plugin** - Guardrail plugin cleanup and Bedrock guardrail adjustments
+
+## 📀 Base OSS version
+
+`transports/v1.5.0-prerelease3`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.2
+	github.com/maximhq/bifrost/framework v1.3.2
+	github.com/maximhq/bifrost/plugins/governance v1.5.2
+	github.com/maximhq/bifrost/plugins/logging v1.5.2
+	github.com/maximhq/bifrost/transports v1.5.0-prerelease3
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

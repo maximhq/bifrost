@@ -192,14 +192,14 @@ func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 
 // OAuthInitiationRequest represents the request to initiate an OAuth flow
 type OAuthInitiationRequest struct {
-	ClientID        string   `json:"client_id"`
-	ClientSecret    string   `json:"client_secret"`
-	AuthorizeURL    string   `json:"authorize_url"`
-	TokenURL        string   `json:"token_url"`
-	RegistrationURL string   `json:"registration_url"`
-	RedirectURI     string   `json:"redirect_uri"`
-	Scopes          []string `json:"scopes"`
-	ServerURL       string   `json:"server_url"` // For OAuth discovery
+	ClientID        *schemas.EnvVar `json:"client_id"`
+	ClientSecret    *schemas.EnvVar `json:"client_secret"`
+	AuthorizeURL    string          `json:"authorize_url"`
+	TokenURL        string          `json:"token_url"`
+	RegistrationURL string          `json:"registration_url"`
+	RedirectURI     string          `json:"redirect_uri"`
+	Scopes          []string        `json:"scopes"`
+	ServerURL       string          `json:"server_url"` // For OAuth discovery
 }
 
 // InitiateOAuthFlow initiates an OAuth flow and returns the authorization URL
@@ -210,15 +210,28 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		registrationURL = &req.RegistrationURL
 	}
 
+	clientID := ""
+	if req.ClientID != nil {
+		if v, _ := req.ClientID.Value(); v != nil {
+			clientID, _ = v.(string)
+		}
+	}
+	clientSecret := ""
+	if req.ClientSecret != nil {
+		if v, _ := req.ClientSecret.Value(); v != nil {
+			clientSecret, _ = v.(string)
+		}
+	}
+
 	config := &schemas.OAuth2Config{
-		ClientID:        req.ClientID,
-		ClientSecret:    req.ClientSecret,
+		ClientID:        clientID,
+		ClientSecret:    clientSecret,
 		AuthorizeURL:    req.AuthorizeURL,
 		TokenURL:        req.TokenURL,
 		RegistrationURL: registrationURL,
 		RedirectURI:     req.RedirectURI,
 		Scopes:          req.Scopes,
-		ServerURL:       req.ServerURL, // MCP server URL for OAuth discovery
+		ServerURL:       req.ServerURL,
 	}
 
 	return h.oauthProvider.InitiateOAuthFlow(ctx, config)

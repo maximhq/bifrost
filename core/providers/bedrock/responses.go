@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1664,7 +1665,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	// map bifrost messages to bedrock messages using the new conversion method
 	if bifrostReq.Input != nil {
-		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(bifrostReq.Input)
+		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, bifrostReq.Input)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Responses messages: %w", err)
 		}
@@ -1959,6 +1960,17 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Convert tool choice
 	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
+		// Per-model gate: Bedrock Converse rejects toolConfig.toolChoice.tool
+		// on Meta Llama variants ("This model doesn't support the
+		// toolConfig.toolChoice.tool field"). Drop the forced specific-tool
+		// pin on Llama; the bound tool list is unaffected so the model can
+		// still call the intended tool under Bedrock's default "auto"
+		// behavior. See per-model support matrix at
+		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+		// (mirrors the gate in convertToolConfigFromFiltered for ChatCompletions).
+		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModel(bifrostReq.Model) {
+			bedrockToolChoice = nil
+		}
 		if bedrockToolChoice != nil {
 			if bedrockReq.ToolConfig == nil {
 				bedrockReq.ToolConfig = &BedrockToolConfig{}
@@ -1974,10 +1986,21 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			bedrockReq.ToolConfig = &BedrockToolConfig{}
 		}
 		bedrockReq.ToolConfig.Tools = append([]BedrockTool{*responsesStructuredOutputTool}, bedrockReq.ToolConfig.Tools...)
-		bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
-			Tool: &BedrockToolChoiceTool{
-				Name: responsesStructuredOutputTool.ToolSpec.Name,
-			},
+		// Force the model to use this specific tool, EXCEPT on Meta Llama where
+		// Bedrock Converse rejects toolConfig.toolChoice.tool with HTTP 400
+		// ("This model doesn't support the toolConfig.toolChoice.tool field").
+		// With only the synthetic bf_so_* tool bound, omitting tool_choice
+		// (Bedrock default = "auto") yields the same outcome on Llama because
+		// there's exactly one tool the model can call. See the per-model
+		// support matrix at
+		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+		// (mirrors the gate applied in convertChatParameters).
+		if !schemas.IsLlamaModel(bifrostReq.Model) {
+			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
+				Tool: &BedrockToolChoiceTool{
+					Name: responsesStructuredOutputTool.ToolSpec.Name,
+				},
+			}
 		}
 	}
 
@@ -2067,8 +2090,10 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 	}
 
 	if len(bifrostResp.Output) > 0 {
-		// Convert Bifrost messages back to Bedrock messages using the new conversion method
-		bedrockMessages, _, err := ConvertBifrostMessagesToBedrockMessages(bifrostResp.Output)
+		// Convert Bifrost messages back to Bedrock messages using the new conversion method.
+		// Response-side conversion does not perform outbound fetches in practice (model output
+		// blocks already carry inline data), so context.Background() is acceptable here.
+		bedrockMessages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), bifrostResp.Output)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert bifrost output messages: %w", err)
 		}
@@ -2465,8 +2490,9 @@ func (m *ToolCallStateManager) HasPendingResults() bool {
 
 // ConvertBifrostMessagesToBedrockMessages converts an array of Bifrost ResponsesMessage to Bedrock message format
 // This is the main conversion method from Bifrost to Bedrock - handles all message types and returns messages + system messages
-// Uses a state machine to properly track and manage tool call lifecycles
-func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.ResponsesMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
+// Uses a state machine to properly track and manage tool call lifecycles.
+// The ctx is propagated to URL fetches inside content blocks.
+func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessages []schemas.ResponsesMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
 	var bedrockMessages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 	var pendingReasoningContentBlocks []BedrockContentBlock
@@ -2619,7 +2645,7 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 								block.ResponsesInputMessageContentBlockImage != nil &&
 								block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-								imageSource, err := convertImageToBedrockSource(*block.ResponsesInputMessageContentBlockImage.ImageURL)
+								imageSource, err := convertImageToBedrockSource(ctx, *block.ResponsesInputMessageContentBlockImage.ImageURL)
 								if err != nil {
 									// Bedrock only supports base64 data URIs for images. If conversion
 									// fails (e.g. remote URL), the image is dropped from the tool result
@@ -2806,7 +2832,7 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 				systemMessages = append(systemMessages, systemMsgs...)
 			} else {
 				// Convert user/assistant text message
-				bedrockMsg := convertBifrostMessageToBedrockMessage(&msg)
+				bedrockMsg := convertBifrostMessageToBedrockMessage(ctx, &msg)
 				if bedrockMsg != nil {
 					bedrockMessages = append(bedrockMessages, *bedrockMsg)
 				}
@@ -2913,8 +2939,9 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 	return systemMessages
 }
 
-// convertBifrostMessageToBedrockMessage converts a regular Bifrost message to Bedrock message
-func convertBifrostMessageToBedrockMessage(msg *schemas.ResponsesMessage) *BedrockMessage {
+// convertBifrostMessageToBedrockMessage converts a regular Bifrost message to Bedrock message.
+// The ctx is propagated to URL fetches inside content blocks.
+func convertBifrostMessageToBedrockMessage(ctx context.Context, msg *schemas.ResponsesMessage) *BedrockMessage {
 	// Ensure Content is present
 	if msg.Content == nil {
 		return nil
@@ -2925,7 +2952,7 @@ func convertBifrostMessageToBedrockMessage(msg *schemas.ResponsesMessage) *Bedro
 	}
 
 	// Convert content
-	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(*msg.Content)
+	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, *msg.Content)
 	if err != nil {
 		return nil
 	}
@@ -3293,8 +3320,9 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 	return reasoningBlocks
 }
 
-// convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks
-func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
+// convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks.
+// The ctx is propagated to URL fetches inside image blocks.
+func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
 	var blocks []BedrockContentBlock
 
 	if content.ContentStr != nil {
@@ -3310,7 +3338,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 				bedrockBlock.Text = block.Text
 			case schemas.ResponsesInputMessageContentBlockTypeImage:
 				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-					imageSource, err := convertImageToBedrockSource(*block.ResponsesInputMessageContentBlockImage.ImageURL)
+					imageSource, err := convertImageToBedrockSource(ctx, *block.ResponsesInputMessageContentBlockImage.ImageURL)
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert image in responses content block: %w", err)
 					}

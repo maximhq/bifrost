@@ -302,7 +302,6 @@ func (h *WebRTCRealtimeHandler) resolveRealtimeWebRTCKeys(
 		applyRealtimeEphemeralKeyMapping(bifrostCtx, mapping)
 	}
 	if isRealtimeEphemeralToken(inboundToken) && !mapped {
-		bifrostCtx.ClearValue(schemas.BifrostContextKeyDirectKey)
 		bifrostCtx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 		bifrostCtx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 		bifrostCtx.ClearValue(schemas.BifrostContextKeySelectedKeyID)
@@ -1045,7 +1044,6 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 		schemas.BifrostContextKeyVirtualKey,
 		schemas.BifrostContextKeyAPIKeyName,
 		schemas.BifrostContextKeyAPIKeyID,
-		schemas.BifrostContextKeyDirectKey,
 		schemas.BifrostContextKeyExtraHeaders,
 		schemas.BifrostContextKeyRequestHeaders,
 		schemas.BifrostContextKeyUserAgent,

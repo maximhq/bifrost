@@ -33,8 +33,8 @@ const emptyStdioConfig: MCPStdioConfig = {
 const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
 
 const emptyOAuthConfig: OAuthConfig = {
-	client_id: "",
-	client_secret: "",
+	client_id: emptyEnvVar,
+	client_secret: emptyEnvVar,
 	authorize_url: "",
 	token_url: "",
 	scopes: [],
@@ -160,8 +160,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-							client_id: data.oauth_config?.client_id || "",
-							client_secret: data.oauth_config?.client_secret || undefined,
+							client_id: data.oauth_config?.client_id ?? emptyEnvVar,
+							client_secret: data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env ? data.oauth_config.client_secret : undefined,
 							authorize_url: data.oauth_config?.authorize_url || undefined,
 							token_url: data.oauth_config?.token_url || undefined,
 							registration_url: data.oauth_config?.registration_url || undefined,
@@ -451,7 +451,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 															</TooltipProvider>
 														</div>
 														<FormControl>
-															<Input {...field} value={field.value ?? ""} placeholder="your-client-id (auto-generated if empty)" data-testid="mcp-oauth-client-id" />
+															<EnvVarInput value={field.value} onChange={field.onChange} placeholder="your-client-id (auto-generated if empty)" data-testid="mcp-oauth-client-id" />
 														</FormControl>
 														<p className="text-muted-foreground text-xs">
 															Will be auto-generated via dynamic registration if left empty and provider supports it
@@ -469,7 +469,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 													<FormItem>
 														<FormLabel>OAuth Client Secret (optional for PKCE)</FormLabel>
 														<FormControl>
-															<Input {...field} type="password" value={field.value ?? ""} placeholder="your-client-secret" data-testid="mcp-oauth-client-secret" />
+															<EnvVarInput value={field.value} onChange={field.onChange} placeholder="your-client-secret" hideValueWhenEnv maskNonEnvValue data-testid="mcp-oauth-client-secret" />
 														</FormControl>
 														<p className="text-muted-foreground text-xs">Leave empty for public clients using PKCE</p>
 														<FormMessage />

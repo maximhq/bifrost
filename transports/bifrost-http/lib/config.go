@@ -60,8 +60,6 @@ type StreamChunkInterceptor interface {
 // This interface allows handlers to access only the configuration they need
 // without depending on the entire ConfigStore, improving testability and decoupling.
 type HandlerStore interface {
-	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
-	ShouldAllowDirectKeys() bool
 	// GetHeaderMatcher returns the precompiled header matcher for header filtering
 	GetHeaderMatcher() *HeaderMatcher
 	// GetProvidersForModel returns the list of providers that can serve a given model.
@@ -320,7 +318,6 @@ var DefaultClientConfig = configstore.ClientConfig{
 	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	EnforceAuthOnInference:          false,
-	AllowDirectKeys:                 false,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
 	WhitelistedRoutes:               []string{},
@@ -693,6 +690,26 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	}
 }
 
+// sanitizeMCPExternalOAuthURLs validates the MCP external OAuth URL overrides
+// on a ClientConfig and clears any invalid override so it cannot leak into
+// OAuth URL generation. The warning intentionally omits the offending value:
+// these fields support env-var references (`env.MY_VAR`), and echoing the
+// resolved value would let a misconfigured deployment surface env contents
+// in logs.
+func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
+	if client == nil {
+		return
+	}
+	if err := ValidateBaseURL(client.MCPExternalServerURL.GetValue()); err != nil {
+		logger.Warn("mcp_external_server_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
+		client.MCPExternalServerURL = nil
+	}
+	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
+		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
+		client.MCPExternalClientURL = nil
+	}
+}
+
 // loadClientConfig loads and merges client config from file with store using hash-based reconciliation
 func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	var clientConfig *configstore.ClientConfig
@@ -707,6 +724,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig == nil {
 		logger.Debug("client config not found in store, using config file")
 		if configData.Client != nil {
+			sanitizeMCPExternalOAuthURLs(configData.Client)
 			config.ClientConfig = configData.Client
 			applyClientConfigDefaults(config.ClientConfig)
 			// Generate hash for the file config
@@ -751,6 +769,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig.ConfigHash != fileHash {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
+		sanitizeMCPExternalOAuthURLs(configData.Client)
 		config.ClientConfig = configData.Client
 		config.ClientConfig.ConfigHash = fileHash
 		applyClientConfigDefaults(config.ClientConfig)
@@ -1261,6 +1280,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolPricing:               clientConfig.ToolPricing,
 		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		Disabled:                  clientConfig.Disabled,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
 		ConfigHash:                clientConfig.ConfigHash,
@@ -3244,14 +3264,6 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 
 // HandlerStore interface implementation
 
-// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
-// Note: This method doesn't use locking for performance. In rare cases during
-// config updates, it may return stale data, but this is acceptable since bool
-// reads are atomic and won't cause panics.
-func (c *Config) ShouldAllowDirectKeys() bool {
-	return c.ClientConfig.AllowDirectKeys
-}
-
 // ShouldAllowPerRequestStorageOverride returns whether per-request content storage overrides are permitted.
 func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
 	return c.ClientConfig.AllowPerRequestContentStorageOverride
@@ -3340,7 +3352,7 @@ func (c *Config) GetPerUserOAuthMCPClients() map[string]string {
 	}
 	result := make(map[string]string)
 	for _, client := range c.MCPConfig.ClientConfigs {
-		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth {
+		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && !client.Disabled {
 			result[client.ID] = client.Name
 		}
 	}
@@ -4535,10 +4547,13 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	if !found {
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
+	oldDisabled := oldConfig.Disabled
 	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
+	clientRegistered := false
 	if clients, err := c.client.GetMCPClients(); err == nil && len(clients) > 0 {
 		for _, client := range clients {
 			if client.Config.ID == id {
+				clientRegistered = true
 				if err := c.client.UpdateMCPClient(id, updatedConfig); err != nil {
 					// Rollback in-memory changes
 					c.MCPConfig.ClientConfigs[configIndex] = oldConfig
@@ -4583,6 +4598,88 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
+	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
+
+	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
+	// is registered at runtime. We call the core bifrost methods directly (not the
+	// Config wrappers) to avoid a redundant DB write — the caller is responsible for
+	// persisting the disabled flag to the DB before calling UpdateMCPClient.
+	if oldDisabled != updatedConfig.Disabled && clientRegistered {
+		if updatedConfig.Disabled {
+			if err := c.client.DisableMCPClient(id); err != nil {
+				// Rollback the in-memory Disabled flag so the runtime view stays
+				// consistent with what the caller can observe.
+				c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+				return fmt.Errorf("failed to disable MCP client: %w", err)
+			}
+		} else {
+			if err := c.client.EnableMCPClient(id); err != nil {
+				c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+				return fmt.Errorf("failed to enable MCP client: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// UpdateMCPClientConnection updates the auth credentials (headers) for an existing MCP client.
+// It delegates the actual reconnection (with the new credentials) to the Bifrost client.
+func (c *Config) UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
+	if c.client == nil {
+		return fmt.Errorf("bifrost client not set")
+	}
+
+	c.muMCP.RLock()
+	if c.MCPConfig == nil {
+		c.muMCP.RUnlock()
+		return fmt.Errorf("in-memory MCPConfig absent; cannot update MCP client connection")
+	}
+	found := false
+	for _, cc := range c.MCPConfig.ClientConfigs {
+		if cc == nil {
+			continue
+		}
+		if cc.ID == id {
+			found = true
+			break
+		}
+	}
+	c.muMCP.RUnlock()
+	if !found {
+		return fmt.Errorf("MCP client %s not found in in-memory MCP config", id)
+	}
+
+	// Attempt the credential swap on the runtime side first.
+	// If this fails, nothing in our in-memory config has changed.
+	if err := c.client.UpdateMCPClientConnection(id, newConfig); err != nil {
+		return fmt.Errorf("failed to update MCP client credentials: %w", err)
+	}
+
+	// Reconnect succeeded — mirror the new credentials into the in-memory config
+	// so that subsequent reads of MCPConfig reflect the live state.
+	c.muMCP.Lock()
+	defer c.muMCP.Unlock()
+	if c.MCPConfig != nil {
+		found := false
+		for _, cc := range c.MCPConfig.ClientConfigs {
+			if cc == nil {
+				continue
+			}
+			if cc.ID == id {
+				found = true
+				if newConfig.Headers != nil {
+					cc.Headers = maps.Clone(newConfig.Headers)
+				}
+				if newConfig.OauthConfigID != nil {
+					cc.OauthConfigID = newConfig.OauthConfigID
+				}
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("MCP client %s not found in in-memory config after successful reconnect", id)
+		}
+	}
 	return nil
 }
 
@@ -4623,6 +4720,77 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 	return nil
 }
 
+// DisableMCPClient persists disabled=true to the DB and shuts down the client's
+// connection, health monitor, and tool syncer at runtime.
+func (c *Config) DisableMCPClient(ctx context.Context, id string) error {
+	if c.client == nil {
+		return fmt.Errorf("bifrost client not set")
+	}
+
+	if c.ConfigStore == nil {
+		return fmt.Errorf("config store not set")
+	}
+
+	dbClient, err := c.ConfigStore.GetMCPClientByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("MCP client '%s' not found: %w", id, err)
+	}
+	if err := c.client.DisableMCPClient(id); err != nil {
+		return fmt.Errorf("failed to disable MCP client: %w", err)
+	}
+
+	dbClient.Disabled = true
+	if err := c.ConfigStore.UpdateMCPClientConfig(ctx, id, dbClient); err != nil {
+		_ = c.client.EnableMCPClient(id) // rollback
+		return fmt.Errorf("failed to persist disabled state: %w", err)
+	}
+
+	c.muMCP.Lock()
+	defer c.muMCP.Unlock()
+	if c.MCPConfig != nil {
+		for _, cc := range c.MCPConfig.ClientConfigs {
+			if cc.ID == id {
+				cc.Disabled = true
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// EnableMCPClient persists disabled=false to the DB and reconnects the client
+// at runtime, restarting its health monitor and tool syncer.
+func (c *Config) EnableMCPClient(ctx context.Context, id string) error {
+	if c.client == nil {
+		return fmt.Errorf("bifrost client not set")
+	}
+	if c.ConfigStore == nil {
+		return fmt.Errorf("config store not set")
+	}
+
+	dbClient, err := c.ConfigStore.GetMCPClientByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("MCP client '%s' not found: %w", id, err)
+	}
+	dbClient.Disabled = false
+	if err := c.ConfigStore.UpdateMCPClientConfig(ctx, id, dbClient); err != nil {
+		return fmt.Errorf("failed to persist enabled state: %w", err)
+	}
+
+	c.muMCP.Lock()
+	if c.MCPConfig != nil {
+		for _, cc := range c.MCPConfig.ClientConfigs {
+			if cc.ID == id {
+				cc.Disabled = false
+				break
+			}
+		}
+	}
+	c.muMCP.Unlock()
+
+	return c.client.EnableMCPClient(id)
+}
+
 // RedactMCPClientConfig creates a redacted copy of a MCPClientConfig configuration.
 // Connection strings and headers are redacted for safe external exposure.
 func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas.MCPClientConfig {
@@ -4641,6 +4809,14 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		for header, value := range config.Headers {
 			configCopy.Headers[header] = *value.Redacted()
 		}
+	}
+
+	// Redact OAuth client credentials
+	if config.OauthClientID != nil {
+		configCopy.OauthClientID = config.OauthClientID.Redacted()
+	}
+	if config.OauthClientSecret != nil {
+		configCopy.OauthClientSecret = config.OauthClientSecret.Redacted()
 	}
 
 	return &configCopy

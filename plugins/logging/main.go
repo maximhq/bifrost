@@ -908,6 +908,38 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.ErrorDetails = string(data)
 			}
 			entry.ErrorDetailsParsed = bifrostErr
+			// Backfill raw request/response on streaming-error path so cancellation/timeout
+			// log entries still carry raw payloads when content logging + raw storage are
+			// enabled. Mirrors the non-streaming Path A pattern at line 872. Prefer the
+			// accumulator-captured raw bytes (streamResponse), then fall back to whatever
+			// the provider attached to the BifrostError.
+			if shouldStoreRaw && contentLoggingEnabled {
+				if entry.RawRequest == "" {
+					if streamResponse != nil && streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
+						switch raw := (*streamResponse.RawRequest).(type) {
+						case string:
+							entry.RawRequest = raw
+						default:
+							if rawReqBytes, err := sonic.Marshal(raw); err == nil {
+								entry.RawRequest = string(rawReqBytes)
+							}
+						}
+					} else if bifrostErr.ExtraFields.RawRequest != nil {
+						if rawReqBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawRequest); err == nil {
+							entry.RawRequest = string(rawReqBytes)
+						}
+					}
+				}
+				if entry.RawResponse == "" {
+					if streamResponse != nil && streamResponse.Data != nil && streamResponse.Data.RawResponse != nil {
+						entry.RawResponse = *streamResponse.Data.RawResponse
+					} else if bifrostErr.ExtraFields.RawResponse != nil {
+						if rawRespBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); err == nil {
+							entry.RawResponse = string(rawRespBytes)
+						}
+					}
+				}
+			}
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
 			entry.Status = "success"
@@ -1072,7 +1104,6 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if !ok {
 		return nil
 	}
-
 	// Serialize plugin logs once for all entries
 	var pluginLogsJSON string
 	if len(trace.PluginLogs) > 0 {
@@ -1081,10 +1112,11 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 			pluginLogsJSON = string(data)
 		}
 	}
-
+	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Enqueue each log entry (supports multiple attempts per trace)
 	for _, entry := range pending.entries {
 		entry.PluginLogs = pluginLogsJSON
+		p.logger.Debug("Inject: enqueuing log entry %s", entry.ID)
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 	}
 	return nil

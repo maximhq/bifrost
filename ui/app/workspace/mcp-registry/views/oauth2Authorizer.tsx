@@ -30,6 +30,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	const popupRef = useRef<Window | null>(null);
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 	const isCompletingRef = useRef(false);
+	// Set to true when the user cancels so in-flight async callbacks do not
+	// invoke onSuccess / onError / onClose after the dialog is dismissed.
+	const cancelledRef = useRef(false);
 
 	// RTK Query hooks
 	const [getOAuthStatus] = useLazyGetOAuthConfigStatusQuery();
@@ -45,6 +48,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 	// Handle successful OAuth completion
 	const handleOAuthComplete = useCallback(async () => {
+		if (cancelledRef.current) return;
 		// Guard against concurrent calls (race between postMessage and polling)
 		if (isCompletingRef.current) return;
 		isCompletingRef.current = true;
@@ -58,12 +62,14 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		// Use oauthConfigId instead of mcpClientId for multi-instance support
 		try {
 			await completeOAuth(oauthConfigId).unwrap();
+			if (cancelledRef.current) return;
 			setStatus("success");
 			onSuccess();
 			setTimeout(() => {
-				onClose();
+				if (!cancelledRef.current) onClose();
 			}, 1000);
 		} catch (error) {
+			if (cancelledRef.current) return;
 			const errMsg = getErrorMessage(error);
 			setStatus("failed");
 			setErrorMessage(errMsg);
@@ -78,6 +84,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			if (popupRef.current && !popupRef.current.closed) {
 				popupRef.current.close();
 			}
+			if (cancelledRef.current) return;
 			setStatus("failed");
 			setErrorMessage(reason);
 			onError(reason);
@@ -87,8 +94,10 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 	// Check OAuth status (called by postMessage or polling)
 	const checkOAuthStatus = useCallback(async () => {
+		if (cancelledRef.current) return;
 		try {
 			const result = await getOAuthStatus(oauthConfigId).unwrap();
+			if (cancelledRef.current) return;
 
 			if (result.status === "authorized") {
 				stopPolling();
@@ -135,8 +144,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 	// Open popup and start polling
 	const openPopup = useCallback(() => {
-		// Reset completion guard for each fresh OAuth attempt
+		// Reset completion and cancelled guards for each fresh OAuth attempt
 		isCompletingRef.current = false;
+		cancelledRef.current = false;
 
 		// Close any existing popup
 		if (popupRef.current && !popupRef.current.closed) {
@@ -214,6 +224,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	const handleCancel = () => {
+		cancelledRef.current = true;
 		stopPolling();
 		isCompletingRef.current = false;
 		if (popupRef.current && !popupRef.current.closed) {
@@ -223,8 +234,25 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	return (
-		<Dialog open={open}>
-			<DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()}>
+		<Dialog
+			open={open}
+			onOpenChange={(nextOpen) => {
+				if (!nextOpen) {
+					handleCancel();
+				}
+			}}
+		>
+			<DialogContent
+				className="sm:max-w-md"
+				onPointerDownOutside={(e) => {
+					e.preventDefault();
+					handleCancel();
+				}}
+				onEscapeKeyDown={(e) => {
+					e.preventDefault();
+					handleCancel();
+				}}
+			>
 				<DialogHeader>
 					<DialogTitle>{status === "confirm" ? "Test OAuth Configuration" : "OAuth Authorization"}</DialogTitle>
 					<DialogDescription>

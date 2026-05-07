@@ -925,14 +925,14 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 	})
 
 	t.Run("passthrough_computer_use_header_prevents_auto_inject", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		// Simulate passthrough setting an older computer-use header
 		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 			"anthropic-beta": {AnthropicComputerUseBetaHeader20250124},
 		})
 		req := &AnthropicMessageRequest{
 			Tools: []AnthropicTool{{
-				Type: schemas.Ptr(AnthropicToolTypeComputer20251124),
+				Type: new(AnthropicToolTypeComputer20251124),
 				Name: string(AnthropicToolNameComputer),
 			}},
 		}
@@ -949,7 +949,7 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 	})
 
 	t.Run("no_passthrough_allows_auto_inject", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
 			MCPServers: []AnthropicMCPServerV2{{URL: "http://example.com"}},
 		}
@@ -1895,7 +1895,7 @@ func TestAnthropicToolUnmarshalJSON_MCPToolset(t *testing.T) {
 func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
 	rawBody := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"fallbacks":["claude-haiku-4-5"],"temperature":0.7}`)
 
-	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 	request := &schemas.BifrostResponsesRequest{
@@ -2021,6 +2021,224 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 	}
 }
 
+// TestSupportsEffortParameter pins the helper against the explicit doc list
+// at https://platform.claude.com/docs/en/build-with-claude/effort:
+// "Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+func TestSupportsEffortParameter(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Supported per docs.
+		{"claude-mythos-preview", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.7-20260401", true},
+		{"claude-opus-4-6", true},
+		{"claude-opus-4.6-20250514", true},
+		{"claude-sonnet-4-6", true},
+		{"claude-sonnet-4.6-20250514", true},
+		{"claude-opus-4-5", true},
+		{"claude-opus-4.5-20251101", true},
+		{"claude-opus-4-5-20251101", true},
+		// Bedrock + Vertex IDs for supported models keep the substring shape.
+		{"anthropic.claude-opus-4-7-v1", true},
+		{"global.anthropic.claude-sonnet-4-6", true},
+		{"claude-opus-4-7@20260401", true},
+		// Not supported - the failing case from the upstream 400.
+		{"claude-haiku-4-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"claude-haiku-4-6-20250514", false},
+		// Sonnet < 4.6 not in the supported list.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
+		{"claude-sonnet-4-20250514", false},
+		// Opus < 4.5 not in the supported list.
+		{"claude-opus-4-1", false},
+		{"claude-opus-4-1-20250805", false},
+		{"claude-opus-4-20250514", false},
+		// Pre-4 generation.
+		{"claude-3-5-sonnet-20241022", false},
+		{"claude-3-opus", false},
+		// Defensive cases.
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := SupportsEffortParameter(tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsEffortParameter(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedAnthropicFields_EffortGating exercises the typed path:
+// effort is removed for non-supporting models and the empty parent is cleaned
+// up; supporting models keep the effort value untouched.
+func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
+	highEffort := "high"
+	mediumEffort := "medium"
+
+	tests := []struct {
+		name       string
+		model      string
+		req        *AnthropicMessageRequest
+		wantEffort *string
+		wantOCNil  bool
+	}{
+		{
+			name:  "haiku 4.5 strips effort and drops empty output_config",
+			model: "claude-haiku-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: nil,
+			wantOCNil:  true,
+		},
+		{
+			name:  "opus 4.5 keeps effort (SupportsNativeEffort)",
+			model: "claude-opus-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &mediumEffort},
+			},
+			wantEffort: &mediumEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "sonnet 4.6 keeps effort",
+			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "opus 4.7 keeps effort",
+			model: "claude-opus-4-7",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "sonnet 4.5 strips effort",
+			model: "claude-sonnet-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: nil,
+			wantOCNil:  true,
+		},
+		{
+			name:  "haiku 4.5 strips effort but preserves sibling Format",
+			model: "claude-haiku-4-5",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{
+					Effort: &highEffort,
+					Format: json.RawMessage(`{"type":"json_schema"}`),
+				},
+			},
+			wantEffort: nil,
+			wantOCNil:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stripUnsupportedAnthropicFields(tt.req, schemas.Anthropic, tt.model)
+			if tt.wantOCNil {
+				if tt.req.OutputConfig != nil {
+					t.Fatalf("expected OutputConfig nil, got %+v", tt.req.OutputConfig)
+				}
+				return
+			}
+			if tt.req.OutputConfig == nil {
+				t.Fatalf("expected OutputConfig non-nil")
+			}
+			gotEffort := tt.req.OutputConfig.Effort
+			switch {
+			case tt.wantEffort == nil && gotEffort != nil:
+				t.Errorf("expected Effort nil, got %q", *gotEffort)
+			case tt.wantEffort != nil && gotEffort == nil:
+				t.Errorf("expected Effort %q, got nil", *tt.wantEffort)
+			case tt.wantEffort != nil && gotEffort != nil && *tt.wantEffort != *gotEffort:
+				t.Errorf("expected Effort %q, got %q", *tt.wantEffort, *gotEffort)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_EffortGating exercises the raw-bytes
+// path. Same gating semantics as the typed path; verifies the JSON delete
+// also drops an empty output_config parent.
+func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
+	tests := []struct {
+		name           string
+		model          string
+		body           string
+		wantHasEffort  bool
+		wantHasOCField bool
+	}{
+		{
+			name:           "haiku 4.5 strips effort and drops parent",
+			model:          "claude-haiku-4-5",
+			body:           `{"model":"claude-haiku-4-5","output_config":{"effort":"high"}}`,
+			wantHasEffort:  false,
+			wantHasOCField: false,
+		},
+		{
+			name:           "opus 4.5 keeps effort",
+			model:          "claude-opus-4-5",
+			body:           `{"model":"claude-opus-4-5","output_config":{"effort":"high"}}`,
+			wantHasEffort:  true,
+			wantHasOCField: true,
+		},
+		{
+			name:           "sonnet 4.6 keeps effort",
+			model:          "claude-sonnet-4-6",
+			body:           `{"model":"claude-sonnet-4-6","output_config":{"effort":"medium"}}`,
+			wantHasEffort:  true,
+			wantHasOCField: true,
+		},
+		{
+			name:           "haiku 4.5 strips effort but keeps sibling format",
+			model:          "claude-haiku-4-5",
+			body:           `{"model":"claude-haiku-4-5","output_config":{"effort":"high","format":{"type":"json_schema"}}}`,
+			wantHasEffort:  false,
+			wantHasOCField: true,
+		},
+		{
+			name:           "model fallback - haiku 4.5 inferred from body when arg empty",
+			model:          "",
+			body:           `{"model":"claude-haiku-4-5-20251001","output_config":{"effort":"high"}}`,
+			wantHasEffort:  false,
+			wantHasOCField: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripUnsupportedFieldsFromRawBody([]byte(tt.body), schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			haveEffort := providerUtils.JSONFieldExists(out, "output_config.effort")
+			if haveEffort != tt.wantHasEffort {
+				t.Errorf("output_config.effort present=%v, want %v; body=%s", haveEffort, tt.wantHasEffort, string(out))
+			}
+			haveOC := providerUtils.JSONFieldExists(out, "output_config")
+			if haveOC != tt.wantHasOCField {
+				t.Errorf("output_config present=%v, want %v; body=%s", haveOC, tt.wantHasOCField, string(out))
+			}
+		})
+	}
+}
+
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -2067,7 +2285,7 @@ func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 			AddMissingBetaHeadersToContext(ctx, tt.req, tt.provider)
 
 			var headers []string
@@ -2094,6 +2312,323 @@ func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 						t.Errorf("unexpected header %q found in %v", unexpected, headers)
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestComputerUseGeneration verifies the (model -> generation) classifier
+// covers every Claude model that Anthropic explicitly maps to a computer-use
+// beta header version, plus the fallback for unknown / non-Claude models.
+func TestComputerUseGeneration(t *testing.T) {
+	cases := []struct {
+		model string
+		want  string
+	}{
+		{"claude-opus-4-7", ComputerUseGen20251124},
+		{"claude-opus-4.7", ComputerUseGen20251124},
+		{"Claude-Opus-4-7", ComputerUseGen20251124},
+		{"claude-opus-4-7-20260321", ComputerUseGen20251124},
+		{"claude-opus-4-6", ComputerUseGen20251124},
+		{"claude-sonnet-4-6", ComputerUseGen20251124},
+		{"claude-sonnet-4.6", ComputerUseGen20251124},
+		{"claude-opus-4-5", ComputerUseGen20251124},
+		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
+		{"claude-sonnet-4-5", ComputerUseGen20250124},
+		{"claude-sonnet-4-5-20250929", ComputerUseGen20250124},
+		{"claude-haiku-4-5", ComputerUseGen20250124},
+		{"claude-haiku-4-5-20251001", ComputerUseGen20250124},
+		{"claude-opus-4-1", ComputerUseGen20250124},
+		{"claude-opus-4-1-20250805", ComputerUseGen20250124},
+		{"claude-sonnet-4", ComputerUseGen20250124},
+		{"claude-sonnet-4-20250514", ComputerUseGen20250124},
+		{"claude-opus-4", ComputerUseGen20250124},
+		{"claude-opus-4-20250514", ComputerUseGen20250124},
+		{"claude-3-7-sonnet-20250219", ComputerUseGen20250124},
+		{"claude-3-5-sonnet-20241022", ComputerUseGen20250124},
+		{"", ComputerUseGen20250124},
+		{"some-unknown-model", ComputerUseGen20250124},
+		{"global.anthropic.claude-opus-4-7", ComputerUseGen20251124},
+		{"global.anthropic.claude-sonnet-4-6", ComputerUseGen20251124},
+		{"global.anthropic.claude-haiku-4-5-20251001-v1:0", ComputerUseGen20250124},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			got := ComputerUseGeneration(tc.model)
+			if got != tc.want {
+				t.Errorf("ComputerUseGeneration(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormalizedToolSpec verifies the canonical {type, name} pair returned per
+// (generation, base-tool) pair matches Anthropic's strict Pydantic validators.
+func TestNormalizedToolSpec(t *testing.T) {
+	cases := []struct {
+		generation string
+		baseTool   string
+		wantType   string
+		wantName   string
+	}{
+		{ComputerUseGen20251124, "computer", "computer_20251124", "computer"},
+		{ComputerUseGen20251124, "text_editor", "text_editor_20250728", "str_replace_based_edit_tool"},
+		{ComputerUseGen20251124, "bash", "bash_20250124", "bash"},
+		{ComputerUseGen20250124, "computer", "computer_20250124", "computer"},
+		{ComputerUseGen20250124, "text_editor", "text_editor_20250124", "str_replace_editor"},
+		{ComputerUseGen20250124, "bash", "bash_20250124", "bash"},
+		{ComputerUseGen20251124, "web_search", "", ""},
+		{ComputerUseGen20250124, "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.generation+"/"+tc.baseTool, func(t *testing.T) {
+			gotType, gotName := NormalizedToolSpec(tc.generation, tc.baseTool)
+			if gotType != tc.wantType {
+				t.Errorf("NormalizedToolSpec(%q, %q) type = %q, want %q", tc.generation, tc.baseTool, gotType, tc.wantType)
+			}
+			if gotName != tc.wantName {
+				t.Errorf("NormalizedToolSpec(%q, %q) name = %q, want %q", tc.generation, tc.baseTool, gotName, tc.wantName)
+			}
+		})
+	}
+}
+
+// TestRemapRawToolVersionsForProvider_NormalizesComputerUse covers the four
+// permutations of (model generation, supplied tool generation):
+//   - matched (no-op)
+//   - mismatched (auto-corrects type AND name)
+//
+// for both directions, plus mixed-tool requests where only some tools need
+// normalization.
+func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
+	type expectedTool struct {
+		toolType string
+		toolName string
+	}
+	cases := []struct {
+		name      string
+		model     string
+		inputBody string
+		expected  []expectedTool
+	}{
+		{
+			name:  "sonnet-4-6 with new-gen tools (no-op)",
+			model: "claude-sonnet-4-6",
+			inputBody: `{"model":"claude-sonnet-4-6","tools":[
+				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20251124", "computer"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "sonnet-4-5 with old-gen tools (no-op)",
+			model: "claude-sonnet-4-5",
+			inputBody: `{"model":"claude-sonnet-4-5","tools":[
+				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250124","name":"str_replace_editor"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20250124", "computer"},
+				{"text_editor_20250124", "str_replace_editor"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "sonnet-4-6 with old-gen tools auto-upgrades",
+			model: "claude-sonnet-4-6",
+			inputBody: `{"model":"claude-sonnet-4-6","tools":[
+				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250124","name":"str_replace_editor"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20251124", "computer"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "sonnet-4-5 with new-gen tools auto-downgrades",
+			model: "claude-sonnet-4-5",
+			inputBody: `{"model":"claude-sonnet-4-5","tools":[
+				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},
+				{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"},
+				{"type":"bash_20250124","name":"bash"}
+			]}`,
+			expected: []expectedTool{
+				{"computer_20250124", "computer"},
+				{"text_editor_20250124", "str_replace_editor"},
+				{"bash_20250124", "bash"},
+			},
+		},
+		{
+			name:  "opus-4-7 with old-gen text_editor mid-list (only that tool changes)",
+			model: "claude-opus-4-7",
+			inputBody: `{"model":"claude-opus-4-7","tools":[
+				{"type":"web_search_20250305","name":"web_search","max_uses":3},
+				{"type":"text_editor_20250124","name":"str_replace_editor"},
+				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768}
+			]}`,
+			expected: []expectedTool{
+				{"web_search_20250305", "web_search"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+				{"computer_20251124", "computer"},
+			},
+		},
+		{
+			name:      "no tools array is a clean no-op",
+			model:     "claude-sonnet-4-6",
+			inputBody: `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`,
+			expected:  nil,
+		},
+		{
+			name:  "bedrock-style global. prefix model classifies correctly",
+			model: "global.anthropic.claude-opus-4-7",
+			inputBody: `{"model":"global.anthropic.claude-opus-4-7","tools":[
+				{"type":"text_editor_20250124","name":"str_replace_editor"}
+			]}`,
+			expected: []expectedTool{
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+			},
+		},
+		{
+			// Mirrors the body-embedded fallback in StripUnsupportedFieldsFromRawBody:
+			// when the caller passes model="", recover it from the body so a request
+			// targeting opus-4-7 doesn't silently get the older 20250124 generation.
+			name:  "recovers model from body when caller passes empty model",
+			model: "",
+			inputBody: `{"model":"claude-opus-4-7","tools":[
+				{"type":"text_editor_20250124","name":"str_replace_editor"}
+			]}`,
+			expected: []expectedTool{
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := RemapRawToolVersionsForProvider([]byte(tc.inputBody), schemas.Anthropic, tc.model)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			toolsResult := providerUtils.GetJSONField(out, "tools")
+			if tc.expected == nil {
+				if toolsResult.Exists() && toolsResult.IsArray() && len(toolsResult.Array()) > 0 {
+					t.Fatalf("expected no tools array, got %s", toolsResult.Raw)
+				}
+				return
+			}
+			tools := toolsResult.Array()
+			if len(tools) != len(tc.expected) {
+				t.Fatalf("got %d tools, want %d (body=%s)", len(tools), len(tc.expected), out)
+			}
+			for i, want := range tc.expected {
+				gotType := tools[i].Get("type").String()
+				gotName := tools[i].Get("name").String()
+				if gotType != want.toolType {
+					t.Errorf("tool[%d].type = %q, want %q (body=%s)", i, gotType, want.toolType, out)
+				}
+				if gotName != want.toolName {
+					t.Errorf("tool[%d].name = %q, want %q (body=%s)", i, gotName, want.toolName, out)
+				}
+			}
+		})
+	}
+}
+
+// TestIsClaudeCodeRequest covers detection of Claude CLI / Claude Code clients
+// via the User-Agent stored on BifrostContext. ClaudeCLI.Matches uses a
+// case-insensitive substring check, so identifiers such as "claude-cli" should
+// match version-suffixed strings like "claude-cli/2.1.128 (external, cli)".
+func TestIsClaudeCodeRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		setUA     bool        // false: do not set the user-agent key on the context
+		userAgent interface{} // interface{} so we can also test non-string values
+		expected  bool
+	}{
+		{
+			name:      "claude-cli with version and metadata suffix",
+			setUA:     true,
+			userAgent: "claude-cli/2.1.128 (external, cli)",
+			expected:  true,
+		},
+		{
+			name:      "claude-cli older version",
+			setUA:     true,
+			userAgent: "claude-cli/1.0.0",
+			expected:  true,
+		},
+		{
+			name:      "claude-code identifier",
+			setUA:     true,
+			userAgent: "claude-code/0.5.2",
+			expected:  true,
+		},
+		{
+			name:      "claude-vscode identifier",
+			setUA:     true,
+			userAgent: "claude-vscode/0.1.0 (vscode)",
+			expected:  true,
+		},
+		{
+			name:      "uppercase CLAUDE-CLI matches case-insensitively",
+			setUA:     true,
+			userAgent: "CLAUDE-CLI/2.1.128 (external, cli)",
+			expected:  true,
+		},
+		{
+			name:      "claude-cli embedded in a larger user-agent string",
+			setUA:     true,
+			userAgent: "Mozilla/5.0 (compatible; claude-cli/2.1.128) extra-suffix",
+			expected:  true,
+		},
+		{
+			name:      "non-claude client (geminicli) does not match",
+			setUA:     true,
+			userAgent: "geminicli/0.4.1",
+			expected:  false,
+		},
+		{
+			name:      "non-claude client (python-requests) does not match",
+			setUA:     true,
+			userAgent: "python-requests/2.28.0",
+			expected:  false,
+		},
+		{
+			name:      "empty user-agent string",
+			setUA:     true,
+			userAgent: "",
+			expected:  false,
+		},
+		{
+			name:     "no user-agent set on context",
+			setUA:    false,
+			expected: false,
+		},
+		{
+			name:      "non-string value stored under the user-agent key",
+			setUA:     true,
+			userAgent: 12345,
+			expected:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			if tc.setUA {
+				ctx.SetValue(schemas.BifrostContextKeyUserAgent, tc.userAgent)
+			}
+			got := IsClaudeCodeRequest(ctx)
+			if got != tc.expected {
+				t.Errorf("IsClaudeCodeRequest() = %v, want %v (userAgent=%v)", got, tc.expected, tc.userAgent)
 			}
 		})
 	}

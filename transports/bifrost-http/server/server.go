@@ -91,12 +91,16 @@ type ServerCallbacks interface {
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
+	// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
+	UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary token and discovers tools.
 	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 	ReconnectMCPClient(ctx context.Context, id string) error
+	DisableMCPClient(ctx context.Context, id string) error
+	EnableMCPClient(ctx context.Context, id string) error
 }
 
 // BifrostHTTPServer represents a HTTP server instance.
@@ -218,6 +222,17 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	return nil
 }
 
+// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
+func (s *BifrostHTTPServer) UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
+	if err := s.Config.UpdateMCPClientConnection(ctx, id, newConfig); err != nil {
+		return err
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn("failed to sync MCP servers after updating client connection: %v", err)
+	}
+	return nil
+}
+
 // RemoveMCPClient removes an MCP client from the in-memory store
 func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) error {
 	if err := s.Config.RemoveMCPClient(ctx, id); err != nil {
@@ -225,6 +240,28 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 	}
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after removing client: %v", err)
+	}
+	return nil
+}
+
+// DisableMCPClient shuts down an MCP client's connection and workers without removing it.
+func (s *BifrostHTTPServer) DisableMCPClient(ctx context.Context, id string) error {
+	if err := s.Config.DisableMCPClient(ctx, id); err != nil {
+		return err
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn("failed to sync MCP servers after disabling client: %v", err)
+	}
+	return nil
+}
+
+// EnableMCPClient reconnects a disabled MCP client and restarts its health monitor and tool syncer.
+func (s *BifrostHTTPServer) EnableMCPClient(ctx context.Context, id string) error {
+	if err := s.Config.EnableMCPClient(ctx, id); err != nil {
+		return err
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn("failed to sync MCP servers after enabling client: %v", err)
 	}
 	return nil
 }

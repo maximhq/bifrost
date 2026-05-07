@@ -22,7 +22,6 @@
     "disable_content_logging": false,
     "log_retention_days": 365,
     "enforce_auth_on_inference": false,
-    "allow_direct_keys": false,
     "allowed_origins": [
       "*"
     ],

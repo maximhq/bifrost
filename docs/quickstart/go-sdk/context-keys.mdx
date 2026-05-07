@@ -70,18 +70,6 @@ Explicitly select a named API key from your configured keys.
 bfCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, "premium-key")
 ```
 
-### Direct Key
-
-Provide credentials directly, bypassing Bifrost's key selection entirely. Useful for dynamic or per-request key scenarios.
-
-```go
-bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
-    Value:  "sk-direct-api-key",
-    Models: []string{"gpt-4o"},
-    Weight: 1.0,
-})
-```
-
 ### Skip Key Selection
 
 Skip key selection entirely and pass an empty key to the provider. Useful for providers that don't require authentication or when using ambient credentials (e.g., IAM roles).
@@ -358,7 +346,6 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyAPIKeyID` | `string` | Set | Explicit API key ID selection (priority over name) |
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
 | `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID used for fallback attempt |
-| `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Provide credentials directly, bypassing key selection |
 | `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection entirely |
 | `BifrostContextKeySessionID` | `string` | Set | Session ID for key stickiness (requires KV store) |
 | `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session-to-key cache (default: 1 hour) |

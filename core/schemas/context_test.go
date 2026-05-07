@@ -329,3 +329,71 @@ func TestPluginLog_PoolReuse(t *testing.T) {
 		t.Errorf("expected 100 logs from pool reuse, got %d", len(logs))
 	}
 }
+
+// TestNewBifrostContext_DerivedFromReleasedScope_NoPanic locks in the
+// deterministic half of the scoped-parent-release bug: a derived BifrostContext
+// must not deref a pool-released scoped ancestor when its accessors are called.
+//
+// Pre-fix shape (see plugins/semanticcache/utils.go:71):
+//
+//	root := NewBifrostContext(...)
+//	scope := root.WithPluginScope(...)
+//	derived := NewBifrostContext(scope, NoDeadline)   // derived.parent = scope
+//	scope.ReleasePluginScope()                        // scope.parent = nil, valueDelegate = nil
+//	derived.Deadline()                                 // → scope.Deadline() → nil deref panic
+//
+// The fix unwraps scoped parents to their valueDelegate (root) at construction
+// time, so derived.parent is root and the release of scope cannot affect it.
+func TestNewBifrostContext_DerivedFromReleasedScope_NoPanic(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	pluginName := "release-race"
+	scope := root.WithPluginScope(&pluginName)
+
+	derived := NewBifrostContext(scope, NoDeadline)
+
+	// Release the scope while a derived child is still alive — same shape as
+	// core/bifrost.go's plugin pipeline releasing pluginCtx after PreLLMHook
+	// returns, while plugins/semanticcache holds the embeddingCtx child.
+	scope.ReleasePluginScope()
+
+	// All three accessors used to crash via the parent chain. After the unwrap
+	// fix, derived.parent is the (still-live) root.
+	_, _ = derived.Deadline()
+	_ = derived.Err()
+	_ = derived.Done()
+}
+
+// TestNewBifrostContext_WatchdogRaceWithReleasedScope is the stress companion
+// to the deterministic test above. Run with `go test -race` to surface the
+// data race between watchCancellation reading bc.parent (context.go:202) and
+// ReleasePluginScope writing bc.parent = nil (context.go:432).
+//
+// With the unwrap fix, watchCancellation observes root (long-lived) instead of
+// the pool-released scope, so the race window does not exist.
+func TestNewBifrostContext_WatchdogRaceWithReleasedScope(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	pluginName := "watchdog-race"
+
+	const iterations = 200
+	derivedCtxs := make([]*BifrostContext, 0, iterations)
+	for i := 0; i < iterations; i++ {
+		scope := root.WithPluginScope(&pluginName)
+		// Spawning watchCancellation: parent (scope) has a non-nil Done()
+		// channel, so NewBifrostContext schedules the goroutine.
+		derivedCtxs = append(derivedCtxs, NewBifrostContext(scope, NoDeadline))
+		scope.ReleasePluginScope()
+	}
+
+	// Yield so any late-scheduled watchdog goroutines run their Deadline()
+	// observation after the surrounding scope was released. Under -race, any
+	// remaining racy read of a pool-reset field would be flagged here.
+	runtime.Gosched()
+	time.Sleep(50 * time.Millisecond)
+
+	// Touch each derived context to keep it live across the sleep — without
+	// this, the compiler/GC could optimize them away before the race window
+	// has a chance to manifest.
+	for _, c := range derivedCtxs {
+		_, _ = c.Deadline()
+	}
+}

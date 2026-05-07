@@ -207,7 +207,6 @@ bifrost:
     # Require auth (VK, API key, or user token) on inference endpoints.
     # When unset, inference endpoints follow authConfig.disableAuthOnInference behavior.
     enforceAuthOnInference: true
-    allowDirectKeys: false
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false

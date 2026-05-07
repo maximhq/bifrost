@@ -61,7 +61,6 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `log_retention_days` | integer | `365` | Days to retain log entries |
 | `logging_headers` | array | `[]` | HTTP headers to capture in log metadata |
 | `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |
-| `allow_direct_keys` | boolean | `false` | Allow callers to pass provider API keys directly |
 | `allowed_origins` | array | `["*"]` | CORS allowed origins |
 | `max_request_body_size_mb` | integer | `100` | Maximum request body in MB |
 | `whitelisted_routes` | array | `[]` | Routes that bypass auth middleware |

@@ -162,6 +162,9 @@ export default function DashboardPage() {
 			mcp_cost_chart: parseAsString.withDefault("bar"),
 			mcp_tool_names: parseAsString.withDefault(""),
 			mcp_server_labels: parseAsString.withDefault(""),
+			parent_request_id: parseAsString.withDefault(""),
+			user_ids: parseAsString.withDefault(""),
+			aliases: parseAsString.withDefault(""),
 		},
 		{
 			history: "push",
@@ -192,6 +195,10 @@ export default function DashboardPage() {
 	// MCP filter arrays
 	const selectedMcpToolNames = useMemo(() => parseCsvParam(urlState.mcp_tool_names), [urlState.mcp_tool_names]);
 	const selectedMcpServerLabels = useMemo(() => parseCsvParam(urlState.mcp_server_labels), [urlState.mcp_server_labels]);
+
+	// Free-form / multi-value sidebar inputs
+	const selectedUserIds = useMemo(() => parseCsvParam(urlState.user_ids), [urlState.user_ids]);
+	const selectedAliases = useMemo(() => parseCsvParam(urlState.aliases), [urlState.aliases]);
 
 	// Derived filter for API calls.
 	// When period is set, send it so the backend computes the window fresh on every request.
@@ -224,11 +231,15 @@ export default function DashboardPage() {
 				Object.keys(metadataFilters).length > 0 && {
 					metadata_filters: metadataFilters,
 				}),
+			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
+			...(selectedUserIds.length > 0 && { user_ids: selectedUserIds }),
+			...(selectedAliases.length > 0 && { aliases: selectedAliases }),
 		}),
 		[
 			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
+			urlState.parent_request_id,
 			selectedProviders,
 			selectedModels,
 			selectedKeyIds,
@@ -240,6 +251,8 @@ export default function DashboardPage() {
 			selectedStopReasons,
 			missingCostOnly,
 			metadataFilters,
+			selectedUserIds,
+			selectedAliases,
 		],
 	);
 
@@ -258,8 +271,20 @@ export default function DashboardPage() {
 			...(selectedMcpServerLabels.length > 0 && {
 				server_labels: selectedMcpServerLabels,
 			}),
+			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
+			...(selectedVirtualKeyIds.length > 0 && {
+				virtual_key_ids: selectedVirtualKeyIds,
+			}),
 		}),
-		[urlState.period, urlState.start_time, urlState.end_time, selectedMcpToolNames, selectedMcpServerLabels],
+		[
+			urlState.period,
+			urlState.start_time,
+			urlState.end_time,
+			selectedMcpToolNames,
+			selectedMcpServerLabels,
+			selectedStatuses,
+			selectedVirtualKeyIds,
+		],
 	);
 
 	// Model lists for each chart's legend (must match what the chart component actually renders)
@@ -552,6 +577,9 @@ export default function DashboardPage() {
 					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0
 						? JSON.stringify(newFilters.metadata_filters)
 						: "",
+				parent_request_id: newFilters.parent_request_id || "",
+				user_ids: (newFilters.user_ids || []).join(","),
+				aliases: (newFilters.aliases || []).join(","),
 			});
 		},
 		[setUrlState, urlState.start_time, urlState.end_time, urlState.period],

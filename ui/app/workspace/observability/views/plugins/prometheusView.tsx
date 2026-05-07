@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { PrometheusFormFragment } from "../../fragments/prometheusFormFragment";
 
 interface PushGatewayConfig {
+	enabled?: boolean;
 	push_gateway_url?: string;
 	job_name?: string;
 	instance_id?: string;
@@ -43,6 +44,7 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 		return new Promise((resolve, reject) => {
 			// Transform the form data to the telemetry plugin's push_gateway config format
 			const pushGatewayConfig: PushGatewayConfig = {
+				enabled: config.enabled,
 				push_gateway_url: config.prometheus_config.push_gateway_url,
 				job_name: config.prometheus_config.job_name,
 				instance_id: config.prometheus_config.instance_id || undefined,

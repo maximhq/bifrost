@@ -1063,7 +1063,6 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			if parentSpanID != "" {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
 			}
-
 			// Store a trace completion callback for streaming handlers to use.
 			// Accepts transport plugin logs as a parameter so it never reads from
 			// ctx.UserValue — ctx may be recycled by the time this runs in a goroutine.

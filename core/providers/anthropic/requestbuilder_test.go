@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		// the provider is invoked). The raw body may still carry the governance-modified
 		// form ("anthropic/anthropic.claude-sonnet-4-5"), but the output should use the
 		// resolved model from request.Model.
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -54,7 +55,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		// being skipped on the raw-body path. Governance rewrites the body model to
 		// "anthropic/anthropic.claude-sonnet-4-6"; request.Model holds the alias-resolved
 		// value "claude-sonnet-4-6". The output must use the resolved model, not the raw bytes.
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -77,7 +78,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("vertex_deletes_model_field", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -101,7 +102,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("azure_replaces_model_with_deployment", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -125,7 +126,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("adds_max_tokens_if_missing", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -147,7 +148,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("adds_stream_when_streaming", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -171,7 +172,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("deletes_region_field_when_configured", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -196,7 +197,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("adds_anthropic_version_when_configured", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -223,7 +224,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("excludes_specified_fields", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -246,7 +247,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("always_deletes_fallbacks", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -268,7 +269,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 	})
 
 	t.Run("injects_beta_headers_into_body", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 			"anthropic-beta": {AnthropicCompactionBetaHeader},
@@ -298,7 +299,7 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 
 func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 	t.Run("count_tokens_strips_max_tokens_and_temperature_raw", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -328,7 +329,7 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 	})
 
 	t.Run("count_tokens_sets_deployment_as_model", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
 		request := &schemas.BifrostResponsesRequest{
@@ -355,7 +356,7 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 
 func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 	t.Run("typed_path_basic_request", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.Anthropic,
@@ -379,7 +380,7 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 	})
 
 	t.Run("typed_path_with_streaming", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.Anthropic,
@@ -402,7 +403,7 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 	})
 
 	t.Run("typed_path_vertex_deletes_model", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.Vertex,
@@ -425,7 +426,7 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 	})
 
 	t.Run("typed_path_adds_anthropic_version", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.Vertex,
@@ -481,7 +482,7 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 	})
 
 	t.Run("typed_path_validates_tools_when_configured", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.Bedrock,
@@ -681,7 +682,7 @@ func TestAnthropicToolTypeString(t *testing.T) {
 
 func TestBuildAnthropicResponsesRequestBody_StripCacheControlScope(t *testing.T) {
 	t.Run("typed_path_strips_cache_control_scope_when_configured", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.Vertex,

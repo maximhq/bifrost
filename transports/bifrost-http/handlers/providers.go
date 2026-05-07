@@ -503,10 +503,20 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
 	}
-	// Attempt model discovery
-	err = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
-	if err != nil {
-		logger.Warn("Model discovery failed for provider %s: %v", provider, err)
+	// Attempt model discovery (also triggers cluster broadcast via ReloadProvider).
+	// For keyless providers, model discovery is skipped but we still need to
+	// call ReloadProvider directly so the config change is broadcast to cluster peers.
+	if payload.CustomProviderConfig != nil && payload.CustomProviderConfig.IsKeyLess {
+		ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, reloadErr := h.modelsManager.ReloadProvider(ctxWithTimeout, provider); reloadErr != nil {
+			logger.Warn("ReloadProvider failed for keyless provider %s: %v", provider, reloadErr)
+		}
+	} else {
+		err = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
+		if err != nil {
+			logger.Warn("Model discovery failed for provider %s: %v", provider, err)
+		}
 	}
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)

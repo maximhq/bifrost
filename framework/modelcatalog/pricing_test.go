@@ -2428,3 +2428,168 @@ func TestComputeImageCost_BothHaveTokens_IgnoresPerImage(t *testing.T) {
 	// Output: 800 * $0.000015 = $0.012 (tokens present, per-image ignored)
 	assert.InDelta(t, 0.013, cost, 1e-12)
 }
+
+func TestCalculateCost_ResponsesWithCodeInterpreter(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4.1", "openai", "chat"): chatPricing(0.000002, 0.000008),
+	})
+
+	ciType := schemas.ResponsesMessageTypeCodeInterpreterCall
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  579,
+				OutputTokens: 334,
+				TotalTokens:  913,
+			},
+			Output: []schemas.ResponsesMessage{
+				{Type: &ciType},
+				{Type: &ciType},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ResponsesRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4.1",
+				ResolvedModelUsed:      "gpt-4.1",
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	// Token cost only: 579*0.000002 + 334*0.000008 = 0.001158 + 0.002672 = 0.003830
+	// Session cost is now tracked via ContainerCreateRequest, not per-response
+	assert.InDelta(t, 0.003830, cost, 1e-6)
+}
+
+// ---------------------------------------------------------------------------
+// computeContainerCreationCost
+// ---------------------------------------------------------------------------
+
+func TestComputeContainerCreationCost_Basic(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		Model:                         "container",
+		Provider:                      "openai",
+		Mode:                          "chat",
+		CodeInterpreterCostPerSession: bifrost.Ptr(0.03),
+	}
+	assert.InDelta(t, 0.03, computeContainerCreationCost(&p), 1e-12)
+}
+
+func TestComputeContainerCreationCost_NilPricing(t *testing.T) {
+	assert.Equal(t, 0.0, computeContainerCreationCost(nil))
+}
+
+func TestComputeContainerCreationCost_NilRate(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		Model:    "container",
+		Provider: "openai",
+		Mode:     "chat",
+	}
+	assert.Equal(t, 0.0, computeContainerCreationCost(&p))
+}
+
+// ---------------------------------------------------------------------------
+// ContainerCreateRequest end-to-end via CalculateCost
+// ---------------------------------------------------------------------------
+
+func TestCalculateCost_ContainerCreate_NoMemoryLimit(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("container", "openai", "chat"): {
+			Model:                         "container",
+			Provider:                      "openai",
+			Mode:                          "chat",
+			CodeInterpreterCostPerSession: bifrost.Ptr(0.03),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		ContainerCreateResponse: &schemas.BifrostContainerCreateResponse{
+			ID:   "cntr_abc123",
+			Name: "test-container",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ContainerCreateRequest,
+				Provider:    schemas.OpenAI,
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	assert.InDelta(t, 0.03, cost, 1e-12)
+}
+
+func TestCalculateCost_ContainerCreate_MemorySpecificEntry(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("container", "openai", "chat"): {
+			Model:                         "container",
+			Provider:                      "openai",
+			Mode:                          "chat",
+			CodeInterpreterCostPerSession: bifrost.Ptr(0.03),
+		},
+		makeKey("container-4g", "openai", "chat"): {
+			Model:                         "container-4g",
+			Provider:                      "openai",
+			Mode:                          "chat",
+			CodeInterpreterCostPerSession: bifrost.Ptr(0.12),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		ContainerCreateResponse: &schemas.BifrostContainerCreateResponse{
+			ID:          "cntr_abc123",
+			Name:        "test-container",
+			MemoryLimit: "4g",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ContainerCreateRequest,
+				Provider:    schemas.OpenAI,
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	assert.InDelta(t, 0.12, cost, 1e-12)
+}
+
+func TestCalculateCost_ContainerCreate_FallsBackToBaseEntry(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("container", "openai", "chat"): {
+			Model:                         "container",
+			Provider:                      "openai",
+			Mode:                          "chat",
+			CodeInterpreterCostPerSession: bifrost.Ptr(0.03),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		ContainerCreateResponse: &schemas.BifrostContainerCreateResponse{
+			ID:          "cntr_abc123",
+			Name:        "test-container",
+			MemoryLimit: "4g",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ContainerCreateRequest,
+				Provider:    schemas.OpenAI,
+			},
+		},
+	}
+
+	// No container-4g entry — should fall back to base "container" rate
+	cost := mc.CalculateCost(resp, nil)
+	assert.InDelta(t, 0.03, cost, 1e-12)
+}
+
+func TestCalculateCost_ContainerCreate_NoPricingEntry(t *testing.T) {
+	mc := testCatalogWithPricing(nil)
+
+	resp := &schemas.BifrostResponse{
+		ContainerCreateResponse: &schemas.BifrostContainerCreateResponse{
+			ID:   "cntr_abc123",
+			Name: "test-container",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ContainerCreateRequest,
+				Provider:    schemas.OpenAI,
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	assert.Equal(t, 0.0, cost)
+}

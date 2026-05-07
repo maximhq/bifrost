@@ -102,7 +102,6 @@ export default function SecurityView() {
 
     const enforceAuthOnInferenceChanged =
       localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
-    const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
     return (
       originsChanged ||
@@ -110,8 +109,7 @@ export default function SecurityView() {
       requiredChanged ||
       whitelistedRoutesChanged ||
       authChanged ||
-      enforceAuthOnInferenceChanged ||
-      allowDirectKeysChanged
+      enforceAuthOnInferenceChanged
     );
   }, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
@@ -351,23 +349,6 @@ export default function SecurityView() {
         </div>
         {/* Allowed Origins */}
         {needsRestart && <RestartWarning />}
-        {/* Allow Direct API Keys */}
-        <div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
-          <div className="space-y-0.5">
-            <label htmlFor="allow-direct-keys" className="text-sm font-medium">
-              Allow Direct API Keys
-            </label>
-            <p className="text-muted-foreground text-sm">
-              Allow API keys to be passed directly in request headers (<b>Authorization</b>,{" "}
-              <b>x-api-key</b>, or <b>x-goog-api-key</b>). Bifrost will directly use the key.
-            </p>
-          </div>
-          <Switch
-            id="allow-direct-keys"
-            checked={localConfig.allow_direct_keys}
-            onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
-          />
-        </div>
         <div>
           <div className="space-y-2 rounded-lg border p-4">
             <div className="space-y-0.5">

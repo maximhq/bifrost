@@ -219,7 +219,6 @@
         ],
         "enable_logging": true,
         "enforce_auth_on_inference": false,
-        "allow_direct_keys": false,
         "max_request_body_size_mb": 100
     }
 }
