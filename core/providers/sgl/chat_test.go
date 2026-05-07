@@ -145,6 +145,31 @@ func noopPostHookRunner(_ *schemas.BifrostContext, result *schemas.BifrostRespon
 	return result, err
 }
 
+// drainStream consumes chunks from streamChan in a goroutine that exits when
+// the channel closes or when the test completes (via t.Cleanup), whichever
+// comes first. This prevents a goroutine leak if the streaming pipeline ever
+// fails to close the channel — e.g. on a test timeout.
+func drainStream[T any](t *testing.T, streamChan <-chan T) {
+	t.Helper()
+	if streamChan == nil {
+		return
+	}
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	go func() {
+		for {
+			select {
+			case _, ok := <-streamChan:
+				if !ok {
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+}
+
 // streamCaptureServer returns an httptest.Server that captures the inbound
 // Authorization header into the provided channel and immediately closes the
 // SSE stream with a [DONE] sentinel. The streaming pipeline only needs to
@@ -213,13 +238,9 @@ func TestChatCompletionStream_SetsAuthorizationHeader(t *testing.T) {
 		t.Fatalf("ChatCompletionStream returned error: %v", bifrostErr.Error.Message)
 	}
 
-	// Drain any chunks so the goroutine completes.
-	if streamChan != nil {
-		go func() {
-			for range streamChan {
-			}
-		}()
-	}
+	// Drain any chunks so the streaming goroutine completes; the drain itself
+	// is cancelled via t.Cleanup so it cannot leak if the channel never closes.
+	drainStream(t, streamChan)
 
 	select {
 	case got := <-authCh:
@@ -265,12 +286,7 @@ func TestTextCompletionStream_SetsAuthorizationHeader(t *testing.T) {
 		t.Fatalf("TextCompletionStream returned error: %v", bifrostErr.Error.Message)
 	}
 
-	if streamChan != nil {
-		go func() {
-			for range streamChan {
-			}
-		}()
-	}
+	drainStream(t, streamChan)
 
 	select {
 	case got := <-authCh:
