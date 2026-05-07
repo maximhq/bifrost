@@ -1528,8 +1528,9 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 				Model:    "claude-3-sonnet",
 				Input: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Status: schemas.Ptr("completed"),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
