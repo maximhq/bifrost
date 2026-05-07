@@ -716,6 +716,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOAuthRelationalConstraints(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDeleteOrphanedOAuthConfigs(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7600,6 +7603,15 @@ func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) er
 				return fmt.Errorf("backfill config_mcp_client_id: %w", err)
 			}
 
+			// Delete oauth_configs that still have no parent MCP client after the backfill —
+			// these are truly orphaned (no config_mcp_clients row points to them).
+			if err := tx.Exec(`
+				DELETE FROM oauth_configs
+				WHERE config_mcp_client_id IS NULL
+			`).Error; err != nil {
+				return fmt.Errorf("delete orphaned oauth_configs: %w", err)
+			}
+
 			// Backfill oauth_tokens.oauth_config_id from oauth_configs.token_id
 			if err := tx.Exec(`
 				UPDATE oauth_tokens
@@ -7661,5 +7673,19 @@ func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) er
 			_ = mg.DropColumn(&tables.TableOauthConfig{}, "ConfigMCPClientID")
 			return nil
 		},
+	})
+}
+
+// migrationDeleteOrphanedOAuthConfigs removes oauth_configs rows where config_mcp_client_id is null
+func migrationDeleteOrphanedOAuthConfigs(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "delete_orphaned_oauth_configs",
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Exec(`
+				DELETE FROM oauth_configs
+				WHERE config_mcp_client_id IS NULL
+			`).Error
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
 	})
 }

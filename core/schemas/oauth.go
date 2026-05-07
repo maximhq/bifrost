@@ -57,6 +57,7 @@ type OAuth2Config struct {
 	Scopes          []string `json:"scopes,omitempty"`           // Optional: Can be discovered
 	ServerURL       string   `json:"server_url"`                 // MCP server URL for OAuth discovery (required if URLs not provided)
 	UseDiscovery    bool     `json:"use_discovery,omitempty"`    // Deprecated: Discovery now happens automatically when URLs are missing
+	MCPClientID     string   `json:"mcp_client_id,omitempty"`    // MCP client this oauth config belongs to (set at insert time)
 }
 
 // OauthToken represents OAuth access and refresh tokens

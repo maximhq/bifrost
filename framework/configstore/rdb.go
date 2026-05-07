@@ -1417,8 +1417,14 @@ func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*
 }
 
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
-func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	return txDB.Transaction(func(tx *gorm.DB) error {
 		// Check if a client with the same name already exists
 		if _, err := s.GetMCPClientByName(ctx, clientConfig.Name); err == nil {
 			return fmt.Errorf("MCP client with name '%s' already exists", clientConfig.Name)
@@ -1462,9 +1468,161 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 }
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
-func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
-		// Find existing client
+// An optional tx can be passed to run the update within an existing transaction.
+func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+
+	// Create a deep copy to avoid modifying the original
+	clientConfigCopy, err := deepCopy(clientConfig)
+	if err != nil {
+		return err
+	}
+
+	// Serialize the virtual fields to JSON before updating
+	// This is normally done in BeforeSave hook, but we need to do it manually for map updates
+	// Normalize nil slices/maps to avoid storing JSON "null"
+	if clientConfigCopy.ToolsToExecute == nil {
+		clientConfigCopy.ToolsToExecute = []string{}
+	}
+	toolsToExecuteJSON, err := json.Marshal(clientConfigCopy.ToolsToExecute)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tools_to_execute: %w", err)
+	}
+	if clientConfigCopy.ToolsToAutoExecute == nil {
+		clientConfigCopy.ToolsToAutoExecute = []string{}
+	}
+	toolsToAutoExecuteJSON, err := json.Marshal(clientConfigCopy.ToolsToAutoExecute)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tools_to_auto_execute: %w", err)
+	}
+	// Serialize headers to map[string]string matching BeforeSave logic
+	headersToSerialize := make(map[string]string)
+	if clientConfigCopy.Headers != nil {
+		for key, value := range clientConfigCopy.Headers {
+			if value.IsFromEnv() {
+				headersToSerialize[key] = value.EnvVar
+			} else {
+				headersToSerialize[key] = value.GetValue()
+			}
+		}
+	}
+	headersJSON, err := json.Marshal(headersToSerialize)
+	if err != nil {
+		return fmt.Errorf("failed to marshal headers: %w", err)
+	}
+	if clientConfigCopy.AllowedExtraHeaders == nil {
+		clientConfigCopy.AllowedExtraHeaders = []string{}
+	}
+	allowedExtraHeadersJSON, err := json.Marshal(clientConfigCopy.AllowedExtraHeaders)
+	if err != nil {
+		return fmt.Errorf("failed to marshal allowed_extra_headers: %w", err)
+	}
+	var stdioConfigJSON *string
+	if clientConfigCopy.StdioConfig != nil {
+		stdioData, marshalErr := json.Marshal(clientConfigCopy.StdioConfig)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal stdio_config: %w", marshalErr)
+		}
+		stdioStr := string(stdioData)
+		stdioConfigJSON = &stdioStr
+	}
+
+	if clientConfigCopy.ToolPricing == nil {
+		clientConfigCopy.ToolPricing = map[string]float64{}
+	}
+	toolPricingJSON, err := json.Marshal(clientConfigCopy.ToolPricing)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tool_pricing: %w", err)
+	}
+	discoveredToolsJSON := ""
+	if clientConfig.DiscoveredTools != nil {
+		data, marshalErr := json.Marshal(clientConfig.DiscoveredTools)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal discovered_tools: %w", marshalErr)
+		}
+		discoveredToolsJSON = string(data)
+	}
+	toolNameMappingJSON := ""
+	if clientConfig.DiscoveredToolNameMapping != nil {
+		data, marshalErr := json.Marshal(clientConfig.DiscoveredToolNameMapping)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal tool_name_mapping: %w", marshalErr)
+		}
+		toolNameMappingJSON = string(data)
+	}
+
+	headersJSONStr := string(headersJSON)
+	if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
+		encrypted, encErr := encrypt.Encrypt(headersJSONStr)
+		if encErr != nil {
+			return fmt.Errorf("failed to encrypt mcp headers: %w", encErr)
+		}
+		headersJSONStr = encrypted
+	}
+
+	// Update only editable fields using a map to avoid updating connection info
+	// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
+	updates := map[string]interface{}{
+		"name":                       clientConfigCopy.Name,
+		"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
+		"tools_to_execute_json":      string(toolsToExecuteJSON),
+		"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
+		"headers_json":               headersJSONStr,
+		"allowed_extra_headers_json": string(allowedExtraHeadersJSON),
+		"tool_pricing_json":          string(toolPricingJSON),
+		"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
+		"allow_on_all_virtual_keys":  clientConfigCopy.AllowOnAllVirtualKeys,
+		"disabled":                   clientConfigCopy.Disabled,
+		"updated_at":                 time.Now(),
+	}
+	if encrypt.IsEnabled() {
+		updates["encryption_status"] = encryptionStatusEncrypted
+	}
+	if clientConfigCopy.OauthConfigID != nil {
+		updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
+	}
+	if discoveredToolsJSON != "" {
+		updates["discovered_tools_json"] = discoveredToolsJSON
+	}
+	if toolNameMappingJSON != "" {
+		updates["tool_name_mapping_json"] = toolNameMappingJSON
+	}
+	// Config-file driven reconciliation passes ConfigHash. In this mode we should
+	// also sync connection/auth metadata from config.json and persist the hash.
+	if clientConfigCopy.ConfigHash != "" {
+		connectionStringToPersist := clientConfigCopy.ConnectionString
+		if encrypt.IsEnabled() && connectionStringToPersist != nil &&
+			!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
+			// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
+			cs := *connectionStringToPersist
+			encryptedConnString, encErr := encrypt.Encrypt(cs.Val)
+			if encErr != nil {
+				return fmt.Errorf("failed to encrypt mcp connection string: %w", encErr)
+			}
+			cs.Val = encryptedConnString
+			connectionStringToPersist = &cs
+		}
+
+		updates["config_hash"] = clientConfigCopy.ConfigHash
+		updates["connection_type"] = clientConfigCopy.ConnectionType
+		updates["connection_string"] = connectionStringToPersist
+		updates["stdio_config_json"] = stdioConfigJSON
+		updates["auth_type"] = clientConfigCopy.AuthType
+		updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
+	}
+
+	// Only update is_ping_available if explicitly provided (non-nil)
+	// This preserves the existing DB value when the request omits the field
+	if clientConfigCopy.IsPingAvailable != nil {
+		updates["is_ping_available"] = *clientConfigCopy.IsPingAvailable
+	}
+
+	return txDB.Transaction(func(tx *gorm.DB) error {
 		var existingClient tables.TableMCPClient
 		if err := tx.WithContext(ctx).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1472,152 +1630,6 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			}
 			return err
 		}
-
-		// Create a deep copy to avoid modifying the original
-		clientConfigCopy, err := deepCopy(clientConfig)
-		if err != nil {
-			return err
-		}
-
-		// Serialize the virtual fields to JSON before updating
-		// This is normally done in BeforeSave hook, but we need to do it manually for map updates
-		// Normalize nil slices/maps to avoid storing JSON "null"
-		if clientConfigCopy.ToolsToExecute == nil {
-			clientConfigCopy.ToolsToExecute = []string{}
-		}
-		toolsToExecuteJSON, err := json.Marshal(clientConfigCopy.ToolsToExecute)
-		if err != nil {
-			return fmt.Errorf("failed to marshal tools_to_execute: %w", err)
-		}
-		if clientConfigCopy.ToolsToAutoExecute == nil {
-			clientConfigCopy.ToolsToAutoExecute = []string{}
-		}
-		toolsToAutoExecuteJSON, err := json.Marshal(clientConfigCopy.ToolsToAutoExecute)
-		if err != nil {
-			return fmt.Errorf("failed to marshal tools_to_auto_execute: %w", err)
-		}
-		// Serialize headers to map[string]string matching BeforeSave logic
-		headersToSerialize := make(map[string]string)
-		if clientConfigCopy.Headers != nil {
-			for key, value := range clientConfigCopy.Headers {
-				if value.IsFromEnv() {
-					headersToSerialize[key] = value.EnvVar
-				} else {
-					headersToSerialize[key] = value.GetValue()
-				}
-			}
-		}
-		headersJSON, err := json.Marshal(headersToSerialize)
-		if err != nil {
-			return fmt.Errorf("failed to marshal headers: %w", err)
-		}
-		if clientConfigCopy.AllowedExtraHeaders == nil {
-			clientConfigCopy.AllowedExtraHeaders = []string{}
-		}
-		allowedExtraHeadersJSON, err := json.Marshal(clientConfigCopy.AllowedExtraHeaders)
-		if err != nil {
-			return fmt.Errorf("failed to marshal allowed_extra_headers: %w", err)
-		}
-		var stdioConfigJSON *string
-		if clientConfigCopy.StdioConfig != nil {
-			stdioData, marshalErr := json.Marshal(clientConfigCopy.StdioConfig)
-			if marshalErr != nil {
-				return fmt.Errorf("failed to marshal stdio_config: %w", marshalErr)
-			}
-			stdioStr := string(stdioData)
-			stdioConfigJSON = &stdioStr
-		}
-
-		if clientConfigCopy.ToolPricing == nil {
-			clientConfigCopy.ToolPricing = map[string]float64{}
-		}
-		toolPricingJSON, err := json.Marshal(clientConfigCopy.ToolPricing)
-		if err != nil {
-			return fmt.Errorf("failed to marshal tool_pricing: %w", err)
-		}
-		discoveredToolsJSON := ""
-		if clientConfig.DiscoveredTools != nil {
-			data, marshalErr := json.Marshal(clientConfig.DiscoveredTools)
-			if marshalErr != nil {
-				return fmt.Errorf("failed to marshal discovered_tools: %w", marshalErr)
-			}
-			discoveredToolsJSON = string(data)
-		}
-		toolNameMappingJSON := ""
-		if clientConfig.DiscoveredToolNameMapping != nil {
-			data, marshalErr := json.Marshal(clientConfig.DiscoveredToolNameMapping)
-			if marshalErr != nil {
-				return fmt.Errorf("failed to marshal tool_name_mapping: %w", marshalErr)
-			}
-			toolNameMappingJSON = string(data)
-		}
-
-		headersJSONStr := string(headersJSON)
-		if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
-			encrypted, encErr := encrypt.Encrypt(headersJSONStr)
-			if encErr != nil {
-				return fmt.Errorf("failed to encrypt mcp headers: %w", encErr)
-			}
-			headersJSONStr = encrypted
-		}
-
-		// Update only editable fields using a map to avoid updating connection info
-		// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
-		updates := map[string]interface{}{
-			"name":                       clientConfigCopy.Name,
-			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
-			"tools_to_execute_json":      string(toolsToExecuteJSON),
-			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
-			"headers_json":               headersJSONStr,
-			"allowed_extra_headers_json": string(allowedExtraHeadersJSON),
-			"tool_pricing_json":          string(toolPricingJSON),
-			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
-			"allow_on_all_virtual_keys":  clientConfigCopy.AllowOnAllVirtualKeys,
-			"disabled":                   clientConfigCopy.Disabled,
-			"updated_at":                 time.Now(),
-		}
-		if encrypt.IsEnabled() {
-			updates["encryption_status"] = encryptionStatusEncrypted
-		}
-		if clientConfigCopy.OauthConfigID != nil {
-			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
-		}
-		if discoveredToolsJSON != "" {
-			updates["discovered_tools_json"] = discoveredToolsJSON
-		}
-		if toolNameMappingJSON != "" {
-			updates["tool_name_mapping_json"] = toolNameMappingJSON
-		}
-		// Config-file driven reconciliation passes ConfigHash. In this mode we should
-		// also sync connection/auth metadata from config.json and persist the hash.
-		if clientConfigCopy.ConfigHash != "" {
-			connectionStringToPersist := clientConfigCopy.ConnectionString
-			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
-				!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
-				// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
-				cs := *connectionStringToPersist
-				encryptedConnString, encErr := encrypt.Encrypt(cs.Val)
-				if encErr != nil {
-					return fmt.Errorf("failed to encrypt mcp connection string: %w", encErr)
-				}
-				cs.Val = encryptedConnString
-				connectionStringToPersist = &cs
-			}
-
-			updates["config_hash"] = clientConfigCopy.ConfigHash
-			updates["connection_type"] = clientConfigCopy.ConnectionType
-			updates["connection_string"] = connectionStringToPersist
-			updates["stdio_config_json"] = stdioConfigJSON
-			updates["auth_type"] = clientConfigCopy.AuthType
-			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
-		}
-
-		// Only update is_ping_available if explicitly provided (non-nil)
-		// This preserves the existing DB value when the request omits the field
-		if clientConfigCopy.IsPingAvailable != nil {
-			updates["is_ping_available"] = *clientConfigCopy.IsPingAvailable
-		}
-
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {
 			return s.parseGormError(err)
 		}
@@ -1626,8 +1638,14 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 }
 
 // DeleteMCPClientConfig deletes an MCP client configuration from the database.
-func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	return txDB.Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient
 		if err := tx.WithContext(ctx).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
@@ -4265,6 +4283,21 @@ func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.Tab
 	result := s.DB().WithContext(ctx).Create(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create oauth token: %w", result.Error)
+	}
+	return nil
+}
+
+// DeleteOauthConfig deletes an OAuth config by ID.
+// Cascades to oauth_tokens, oauth_user_sessions, and oauth_user_tokens via FK constraints.
+// An optional tx can be passed to run the delete within an existing transaction.
+func (s *RDBConfigStore) DeleteOauthConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).Delete(&tables.TableOauthConfig{}, "id = ?", id)
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete oauth config: %w", result.Error)
 	}
 	return nil
 }
