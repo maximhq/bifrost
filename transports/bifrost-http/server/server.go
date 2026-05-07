@@ -1172,8 +1172,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Add Prometheus /metrics endpoint
 	prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
 	if err == nil && prometheusPlugin.GetRegistry() != nil {
-		// Use the plugin's dedicated registry if available
-		metricsHandler := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(prometheusPlugin.GetRegistry(), promhttp.HandlerOpts{}))
+		metricsHandler := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(prometheusPlugin.GetMetricsGatherer(), promhttp.HandlerOpts{}))
 		s.Router.GET("/metrics", lib.ChainMiddlewares(metricsHandler, middlewares...))
 	} else {
 		logger.Warn("prometheus plugin not found or registry is nil, skipping metrics endpoint")

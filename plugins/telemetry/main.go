@@ -27,7 +27,8 @@ const (
 )
 
 const (
-	startTimeKey schemas.BifrostContextKey = "bf-prom-start-time"
+	startTimeKey         schemas.BifrostContextKey = "bf-prom-start-time"
+	activeRequestTypeKey schemas.BifrostContextKey = "bf-prom-active-req-type"
 )
 
 // PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
@@ -61,7 +62,8 @@ type BasicAuthConfig struct {
 //   - Error counts
 type PrometheusPlugin struct {
 	pricingManager *modelcatalog.ModelCatalog
-	registry       *prometheus.Registry
+	registry       *prometheus.Registry // Bifrost metrics only — used for push gateway
+	systemRegistry *prometheus.Registry // Go/process collectors — /metrics scraping only
 
 	logger schemas.Logger
 
@@ -85,6 +87,8 @@ type PrometheusPlugin struct {
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
 	KeyRotationEventsTotal         *prometheus.CounterVec
+	ActiveRequests                 *prometheus.GaugeVec
+	ProviderKeyUp                  *prometheus.GaugeVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -122,14 +126,16 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		registry = prometheus.NewRegistry()
 	}
 
-	// Create collectors and store references for cleanup
+	// GoCollector and ProcessCollector go into a separate registry so they are served
+	// on /metrics but never pushed to the push gateway (the gateway itself registers
+	// the same metric names and conflicts/spams warnings when they collide).
+	systemRegistry := prometheus.NewRegistry()
 	goCollector := collectors.NewGoCollector()
-	if err := registry.Register(goCollector); err != nil {
+	if err := systemRegistry.Register(goCollector); err != nil {
 		return nil, fmt.Errorf("failed to register Go collector: %v", err)
 	}
-
 	processCollector := collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})
-	if err := registry.Register(processCollector); err != nil {
+	if err := systemRegistry.Register(processCollector); err != nil {
 		return nil, fmt.Errorf("failed to register process collector: %v", err)
 	}
 
@@ -301,10 +307,27 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
 
+	bifrostActiveRequests := factory.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "bifrost_active_requests",
+			Help: "Number of LLM requests currently in-flight.",
+		},
+		[]string{"method"},
+	)
+
+	bifrostProviderKeyUp := factory.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "bifrost_provider_key_up",
+			Help: "Health of a provider key. 1 = last attempt succeeded, 0 = last attempt failed.",
+		},
+		[]string{"provider", "key_id", "key_name"},
+	)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
 		registry:                       registry,
+		systemRegistry:                 systemRegistry,
 		GoCollector:                    goCollector,
 		ProcessCollector:               processCollector,
 		HTTPRequestsTotal:              httpRequestsTotal,
@@ -322,6 +345,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
 		KeyRotationEventsTotal:         bifrostKeyRotationEventsTotal,
+		ActiveRequests:                 bifrostActiveRequests,
+		ProviderKeyUp:                  bifrostProviderKeyUp,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -339,6 +364,12 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {
 	return p.registry
+}
+
+// GetMetricsGatherer returns a combined gatherer for the /metrics endpoint,
+// including both Bifrost metrics and Go/process runtime collectors.
+func (p *PrometheusPlugin) GetMetricsGatherer() prometheus.Gatherer {
+	return prometheus.Gatherers{p.registry, p.systemRegistry}
 }
 
 // GetName returns the name of the plugin.
@@ -365,6 +396,8 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
+	ctx.SetValue(activeRequestTypeKey, req.RequestType)
+	p.ActiveRequests.WithLabelValues(string(req.RequestType)).Inc()
 	return req, nil, nil
 }
 
@@ -471,6 +504,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
+	// Decrement active requests on the final (or only) call for this request
+	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
+	if isStreamFinal {
+		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
+			p.ActiveRequests.WithLabelValues(string(method)).Dec()
+		}
+	}
+
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
@@ -505,7 +546,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), originalModel, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
+				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
+		}
+		// Mark the selected key healthy if the request ultimately succeeded
+		if bifrostErr == nil && selectedKeyID != "" {
+			p.ProviderKeyUp.WithLabelValues(string(provider), selectedKeyID, selectedKeyName).Set(1)
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
