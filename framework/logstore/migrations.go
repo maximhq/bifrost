@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
@@ -32,6 +34,13 @@ const (
 	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
 	// refreshes across cluster nodes so only one replica refreshes at a time.
 	matviewRefreshAdvisoryLockKey = 1000005
+
+	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
+	advisoryLockRetryInterval = 5 * time.Second
+
+	// advisoryLockTimeout is the maximum time to wait for an advisory lock
+	// before giving up with actionable operator guidance.
+	advisoryLockTimeout = 5 * time.Minute
 )
 
 // advisoryLock holds a dedicated connection and the advisory lock key.
@@ -43,7 +52,10 @@ type advisoryLock struct {
 }
 
 // acquireAdvisoryLock gets a dedicated connection and acquires a PostgreSQL advisory lock
-// for the given key. For non-PostgreSQL databases, returns a no-op lock.
+// using pg_try_advisory_lock with retry + timeout. This prevents pods from
+// blocking indefinitely if a previous pod crashed without releasing the lock
+// (e.g., behind a connection proxy or with slow TCP keepalive detection).
+// For non-PostgreSQL databases, returns a no-op lock.
 func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, lockKey int64, label string) (*advisoryLock, error) {
 	if db.Dialector.Name() != "postgres" {
 		return &advisoryLock{}, nil
@@ -60,14 +72,70 @@ func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, lockKey int64, label 
 		return nil, fmt.Errorf("failed to get dedicated connection for %s lock: %w", label, err)
 	}
 
-	// Acquire advisory lock on this dedicated connection.
-	// This will BLOCK if another node holds the lock.
-	if _, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockKey); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to acquire %s advisory lock: %w", label, err)
-	}
+	// Try to acquire advisory lock with retry + timeout instead of blocking forever.
+	// pg_try_advisory_lock returns true if acquired, false if held by another session.
+	deadline := time.Now().Add(advisoryLockTimeout)
+	maxAttempts := int(advisoryLockTimeout / advisoryLockRetryInterval)
+	attempt := 0
 
-	return &advisoryLock{conn: conn, lockKey: lockKey}, nil
+	for {
+		attempt++
+		// Derive a per-attempt context with the remaining lock budget as timeout,
+		// so a stalled DB round-trip can't block beyond the overall deadline.
+		attemptTimeout := time.Until(deadline)
+		if attemptTimeout <= 0 {
+			attemptTimeout = advisoryLockRetryInterval
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, attemptTimeout)
+		var acquired bool
+		err = conn.QueryRowContext(attemptCtx, "SELECT pg_try_advisory_lock($1)", lockKey).Scan(&acquired)
+		attemptCancel()
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to attempt %s advisory lock: %w", label, err)
+		}
+
+		if acquired {
+			if attempt > 1 {
+				log.Printf("[logstore] %s lock acquired after %d attempts", label, attempt)
+			}
+			return &advisoryLock{conn: conn, lockKey: lockKey}, nil
+		}
+
+		// Lock not acquired -- check if we've exceeded the timeout
+		if time.Now().After(deadline) {
+			conn.Close()
+			return nil, fmt.Errorf(
+				"failed to acquire logstore %s lock (key=%d) after %d attempts over %s\n\n"+
+					"This usually means another Bifrost pod (or a previous crashed pod's lingering\n"+
+					"database session) is still holding the lock. To diagnose and resolve:\n\n"+
+					"1. Find who holds the lock:\n"+
+					"   SELECT pid, usename, application_name, client_addr, backend_start, state, query\n"+
+					"   FROM pg_stat_activity\n"+
+					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = true);\n\n"+
+					"2. If the session belongs to a dead/crashed pod, terminate it:\n"+
+					"   SELECT pg_terminate_backend(<pid_from_step_1>);\n\n"+
+					"3. List all sessions waiting for this lock:\n"+
+					"   SELECT pid, usename, client_addr, state, wait_event\n"+
+					"   FROM pg_stat_activity\n"+
+					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = false);\n\n"+
+					"After terminating the stale session, restart this pod and it should proceed normally.",
+				label, lockKey, attempt, advisoryLockTimeout,
+				lockKey, lockKey,
+			)
+		}
+
+		log.Printf("[logstore] waiting for %s lock (attempt %d/%d) \u2014 another node is running %s operations, retrying in %s...",
+			label, attempt, maxAttempts, label, advisoryLockRetryInterval)
+
+		// Wait before retrying, but respect context cancellation
+		select {
+		case <-ctx.Done():
+			conn.Close()
+			return nil, fmt.Errorf("context cancelled while waiting for %s lock: %w", label, ctx.Err())
+		case <-time.After(advisoryLockRetryInterval):
+		}
+	}
 }
 
 // release unlocks and closes the dedicated connection.
