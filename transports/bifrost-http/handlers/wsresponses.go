@@ -196,9 +196,9 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, _, err := h.resolveEventModel(event.Model)
+	provider, modelName, err := h.resolveEventModel(event.Model)
 	if err != nil {
-		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
+		writeWSError(session, 400, "invalid_request_error", err.Error())
 		return
 	}
 
@@ -209,7 +209,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		event.Store = schemas.Ptr(true)
 	}
 
-	bifrostReq, err := h.convertEventToRequest(&event)
+	bifrostReq, err := h.convertResolvedEventToRequest(&event, provider, modelName)
 	if err != nil {
 		writeWSError(session, 400, "invalid_request_error", err.Error())
 		return
@@ -574,6 +574,14 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 		return nil, err
 	}
 
+	return h.convertResolvedEventToRequest(event, provider, modelName)
+}
+
+func (h *WSResponsesHandler) convertResolvedEventToRequest(
+	event *schemas.WebSocketResponsesEvent,
+	provider schemas.ModelProvider,
+	modelName string,
+) (*schemas.BifrostResponsesRequest, error) {
 	var input []schemas.ResponsesMessage
 	if event.Input != nil {
 		// Try parsing as array first
@@ -649,7 +657,7 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 	}
 
 	return &schemas.BifrostResponsesRequest{
-		Provider: schemas.ModelProvider(provider),
+		Provider: provider,
 		Model:    modelName,
 		Input:    input,
 		Params:   params,
