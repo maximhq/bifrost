@@ -300,8 +300,9 @@ type ConfigStore interface {
 	GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error)
 	GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error)
 	GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error)
+	GetOauthConfigByMCPClientID(ctx context.Context, mcpClientID string) (*tables.TableOauthConfig, error)
 	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
-	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
+	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error
 	DeleteOauthConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// OAuth token CRUD

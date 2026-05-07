@@ -199,7 +199,43 @@ type OAuthInitiationRequest struct {
 	RegistrationURL string          `json:"registration_url"`
 	RedirectURI     string          `json:"redirect_uri"`
 	Scopes          []string        `json:"scopes"`
-	ServerURL       string          `json:"server_url"` // For OAuth discovery
+	ServerURL       string          `json:"server_url"`              // For OAuth discovery
+	MCPClientID     string          `json:"mcp_client_id,omitempty"` // MCP client ID to link at insert time
+}
+
+// PrepareOAuthFlow performs all network I/O (discovery, dynamic registration, PKCE) and
+// returns the prepared record + initiation result without writing to the DB.
+// Use this when you need to wrap the DB insert in a larger transaction.
+func (h *OAuthHandler) PrepareOAuthFlow(ctx context.Context, req OAuthInitiationRequest) (*oauth2.PreparedOAuthFlow, error) {
+	var registrationURL *string
+	if req.RegistrationURL != "" {
+		registrationURL = &req.RegistrationURL
+	}
+
+	clientID := ""
+	if req.ClientID != nil {
+		if v := req.ClientID.GetValue(); v != "" {
+			clientID = v
+		}
+	}
+	clientSecret := ""
+	if req.ClientSecret != nil {
+		if v := req.ClientSecret.GetValue(); v != "" {
+			clientSecret = v
+		}
+	}
+
+	return h.oauthProvider.PrepareOAuthFlow(ctx, &schemas.OAuth2Config{
+		ClientID:        clientID,
+		ClientSecret:    clientSecret,
+		AuthorizeURL:    req.AuthorizeURL,
+		TokenURL:        req.TokenURL,
+		RegistrationURL: registrationURL,
+		RedirectURI:     req.RedirectURI,
+		Scopes:          req.Scopes,
+		ServerURL:       req.ServerURL,
+		MCPClientID:     req.MCPClientID,
+	})
 }
 
 // InitiateOAuthFlow initiates an OAuth flow and returns the authorization URL
@@ -212,14 +248,14 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 
 	clientID := ""
 	if req.ClientID != nil {
-		if v, _ := req.ClientID.Value(); v != nil {
-			clientID, _ = v.(string)
+		if v := req.ClientID.GetValue(); v != "" {
+			clientID = v
 		}
 	}
 	clientSecret := ""
 	if req.ClientSecret != nil {
-		if v, _ := req.ClientSecret.Value(); v != nil {
-			clientSecret, _ = v.(string)
+		if v := req.ClientSecret.GetValue(); v != "" {
+			clientSecret = v
 		}
 	}
 
@@ -232,6 +268,7 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		RedirectURI:     req.RedirectURI,
 		Scopes:          req.Scopes,
 		ServerURL:       req.ServerURL,
+		MCPClientID:     req.MCPClientID,
 	}
 
 	return h.oauthProvider.InitiateOAuthFlow(ctx, config)

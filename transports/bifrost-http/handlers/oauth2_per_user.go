@@ -476,17 +476,11 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client does not use per-user OAuth")
 		return
 	}
-	if mcpClient.OauthConfigID == nil || *mcpClient.OauthConfigID == "" {
+	if mcpClient.OauthConfig == nil || mcpClient.OauthConfig.ID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no OAuth configuration")
 		return
 	}
-
-	// Load template OAuth config (has upstream authorize_url, client_id, etc.)
-	templateConfig, err := h.store.ConfigStore.GetOauthConfigByID(ctx, *mcpClient.OauthConfigID)
-	if err != nil || templateConfig == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to load OAuth template config")
-		return
-	}
+	templateConfig := mcpClient.OauthConfig
 
 	// Generate PKCE challenge for upstream.
 	codeVerifier, err := generateOpaqueToken(32)
@@ -518,7 +512,7 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 	upstreamSession := &tables.TableOauthUserSession{
 		ID:               uuid.New().String(),
 		MCPClientID:      mcpClientID,
-		OauthConfigID:    *mcpClient.OauthConfigID,
+		OauthConfigID:    mcpClient.OauthConfig.ID,
 		State:            state,
 		CodeVerifier:     codeVerifier,
 		SessionToken:     proxySessionToken, // "runtime:xxx" for runtime flow; "flow:xxx" for consent flow
