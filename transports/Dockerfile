@@ -1,7 +1,10 @@
 # --- UI Build Stage: Build the React + Vite frontend ---
-  FROM node:25-alpine3.23@sha256:cf38e1f3c28ac9d81cdc0c51d8220320b3b618780e44ef96a39f76f7dbfef023 AS ui-builder
+  FROM node:25-alpine3.23@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS ui-builder
   WORKDIR /app
-  
+
+  # Apply latest alpine security patches before installing packages
+  RUN apk upgrade --no-cache
+
   # Copy UI package files and install dependencies
   COPY ui/package*.json ./
   RUN npm ci
@@ -17,8 +20,9 @@
   FROM golang:1.26.2-alpine3.23@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS builder
   WORKDIR /app
   
-  # Install dependencies including gcc for CGO and sqlite
-  RUN apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold
+  # Install dependencies including gcc for CGO and sqlite (with latest security patches)
+  RUN apk upgrade --no-cache && \
+    apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold
   
   # Set environment for CGO-enabled build (required for go-sqlite3)
   ENV CGO_ENABLED=1 GOOS=linux
@@ -47,14 +51,15 @@
   RUN test -f /app/main || (echo "Build failed" && exit 1)
   
   # --- Runtime Stage: Minimal runtime image ---
-  FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+  FROM alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
   WORKDIR /app
   
   # Install runtime dependencies for CGO-enabled binary
   # musl: C standard library (required for CGO binaries)
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
-  RUN apk add --no-cache musl libgcc ca-certificates wget zlib=1.3.2-r0
+  RUN apk upgrade --no-cache && \
+    apk add --no-cache musl libgcc ca-certificates wget zlib
   
   # Create data directory and set up user
   COPY --from=builder /app/main .
