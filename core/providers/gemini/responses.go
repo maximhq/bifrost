@@ -2212,6 +2212,8 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 	switch toolConfig.FunctionCallingConfig.Mode {
 	case FunctionCallingConfigModeAuto:
 		toolChoice.Mode = schemas.Ptr("auto")
+	case FunctionCallingConfigModeAny:
+		toolChoice.Mode = schemas.Ptr("required")
 	case FunctionCallingConfigModeNone:
 		toolChoice.Mode = schemas.Ptr("none")
 	default:
@@ -2857,8 +2859,21 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 		}
 
 		if ext.Name != nil {
-			funcConfig.Mode = FunctionCallingConfigModeAny
+			if ext.Mode == nil {
+				funcConfig.Mode = FunctionCallingConfigModeAny
+			}
 			funcConfig.AllowedFunctionNames = []string{*ext.Name}
+		}
+
+		if len(ext.Tools) > 0 {
+			if ext.Mode == nil {
+				funcConfig.Mode = FunctionCallingConfigModeAny
+			}
+			for _, tool := range ext.Tools {
+				if tool.Name != nil {
+					funcConfig.AllowedFunctionNames = append(funcConfig.AllowedFunctionNames, *tool.Name)
+				}
+			}
 		}
 
 		config.FunctionCallingConfig = funcConfig
