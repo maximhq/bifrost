@@ -835,6 +835,13 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 					return err
 				}
 			}
+			// TableMCPClient must be created before TableOauthConfig because
+			// TableOauthConfig.ConfigMCPClient has a FK → config_mcp_clients.
+			if !migrator.HasTable(&tables.TableMCPClient{}) {
+				if err := migrator.CreateTable(&tables.TableMCPClient{}); err != nil {
+					return err
+				}
+			}
 			if !migrator.HasTable(&tables.TableOauthConfig{}) {
 				if err := migrator.CreateTable(&tables.TableOauthConfig{}); err != nil {
 					return err
@@ -842,11 +849,6 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			}
 			if !migrator.HasTable(&tables.TableOauthToken{}) {
 				if err := migrator.CreateTable(&tables.TableOauthToken{}); err != nil {
-					return err
-				}
-			}
-			if !migrator.HasTable(&tables.TableMCPClient{}) {
-				if err := migrator.CreateTable(&tables.TableMCPClient{}); err != nil {
 					return err
 				}
 			}
@@ -3790,15 +3792,9 @@ func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
 				}
 			}
 			// Now update MCPClient table to add auth_type, oauth_config_id columns
-			// (oauth_config_id has FK constraint to oauth_configs table created above)
 			if !migrator.HasColumn(&tables.TableMCPClient{}, "auth_type") {
 				if err := migrator.AddColumn(&tables.TableMCPClient{}, "auth_type"); err != nil {
 					return fmt.Errorf("failed to add auth_type column: %w", err)
-				}
-			}
-			if !migrator.HasColumn(&tables.TableMCPClient{}, "oauth_config_id") {
-				if err := migrator.AddColumn(&tables.TableMCPClient{}, "oauth_config_id"); err != nil {
-					return fmt.Errorf("failed to add oauth_config_id column: %w", err)
 				}
 			}
 			// Set default value for auth_type column
@@ -6678,39 +6674,21 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 		ID: "add_per_user_oauth_tables",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if !mg.HasTable(&tables.TablePerUserOAuthClient{}) {
-				if err := mg.CreateTable(&tables.TablePerUserOAuthClient{}); err != nil {
-					return fmt.Errorf("failed to create oauth_per_user_clients table: %w", err)
-				}
-			}
-			if !mg.HasTable(&tables.TablePerUserOAuthSession{}) {
-				if err := mg.CreateTable(&tables.TablePerUserOAuthSession{}); err != nil {
-					return fmt.Errorf("failed to create oauth_per_user_sessions table: %w", err)
-				}
-			}
-			if !mg.HasTable(&tables.TablePerUserOAuthCode{}) {
-				if err := mg.CreateTable(&tables.TablePerUserOAuthCode{}); err != nil {
-					return fmt.Errorf("failed to create oauth_per_user_codes table: %w", err)
-				}
-			}
-			if !mg.HasTable(&tables.TableOauthUserToken{}) {
-				if err := mg.CreateTable(&tables.TableOauthUserToken{}); err != nil {
-					return fmt.Errorf("failed to create oauth_user_tokens table: %w", err)
-				}
-			}
-			if !mg.HasTable(&tables.TableOauthUserSession{}) {
-				if err := mg.CreateTable(&tables.TableOauthUserSession{}); err != nil {
-					return fmt.Errorf("failed to create oauth_user_sessions table: %w", err)
-				}
-			}
-			if !mg.HasTable(&tables.TablePerUserOAuthPendingFlow{}) {
-				if err := mg.CreateTable(&tables.TablePerUserOAuthPendingFlow{}); err != nil {
-					return fmt.Errorf("failed to create oauth_per_user_pending_flows table: %w", err)
-				}
-			}
-
-			return nil
+			// Disable FK constraint creation during AutoMigrate so that table creation
+			// order is irrelevant — the clients ↔ sessions/pending_flows/codes tables
+			// have a circular relationship, and FK constraints are added afterwards
+			// by migrationAddOAuthRelationalConstraints.
+			orig := tx.Config.DisableForeignKeyConstraintWhenMigrating
+			tx.Config.DisableForeignKeyConstraintWhenMigrating = true
+			defer func() { tx.Config.DisableForeignKeyConstraintWhenMigrating = orig }()
+			return tx.AutoMigrate(
+				&tables.TablePerUserOAuthClient{},
+				&tables.TablePerUserOAuthSession{},
+				&tables.TablePerUserOAuthPendingFlow{},
+				&tables.TablePerUserOAuthCode{},
+				&tables.TableOauthUserToken{},
+				&tables.TableOauthUserSession{},
+			)
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -7539,8 +7517,11 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 
 // migrationCleanupOAuthOrphans removes orphaned OAuth rows before FK constraints are added.
 // Runs first so the subsequent constraint migration never hits a foreign-key violation.
+// Uses the same SQLite FK pragma pattern as migrationAddOAuthRelationalConstraints so that
+// any backwards HasMany FK left on the clients table by AutoMigrate does not cause a
+// "foreign key mismatch" error when rows are deleted from the child tables.
 func migrationCleanupOAuthOrphans(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "cleanup_oauth_orphans",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -7559,7 +7540,27 @@ func migrationCleanupOAuthOrphans(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error { return nil },
-	})
+	}})
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(0)
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running cleanup_oauth_orphans migration: %s", err.Error())
+	}
+	return nil
 }
 
 // fkEntry pairs a GORM model with the relationship field name used by HasConstraint/CreateConstraint.
@@ -7590,17 +7591,21 @@ func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) er
 				}
 			}
 
-			// Backfill config_mcp_client_id from the reverse pointer stored on config_mcp_clients
-			if err := tx.Exec(`
-				UPDATE oauth_configs
-				SET config_mcp_client_id = (
-					SELECT client_id FROM config_mcp_clients
-					WHERE config_mcp_clients.oauth_config_id = oauth_configs.id
-					LIMIT 1
-				)
-				WHERE config_mcp_client_id IS NULL
-			`).Error; err != nil {
-				return fmt.Errorf("backfill config_mcp_client_id: %w", err)
+			// Backfill config_mcp_client_id from the reverse pointer on config_mcp_clients
+			// (only possible on existing DBs that still have the oauth_config_id column;
+			// fresh DBs never had it, and handlers set config_mcp_client_id at insert time).
+			if mg.HasColumn(&tables.TableMCPClient{}, "oauth_config_id") {
+				if err := tx.Exec(`
+					UPDATE oauth_configs
+					SET config_mcp_client_id = (
+						SELECT client_id FROM config_mcp_clients
+						WHERE config_mcp_clients.oauth_config_id = oauth_configs.id
+						LIMIT 1
+					)
+					WHERE config_mcp_client_id IS NULL
+				`).Error; err != nil {
+					return fmt.Errorf("backfill config_mcp_client_id: %w", err)
+				}
 			}
 
 			// Backfill oauth_tokens.oauth_config_id from oauth_configs.token_id
@@ -7616,17 +7621,17 @@ func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) er
 				return fmt.Errorf("backfill oauth_tokens.oauth_config_id: %w", err)
 			}
 
-			// Drop old (incorrect) CASCADE on config_mcp_clients.OauthConfig if it exists.
-			// That constraint deleted the MCP client when an oauth_config was deleted — backwards.
+			// The OauthConfig FK (oauth_configs → config_mcp_clients) is always dropped and
+			// recreated to ensure ON DELETE CASCADE is present — the constraint may have been
+			// created without it in an earlier run of this migration.
 			if mg.HasConstraint(&tables.TableMCPClient{}, "OauthConfig") {
 				if err := mg.DropConstraint(&tables.TableMCPClient{}, "OauthConfig"); err != nil {
-					return fmt.Errorf("drop old config_mcp_clients OauthConfig constraint: %w", err)
+					return fmt.Errorf("drop oauth_configs.config_mcp_client_id FK: %w", err)
 				}
 			}
 
-			// Create FK constraints in lifecycle order
 			for _, e := range []fkEntry{
-				{&tables.TableOauthConfig{}, "ConfigMCPClient", "oauth_configs → config_mcp_clients"},
+				{&tables.TableMCPClient{}, "OauthConfig", "oauth_configs → config_mcp_clients"},
 				{&tables.TableOauthToken{}, "OauthConfig", "oauth_tokens → oauth_configs"},
 				{&tables.TableOauthUserSession{}, "OauthConfig", "oauth_user_sessions → oauth_configs"},
 				{&tables.TableOauthUserToken{}, "OauthConfig", "oauth_user_tokens → oauth_configs"},
@@ -7639,6 +7644,14 @@ func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) er
 					if err := mg.CreateConstraint(e.model, e.name); err != nil {
 						return fmt.Errorf("failed to create FK %s: %w", e.desc, err)
 					}
+				}
+			}
+
+			// Drop the orphaned reverse-pointer column from config_mcp_clients if it still
+			// exists (created by the old add_oauth_tables migration on pre-branch DBs).
+			if mg.HasColumn(&tables.TableMCPClient{}, "oauth_config_id") {
+				if err := mg.DropColumn(&tables.TableMCPClient{}, "oauth_config_id"); err != nil {
+					return fmt.Errorf("drop config_mcp_clients.oauth_config_id: %w", err)
 				}
 			}
 			return nil
@@ -7654,7 +7667,7 @@ func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) er
 				{&tables.TableOauthUserToken{}, "OauthConfig", "oauth_user_tokens → oauth_configs"},
 				{&tables.TableOauthUserSession{}, "OauthConfig", "oauth_user_sessions → oauth_configs"},
 				{&tables.TableOauthToken{}, "OauthConfig", "oauth_tokens → oauth_configs"},
-				{&tables.TableOauthConfig{}, "ConfigMCPClient", "oauth_configs → config_mcp_clients"},
+				{&tables.TableMCPClient{}, "OauthConfig", "oauth_configs → config_mcp_clients"},
 			} {
 				if mg.HasConstraint(e.model, e.name) {
 					_ = mg.DropConstraint(e.model, e.name)

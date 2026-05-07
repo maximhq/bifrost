@@ -29,7 +29,7 @@ type TableOauthConfig struct {
 	UseDiscovery        bool            `gorm:"default:false" json:"use_discovery"`              // Flag to enable OAuth discovery
 	MCPClientConfigJSON *string         `gorm:"type:text" json:"-"`                              // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
 	ConfigMCPClientID   *string         `gorm:"type:varchar(255);index" json:"config_mcp_client_id,omitempty"`
-	ConfigMCPClient     *TableMCPClient `gorm:"foreignKey:ConfigMCPClientID;references:ClientID;constraint:OnDelete:CASCADE,OnUpdate:CASCADE" json:"-"`
+	ConfigMCPClient     *TableMCPClient `gorm:"foreignKey:ConfigMCPClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"`
 	EncryptionStatus    string          `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	CreatedAt           time.Time       `gorm:"index;not null" json:"created_at"`
 	UpdatedAt           time.Time       `gorm:"index;not null" json:"updated_at"`

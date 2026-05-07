@@ -111,8 +111,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		],
 		[allToolNames],
 	);
-	const supportsOAuthCredentialUpdate = false;
-	// mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
+	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
 	const addVKConfig = (vkId: string) => {
 		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
@@ -191,7 +190,18 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			const oauthClientSecret = data.oauth_config?.client_secret;
 			// Only rotate when the user actually changed a credential field.
 			// dirtyFields tracks deep changes vs. the pre-populated default values.
-			const oauthDirty = !!(form.formState.dirtyFields.oauth_config?.client_id || form.formState.dirtyFields.oauth_config?.client_secret);
+			const oauthClientIDDirty = !!form.formState.dirtyFields.oauth_config?.client_id;
+			const oauthClientSecretDirty = !!form.formState.dirtyFields.oauth_config?.client_secret;
+
+			if (oauthClientIDDirty && !oauthClientSecretDirty) {
+				form.setError("oauth_config.client_secret", {
+					type: "manual",
+					message: "Client secret must also be updated when changing the client ID",
+				});
+				return;
+			}
+
+			const oauthDirty = !!(oauthClientIDDirty || oauthClientSecretDirty);
 			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && oauthDirty;
 			const response = await updateMCPClient({
 				id: mcpClient.config.client_id,

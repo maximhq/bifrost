@@ -1150,7 +1150,7 @@ func (m *MockConfigStore) DeleteOauthConfig(ctx context.Context, id string, tx .
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error {
 	return nil
 }
 

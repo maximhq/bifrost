@@ -1353,7 +1353,7 @@ func (s *RDBConfigStore) UpdateStatus(ctx context.Context, provider schemas.Mode
 func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	var dbMCPClients []tables.TableMCPClient
 	// Get all MCP clients
-	if err := s.DB().WithContext(ctx).Find(&dbMCPClients).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("OauthConfig").Find(&dbMCPClients).Error; err != nil {
 		return nil, err
 	}
 	var clientConfig tables.TableClientConfig
@@ -1371,7 +1371,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					ConnectionString:          dbClient.ConnectionString,
 					StdioConfig:               dbClient.StdioConfig,
 					AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
-					OauthConfigID:             dbClient.OauthConfigID,
+					OauthConfigID:             mcpClientOauthConfigID(&dbClient),
 					ToolsToExecute:            dbClient.ToolsToExecute,
 					ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
 					Headers:                   dbClient.Headers,
@@ -1411,7 +1411,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ConnectionString:          dbClient.ConnectionString,
 			StdioConfig:               dbClient.StdioConfig,
 			AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
-			OauthConfigID:             dbClient.OauthConfigID,
+			OauthConfigID:             mcpClientOauthConfigID(&dbClient),
 			ToolsToExecute:            dbClient.ToolsToExecute,
 			ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
 			Headers:                   dbClient.Headers,
@@ -1460,6 +1460,7 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 
 	var clients []tables.TableMCPClient
 	if err := baseQuery.
+		Preload("OauthConfig").
 		Order("created_at ASC, client_id ASC").
 		Offset(offset).
 		Limit(limit).
@@ -1472,7 +1473,7 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 // GetMCPClientByID retrieves an MCP client by ID from the database.
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
-	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("OauthConfig").Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1496,7 +1497,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		ConnectionString:          dbClient.ConnectionString,
 		StdioConfig:               dbClient.StdioConfig,
 		AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
-		OauthConfigID:             dbClient.OauthConfigID,
+		OauthConfigID:             mcpClientOauthConfigID(dbClient),
 		ToolsToExecute:            dbClient.ToolsToExecute,
 		ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
 		Headers:                   dbClient.Headers,
@@ -1549,7 +1550,6 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		ConnectionString:      clientConfigCopy.ConnectionString,
 		StdioConfig:           clientConfigCopy.StdioConfig,
 		AuthType:              string(clientConfigCopy.AuthType),
-		OauthConfigID:         clientConfigCopy.OauthConfigID,
 		ToolsToExecute:        clientConfigCopy.ToolsToExecute,
 		ToolsToAutoExecute:    clientConfigCopy.ToolsToAutoExecute,
 		Headers:               clientConfigCopy.Headers,
@@ -1686,9 +1686,6 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 	if encrypt.IsEnabled() {
 		updates["encryption_status"] = encryptionStatusEncrypted
 	}
-	if clientConfigCopy.OauthConfigID != nil {
-		updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
-	}
 	if discoveredToolsJSON != "" {
 		updates["discovered_tools_json"] = discoveredToolsJSON
 	}
@@ -1716,7 +1713,6 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		updates["connection_string"] = connectionStringToPersist
 		updates["stdio_config_json"] = stdioConfigJSON
 		updates["auth_type"] = clientConfigCopy.AuthType
-		updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 	}
 
 	// Only update is_ping_available if explicitly provided (non-nil)
@@ -4552,9 +4548,14 @@ func (s *RDBConfigStore) DeleteOauthConfig(ctx context.Context, id string, tx ..
 	return nil
 }
 
-// UpdateOauthConfig updates an existing OAuth config
-func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
-	result := s.DB().WithContext(ctx).Save(config)
+// UpdateOauthConfig updates an existing OAuth config.
+// An optional tx can be passed to run the update within an existing transaction.
+func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).Save(config)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth config: %w", result.Error)
 	}
@@ -4602,6 +4603,28 @@ func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID st
 		return nil, fmt.Errorf("failed to get oauth config by token id: %w", result.Error)
 	}
 	return &config, nil
+}
+
+// GetOauthConfigByMCPClientID retrieves the OAuth config associated with a given MCP client.
+func (s *RDBConfigStore) GetOauthConfigByMCPClientID(ctx context.Context, mcpClientID string) (*tables.TableOauthConfig, error) {
+	var config tables.TableOauthConfig
+	result := s.DB().WithContext(ctx).Where("config_mcp_client_id = ?", mcpClientID).First(&config)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth config by mcp client id: %w", result.Error)
+	}
+	return &config, nil
+}
+
+// mcpClientOauthConfigID returns the OAuth config ID from a preloaded TableMCPClient, or nil if none.
+func mcpClientOauthConfigID(c *tables.TableMCPClient) *string {
+	if c.OauthConfig == nil {
+		return nil
+	}
+	id := c.OauthConfig.ID
+	return &id
 }
 
 // ---------- Per-User OAuth Session CRUD ----------

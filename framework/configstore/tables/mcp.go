@@ -33,9 +33,8 @@ type TableMCPClient struct {
 	ToolNameMappingJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
 
 	// OAuth authentication fields
-	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`  // "none", "headers", "oauth"
-	OauthConfigID *string           `gorm:"type:varchar(255);index" json:"oauth_config_id"`       // Reference to oauth_configs.ID (no FK — cascade is handled via oauth_configs.config_mcp_client_id)
-	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID" json:"-"`      // Gorm relationship (no cascade — circular FK avoidance)
+	AuthType    string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"` // "none", "headers", "oauth"
+	OauthConfig *TableOauthConfig `gorm:"foreignKey:ConfigMCPClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"` // HasOne; FK lives on oauth_configs.config_mcp_client_id → config_mcp_clients.client_id
 
 	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
 	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled

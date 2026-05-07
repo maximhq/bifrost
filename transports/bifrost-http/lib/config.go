@@ -1312,7 +1312,6 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		ConnectionString:          clientConfig.ConnectionString,
 		StdioConfig:               clientConfig.StdioConfig,
 		AuthType:                  authType,
-		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
 		Headers:                   clientConfig.Headers,
@@ -4640,6 +4639,9 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
+	if updatedConfig.OauthConfigID != nil {
+		c.MCPConfig.ClientConfigs[configIndex].OauthConfigID = updatedConfig.OauthConfigID
+	}
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the
