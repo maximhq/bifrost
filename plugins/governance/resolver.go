@@ -258,7 +258,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
 	}
-	if !vk.IsActive {
+	if !vk.IsActiveValue() {
 		return &EvaluationResult{
 			Decision: DecisionVirtualKeyBlocked,
 			Reason:   "Virtual key is inactive",

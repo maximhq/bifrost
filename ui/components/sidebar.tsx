@@ -570,10 +570,10 @@ export default function AppSidebar() {
   const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
   const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
   const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
-  const hasBusinessUnitsAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+  const hasBusinessUnitsAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
   const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
   const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
-  const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+  const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
   const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
   const hasGuardrailsProvidersAccess = useRbac(
     RbacResource.GuardrailsProviders,
@@ -585,6 +585,15 @@ export default function AppSidebar() {
   const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
   const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
   const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
+  const hasAnyGovernanceAccess =
+    hasVirtualKeysAccess ||
+    hasTeamsAccess ||
+    hasUsersAccess ||
+    hasCustomersAccess ||
+    hasBusinessUnitsAccess ||
+    hasRbacAccess ||
+    hasAccessProfilesAccess ||
+    hasGovernanceLegacyAccess;
   const { data: coreConfig } = useGetCoreConfigQuery({});
   const isDbConnected = coreConfig?.is_db_connected ?? false;
 
@@ -660,7 +669,7 @@ export default function AppSidebar() {
             url: "/workspace/model-limits",
             icon: Wallet,
             description: "Model limits",
-            hasAccess: hasGovernanceAccess,
+            hasAccess: hasGovernanceLegacyAccess,
           },
           {
             title: "Routing Rules",
@@ -727,7 +736,7 @@ export default function AppSidebar() {
         url: "/workspace/governance",
         icon: Landmark,
         description: "Virtual keys, users, teams, customers & roles",
-        hasAccess: hasGovernanceAccess,
+        hasAccess: hasAnyGovernanceAccess,
         subItems: [
           {
             title: "Virtual Keys",
@@ -927,7 +936,8 @@ export default function AppSidebar() {
       hasBusinessUnitsAccess,
       hasRbacAccess,
       hasVirtualKeysAccess,
-      hasGovernanceAccess,
+      hasGovernanceLegacyAccess,
+      hasAnyGovernanceAccess,
       hasRoutingRulesAccess,
       hasGuardrailsProvidersAccess,
       hasGuardrailsConfigAccess,

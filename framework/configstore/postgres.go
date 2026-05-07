@@ -102,9 +102,16 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	}
 	dsn := buildPostgresDSN(config)
 
+	// Migration-only DSN. Forces pgx into simple-query protocol on the migration
+	// pool so no statement plan is ever cached server-side; that makes SQLSTATE
+	// 0A000 ("cached plan must not change result type") structurally impossible
+	// when a migration mixes DDL with subsequent SELECTs against the same table.
+	// Runtime pools keep the default cache-statement mode for performance.
+	migrationDSN := dsn + " default_query_exec_mode=simple_protocol"
+
 	// Throwaway pool for schema migrations. Closing it before the runtime pool
 	// opens guarantees no cached prepared-plan survives the DDL.
-	mDb, err := openPostresConnection(dsn, logger)
+	mDb, err := openPostresConnection(migrationDSN, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +137,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// migrateOnFreshFn: downstream consumers (e.g. bifrost-enterprise) run
 	// their migrations via this hook on a throwaway pool that closes after fn.
 	d.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
-		tempDB, err := openPostresConnection(dsn, logger)
+		tempDB, err := openPostresConnection(migrationDSN, logger)
 		if err != nil {
 			return err
 		}

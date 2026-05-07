@@ -17,12 +17,7 @@ import (
 )
 
 type testWSHandlerStore struct {
-	allowDirectKeys bool
-	matcher         *lib.HeaderMatcher
-}
-
-func (s testWSHandlerStore) ShouldAllowDirectKeys() bool {
-	return s.allowDirectKeys
+	matcher *lib.HeaderMatcher
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {

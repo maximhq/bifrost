@@ -76,7 +76,6 @@ helm upgrade bifrost bifrost/bifrost \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.client.allowedOrigins` | CORS allowed origins | `["*"]` |
-| `bifrost.client.allowDirectKeys` | Allow callers to pass provider keys directly in requests | `false` |
 | `bifrost.client.enforceGovernanceHeader` | Require `x-bf-vk` virtual-key header on every request | `false` |
 | `bifrost.client.maxRequestBodySizeMb` | Maximum allowed request body size | `100` |
 | `bifrost.client.whitelistedRoutes` | Routes that bypass auth middleware | `[]` |
@@ -87,7 +86,6 @@ bifrost:
     allowedOrigins:
       - "https://app.yourdomain.com"
       - "https://admin.yourdomain.com"
-    allowDirectKeys: false         # Prevent callers from supplying raw provider keys
     enforceGovernanceHeader: true  # Every request must carry a virtual key
     maxRequestBodySizeMb: 50
     whitelistedRoutes:
@@ -98,8 +96,7 @@ bifrost:
 ```bash
 helm install bifrost bifrost/bifrost \
   --set image.tag=v1.4.11 \
-  --set bifrost.client.enforceGovernanceHeader=true \
-  --set bifrost.client.allowDirectKeys=false
+  --set bifrost.client.enforceGovernanceHeader=true
 ```
 
 ---
@@ -295,7 +292,6 @@ bifrost:
     disableContentLogging: false
     logRetentionDays: 90
     enforceGovernanceHeader: true
-    allowDirectKeys: false
     maxRequestBodySizeMb: 100
     headerFilterConfig:
       allowlist: []

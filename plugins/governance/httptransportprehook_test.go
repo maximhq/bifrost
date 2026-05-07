@@ -74,7 +74,7 @@ func TestHTTPTransportPreHook_GenAIRoutingRulePreservesTarget(t *testing.T) {
 	routingRule := configstoreTables.TableRoutingRule{
 		ID:            "rule-genai-1",
 		Name:          "genai-repro-rule",
-		Enabled:       true,
+		Enabled:       bifrost.Ptr(true),
 		CelExpression: `model == "probe-genai-model" && provider == ""`,
 		Targets: []configstoreTables.TableRoutingTarget{
 			{
@@ -141,7 +141,7 @@ func TestHTTPTransportPreHook_GenAIRoutingRulePreservesTarget_WithStore(t *testi
 	routingRule := configstoreTables.TableRoutingRule{
 		ID:            "rule-genai-ws-1",
 		Name:          "genai-repro-rule-with-store",
-		Enabled:       true,
+		Enabled:       bifrost.Ptr(true),
 		CelExpression: `model == "probe-genai-model" && provider == ""`,
 		Targets: []configstoreTables.TableRoutingTarget{
 			{
@@ -264,7 +264,7 @@ func TestHTTPTransportPreHook_BedrockRoutingRulePreservesTarget(t *testing.T) {
 	routingRule := configstoreTables.TableRoutingRule{
 		ID:            "rule-bedrock-1",
 		Name:          "bedrock-repro-rule",
-		Enabled:       true,
+		Enabled:       bifrost.Ptr(true),
 		CelExpression: `model == "probe-bedrock-model" && provider == ""`,
 		Targets: []configstoreTables.TableRoutingTarget{
 			{

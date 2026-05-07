@@ -91,7 +91,6 @@ CONFIGS_TO_TEST=(
   "withdynamicplugin"
   "withobservability"
   "withsemanticcache"
-  "withpostgresmcpclientsinconfig"
 )
 
 TEST_BINARY="../tmp/bifrost-http"

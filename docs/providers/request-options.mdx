@@ -22,7 +22,6 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeyDisableContentLogging`   | `x-bf-disable-content-logging`                       | `bool`                | Per-request override for content logging; only honored when `allow_per_request_content_storage_override` is enabled in logging config |
 | `BifrostContextKeyPassthroughExtraParams`  | `x-bf-passthrough-extra-params`                      | `bool`                | Enable passthrough for extra parameters                                                                                               |
 | `BifrostContextKeyExtraHeaders`            | `x-bf-eh-*`                                          | `map[string][]string` | Custom headers forwarded to provider                                                                                                  |
-| `BifrostContextKeyDirectKey`               | `-`                                                  | `schemas.Key`         | Direct key credentials (Go SDK only)                                                                                                  |
 | `BifrostContextKeySkipKeySelection`        | `-`                                                  | `bool`                | Skip key selection process (Go SDK only)                                                                                              |
 | `BifrostContextKeyURLPath`                 | `-`                                                  | `string`              | Custom URL path appended to provider base URL (Go SDK only)                                                                           |
 | `BifrostContextKeyUseRawRequestBody`       | `-`                                                  | `bool`                | Use raw request body (Go SDK only, requires RawRequestBody field)                                                                     |
@@ -569,31 +568,6 @@ ExtraParams: map[string]interface{}{
 - Parameters already handled by Bifrost are not duplicated
 - Nested parameters are merged recursively with existing structures
 </Note>
-
-### Direct Key (Go SDK Only)
-
-**Context Key:** `BifrostContextKeyDirectKey`
-**Header:** `-` (not available via HTTP)
-**Type:** `schemas.Key`
-**Required:** No
-
-Bypass key selection and provide credentials directly. Useful for dynamic key scenarios.
-
-```go
-directKey := schemas.Key{
-    Value:  "sk-direct-api-key",
-    Models: []string{"gpt-4o"},
-    Weight: 1.0,
-}
-ctx := context.Background()
-ctx = context.WithValue(ctx, schemas.BifrostContextKeyDirectKey, directKey)
-
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-    Provider: schemas.OpenAI,
-    Model:    "gpt-4o",
-    Input:    messages,
-})
-````
 
 ### Skip Key Selection (Go SDK Only)
 

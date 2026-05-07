@@ -3081,7 +3081,7 @@ func (gs *LocalGovernanceStore) GetScopedRoutingRules(ctx context.Context, scope
 	// Filter by enabled and return
 	var enabledRules []*configstoreTables.TableRoutingRule
 	for _, rule := range rulesList {
-		if rule.Enabled {
+		if rule.EnabledValue() {
 			enabledRules = append(enabledRules, rule)
 		}
 	}

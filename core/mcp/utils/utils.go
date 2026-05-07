@@ -25,7 +25,11 @@ func ResolvePerUserOAuthToken(ctx *schemas.BifrostContext, client *schemas.MCPCl
 	}
 
 	accessToken, err := oauth2Provider.GetUserAccessTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, client.ExecutionConfig.ID)
-	if err != nil && !errors.Is(err, schemas.ErrOAuth2TokenNotFound) {
+	// Both sentinels mean "this user must re-authenticate":
+	//   - ErrOAuth2TokenNotFound: row missing (never authed, or purged after permanent refresh failure)
+	//   - ErrOAuth2TokenExpired:  row present but tokens unusable (access expired + no refresh available)
+	// Either way, fall through to the re-auth branch below to surface an inline auth URL.
+	if err != nil && !errors.Is(err, schemas.ErrOAuth2TokenNotFound) && !errors.Is(err, schemas.ErrOAuth2TokenExpired) {
 		return "", fmt.Errorf("failed to get user access token for MCP server %s: %w", client.ExecutionConfig.Name, err)
 	}
 	if err != nil {

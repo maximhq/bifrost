@@ -540,14 +540,11 @@ func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model
 	return unifiedMetadata
 }
 
-// addSingleResponse stores a single (non-streaming) response in unified VectorEntry format
-func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
-	// Marshal response as string
-	responseData, err := json.Marshal(res)
-	if err != nil {
-		return fmt.Errorf("failed to marshal response: %w", err)
-	}
-
+// addSingleResponse stores a single (non-streaming) response in unified VectorEntry format.
+// responseData is the pre-marshaled JSON of the response; the caller must marshal
+// synchronously before spawning the cache goroutine so the marshal cannot race
+// with downstream mutation of the response struct.
+func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, responseData []byte, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
 	// Add response field to metadata
 	metadata["response"] = string(responseData)
 	metadata["stream_chunks"] = []string{}

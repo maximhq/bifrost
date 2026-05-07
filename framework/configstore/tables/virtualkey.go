@@ -200,8 +200,8 @@ type TableVirtualKey struct {
 	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
 	Description     string                          `gorm:"type:text" json:"description,omitempty"`
-	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"` // The virtual key value
-	IsActive        bool                            `gorm:"default:true" json:"is_active"`
+	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`           // The virtual key value
+	IsActive        *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
@@ -235,6 +235,17 @@ type TableVirtualKey struct {
 
 // TableName sets the table name for each model
 func (TableVirtualKey) TableName() string { return "governance_virtual_keys" }
+
+// IsActiveValue returns the effective IsActive bool, treating nil as true (DB default).
+func (vk *TableVirtualKey) IsActiveValue() bool {
+	if vk == nil {
+		return false
+	}
+	if vk.IsActive == nil {
+		return true
+	}
+	return *vk.IsActive
+}
 
 // BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
 // a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key

@@ -208,6 +208,60 @@ const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
   return "assistant";
 };
 
+const isPlainAssistantResponsesMessage = (m: ResponsesMessage): boolean => {
+  if (m.type && m.type !== "message") return false;
+  return getResponsesRole(m) === "assistant";
+};
+
+const isReasoningResponsesMessage = (m: ResponsesMessage): boolean =>
+  m.type === "reasoning";
+
+// Streaming providers can emit a single logical assistant turn (or reasoning
+// item) as many small messages. Collapse adjacent ones so the UI shows one
+// bubble per turn instead of N "1 line" bubbles.
+const coalesceResponsesMessages = (
+  msgs: ResponsesMessage[],
+): ResponsesMessage[] => {
+  const out: ResponsesMessage[] = [];
+  for (const m of msgs) {
+    const last = out[out.length - 1];
+    if (
+      last &&
+      isPlainAssistantResponsesMessage(last) &&
+      isPlainAssistantResponsesMessage(m)
+    ) {
+      const merged = extractResponsesText(last) + extractResponsesText(m);
+      out[out.length - 1] = {
+        ...last,
+        content: [{ type: "output_text", text: merged } as any],
+      };
+      continue;
+    }
+    if (
+      last &&
+      isReasoningResponsesMessage(last) &&
+      isReasoningResponsesMessage(m)
+    ) {
+      const aSum = last.summary ?? [];
+      const bSum = m.summary ?? [];
+      const aEnc = (last as any).encrypted_content ?? "";
+      const bEnc = (m as any).encrypted_content ?? "";
+      const joinedEnc = `${aEnc}${bEnc}`;
+      out[out.length - 1] = {
+        ...last,
+        summary: [...aSum, ...bSum],
+        encrypted_content: joinedEnc ? joinedEnc : undefined,
+      } as ResponsesMessage;
+      continue;
+    }
+    out.push(m);
+  }
+  return out.filter((m) => {
+    if (!isPlainAssistantResponsesMessage(m)) return true;
+    return extractResponsesText(m).length > 0;
+  });
+};
+
 const extractMessageText = (message: any): string => {
   if (!message || message.content == null) return "";
   if (typeof message.content === "string") return message.content;
@@ -2041,7 +2095,10 @@ export function LogDetailView({
             const outputMsgs = visibleRoles.size < allRoles.length
               ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m)))
               : rawOutput;
-            const all: ResponsesMessage[] = [...inputMsgs, ...outputMsgs];
+            const all: ResponsesMessage[] = coalesceResponsesMessages([
+              ...inputMsgs,
+              ...outputMsgs,
+            ]);
             if (all.length === 0) return null;
             return (
               <div className="bg-card rounded-sm border p-5">

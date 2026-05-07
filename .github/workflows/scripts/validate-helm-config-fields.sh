@@ -39,12 +39,10 @@ report_result() {
 # Usage: render_config <values-file>
 render_config() {
   local values_file=$1
-  helm template bifrost "$CHART_DIR" \
-    --set image.tag=v1.0.0 \
-    -f "$values_file" \
-    > "$TMPDIR/rendered.yaml" 2>"$TMPDIR/render-err.txt"
-  local rc=$?
-  if [ "$rc" -ne 0 ]; then
+  if ! helm template bifrost "$CHART_DIR" \
+       --set image.tag=v1.0.0 \
+       -f "$values_file" \
+       > "$TMPDIR/rendered.yaml" 2>"$TMPDIR/render-err.txt"; then
     echo -e "${RED}    Render failed:${NC}"
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
     return 1
@@ -162,7 +160,6 @@ bifrost:
     disableDbPingsInHealth: true
     logRetentionDays: 30
     enforceGovernanceHeader: true
-    allowDirectKeys: true
     maxRequestBodySizeMb: 50
     compat:
       convertTextToChat: true
@@ -202,7 +199,6 @@ assert_field_value 'client.disable_content_logging' '.client.disable_content_log
 assert_field_value 'client.disable_db_pings_in_health' '.client.disable_db_pings_in_health' 'true'
 assert_field_value 'client.log_retention_days' '.client.log_retention_days' '30'
 assert_field_value 'client.enforce_governance_header' '.client.enforce_governance_header' 'true'
-assert_field_value 'client.allow_direct_keys' '.client.allow_direct_keys' 'true'
 assert_field_value 'client.max_request_body_size_mb' '.client.max_request_body_size_mb' '50'
 assert_field_value 'client.compat.convert_text_to_chat' '.client.compat.convert_text_to_chat' 'true'
 assert_field_value 'client.compat.convert_chat_to_responses' '.client.compat.convert_chat_to_responses' 'true'

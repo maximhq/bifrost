@@ -58,7 +58,6 @@ type ClientConfig struct {
 	EnforceAuthOnInference                bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
 	EnforceGovernanceHeader               bool                             `json:"enforce_governance_header,omitempty"`  // Deprecated: use EnforceAuthOnInference
 	EnforceSCIMAuth                       bool                             `json:"enforce_scim_auth,omitempty"`          // Deprecated: use EnforceAuthOnInference
-	AllowDirectKeys                       bool                             `json:"allow_direct_keys"`                    // Allow direct keys to be used for requests
 	AllowedOrigins                        []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	AllowedHeaders                        []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
 	MaxRequestBodySizeMB                  int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
@@ -115,12 +114,6 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enforceAuthOnInference:true"))
 	} else {
 		hash.Write([]byte("enforceAuthOnInference:false"))
-	}
-
-	if c.AllowDirectKeys {
-		hash.Write([]byte("allowDirectKeys:true"))
-	} else {
-		hash.Write([]byte("allowDirectKeys:false"))
 	}
 
 	if c.Compat.ConvertTextToChat {
@@ -753,8 +746,8 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Description))
 	// Hash Value
 	hash.Write([]byte(vk.Value))
-	// Hash IsActive
-	if vk.IsActive {
+	// Hash IsActive (nil treated as DB default true)
+	if vk.IsActiveValue() {
 		hash.Write([]byte("isActive:true"))
 	} else {
 		hash.Write([]byte("isActive:false"))
@@ -1081,8 +1074,8 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	// Hash Description
 	hash.Write([]byte(r.Description))
 
-	// Hash Enabled
-	if r.Enabled {
+	// Hash Enabled (nil treated as DB default true)
+	if r.EnabledValue() {
 		hash.Write([]byte("enabled:true"))
 	} else {
 		hash.Write([]byte("enabled:false"))

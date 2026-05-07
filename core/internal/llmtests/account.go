@@ -204,12 +204,6 @@ func replicateProviderTestKeys() []schemas.Key {
 	}
 }
 
-// ReplicateDirectKeyForListModels returns the key used for Replicate ListModels (deployments endpoint).
-// List-models tests set it on the context as schemas.BifrostContextKeyDirectKey so Bifrost passes only this key.
-func ReplicateDirectKeyForListModels() schemas.Key {
-	return replicateProviderTestKeys()[0]
-}
-
 // GetKeysForProvider returns the API keys and associated models for a given provider.
 func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	switch providerKey {

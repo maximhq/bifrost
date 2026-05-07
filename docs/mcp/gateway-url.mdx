@@ -312,6 +312,10 @@ The `WWW-Authenticate` URL above and the `redirect_uri` Bifrost hands to upstrea
 
 In most setups both are the same public URL. They can differ when the management/discovery surface and the OAuth callback surface live behind different proxies. See [Reverse Proxy configuration →](../deployment-guides/config-json/client#reverse-proxy) for the full reference and examples.
 
+<Warning>
+**Changing `mcp_external_client_url` breaks already-connected MCP clients.** Upstream OAuth providers lock the `redirect_uri` to whatever was registered during Dynamic Client Registration (RFC 7591). If you change this URL afterwards, existing clients fail with **"Invalid redirect URI"** at the authorize step. To recover, clear the stored OAuth client credentials for the affected MCP server and re-authorize so Bifrost re-registers with the new URL.
+</Warning>
+
 ---
 
 ## Security Considerations

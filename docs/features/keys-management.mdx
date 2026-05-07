@@ -4,137 +4,6 @@ description: "Intelligent API key management with weighted load balancing, model
 icon: "scale-balanced"
 ---
 
-## Smart Key Distribution
-
-Bifrost's key management system goes beyond simple API key storage. It provides intelligent load balancing, model-specific key filtering, and weighted distribution to optimize performance and manage costs across multiple API keys.
-
-When you configure multiple keys for a provider, Bifrost automatically distributes requests using sophisticated selection algorithms that consider key weights, model compatibility, and deployment mappings.
-
-## How Key Selection Works
-
-Bifrost follows a precise selection process for every request:
-
-1. **Context Override Check**: First checks if a key is explicitly provided in context (bypassing management)
-2. **Provider Key Lookup**: Retrieves all configured keys for the requested provider
-3. **Model Filtering**: Filters keys that support the requested model (respecting `models` allowlists and `blacklisted_models` denylists)
-4. **Deployment Validation**: For Azure/Bedrock, validates deployment mappings
-5. **Weighted Selection**: Uses weighted random selection among eligible keys
-
-This ensures optimal key usage while respecting your configuration constraints.
-
-## Implementation Examples
-
-<Tabs group="keys-management">
-
-<Tab title="Gateway">
-
-```bash
-# 1. Create or ensure the provider exists
-curl -X POST http://localhost:8080/api/providers \
-  -H "Content-Type: application/json" \
-  -d '{ "provider": "openai" }'
-
-# 2. Add keys individually via the dedicated keys API
-curl -X POST http://localhost:8080/api/providers/openai/keys \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "openai-key-1",
-    "value": "env.OPENAI_API_KEY_1",
-    "models": ["gpt-4o", "gpt-4o-mini"],
-    "weight": 0.7
-  }'
-
-curl -X POST http://localhost:8080/api/providers/openai/keys \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "openai-key-2",
-    "value": "env.OPENAI_API_KEY_2",
-    "models": ["*"],
-    "weight": 0.3
-  }'
-
-# Regular request (uses weighted key selection)
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "openai/gpt-4o-mini",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-
-# Request with direct API key (bypasses key management)
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-your-direct-api-key" \
-  -d '{
-    "model": "openai/gpt-4o-mini", 
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-</Tab>
-
-<Tab title="Go SDK">
-
-```go
-package main
-
-import (
-    "context"
-    "github.com/maximhq/bifrost/core/schemas"
-)
-
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
-    switch provider {
-    case schemas.OpenAI:
-        return []schemas.Key{
-            {
-                ID:     "primary-key",
-                Value:  "env.OPENAI_API_KEY_1",
-                Models: ["gpt-4o", "gpt-4o-mini"], // Model whitelist
-                Weight: 0.7,                       // 70% of traffic
-            },
-            {
-                ID:     "secondary-key", 
-                Value:  "env.OPENAI_API_KEY_2",
-                Models: []string{"*"}, // ["*"] = supports all models (empty slice denies all in v1.5.0+)
-                Weight: 0.3, // 30% of traffic
-            },
-        }, nil
-    case schemas.Anthropic:
-        return []schemas.Key{
-            {
-                Value:  "env.ANTHROPIC_API_KEY",
-                Models: ["claude-3-5-sonnet-20241022"],
-                Weight: 1.0,
-            },
-        }, nil
-    }
-    return nil, fmt.Errorf("provider %s not supported", provider)
-}
-
-// Using with explicit context key (bypasses key management)
-func makeRequestWithDirectKey() {
-    ctx := context.Background()
-    
-    // Direct key bypasses all key management
-    directKey := schemas.Key{
-        Value:  "sk-direct-api-key",
-        Weight: 1.0,
-    }
-    ctx = context.WithValue(ctx, schemas.BifrostContextKeyDirectKey, directKey)
-    
-    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
-        Provider: schemas.OpenAI,
-        Model:    "gpt-4o-mini",
-        Input:    messages,
-    })
-}
-```
-
-</Tab>
-
-</Tabs>
-
 ## Weighted Load Balancing
 
 Bifrost uses weighted random selection to distribute requests across multiple keys. This allows you to:
@@ -292,47 +161,13 @@ Response (example):
 
 Note: This is not a weighted selection, by providing a specific key name you are explicitly telling Bifrost which stored key to use, so weighted distribution is bypassed. The example above demonstrates the error returned when a referenced key name cannot be resolved.
 
-## Direct Key Bypass
+## Direct Key Bypass — Removed in v1.5
 
-For scenarios requiring explicit key control, Bifrost supports bypassing the entire key management system:
+<Warning>
+The "Direct Key Bypass" feature has been **removed entirely in v1.5**, on both the HTTP gateway and the Go SDK.
 
-**Go SDK Context Override:**
-Pass a key directly in the request context using `schemas.BifrostContextKeyDirectKey`. This completely bypasses provider key lookup and selection.
+- **HTTP gateway:** the `allow_direct_keys` config flag and the `Authorization` / `x-api-key` / `x-goog-api-key` header pass-through (plus the Bedrock `x-bf-bedrock-*` and Azure `x-bf-azure-endpoint` integration paths) no longer forward keys to upstream providers.
+- **Go SDK:** the `schemas.BifrostContextKeyDirectKey` context value and the `Direct Key (Go SDK Only)` API have been removed.
 
-**Gateway Header-based Keys:**
-Send API keys in `Authorization` (Bearer), `x-api-key` or `x-goog-api-key` headers. Requires `allow_direct_keys` setting to be enabled.
-
-**Enable Direct Keys:**
-
-<Tabs group="direct-keys-config">
-
-<Tab title="Web UI">
-
-![Web UI](../media/ui-config-direct-keys.png)
-
-1. Navigate to **Configuration** page
-2. Toggle **"Allow Direct Keys"** to enabled
-3. Save configuration
-
-</Tab>
-
-<Tab title="config.json">
-```json
-{
-  "client": {
-    "allow_direct_keys": true
-  }
-}
-```
-
-</Tab>
-
-</Tabs>
-
-<Note>If a Bifrost virtual key (`sk-bf-*`) is attached in the auth header, direct key bypass will be skipped.</Note>
-
-**When to Use Direct Keys:**
-- Per-user API key scenarios
-- External key management systems
-- Testing with specific keys
-- Debugging key-related issues
+All requests must use Bifrost-managed provider keys. To pin a specific key per request from the Go SDK, set `schemas.BifrostContextKeyAPIKeyID` or `schemas.BifrostContextKeyAPIKeyName` against a key managed by Bifrost (for example, one created via the providers API or returned by your `Account` implementation). See the [v1.5.0 migration guide](/migration-guides/v1.5.0) for the full rationale and migration recipes.
+</Warning>

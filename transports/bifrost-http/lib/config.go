@@ -60,8 +60,6 @@ type StreamChunkInterceptor interface {
 // This interface allows handlers to access only the configuration they need
 // without depending on the entire ConfigStore, improving testability and decoupling.
 type HandlerStore interface {
-	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
-	ShouldAllowDirectKeys() bool
 	// GetHeaderMatcher returns the precompiled header matcher for header filtering
 	GetHeaderMatcher() *HeaderMatcher
 	// GetProvidersForModel returns the list of providers that can serve a given model.
@@ -320,7 +318,6 @@ var DefaultClientConfig = configstore.ClientConfig{
 	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	EnforceAuthOnInference:          false,
-	AllowDirectKeys:                 false,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
 	WhitelistedRoutes:               []string{},
@@ -693,6 +690,26 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	}
 }
 
+// sanitizeMCPExternalOAuthURLs validates the MCP external OAuth URL overrides
+// on a ClientConfig and clears any invalid override so it cannot leak into
+// OAuth URL generation. The warning intentionally omits the offending value:
+// these fields support env-var references (`env.MY_VAR`), and echoing the
+// resolved value would let a misconfigured deployment surface env contents
+// in logs.
+func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
+	if client == nil {
+		return
+	}
+	if err := ValidateBaseURL(client.MCPExternalServerURL.GetValue()); err != nil {
+		logger.Warn("mcp_external_server_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
+		client.MCPExternalServerURL = nil
+	}
+	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
+		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
+		client.MCPExternalClientURL = nil
+	}
+}
+
 // loadClientConfig loads and merges client config from file with store using hash-based reconciliation
 func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	var clientConfig *configstore.ClientConfig
@@ -707,6 +724,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig == nil {
 		logger.Debug("client config not found in store, using config file")
 		if configData.Client != nil {
+			sanitizeMCPExternalOAuthURLs(configData.Client)
 			config.ClientConfig = configData.Client
 			applyClientConfigDefaults(config.ClientConfig)
 			// Generate hash for the file config
@@ -751,6 +769,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig.ConfigHash != fileHash {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
+		sanitizeMCPExternalOAuthURLs(configData.Client)
 		config.ClientConfig = configData.Client
 		config.ClientConfig.ConfigHash = fileHash
 		applyClientConfigDefaults(config.ClientConfig)
@@ -3245,14 +3264,6 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 
 // HandlerStore interface implementation
 
-// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
-// Note: This method doesn't use locking for performance. In rare cases during
-// config updates, it may return stale data, but this is acceptable since bool
-// reads are atomic and won't cause panics.
-func (c *Config) ShouldAllowDirectKeys() bool {
-	return c.ClientConfig.AllowDirectKeys
-}
-
 // ShouldAllowPerRequestStorageOverride returns whether per-request content storage overrides are permitted.
 func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
 	return c.ClientConfig.AllowPerRequestContentStorageOverride
@@ -3341,7 +3352,7 @@ func (c *Config) GetPerUserOAuthMCPClients() map[string]string {
 	}
 	result := make(map[string]string)
 	for _, client := range c.MCPConfig.ClientConfigs {
-		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth {
+		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && !client.Disabled {
 			result[client.ID] = client.Name
 		}
 	}

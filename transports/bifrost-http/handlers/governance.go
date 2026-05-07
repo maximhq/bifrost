@@ -16,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -472,10 +473,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			seenDurations[b.ResetDuration] = true
 		}
 	}
-	// Set defaults
-	isActive := true
-	if req.IsActive != nil {
-		isActive = *req.IsActive
+	// Set defaults: nil means "use DB default (true)"
+	isActive := req.IsActive
+	if isActive == nil {
+		isActive = bifrost.Ptr(true)
 	}
 	// Fetch providers from DB to ensure up-to-date data in cluster mode.
 	providerSet := map[schemas.ModelProvider]struct{}{}
@@ -771,7 +772,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			vk.CustomerID = nil
 		}
 		if req.IsActive != nil {
-			vk.IsActive = *req.IsActive
+			vk.IsActive = req.IsActive
 		}
 		if req.CalendarAligned != nil {
 			vk.CalendarAligned = *req.CalendarAligned
@@ -3219,9 +3220,9 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 
 	// Create routing rule
 	// Handle Enabled/ChainRule: nil means use DB default (true/false), otherwise use provided value
-	enabled := true // DB default
-	if req.Enabled != nil {
-		enabled = *req.Enabled
+	enabled := req.Enabled
+	if enabled == nil {
+		enabled = bifrost.Ptr(true)
 	}
 	chainRule := false // DB default
 	if req.ChainRule != nil {
@@ -3290,7 +3291,7 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		rule.Description = *req.Description
 	}
 	if req.Enabled != nil {
-		rule.Enabled = *req.Enabled
+		rule.Enabled = req.Enabled
 	}
 	if req.ChainRule != nil {
 		rule.ChainRule = *req.ChainRule
@@ -3866,7 +3867,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key_name": vk.Name,
-		"is_active":        vk.IsActive,
+		"is_active":        vk.IsActiveValue(),
 		"budgets":          vk.Budgets,
 		"rate_limit":       vk.RateLimit,
 	})

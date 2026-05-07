@@ -221,9 +221,6 @@ false
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}
-{{- if hasKey .Values.bifrost.client "allowDirectKeys" }}
-{{- $_ := set $client "allow_direct_keys" .Values.bifrost.client.allowDirectKeys }}
-{{- end }}
 {{- if .Values.bifrost.client.maxRequestBodySizeMb }}
 {{- $_ := set $client "max_request_body_size_mb" .Values.bifrost.client.maxRequestBodySizeMb }}
 {{- end }}

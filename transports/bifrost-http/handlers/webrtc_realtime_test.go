@@ -18,7 +18,6 @@ type testHandlerStore struct {
 	kv *kvstore.Store
 }
 
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                               { return true }
 func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher                      { return nil }
 func (s testHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider { return nil }
 func (s testHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
@@ -299,7 +298,6 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 	ctx.Request.Header.Set("Authorization", "Bearer ek_test_unmapped")
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided"})
 	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "selected")
 	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyName, "selected-name")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, "mapped-id")
@@ -314,9 +312,6 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 	}
 	if selectedKey != nil {
 		t.Fatalf("selectedKey = %#v, want nil", selectedKey)
-	}
-	if got := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey); got != nil {
-		t.Fatalf("direct key context = %#v, want nil", got)
 	}
 	if got := bifrostCtx.Value(schemas.BifrostContextKeySelectedKeyID); got != nil {
 		t.Fatalf("selected key id context = %#v, want nil", got)

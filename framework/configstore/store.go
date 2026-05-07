@@ -152,7 +152,7 @@ type ConfigStore interface {
 	GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
-	DeleteVirtualKey(ctx context.Context, id string) error
+	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Virtual key provider config CRUD
 	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error)
@@ -173,6 +173,7 @@ type ConfigStore interface {
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
 	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
 	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
+	GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	UpdateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	DeleteTeam(ctx context.Context, id string) error

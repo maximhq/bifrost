@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -20,6 +21,12 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// sseHeartbeatInterval is the cadence of SSE comment pings on the MCP SSE
+// stream. It must stay below typical proxy/load-balancer idle timeouts (60s on
+// most stacks) so connections aren't reaped, while being large enough to avoid
+// gratuitous wake-ups on idle clients.
+const sseHeartbeatInterval = 15 * time.Second
 
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
@@ -147,10 +154,29 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Signal to transport-plugin and tracing middlewares that this is a streaming
+	// response. Without this, fasthttpResponseToHTTPResponse calls ctx.Response.Body()
+	// during post-hook processing, which materializes the SSE body stream and
+	// deadlocks waiting for an EOF that only arrives after the goroutine exits.
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+
+	// Pre-allocate atomic.Value slot for the transport post-hook completer.
+	// TransportInterceptorMiddleware stores the completer into this slot after next(ctx)
+	// returns. The goroutine reads from the closure-captured pointer, avoiding any ctx
+	// access after the handler returns (fasthttp recycles RequestCtx).
+	var completerSlot atomic.Value
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+
+	// Get the trace completer function for use in the streaming callback.
+	// Signature: func([]schemas.PluginLogEntry) — accepts transport plugin logs so it
+	// never needs to read from ctx.UserValue (ctx may be recycled).
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+
 	// Set SSE headers
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
+	ctx.Response.Header.Set("X-Accel-Buffering", "no")
 
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
@@ -162,9 +188,66 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	ctx.Response.SetBodyStream(reader, -1)
 
 	go func() {
+		var transportLogs []schemas.PluginLogEntry
+		completerRan := false
+		// runCompleter invokes the transport post-hook completer at most once.
+		// sendSSEOnError=true emits plugin errors as SSE "event: error" frames so the
+		// client sees them; =false logs server-side only (defer fallback, after stream
+		// termination). The MCP SSE handler has no happy-path completion point, so it
+		// only ever invokes this from the defer with sendSSEOnError=false.
+		runCompleter := func(sendSSEOnError bool) {
+			if completerRan {
+				return
+			}
+			// Bounded wait for TransportInterceptorMiddleware to publish the completer.
+			// It calls slot.Store after next(ctx) returns, which races with this goroutine
+			// on fast/empty streams. 100ms is ample — the store runs a few instructions
+			// after the handler returns.
+			var loaded any
+			deadline := time.Now().Add(100 * time.Millisecond)
+			for {
+				if loaded = completerSlot.Load(); loaded != nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if loaded == nil {
+				return
+			}
+			postHookCompleter, ok := loaded.(func() ([]schemas.PluginLogEntry, error))
+			if !ok {
+				return
+			}
+			completerRan = true
+			logs, err := postHookCompleter()
+			if err != nil {
+				if sendSSEOnError {
+					errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
+					if marshalErr == nil {
+						reader.SendError(errorJSON)
+					}
+				} else {
+					logger.Warn("transport post-hook failed after stream terminated: %v", err)
+				}
+			}
+			transportLogs = logs
+		}
+
 		defer func() {
+			// Run the deferred transport post-hook completer before cancelling the
+			// context so plugins see a live context. Errors are logged server-side
+			// only — the stream is already closing.
+			runCompleter(false)
 			cancel()
 			reader.Done()
+			// Complete the trace after streaming finishes, passing transport plugin logs.
+			// This ensures all spans are properly ended before the trace is sent to OTEL.
+			if traceCompleter != nil {
+				traceCompleter(transportLogs)
+			}
 		}()
 
 		// Send initial connection message
@@ -177,11 +260,27 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 			buf = append(buf, "data: "...)
 			buf = append(buf, initJSON...)
 			buf = append(buf, '\n', '\n')
-			reader.Send(buf)
+			if !reader.Send(buf) {
+				return
+			}
 		}
 
-		// Wait for context cancellation (client disconnect or server-side cancel)
-		<-(*bifrostCtx).Done()
+		// Periodic SSE comment heartbeats keep idle connections alive through
+		// proxies and let us detect client disconnect via reader.Send() returning
+		// false — fasthttp.RequestCtx never cancels bifrostCtx on its own.
+		ticker := time.NewTicker(sseHeartbeatInterval)
+		defer ticker.Stop()
+		ping := []byte(": ping\n\n")
+		for {
+			select {
+			case <-ticker.C:
+				if !reader.Send(ping) {
+					return
+				}
+			case <-(*bifrostCtx).Done():
+				return
+			}
+		}
 	}()
 }
 

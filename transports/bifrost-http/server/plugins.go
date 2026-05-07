@@ -158,8 +158,11 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	builtinPlacement := schemas.Ptr(schemas.PluginPlacementBuiltin)
 
 	// 1. Telemetry (always first - tracks everything)
-	if err := s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, nil, true); err != nil {
-		return err
+	telemetryPluginConfig := s.getPluginConfig(telemetry.PluginName)
+	if telemetryPluginConfig != nil && telemetryPluginConfig.Enabled {
+		s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, telemetryPluginConfig.Config, false)
+	} else {
+		s.markPluginDisabled(telemetry.PluginName)
 	}
 	s.Config.SetPluginOrderInfo(telemetry.PluginName, builtinPlacement, schemas.Ptr(1))
 

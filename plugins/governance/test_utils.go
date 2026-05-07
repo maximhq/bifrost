@@ -82,7 +82,7 @@ func buildVirtualKey(id, value, name string, isActive bool) *configstoreTables.T
 		ID:       id,
 		Value:    value,
 		Name:     name,
-		IsActive: isActive,
+		IsActive: &isActive,
 	}
 }
 

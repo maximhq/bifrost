@@ -272,7 +272,7 @@ func TestToBifrostResponsesStream_CompactionContentBlockStop(t *testing.T) {
 func TestToAnthropicResponsesStreamResponse_CompactionOutputItemAdded(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	summary := "Summary of the conversation about building a website"
@@ -339,7 +339,7 @@ func TestToAnthropicResponsesStreamResponse_CompactionOutputItemAdded(t *testing
 func TestToAnthropicResponsesStreamResponse_CompactionOutputItemDone(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	bifrostResp := &schemas.BifrostResponsesStreamResponse{
@@ -380,7 +380,7 @@ func TestToAnthropicResponsesStreamResponse_CompactionOutputItemDone(t *testing.
 func TestToAnthropicResponsesStreamResponse_TextOutputItemAdded_NotAffectedByCompactionCheck(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	// Regular text message should still emit content_block_start with type=text
@@ -454,7 +454,7 @@ func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 			defer cancel()
 
 			resp := &AnthropicMessageResponse{
@@ -483,7 +483,7 @@ func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 func TestToBifrostResponsesResponse_EmptyStopReason(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	resp := &AnthropicMessageResponse{
@@ -526,8 +526,8 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 			expectedReason: AnthropicStopReasonToolUse,
 		},
 		{
-			name:       "nil stop_reason defaults to end_turn",
-			stopReason: nil,
+			name:           "nil stop_reason defaults to end_turn",
+			stopReason:     nil,
 			expectedReason: AnthropicStopReasonEndTurn,
 		},
 		{
@@ -548,7 +548,7 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 			defer cancel()
 
 			bifrostResp := &schemas.BifrostResponsesResponse{
@@ -572,7 +572,7 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 func TestCompactionContentBlock_NonStreamingRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	summary := "The user requested help building a web scraper using Python with BeautifulSoup."
@@ -659,7 +659,7 @@ func TestCompactionContentBlock_NonStreamingRoundTrip(t *testing.T) {
 func TestToAnthropicResponsesStreamResponse_CompletedWithCompactionStopReason(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	bifrostResp := &schemas.BifrostResponsesStreamResponse{

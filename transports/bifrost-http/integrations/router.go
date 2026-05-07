@@ -763,14 +763,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}
 
-		// Set direct key from context if available
-		if ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)) != nil {
-			key, ok := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)).(schemas.Key)
-			if ok {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-			}
-		}
-
 		// Set available providers to context
 		if config.GetRequestModel != nil {
 			model, err := config.GetRequestModel(ctx, req)
@@ -2661,11 +2653,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 							errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 							if marshalErr != nil {
 								cancel()
+								for range streamChan {
+								}
 								return
 							}
 							// Return error event and stop streaming
 							reader.SendError(errorJSON)
 							cancel()
+							for range streamChan {
+							}
 							return
 						}
 						// Else add warn log and continue
@@ -2795,6 +2791,12 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 				if !sent {
 					cancel() // Client disconnected, cancel upstream stream
+					// Drain remaining chunks so the provider goroutine's defer
+					// (HandleStreamCancellation -> PostLLMHook -> storeOrEnqueueEntry) finishes
+					// before our own defer fires traceCompleter. Without this, Inject runs
+					// against an empty pendingLogsToInject and the cancellation log is orphaned.
+					for range streamChan {
+					}
 					return
 				}
 			}
@@ -2919,11 +2921,6 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	})
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
-	if directKey := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)); directKey != nil {
-		if key, ok := directKey.(schemas.Key); ok {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-		}
-	}
 
 	path := string(ctx.Path())
 	for _, prefix := range g.passthroughCfg.StripPrefix {

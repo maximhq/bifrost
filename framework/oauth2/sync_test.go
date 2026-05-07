@@ -103,19 +103,19 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 		AccessToken:  "old-access-token",
 		RefreshToken: "refresh-token",
 		TokenType:    "bearer",
-		ExpiresAt:    bifrost.Ptr(time.Now().Add(1 * time.Minute)),
+		ExpiresAt:    new(time.Now().Add(1 * time.Minute)),
 		Scopes:       "[]",
 	}
 
 	oauthConfigID = "test-oauth-config-id"
 	store.oauthConfigs[oauthConfigID] = &tables.TableOauthConfig{
 		ID:          oauthConfigID,
-		ClientID:    "test-client-id",
+		ClientID:    schemas.NewEnvVar("test-client-id"),
 		TokenURL:    tokenURL,
 		RedirectURI: "http://localhost/callback",
 		Scopes:      `["read"]`,
 		Status:      "authorized",
-		TokenID:     bifrost.Ptr(tokenID),
+		TokenID:     new(tokenID),
 		ExpiresAt:   time.Now().Add(24 * time.Hour),
 	}
 

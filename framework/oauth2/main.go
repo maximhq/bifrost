@@ -216,7 +216,7 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 		return fmt.Errorf("failed to update oauth config: %w", err)
 	}
 
-	logger.Info("OAuth token revoked", "oauth_config_id", oauthConfigID)
+	logger.Debug("OAuth token revoked", "oauth_config_id", oauthConfigID)
 
 	return nil
 }
@@ -854,22 +854,47 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	if userID != "" {
 		uid = &userID
 	}
-	session := &tables.TableOauthUserSession{
-		ID:            sessionID,
-		MCPClientID:   mcpClientID,
-		OauthConfigID: oauthConfigID,
-		State:         state,
-		RedirectURI:   redirectURI,
-		CodeVerifier:  codeVerifier,
-		SessionToken:  sessionToken,
-		VirtualKeyID:  vkId,
-		UserID:        uid,
-		Status:        "pending",
-		ExpiresAt:     expiresAt,
+	// session_token_hash has a unique index, so if the user is re-authenticating
+	// with a session token that already has a row (e.g. after a previous
+	// authorized flow whose tokens later got purged), we must update the
+	// existing row rather than insert a fresh one — otherwise INSERT trips the
+	// unique constraint. The CSRF state, PKCE verifier, and flow expiry are
+	// always rotated; identity fields refresh from the current context.
+	existing, err := p.configStore.GetOauthUserSessionBySessionToken(ctx, sessionToken)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to lookup per-user oauth session for re-auth: %w", err)
 	}
-
-	if err := p.configStore.CreateOauthUserSession(ctx, session); err != nil {
-		return nil, "", fmt.Errorf("failed to create per-user oauth session: %w", err)
+	if existing != nil {
+		existing.MCPClientID = mcpClientID
+		existing.OauthConfigID = oauthConfigID
+		existing.State = state
+		existing.RedirectURI = redirectURI
+		existing.CodeVerifier = codeVerifier
+		existing.VirtualKeyID = vkId
+		existing.UserID = uid
+		existing.Status = "pending"
+		existing.ExpiresAt = expiresAt
+		if err := p.configStore.UpdateOauthUserSession(ctx, existing); err != nil {
+			return nil, "", fmt.Errorf("failed to update per-user oauth session for re-auth: %w", err)
+		}
+		sessionID = existing.ID
+	} else {
+		session := &tables.TableOauthUserSession{
+			ID:            sessionID,
+			MCPClientID:   mcpClientID,
+			OauthConfigID: oauthConfigID,
+			State:         state,
+			RedirectURI:   redirectURI,
+			CodeVerifier:  codeVerifier,
+			SessionToken:  sessionToken,
+			VirtualKeyID:  vkId,
+			UserID:        uid,
+			Status:        "pending",
+			ExpiresAt:     expiresAt,
+		}
+		if err := p.configStore.CreateOauthUserSession(ctx, session); err != nil {
+			return nil, "", fmt.Errorf("failed to create per-user oauth session: %w", err)
+		}
 	}
 
 	// Build authorize URL with PKCE
@@ -1096,6 +1121,41 @@ func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToke
 		token.RefreshToken,
 	)
 	if err != nil {
+		// Permanent rejection (HTTP 401, or 400 with invalid_grant /
+		// unauthorized_client per RFC 6749 §5.2) means the refresh token is
+		// dead — revoked, expired, or bound to a grant the AS no longer
+		// honors. Purge the row and signal re-authentication via the
+		// ErrOAuth2TokenExpired sentinel, which ResolvePerUserOAuthToken
+		// converts into an inline MCPUserOAuthRequiredError with auth URL.
+		var permErr *PermanentOAuthError
+		if errors.As(err, &permErr) {
+			// The delete is load-bearing: without it, the dead refresh token
+			// row survives and the caller's subsequent reauth can collide
+			// with it (or replay the rejected refresh). If purge fails,
+			// surface the error rather than misleadingly returning the
+			// "re-authentication required" sentinel.
+			if delErr := p.configStore.DeleteOauthUserToken(ctx, token.ID); delErr != nil {
+				return fmt.Errorf("per-user oauth refresh permanently rejected but token cleanup failed (mcp_client=%s upstream_status=%d): %w",
+					token.MCPClientID, permErr.StatusCode, delErr)
+			}
+			logger.Debug("Per-user OAuth refresh permanently rejected; token purged — re-authentication required: mcp_client=%s upstream_status=%d",
+				token.MCPClientID, permErr.StatusCode)
+			// Surface the state on the session row so dashboards /
+			// observability can show "this user needs to reconnect". The token
+			// delete above is the load-bearing action; this update never gates
+			// the OAuth flow, so a failure here is logged and ignored.
+			if token.SessionToken != "" {
+				if sess, sessErr := p.configStore.GetOauthUserSessionBySessionToken(ctx, token.SessionToken); sessErr == nil && sess != nil {
+					sess.Status = "needs_reauth"
+					if updErr := p.configStore.UpdateOauthUserSession(ctx, sess); updErr != nil {
+						logger.Warn("Failed to mark session needs_reauth after permanent refresh failure: session_id=%s err=%v", sess.ID, updErr)
+					}
+				}
+			}
+			return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
+		}
+		// Transient failure (5xx, network blip, non-permanent 400) — keep the
+		// row so the next call retries refresh.
 		return fmt.Errorf("per-user token refresh failed: %w", err)
 	}
 

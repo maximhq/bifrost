@@ -8,6 +8,7 @@ import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
 import { allowedRequestsSchema } from "@/lib/types/schemas";
 import { cleanPathOverrides } from "@/lib/utils/validation";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
@@ -37,6 +38,7 @@ interface Props extends AddCustomProviderSheetContentProps {
 }
 
 export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: AddCustomProviderSheetContentProps) {
+	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
 	const [addProvider, { isLoading: isAddingProvider }] = useCreateProviderMutation();
 	const form = useForm<FormData>({
 		resolver: zodResolver(formSchema),
@@ -137,7 +139,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 									<FormLabel className="text-right">Name</FormLabel>
 									<div className="col-span-3">
 										<FormControl>
-											<Input placeholder="Name" data-testid="custom-provider-name" {...field} />
+											<Input placeholder="Name" data-testid="custom-provider-name" disabled={!hasProviderCreateAccess} {...field} />
 										</FormControl>
 										<FormMessage />
 									</div>
@@ -152,7 +154,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 									<FormLabel>Base Format</FormLabel>
 									<div>
 										<FormControl>
-											<Select onValueChange={field.onChange} value={field.value}>
+											<Select onValueChange={field.onChange} value={field.value} disabled={!hasProviderCreateAccess}>
 												<SelectTrigger className="w-full" data-testid="base-provider-select">
 													<SelectValue placeholder="Select base format" />
 												</SelectTrigger>
@@ -182,6 +184,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 											<Input
 												placeholder={"https://api.your-provider.com"}
 												data-testid="base-url-input"
+												disabled={!hasProviderCreateAccess}
 												{...field}
 												value={field.value || ""}
 											/>
@@ -209,6 +212,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												size="md"
 												checked={field.value}
 												onCheckedChange={field.onChange}
+												disabled={!hasProviderCreateAccess}
 												data-testid="custom-provider-keyless-switch"
 											/>
 										</div>
@@ -217,12 +221,21 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							/>
 						)}
 						{/* Allowed Requests Configuration */}
-						<AllowedRequestsFields control={form.control} providerType={form.watch("baseFormat") as BaseProvider} />
+						<AllowedRequestsFields
+							control={form.control}
+							providerType={form.watch("baseFormat") as BaseProvider}
+							disabled={!hasProviderCreateAccess}
+						/>
 						<div className="align-end mt-10 ml-auto flex flex-row gap-2 border-t pt-4">
 							<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
 								Cancel
 							</Button>
-							<Button type="submit" isLoading={isAddingProvider} data-testid="custom-provider-save-btn">
+							<Button
+								type="submit"
+								isLoading={isAddingProvider}
+								disabled={!hasProviderCreateAccess}
+								data-testid="custom-provider-save-btn"
+							>
 								Add
 							</Button>
 						</div>

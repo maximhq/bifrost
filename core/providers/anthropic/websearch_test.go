@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -15,7 +16,7 @@ func TestWebSearch_OutputItemAdded_StoresID(t *testing.T) {
 
 	const itemID = "toolu_ws_storesid_test"
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	bifrostResp := &schemas.BifrostResponsesStreamResponse{
@@ -64,7 +65,7 @@ func TestWebSearch_FunctionCallArgumentsDelta_Skipped(t *testing.T) {
 
 	const itemID = "toolu_ws_skip_test"
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	// Pre-seed per-request state as if output_item.added already fired
@@ -74,8 +75,8 @@ func TestWebSearch_FunctionCallArgumentsDelta_Skipped(t *testing.T) {
 	partial := `{"query": "world news"`
 	bifrostResp := &schemas.BifrostResponsesStreamResponse{
 		Type:        schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-		OutputIndex: schemas.Ptr(0),
-		ItemID:      schemas.Ptr(itemID),
+		OutputIndex: new(0),
+		ItemID:      new(itemID),
 		Delta:       &partial,
 	}
 
@@ -95,7 +96,7 @@ func TestWebSearch_OutputItemDone_GeneratesSyntheticDeltas(t *testing.T) {
 
 	const itemID = "toolu_ws_synth_test"
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	// Pre-seed per-request state as if output_item.added already fired
@@ -174,7 +175,7 @@ func TestWebSearch_FullFlow_AnyUserAgent(t *testing.T) {
 
 	const itemID = "toolu_ws_fullflow_test"
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	var allEvents []*AnthropicStreamEvent
