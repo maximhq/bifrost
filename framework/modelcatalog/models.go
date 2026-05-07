@@ -97,10 +97,13 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 		isModelMatch := false
 		for _, m := range models {
 			normalizedCatalogModel := extractModelName(m)
+			bareCatalogModel := extractModelName(normalizedCatalogModel)
 			if m == model ||
 				normalizedCatalogModel == normalizedModel ||
+				bareCatalogModel == normalizedModel ||
 				mc.getBaseModelNameUnsafe(m) == mc.getBaseModelNameUnsafe(model) ||
-				mc.getBaseModelNameUnsafe(normalizedCatalogModel) == baseModel {
+				mc.getBaseModelNameUnsafe(normalizedCatalogModel) == baseModel ||
+				mc.getBaseModelNameUnsafe(bareCatalogModel) == baseModel {
 				isModelMatch = true
 				break
 			}

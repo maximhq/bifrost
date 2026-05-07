@@ -219,6 +219,17 @@ func TestGetProvidersForModel_OpenRouterNestedProviderModel(t *testing.T) {
 	assert.ElementsMatch(t, []schemas.ModelProvider{schemas.OpenRouter}, mc.GetProvidersForModel("gemini-2.5-flash"))
 }
 
+func TestGetProvidersForModel_OpenRouterTripleNestedProviderModel(t *testing.T) {
+	mc := newTestCatalog(
+		map[schemas.ModelProvider][]string{
+			schemas.OpenRouter: {"openrouter/google/gemini-2.5-flash"},
+		},
+		nil,
+	)
+
+	assert.ElementsMatch(t, []schemas.ModelProvider{schemas.OpenRouter}, mc.GetProvidersForModel("gemini-2.5-flash"))
+}
+
 func TestGetProvidersForModel_CustomProviderNestedProviderModel(t *testing.T) {
 	mc := newTestCatalog(
 		map[schemas.ModelProvider][]string{
