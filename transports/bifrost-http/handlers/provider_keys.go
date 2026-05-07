@@ -108,6 +108,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateProviderKeyRequestTimeout(key); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := key.BlacklistedModels.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
 		return
@@ -226,6 +231,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := mergedKey.Aliases.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
+		return
+	}
+
+	if err := validateProviderKeyRequestTimeout(mergedKey); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -490,6 +500,13 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
 		}
+	}
+	return nil
+}
+
+func validateProviderKeyRequestTimeout(key schemas.Key) error {
+	if key.RequestTimeoutInSeconds != nil && *key.RequestTimeoutInSeconds < 1 {
+		return fmt.Errorf("request_timeout_in_seconds must be at least 1")
 	}
 	return nil
 }

@@ -843,11 +843,11 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 			Type:     ChatToolTypeFunction,
 			Function: &ChatToolFunction{Name: "get_weather"},
 			// Mixed state: server-tool + custom fields also populated.
-			Custom:        &ChatToolCustom{},
-			Name:          "leaked_name",
-			MaxUses:       Ptr(5),
+			Custom:         &ChatToolCustom{},
+			Name:           "leaked_name",
+			MaxUses:        Ptr(5),
 			DisplayWidthPx: Ptr(1280),
-			MCPServerName: "leaked_server",
+			MCPServerName:  "leaked_server",
 		}
 		data, err := Marshal(tool)
 		require.NoError(t, err)
@@ -874,8 +874,8 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 		raw := string(data)
 
 		assert.Contains(t, raw, `"type":"custom"`)
-		assert.Contains(t, raw, `"my_custom"`)    // custom tool retains top-level Name
-		assert.Contains(t, raw, `"format"`)       // custom's format field
+		assert.Contains(t, raw, `"my_custom"`) // custom tool retains top-level Name
+		assert.Contains(t, raw, `"format"`)    // custom's format field
 		assert.NotContains(t, raw, `"function"`)
 		assert.NotContains(t, raw, `"should_be_stripped"`)
 		assert.NotContains(t, raw, `"max_uses"`)
@@ -883,9 +883,9 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 
 	t.Run("server_tool_type_clears_function_and_custom", func(t *testing.T) {
 		tool := ChatTool{
-			Type:    "web_search_20260209",
-			Name:    "web_search",
-			MaxUses: Ptr(5),
+			Type:           "web_search_20260209",
+			Name:           "web_search",
+			MaxUses:        Ptr(5),
 			AllowedCallers: []string{"direct"},
 			// Leaks
 			Function: &ChatToolFunction{Name: "should_be_stripped"},
@@ -1353,4 +1353,11 @@ func TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil(t *testing.T) {
 	copied := DeepCopyChatTool(original)
 
 	assert.Nil(t, copied.Annotations, "Annotations should stay nil when original has none")
+}
+
+func TestSonic_Key_NilRequestTimeoutSerializesAsNull(t *testing.T) {
+	key := Key{}
+	output, err := Marshal(key)
+	require.NoError(t, err)
+	assert.Contains(t, string(output), `"request_timeout_in_seconds":null`)
 }

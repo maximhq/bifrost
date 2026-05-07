@@ -240,9 +240,40 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, storedKey)
 	assert.Equal(t, "sk-test-key-v1", storedKey.Value.Val)
+	assert.Nil(t, storedKey.RequestTimeoutInSeconds)
+
+	timeout := 45
+	keyWithTimeout := schemas.Key{
+		ID:                      "key-uuid-2",
+		Name:                    "openai-timeout",
+		Value:                   *schemas.NewEnvVar("sk-test-key-timeout"),
+		Weight:                  1.0,
+		RequestTimeoutInSeconds: &timeout,
+	}
+
+	err = store.CreateProviderKey(ctx, "openai", keyWithTimeout)
+	require.NoError(t, err)
+
+	storedKeyWithTimeout, err := store.GetProviderKey(ctx, "openai", keyWithTimeout.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedKeyWithTimeout)
+	require.NotNil(t, storedKeyWithTimeout.RequestTimeoutInSeconds)
+	assert.Equal(t, 45, *storedKeyWithTimeout.RequestTimeoutInSeconds)
+
+	invalidTimeout := 0
+	err = store.CreateProviderKey(ctx, "openai", schemas.Key{
+		ID:                      "key-uuid-invalid-timeout",
+		Name:                    "openai-invalid-timeout",
+		Value:                   *schemas.NewEnvVar("sk-test-key-invalid-timeout"),
+		Weight:                  1.0,
+		RequestTimeoutInSeconds: &invalidTimeout,
+	})
+	require.Error(t, err)
 
 	key.Value = *schemas.NewEnvVar("sk-test-key-v2")
 	key.Weight = 2.0
+	updatedTimeout := 60
+	key.RequestTimeoutInSeconds = &updatedTimeout
 
 	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
 	require.NoError(t, err)
@@ -252,6 +283,20 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.NotNil(t, storedKey)
 	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
 	assert.Equal(t, 2.0, storedKey.Weight)
+	require.NotNil(t, storedKey.RequestTimeoutInSeconds)
+	assert.Equal(t, 60, *storedKey.RequestTimeoutInSeconds)
+
+	key.RequestTimeoutInSeconds = nil
+	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
+	require.NoError(t, err)
+
+	storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedKey)
+	assert.Nil(t, storedKey.RequestTimeoutInSeconds)
+
+	err = store.DeleteProviderKey(ctx, "openai", keyWithTimeout.ID)
+	require.NoError(t, err)
 
 	err = store.DeleteProviderKey(ctx, "openai", key.ID)
 	require.NoError(t, err)

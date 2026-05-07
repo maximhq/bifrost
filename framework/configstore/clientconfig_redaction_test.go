@@ -158,6 +158,24 @@ func TestProviderConfig_Redacted_DoesNotMutateOriginal(t *testing.T) {
 		"Redacted() or MarshalJSON mutated the original key Value")
 }
 
+func TestProviderConfig_Redacted_PreservesRequestTimeoutOverride(t *testing.T) {
+	timeout := 45
+	config := ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:                      "k1",
+			Name:                    "test",
+			Value:                   *schemas.NewEnvVar("sk-test"),
+			RequestTimeoutInSeconds: &timeout,
+		}},
+	}
+
+	redacted := config.Redacted()
+	require.NotNil(t, redacted)
+	require.Len(t, redacted.Keys, 1)
+	require.NotNil(t, redacted.Keys[0].RequestTimeoutInSeconds)
+	assert.Equal(t, 45, *redacted.Keys[0].RequestTimeoutInSeconds)
+}
+
 // TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets is a high-level smoke
 // test: build a config containing env-backed values across multiple provider types
 // and assert that no resolved secret string appears anywhere in the marshaled

@@ -451,12 +451,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			blacklistedModels = []string{} // Match models: empty JSON array, not null
 		}
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:                key.ID,
-			Name:              key.Name,
-			Models:            models,
-			BlacklistedModels: blacklistedModels,
-			Weight:            key.Weight,
-			ConfigHash:        key.ConfigHash,
+			ID:                      key.ID,
+			Name:                    key.Name,
+			Models:                  models,
+			BlacklistedModels:       blacklistedModels,
+			Weight:                  key.Weight,
+			RequestTimeoutInSeconds: key.RequestTimeoutInSeconds,
+			ConfigHash:              key.ConfigHash,
 		}
 		if key.Enabled != nil {
 			enabled := *key.Enabled
@@ -760,6 +761,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	if useForBatchAPI {
 		hash.Write([]byte("useForBatchAPI:true"))
+	}
+	if key.RequestTimeoutInSeconds != nil {
+		data, err := sonic.Marshal(key.RequestTimeoutInSeconds)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("requestTimeoutInSeconds:"))
+		hash.Write(data)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

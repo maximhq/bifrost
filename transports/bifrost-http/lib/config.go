@@ -965,21 +965,22 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:               dbKey.Name,
-					Value:              dbKey.Value,
-					Models:             dbKey.Models,
-					BlacklistedModels:  dbKey.BlacklistedModels,
-					Weight:             dbKey.Weight,
-					AzureKeyConfig:     dbKey.AzureKeyConfig,
-					VertexKeyConfig:    dbKey.VertexKeyConfig,
-					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					Aliases:            dbKey.Aliases,
-					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-					OllamaKeyConfig:    dbKey.OllamaKeyConfig,
-					SGLKeyConfig:       dbKey.SGLKeyConfig,
-					Enabled:            dbKey.Enabled,
-					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					Name:                    dbKey.Name,
+					Value:                   dbKey.Value,
+					Models:                  dbKey.Models,
+					BlacklistedModels:       dbKey.BlacklistedModels,
+					Weight:                  dbKey.Weight,
+					AzureKeyConfig:          dbKey.AzureKeyConfig,
+					VertexKeyConfig:         dbKey.VertexKeyConfig,
+					BedrockKeyConfig:        dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig:      dbKey.ReplicateKeyConfig,
+					Aliases:                 dbKey.Aliases,
+					VLLMKeyConfig:           dbKey.VLLMKeyConfig,
+					OllamaKeyConfig:         dbKey.OllamaKeyConfig,
+					SGLKeyConfig:            dbKey.SGLKeyConfig,
+					Enabled:                 dbKey.Enabled,
+					UseForBatchAPI:          dbKey.UseForBatchAPI,
+					RequestTimeoutInSeconds: dbKey.RequestTimeoutInSeconds,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -1046,21 +1047,22 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash for comparison
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:               dbKey.Name,
-					Value:              dbKey.Value,
-					Models:             dbKey.Models,
-					BlacklistedModels:  dbKey.BlacklistedModels,
-					Weight:             dbKey.Weight,
-					AzureKeyConfig:     dbKey.AzureKeyConfig,
-					VertexKeyConfig:    dbKey.VertexKeyConfig,
-					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					Aliases:            dbKey.Aliases,
-					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-					OllamaKeyConfig:    dbKey.OllamaKeyConfig,
-					SGLKeyConfig:       dbKey.SGLKeyConfig,
-					Enabled:            dbKey.Enabled,
-					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					Name:                    dbKey.Name,
+					Value:                   dbKey.Value,
+					Models:                  dbKey.Models,
+					BlacklistedModels:       dbKey.BlacklistedModels,
+					Weight:                  dbKey.Weight,
+					AzureKeyConfig:          dbKey.AzureKeyConfig,
+					VertexKeyConfig:         dbKey.VertexKeyConfig,
+					BedrockKeyConfig:        dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig:      dbKey.ReplicateKeyConfig,
+					Aliases:                 dbKey.Aliases,
+					VLLMKeyConfig:           dbKey.VLLMKeyConfig,
+					OllamaKeyConfig:         dbKey.OllamaKeyConfig,
+					SGLKeyConfig:            dbKey.SGLKeyConfig,
+					Enabled:                 dbKey.Enabled,
+					UseForBatchAPI:          dbKey.UseForBatchAPI,
+					RequestTimeoutInSeconds: dbKey.RequestTimeoutInSeconds,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -4416,14 +4418,15 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				blacklisted = []string{}
 			}
 			configStoreKey := configstoreTables.TableKey{
-				KeyID:             key.ID,
-				Name:              key.Name,
-				Value:             *key.Value.Redacted(),
-				Models:            models,
-				BlacklistedModels: blacklisted,
-				Weight:            bifrost.Ptr(key.Weight),
-				Provider:          string(providerKey),
-				ConfigHash:        key.ConfigHash,
+				KeyID:                   key.ID,
+				Name:                    key.Name,
+				Value:                   *key.Value.Redacted(),
+				Models:                  models,
+				BlacklistedModels:       blacklisted,
+				Weight:                  bifrost.Ptr(key.Weight),
+				Provider:                string(providerKey),
+				RequestTimeoutInSeconds: key.RequestTimeoutInSeconds,
+				ConfigHash:              key.ConfigHash,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

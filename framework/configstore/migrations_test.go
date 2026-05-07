@@ -1163,6 +1163,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 	for _, table := range criticalTables {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
+	assert.True(t, migrator.HasColumn(&tables.TableKey{}, "request_timeout_in_seconds"), "TableKey should include request_timeout_in_seconds")
 }
 
 func TestTriggerMigrations_Idempotent(t *testing.T) {
@@ -1184,6 +1185,7 @@ func TestTriggerMigrations_Idempotent(t *testing.T) {
 	// Tables should still be intact
 	assert.True(t, db.Migrator().HasTable(&tables.TableProvider{}), "TableProvider should still exist")
 	assert.True(t, db.Migrator().HasTable(&tables.TableKey{}), "TableKey should still exist")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "request_timeout_in_seconds"), "TableKey request_timeout_in_seconds should still exist")
 	assert.True(t, db.Migrator().HasTable(&tables.TableVirtualKey{}), "TableVirtualKey should still exist")
 }
 
