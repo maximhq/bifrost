@@ -14,15 +14,32 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// testLogger is a minimal schemas.Logger implementation for unit tests.
+type testLogger struct{}
+
+func (testLogger) Debug(string, ...any)                   {}
+func (testLogger) Info(string, ...any)                    {}
+func (testLogger) Warn(string, ...any)                    {}
+func (testLogger) Error(string, ...any)                   {}
+func (testLogger) Fatal(string, ...any)                   {}
+func (testLogger) SetLevel(schemas.LogLevel)              {}
+func (testLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
 // newTestSGLProvider creates an SGLProvider suitable for unit tests.
 // It uses a short timeout and no base URL (per-key URLs are expected).
 func newTestSGLProvider() *SGLProvider {
+	client := &fasthttp.Client{
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
 	return &SGLProvider{
-		client: &fasthttp.Client{
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 5 * time.Second,
-		},
-		networkConfig: schemas.NetworkConfig{},
+		client:          client,
+		streamingClient: client,
+		networkConfig:   schemas.NetworkConfig{},
+		logger:          testLogger{},
 	}
 }
 
@@ -121,4 +138,147 @@ func keys(m map[string]interface{}) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// noopPostHookRunner is a PostHookRunner that passes through results unchanged.
+func noopPostHookRunner(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return result, err
+}
+
+// streamCaptureServer returns an httptest.Server that captures the inbound
+// Authorization header into the provided channel and immediately closes the
+// SSE stream with a [DONE] sentinel. The streaming pipeline only needs to
+// have set the request headers by this point — the test asserts on what was
+// captured and does not need to fully drain the response.
+func streamCaptureServer(authCh chan<- string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture Authorization header (non-blocking; tests read it after the call).
+		select {
+		case authCh <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Send a single [DONE] marker so the stream terminates promptly.
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+}
+
+// TestChatCompletionStream_SetsAuthorizationHeader is a regression test for a
+// bug where ChatCompletionStream passed nil for the authHeader parameter to
+// the OpenAI streaming helper, causing SGLang servers (which always require
+// the api key configured via --api-key) to return 401 on streaming requests
+// while the non-streaming path worked. The fix mirrors the vLLM pattern of
+// building the auth header from key.Value.
+func TestChatCompletionStream_SetsAuthorizationHeader(t *testing.T) {
+	t.Parallel()
+
+	authCh := make(chan string, 1)
+	server := streamCaptureServer(authCh)
+	defer server.Close()
+
+	provider := newTestSGLProvider()
+	const apiKey = "sgl-streaming-secret"
+	key := schemas.Key{
+		ID:    "test-key",
+		Value: schemas.EnvVar{Val: apiKey},
+		SGLKeyConfig: &schemas.SGLKeyConfig{
+			URL: schemas.EnvVar{Val: server.URL},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	hello := "Hello"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.SGL,
+		Model:    "qwen",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &hello},
+			},
+		},
+	}
+
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletionStream returned error: %v", bifrostErr.Error.Message)
+	}
+
+	// Drain any chunks so the goroutine completes.
+	if streamChan != nil {
+		go func() {
+			for range streamChan {
+			}
+		}()
+	}
+
+	select {
+	case got := <-authCh:
+		want := "Bearer " + apiKey
+		if got != want {
+			t.Fatalf("expected Authorization header %q on streaming request, got %q", want, got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mock server did not receive a streaming request within timeout")
+	}
+}
+
+// TestTextCompletionStream_SetsAuthorizationHeader is the equivalent regression
+// test for TextCompletionStream, which had the same nil authHeader bug.
+func TestTextCompletionStream_SetsAuthorizationHeader(t *testing.T) {
+	t.Parallel()
+
+	authCh := make(chan string, 1)
+	server := streamCaptureServer(authCh)
+	defer server.Close()
+
+	provider := newTestSGLProvider()
+	const apiKey = "sgl-streaming-secret"
+	key := schemas.Key{
+		ID:    "test-key",
+		Value: schemas.EnvVar{Val: apiKey},
+		SGLKeyConfig: &schemas.SGLKeyConfig{
+			URL: schemas.EnvVar{Val: server.URL},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	prompt := "Hello"
+	req := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.SGL,
+		Model:    "qwen",
+		Input:    &schemas.TextCompletionInput{PromptStr: &prompt},
+	}
+
+	streamChan, bifrostErr := provider.TextCompletionStream(ctx, noopPostHookRunner, nil, key, req)
+	if bifrostErr != nil {
+		t.Fatalf("TextCompletionStream returned error: %v", bifrostErr.Error.Message)
+	}
+
+	if streamChan != nil {
+		go func() {
+			for range streamChan {
+			}
+		}()
+	}
+
+	select {
+	case got := <-authCh:
+		want := "Bearer " + apiKey
+		if got != want {
+			t.Fatalf("expected Authorization header %q on streaming request, got %q", want, got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mock server did not receive a streaming request within timeout")
+	}
 }
