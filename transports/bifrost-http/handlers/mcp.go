@@ -1462,6 +1462,11 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// Set discovered tools on the client
 		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
 
+		// Link oauth_config → MCP client so FK cascade fires on client deletion
+		if oauthConfig != nil {
+			linkOAuthConfigToMCPClient(ctx, h.store, oauthConfig, mcpClientConfig.ID)
+		}
+
 		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
 		message := fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", len(tools))
 		if isUpdateFlow {
@@ -1528,6 +1533,9 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Link oauth_config → MCP client so FK cascade fires on client deletion
+	linkOAuthConfigToMCPClient(ctx, h.store, oauthConfig, mcpClientConfig.ID)
+
 	// Clear pending MCP client config from oauth_config (cleanup)
 	if err := h.oauthHandler.RemovePendingMCPClient(oauthConfigID); err != nil {
 		logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to clear pending MCP client config: %v", err))
@@ -1540,4 +1548,16 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		message = "MCP client OAuth credentials updated successfully"
 	}
 	SendJSON(ctx, map[string]any{"status": "success", "message": message})
+}
+
+// linkOAuthConfigToMCPClient sets oauth_configs.config_mcp_client_id so that FK cascade
+// fires when the MCP client is deleted (deleting the client cascades to the oauth_config).
+func linkOAuthConfigToMCPClient(ctx context.Context, store *lib.Config, oauthConfig *configstoreTables.TableOauthConfig, mcpClientID string) {
+	if store.ConfigStore == nil || oauthConfig == nil {
+		return
+	}
+	oauthConfig.ConfigMCPClientID = &mcpClientID
+	if err := store.ConfigStore.UpdateOauthConfig(ctx, oauthConfig); err != nil {
+		logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to link oauth_config %s to MCP client %s: %v", oauthConfig.ID, mcpClientID, err))
+	}
 }

@@ -567,12 +567,13 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		expiresAt = bifrost.Ptr(exp)
 	}
 	tokenRecord := &tables.TableOauthToken{
-		ID:           tokenID,
-		AccessToken:  strings.TrimSpace(tokenResponse.AccessToken),
-		RefreshToken: strings.TrimSpace(tokenResponse.RefreshToken),
-		TokenType:    tokenResponse.TokenType,
-		ExpiresAt:    expiresAt,
-		Scopes:       string(scopesJSON),
+		ID:            tokenID,
+		OauthConfigID: &oauthConfig.ID,
+		AccessToken:   strings.TrimSpace(tokenResponse.AccessToken),
+		RefreshToken:  strings.TrimSpace(tokenResponse.RefreshToken),
+		TokenType:     tokenResponse.TokenType,
+		ExpiresAt:     expiresAt,
+		Scopes:        string(scopesJSON),
 	}
 
 	if err := p.configStore.CreateOauthToken(ctx, tokenRecord); err != nil {

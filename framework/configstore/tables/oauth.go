@@ -28,6 +28,8 @@ type TableOauthConfig struct {
 	ServerURL           string          `gorm:"type:text" json:"server_url"`                     // MCP server URL for OAuth discovery
 	UseDiscovery        bool            `gorm:"default:false" json:"use_discovery"`              // Flag to enable OAuth discovery
 	MCPClientConfigJSON *string         `gorm:"type:text" json:"-"`                              // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
+	ConfigMCPClientID   *string         `gorm:"type:varchar(255);index" json:"config_mcp_client_id,omitempty"`
+	ConfigMCPClient     *TableMCPClient `gorm:"foreignKey:ConfigMCPClientID;references:ClientID;constraint:OnDelete:CASCADE,OnUpdate:CASCADE" json:"-"`
 	EncryptionStatus    string          `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	CreatedAt           time.Time       `gorm:"index;not null" json:"created_at"`
 	UpdatedAt           time.Time       `gorm:"index;not null" json:"updated_at"`
@@ -107,10 +109,12 @@ type TableOauthToken struct {
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"` // "Bearer"
 	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`           // Token expiration (nil means unknown/non-expiring)
 	Scopes           string     `gorm:"type:text" json:"scopes"`                     // JSON array of granted scopes
-	LastRefreshedAt  *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"`    // Track when token was last refreshed
-	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
-	CreatedAt        time.Time  `gorm:"index;not null" json:"created_at"`
-	UpdatedAt        time.Time  `gorm:"index;not null" json:"updated_at"`
+	LastRefreshedAt  *time.Time        `gorm:"index" json:"last_refreshed_at,omitempty"`    // Track when token was last refreshed
+	OauthConfigID    *string           `gorm:"type:varchar(255);index" json:"oauth_config_id,omitempty"`
+	OauthConfig      *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"`
+	EncryptionStatus string            `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt        time.Time         `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time         `gorm:"index;not null" json:"updated_at"`
 }
 
 // TableName sets the table name
@@ -159,8 +163,9 @@ func (t *TableOauthToken) AfterFind(tx *gorm.DB) error {
 type TableOauthUserSession struct {
 	ID               string    `gorm:"type:varchar(255);primaryKey" json:"id"`                  // Session UUID
 	MCPClientID      string    `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`   // Which MCP server this auth is for
-	OauthConfigID    string    `gorm:"type:varchar(255);not null;index" json:"oauth_config_id"` // Template OAuth config (holds client_id, token_url, etc.)
-	State            string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"`         // CSRF state token sent to OAuth provider
+	OauthConfigID    string            `gorm:"type:varchar(255);not null;index" json:"oauth_config_id"` // Template OAuth config (holds client_id, token_url, etc.)
+	OauthConfig      *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"`
+	State            string            `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"`         // CSRF state token sent to OAuth provider
 	RedirectURI      string    `gorm:"type:text" json:"-"`                                      // Per-request redirect URI used in authorize step
 	CodeVerifier     string    `gorm:"type:text" json:"-"`                                      // PKCE code verifier (kept secret)
 	SessionToken     string    `gorm:"type:varchar(255)" json:"-"`                              // Bifrost session ID (links to oauth_per_user_sessions)
@@ -216,8 +221,9 @@ type TableOauthUserToken struct {
 	VirtualKeyID     *string    `gorm:"type:varchar(255);index:idx_vk_mcp" json:"virtual_key_id"`                            // VK identity (persistent across sessions)
 	UserID           *string    `gorm:"type:varchar(255);index:idx_user_mcp" json:"user_id"`                                 // Enterprise user identity (persistent across sessions)
 	MCPClientID      string     `gorm:"type:varchar(255);not null;index:idx_vk_mcp;index:idx_user_mcp" json:"mcp_client_id"` // Which MCP server
-	OauthConfigID    string     `gorm:"type:varchar(255);not null;index" json:"oauth_config_id"`                             // Template OAuth config
-	AccessToken      string     `gorm:"type:text;not null" json:"-"`                                                         // Encrypted user's OAuth access token
+	OauthConfigID    string            `gorm:"type:varchar(255);not null;index" json:"oauth_config_id"`                             // Template OAuth config
+	OauthConfig      *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"`
+	AccessToken      string            `gorm:"type:text;not null" json:"-"`                                                         // Encrypted user's OAuth access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                                                                  // Encrypted user's OAuth refresh token
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"`                                         // "Bearer"
 	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`                                                   // Token expiry (nil means unknown/non-expiring)
@@ -276,6 +282,10 @@ type TablePerUserOAuthClient struct {
 	GrantTypes   string    `gorm:"type:text" json:"grant_types"`            // JSON array of grant types
 	CreatedAt    time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt    time.Time `gorm:"index;not null" json:"updated_at"`
+
+	Sessions     []TablePerUserOAuthSession     `gorm:"foreignKey:ClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"`
+	PendingFlows []TablePerUserOAuthPendingFlow `gorm:"foreignKey:ClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"`
+	Codes        []TablePerUserOAuthCode        `gorm:"foreignKey:ClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"`
 }
 
 // TableName returns the table name for per-user OAuth clients.
@@ -293,8 +303,9 @@ type TablePerUserOAuthSession struct {
 	AccessTokenHash  string           `gorm:"type:varchar(64);uniqueIndex" json:"-"`             // SHA-256 hash for secure lookups
 	RefreshToken     string           `gorm:"type:text" json:"-"`                                // Bifrost-issued refresh token (encrypted, optional)
 	RefreshTokenHash string           `gorm:"type:varchar(64);index" json:"-"`                   // SHA-256 hash for secure lookups (not unique — refresh tokens are optional)
-	ClientID         string           `gorm:"type:varchar(255);not null;index" json:"client_id"` // Which OAuth client registered this session
-	VirtualKeyID     *string          `gorm:"type:varchar(255);index" json:"virtual_key_id"`     // Linked VK identity (set when VK is present during auth)
+	ClientID         string                   `gorm:"type:varchar(255);not null;index" json:"client_id"` // Which OAuth client registered this session
+	PerUserClient    *TablePerUserOAuthClient `gorm:"foreignKey:ClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"`
+	VirtualKeyID     *string                  `gorm:"type:varchar(255);index" json:"virtual_key_id"`     // Linked VK identity (set when VK is present during auth)
 	VirtualKey       *TableVirtualKey `gorm:"foreignKey:VirtualKeyID" json:"-"`                  // Linked VK identity (server-only, not serialized)
 	UserID           *string          `gorm:"type:varchar(255);index" json:"user_id"`            // Linked enterprise user identity (set when user ID is present)
 	ExpiresAt        time.Time        `gorm:"index;not null" json:"expires_at"`
@@ -351,11 +362,13 @@ type TablePerUserOAuthCode struct {
 	ID            string    `gorm:"type:varchar(255);primaryKey" json:"id"`
 	Code          string    `gorm:"type:text;not null" json:"-"`           // Authorization code
 	CodeHash      string    `gorm:"type:varchar(64);uniqueIndex" json:"-"` // SHA-256 hash for secure lookups
-	ClientID      string    `gorm:"type:varchar(255);not null;index" json:"client_id"`
-	RedirectURI   string    `gorm:"type:text;not null" json:"redirect_uri"`
+	ClientID      string                   `gorm:"type:varchar(255);not null;index" json:"client_id"`
+	PerUserClient *TablePerUserOAuthClient `gorm:"foreignKey:ClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"`
+	RedirectURI   string                   `gorm:"type:text;not null" json:"redirect_uri"`
 	CodeChallenge string    `gorm:"type:varchar(255);not null" json:"-"` // PKCE S256 challenge
 	Scopes        string    `gorm:"type:text" json:"scopes"`             // JSON array of requested scopes
-	SessionID     string    `gorm:"type:varchar(255);index" json:"-"`    // Links to the TablePerUserOAuthSession created during consent submit
+	SessionID      string                    `gorm:"type:varchar(255);index" json:"-"` // Links to the TablePerUserOAuthSession created during consent submit
+	PerUserSession *TablePerUserOAuthSession `gorm:"foreignKey:SessionID;references:ID;constraint:OnDelete:CASCADE" json:"-"`
 	ExpiresAt     time.Time `gorm:"index;not null" json:"expires_at"`    // 5 min TTL
 	Used          bool      `gorm:"default:false;not null" json:"used"`  // Single-use flag
 	CreatedAt     time.Time `gorm:"index;not null" json:"created_at"`
@@ -379,8 +392,9 @@ func (TablePerUserOAuthCode) TableName() string {
 // screen (VK entry + per-MCP upstream auth) before a real authorization code is issued.
 type TablePerUserOAuthPendingFlow struct {
 	ID                string    `gorm:"type:varchar(255);primaryKey" json:"id"`
-	ClientID          string    `gorm:"type:varchar(255);not null;index" json:"client_id"` // Registered OAuth client (from authorize request)
-	RedirectURI       string    `gorm:"type:text;not null" json:"redirect_uri"`            // Client's callback URL
+	ClientID          string                   `gorm:"type:varchar(255);not null;index" json:"client_id"` // Registered OAuth client (from authorize request)
+	PerUserClient     *TablePerUserOAuthClient `gorm:"foreignKey:ClientID;references:ClientID;constraint:OnDelete:CASCADE" json:"-"`
+	RedirectURI       string                   `gorm:"type:text;not null" json:"redirect_uri"` // Client's callback URL
 	CodeChallenge     string    `gorm:"type:varchar(255);not null" json:"-"`               // PKCE S256 challenge (echoed into the final code)
 	State             string    `gorm:"type:text;not null" json:"-"`                       // Original OAuth state (echoed back on final redirect)
 	VirtualKeyID      *string   `gorm:"type:varchar(255);index" json:"virtual_key_id"`     // Set if user chose VK identity

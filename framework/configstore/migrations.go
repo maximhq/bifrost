@@ -710,6 +710,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCleanupOAuthOrphans(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOAuthRelationalConstraints(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7523,6 +7529,136 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 		},
 		Rollback: func(tx *gorm.DB) error {
 			_ = tx.Migrator().DropIndex(&tables.TableTeam{}, "idx_governance_teams_name")
+			return nil
+		},
+	})
+}
+
+// migrationCleanupOAuthOrphans removes orphaned OAuth rows before FK constraints are added.
+// Runs first so the subsequent constraint migration never hits a foreign-key violation.
+func migrationCleanupOAuthOrphans(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "cleanup_oauth_orphans",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, q := range []string{
+				`DELETE FROM oauth_user_sessions WHERE oauth_config_id NOT IN (SELECT id FROM oauth_configs)`,
+				`DELETE FROM oauth_user_tokens WHERE oauth_config_id NOT IN (SELECT id FROM oauth_configs)`,
+				`DELETE FROM oauth_per_user_pending_flows WHERE client_id NOT IN (SELECT client_id FROM oauth_per_user_clients)`,
+				`DELETE FROM oauth_per_user_sessions WHERE client_id NOT IN (SELECT client_id FROM oauth_per_user_clients)`,
+				`DELETE FROM oauth_per_user_codes WHERE session_id = '' OR session_id NOT IN (SELECT id FROM oauth_per_user_sessions)`,
+				`DELETE FROM oauth_per_user_codes WHERE client_id NOT IN (SELECT client_id FROM oauth_per_user_clients)`,
+			} {
+				if err := tx.Exec(q).Error; err != nil {
+					return fmt.Errorf("oauth orphan cleanup (%s): %w", q, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	})
+}
+
+// fkEntry pairs a GORM model with the relationship field name used by HasConstraint/CreateConstraint.
+type fkEntry struct {
+	model interface{}
+	name  string
+	desc  string
+}
+
+// migrationAddOAuthRelationalConstraints adds new FK columns and constraints that wire up
+// the OAuth lifecycle chain. Must run after migrationCleanupOAuthOrphans.
+func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "add_oauth_relational_constraints",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Add nullable FK columns if they don't exist yet
+			if !mg.HasColumn(&tables.TableOauthConfig{}, "config_mcp_client_id") {
+				if err := mg.AddColumn(&tables.TableOauthConfig{}, "ConfigMCPClientID"); err != nil {
+					return fmt.Errorf("add config_mcp_client_id column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableOauthToken{}, "oauth_config_id") {
+				if err := mg.AddColumn(&tables.TableOauthToken{}, "OauthConfigID"); err != nil {
+					return fmt.Errorf("add oauth_tokens.oauth_config_id column: %w", err)
+				}
+			}
+
+			// Backfill config_mcp_client_id from the reverse pointer stored on config_mcp_clients
+			if err := tx.Exec(`
+				UPDATE oauth_configs
+				SET config_mcp_client_id = (
+					SELECT client_id FROM config_mcp_clients
+					WHERE config_mcp_clients.oauth_config_id = oauth_configs.id
+					LIMIT 1
+				)
+				WHERE config_mcp_client_id IS NULL
+			`).Error; err != nil {
+				return fmt.Errorf("backfill config_mcp_client_id: %w", err)
+			}
+
+			// Backfill oauth_tokens.oauth_config_id from oauth_configs.token_id
+			if err := tx.Exec(`
+				UPDATE oauth_tokens
+				SET oauth_config_id = (
+					SELECT id FROM oauth_configs
+					WHERE oauth_configs.token_id = oauth_tokens.id
+					LIMIT 1
+				)
+				WHERE oauth_config_id IS NULL
+			`).Error; err != nil {
+				return fmt.Errorf("backfill oauth_tokens.oauth_config_id: %w", err)
+			}
+
+			// Drop old (incorrect) CASCADE on config_mcp_clients.OauthConfig if it exists.
+			// That constraint deleted the MCP client when an oauth_config was deleted — backwards.
+			if mg.HasConstraint(&tables.TableMCPClient{}, "OauthConfig") {
+				if err := mg.DropConstraint(&tables.TableMCPClient{}, "OauthConfig"); err != nil {
+					return fmt.Errorf("drop old config_mcp_clients OauthConfig constraint: %w", err)
+				}
+			}
+
+			// Create FK constraints in lifecycle order
+			for _, e := range []fkEntry{
+				{&tables.TableOauthConfig{}, "ConfigMCPClient", "oauth_configs → config_mcp_clients"},
+				{&tables.TableOauthToken{}, "OauthConfig", "oauth_tokens → oauth_configs"},
+				{&tables.TableOauthUserSession{}, "OauthConfig", "oauth_user_sessions → oauth_configs"},
+				{&tables.TableOauthUserToken{}, "OauthConfig", "oauth_user_tokens → oauth_configs"},
+				{&tables.TablePerUserOAuthClient{}, "PendingFlows", "oauth_per_user_pending_flows → oauth_per_user_clients"},
+				{&tables.TablePerUserOAuthClient{}, "Sessions", "oauth_per_user_sessions → oauth_per_user_clients"},
+				{&tables.TablePerUserOAuthClient{}, "Codes", "oauth_per_user_codes → oauth_per_user_clients"},
+				{&tables.TablePerUserOAuthCode{}, "PerUserSession", "oauth_per_user_codes → oauth_per_user_sessions"},
+			} {
+				if !mg.HasConstraint(e.model, e.name) {
+					if err := mg.CreateConstraint(e.model, e.name); err != nil {
+						return fmt.Errorf("failed to create FK %s: %w", e.desc, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, e := range []fkEntry{
+				{&tables.TablePerUserOAuthCode{}, "PerUserSession", "oauth_per_user_codes → oauth_per_user_sessions"},
+				{&tables.TablePerUserOAuthClient{}, "Codes", "oauth_per_user_codes → oauth_per_user_clients"},
+				{&tables.TablePerUserOAuthClient{}, "Sessions", "oauth_per_user_sessions → oauth_per_user_clients"},
+				{&tables.TablePerUserOAuthClient{}, "PendingFlows", "oauth_per_user_pending_flows → oauth_per_user_clients"},
+				{&tables.TableOauthUserToken{}, "OauthConfig", "oauth_user_tokens → oauth_configs"},
+				{&tables.TableOauthUserSession{}, "OauthConfig", "oauth_user_sessions → oauth_configs"},
+				{&tables.TableOauthToken{}, "OauthConfig", "oauth_tokens → oauth_configs"},
+				{&tables.TableOauthConfig{}, "ConfigMCPClient", "oauth_configs → config_mcp_clients"},
+			} {
+				if mg.HasConstraint(e.model, e.name) {
+					_ = mg.DropConstraint(e.model, e.name)
+				}
+			}
+			_ = mg.DropColumn(&tables.TableOauthToken{}, "OauthConfigID")
+			_ = mg.DropColumn(&tables.TableOauthConfig{}, "ConfigMCPClientID")
 			return nil
 		},
 	})
