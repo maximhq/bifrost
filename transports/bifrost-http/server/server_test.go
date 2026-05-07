@@ -4,8 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -42,6 +45,51 @@ func (s *updateStatusOnlyConfigStore) UpdateStatus(ctx context.Context, provider
 		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: errorMsg}},
 	})
 	return nil
+}
+
+func TestRegisterAPIRoutes_SkipsGovernanceHandlerWithoutConfigStore(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	handlers.SetLogger(noopTestLogger{})
+	defer func() { logger = prevLogger }()
+
+	governancePlugin, err := governance.Init(
+		context.Background(),
+		&governance.Config{},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{},
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("expected governance plugin to initialize in memory-only mode: %v", err)
+	}
+
+	clientConfig := lib.DefaultClientConfig
+	config := &lib.Config{
+		ConfigStore:      nil,
+		ClientConfig:     &clientConfig,
+		Providers:        map[schemas.ModelProvider]configstore.ProviderConfig{},
+		GovernanceConfig: &configstore.GovernanceConfig{},
+	}
+	if err := config.ReloadPlugin(governancePlugin); err != nil {
+		t.Fatalf("expected governance plugin to load: %v", err)
+	}
+
+	serverCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	server := &BifrostHTTPServer{
+		Ctx:    serverCtx,
+		Config: config,
+		Router: router.New(),
+	}
+
+	if err := server.RegisterAPIRoutes(context.Background(), server); err != nil {
+		t.Fatalf("expected API route registration to tolerate nil ConfigStore in file-only mode: %v", err)
+	}
 }
 
 func TestUpdateKeyStatus_KeylessProviderUpdatesProviderStatusInMemory(t *testing.T) {
