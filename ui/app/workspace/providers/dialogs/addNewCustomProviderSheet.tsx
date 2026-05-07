@@ -124,13 +124,13 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 
 	return (
 		<>
-			<SheetHeader className="flex shrink-0 flex-col items-start">
+			<SheetHeader className="flex shrink-0 flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 				<SheetTitle>Add Custom Provider</SheetTitle>
 				<SheetDescription>Enter the details of your custom provider.</SheetDescription>
 			</SheetHeader>
 			<Form {...form}>
-				<form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-					<div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto">
+				<form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col">
+					<div className="min-h-0 flex-1 space-y-4 px-8 pb-4">
 						<FormField
 							control={form.control}
 							name="name"
@@ -226,19 +226,19 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							providerType={form.watch("baseFormat") as BaseProvider}
 							disabled={!hasProviderCreateAccess}
 						/>
-						<div className="align-end mt-10 ml-auto flex flex-row gap-2 border-t pt-4">
-							<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
-								Cancel
-							</Button>
-							<Button
-								type="submit"
-								isLoading={isAddingProvider}
-								disabled={!hasProviderCreateAccess}
-								data-testid="custom-provider-save-btn"
-							>
-								Add
-							</Button>
-						</div>
+					</div>
+					<div className="w-full ml-auto flex flex-row gap-2 bg-card sticky bottom-0 border-t px-8 py-4">
+						<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
+							Cancel
+						</Button>
+						<Button
+							type="submit"
+							isLoading={isAddingProvider}
+							disabled={!hasProviderCreateAccess}
+							data-testid="custom-provider-save-btn"
+						>
+							Add
+						</Button>
 					</div>
 				</form>
 			</Form>
@@ -249,7 +249,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 export default function AddCustomProviderSheet(props: Props) {
 	return (
 		<Sheet open={props.show} onOpenChange={(open) => !open && props.onClose()}>
-			<SheetContent className="custom-scrollbar flex flex-col p-8 sm:max-w-3xl" data-testid="custom-provider-sheet">
+			<SheetContent data-testid="custom-provider-sheet" className="p-0 pt-4">
 				<AddCustomProviderSheetContent {...props} />
 			</SheetContent>
 		</Sheet>
