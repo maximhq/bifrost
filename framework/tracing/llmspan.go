@@ -269,6 +269,18 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 			if resp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
 				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens
 			}
+			if d := resp.Usage.PromptTokensDetails.CachedWriteTokenDetails; d != nil {
+				if d.CachedWriteTokens5m > 0 {
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite5m] = d.CachedWriteTokens5m
+				}
+				if d.CachedWriteTokens1h > 0 {
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite1h] = d.CachedWriteTokens1h
+				}
+			}
+		}
+
+		if resp.Usage.Cost != nil {
+			attrs[schemas.AttrUsageCost] = resp.Usage.Cost.TotalCost
 		}
 
 		if resp.Usage.CompletionTokensDetails != nil {
@@ -784,6 +796,63 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrInputTokens] = resp.Usage.InputTokens
 		attrs[schemas.AttrOutputTokens] = resp.Usage.OutputTokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+
+		if resp.Usage.Cost != nil {
+			attrs[schemas.AttrUsageCost] = resp.Usage.Cost.TotalCost
+		}
+
+		if d := resp.Usage.InputTokensDetails; d != nil {
+			if d.TextTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsText] = d.TextTokens
+			}
+			if d.AudioTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsAudio] = d.AudioTokens
+			}
+			if d.ImageTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsImage] = d.ImageTokens
+			}
+			if d.CachedReadTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens
+			}
+			if d.CachedWriteTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsCachedWrite] = d.CachedWriteTokens
+			}
+			if wd := d.CachedWriteTokenDetails; wd != nil {
+				if wd.CachedWriteTokens5m > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
+				}
+				if wd.CachedWriteTokens1h > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
+				}
+			}
+		}
+
+		if d := resp.Usage.OutputTokensDetails; d != nil {
+			if d.TextTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsText] = d.TextTokens
+			}
+			if d.AudioTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsAudio] = d.AudioTokens
+			}
+			if d.ImageTokens != nil && *d.ImageTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsImage] = *d.ImageTokens
+			}
+			if d.ReasoningTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsReason] = d.ReasoningTokens
+			}
+			if d.AcceptedPredictionTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsAccept] = d.AcceptedPredictionTokens
+			}
+			if d.RejectedPredictionTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsReject] = d.RejectedPredictionTokens
+			}
+			if d.CitationTokens != nil && *d.CitationTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsCite] = *d.CitationTokens
+			}
+			if d.NumSearchQueries != nil && *d.NumSearchQueries > 0 {
+				attrs[schemas.AttrOutputTokenDetailsSearch] = *d.NumSearchQueries
+			}
+		}
 	}
 }
 

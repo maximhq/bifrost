@@ -74,8 +74,13 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		otelSpan := p.convertSpanToOTELSpan(trace.TraceID, span)
-		if span == trace.RootSpan && len(p.instanceAttrs) > 0 {
-			otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
+		if span == trace.RootSpan {
+			if requestID := trace.GetRequestID(); requestID != "" {
+				otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrRequestID, requestID))
+			}
+			if len(p.instanceAttrs) > 0 {
+				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
+			}
 		}
 		otelSpans = append(otelSpans, otelSpan)
 	}
