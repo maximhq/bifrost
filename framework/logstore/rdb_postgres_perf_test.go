@@ -23,7 +23,9 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 
 	// Clean slate — drop test-owned tables but preserve the shared migrations
 	// table so concurrent test packages (e.g. configstore) are not disrupted.
-	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE")
+	for _, view := range allMatViewNames() {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
 	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE")
 	db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE")
 	db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE")

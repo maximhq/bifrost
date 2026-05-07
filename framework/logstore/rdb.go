@@ -2732,6 +2732,9 @@ func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
 // GetDistinctAliases returns all unique non-empty alias values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetDistinctAliases(ctx context.Context) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctAliasesFromMatView(ctx)
+	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var aliases []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
@@ -2765,7 +2768,11 @@ var allowedKeyPairColumns = map[string]struct{}{
 // idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
 func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
-		return s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol)
+		results, served, err := s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol)
+		if served {
+			return results, err
+		}
+		// Pair has no per-dimension matview registered — fall through to raw path.
 	}
 	if _, ok := allowedKeyPairColumns[idCol]; !ok {
 		return nil, fmt.Errorf("invalid id column: %s", idCol)
@@ -2820,6 +2827,9 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 // GetDistinctStopReasons returns all unique non-empty stop_reason values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctStopReasonsFromMatView(ctx)
+	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var stopReasons []string
 	err := s.db.WithContext(ctx).Model(&Log{}).

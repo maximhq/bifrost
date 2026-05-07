@@ -316,6 +316,11 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddStopReasonColumn(ctx, db); err != nil {
 		return err
 	}
+	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
+	// release. Dropping mv_logs_filterdata while old replicas are still
+	// serving /api/logs/filterdata from it would surface "relation does not
+	// exist" during rolling deploys. A follow-up release wires it in once
+	// this one is fully rolled out. See the function's docstring.
 	return nil
 }
 
@@ -2588,6 +2593,48 @@ func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gor
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while recreating matviews with governance columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationSplitFilterDataMatView drops the legacy mv_logs_filterdata view so
+// ensureMatViews recreates it as per-dimension matviews (mv_filter_models,
+// mv_filter_selected_keys, ...). The old view DISTINCTed across 16 columns and
+// could grow nearly as large as the source `logs` table on multi-tenant
+// deployments, making REFRESH ... CONCURRENTLY memory-intensive. Splitting per
+// dimension keeps each view bounded by a single column's cardinality.
+//
+// NOT CALLED YET. Multi-replica deployments do rolling restarts, so dropping
+// mv_logs_filterdata in this release would make every filterdata request on
+// not-yet-upgraded replicas return "relation does not exist" until they
+// restart. The per-dimension views ship in this release and the legacy view
+// is intentionally left in place. A follow-up release — after this one has
+// fully rolled out everywhere — will wire this migration into RunMigrations
+// (or add "mv_logs_filterdata" to legacyMatViewNames in matviews.go) to
+// actually perform the drop.
+func migrationSplitFilterDataMatView(ctx context.Context, db *gorm.DB) error {
+	// Materialized views are PostgreSQL-only; skip on other dialects.
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_split_filter_data_matview",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE").Error; err != nil {
+				return fmt.Errorf("failed to drop legacy mv_logs_filterdata: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback — ensureMatViews recreates the per-dim views on next startup.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while splitting filter-data matview: %s", err.Error())
 	}
 	return nil
 }

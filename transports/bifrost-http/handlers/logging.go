@@ -27,10 +27,79 @@ type LoggingHandler struct {
 	logManager          logging.LogManager
 	redactedKeysManager RedactedKeysManager
 	config              *lib.Config
+
+	// filterDataCache memoizes /api/logs/filterdata response bodies. Filter
+	// dropdowns don't need request-fresh data and the underlying matview-backed
+	// query set is heavy; a short TTL plus single-flight collapses hot reloads
+	// (every page load fires this) into one DB roundtrip.
+	filterDataCache    filterDataCache
+	mcpFilterDataCache filterDataCache
 }
 
 // Keep session log page size in one place so the session sheet limit is easy to tune later.
 const sessionLogPageLimit = 500
+
+// filterDataCacheTTL is short enough that newly used models/keys appear in
+// dropdowns within ~half a minute — matview refresh runs every 30s anyway, so a
+// longer TTL would just hide stale results.
+const filterDataCacheTTL = 30 * time.Second
+
+// filterDataFanOutLimit caps how many parallel goroutines hit the DB for one
+// filterdata request. The handler issues 12 independent SELECT DISTINCTs;
+// firing all of them concurrently spikes both the Go heap (12 result sets held
+// simultaneously) and the PG connection pool. 4 keeps it bounded while
+// preserving most of the latency win over serial.
+const filterDataFanOutLimit = 4
+
+// filterDataCache stores one cached response per cache key. Entries are simple
+// JSON-ready maps — by the time we reach the cache we've already done all the
+// redaction/merging the handler does. Single-flight is implemented via a per-
+// key sync.Mutex so that on cache miss only one request hits the DB and the
+// rest wait for it.
+type filterDataCache struct {
+	mu      sync.Mutex
+	entries map[string]*filterDataCacheEntry
+}
+
+type filterDataCacheEntry struct {
+	mu        sync.Mutex
+	expiresAt time.Time
+	payload   map[string]interface{}
+}
+
+// load returns the cached payload for key if it hasn't expired. The returned
+// entry is locked for single-flight: callers MUST call store() or release()
+// before discarding it.
+func (c *filterDataCache) load(key string) (*filterDataCacheEntry, map[string]interface{}, bool) {
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = make(map[string]*filterDataCacheEntry)
+	}
+	entry, ok := c.entries[key]
+	if !ok {
+		entry = &filterDataCacheEntry{}
+		c.entries[key] = entry
+	}
+	c.mu.Unlock()
+
+	entry.mu.Lock()
+	if !entry.expiresAt.IsZero() && time.Now().Before(entry.expiresAt) && entry.payload != nil {
+		payload := entry.payload
+		entry.mu.Unlock()
+		return entry, payload, true
+	}
+	return entry, nil, false
+}
+
+func (c *filterDataCache) store(entry *filterDataCacheEntry, payload map[string]interface{}) {
+	entry.payload = payload
+	entry.expiresAt = time.Now().Add(filterDataCacheTTL)
+	entry.mu.Unlock()
+}
+
+func (c *filterDataCache) release(entry *filterDataCacheEntry) {
+	entry.mu.Unlock()
+}
 
 func parseParentRequestIDFilter(ctx *fasthttp.RequestCtx) string {
 	if parentRequestID := string(ctx.QueryArgs().Peek("parent_request_id")); strings.TrimSpace(parentRequestID) != "" {
@@ -926,6 +995,22 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
 
+	// Cache key includes hideDeletedVirtualKeys because it changes the output
+	// (deleted virtual keys are filtered out post-redaction when the flag is on).
+	cacheKey := fmt.Sprintf("hide_deleted=%v", hideDeletedVirtualKeys)
+	entry, cached, ok := h.filterDataCache.load(cacheKey)
+	if ok {
+		SendJSON(ctx, cached)
+		return
+	}
+	// We hold entry.mu for single-flight; ensure it's released on every exit.
+	released := false
+	defer func() {
+		if !released {
+			h.filterDataCache.release(entry)
+		}
+	}()
+
 	var (
 		models         []string
 		aliases        []string
@@ -943,6 +1028,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	)
 
 	g, gCtx := errgroup.WithContext(ctx)
+	// Cap parallel DB load: we issue 12 SELECT DISTINCTs and previously fired
+	// them all at once, which was the dominant Go-heap spike on this endpoint.
+	g.SetLimit(filterDataFanOutLimit)
 
 	g.Go(func() error {
 		result := h.logManager.GetAvailableModels(gCtx)
@@ -1120,7 +1208,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	if metadataKeys == nil {
 		metadataKeys = make(map[string][]string)
 	}
-	SendJSON(ctx, map[string]interface{}{"models": models, "aliases": aliases, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines, "stop_reasons": stopReasons, "teams": teams, "customers": customers, "users": users, "business_units": businessUnits, "metadata_keys": metadataKeys})
+	payload := map[string]interface{}{"models": models, "aliases": aliases, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines, "stop_reasons": stopReasons, "teams": teams, "customers": customers, "users": users, "business_units": businessUnits, "metadata_keys": metadataKeys}
+	h.filterDataCache.store(entry, payload)
+	released = true
+	SendJSON(ctx, payload)
 }
 
 // deleteLogs handles DELETE /api/logs - Delete logs by their IDs
@@ -1605,6 +1696,19 @@ func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
 
+	cacheKey := fmt.Sprintf("hide_deleted=%v", hideDeletedVirtualKeys)
+	entry, cached, ok := h.mcpFilterDataCache.load(cacheKey)
+	if ok {
+		SendJSON(ctx, cached)
+		return
+	}
+	released := false
+	defer func() {
+		if !released {
+			h.mcpFilterDataCache.release(entry)
+		}
+	}()
+
 	toolNames, err := h.logManager.GetAvailableToolNames(ctx)
 	if err != nil {
 		logger.Error("failed to get available tool names: %v", err)
@@ -1652,11 +1756,14 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 		virtualKeysArray = append(virtualKeysArray, key)
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	payload := map[string]interface{}{
 		"tool_names":    toolNames,
 		"server_labels": serverLabels,
 		"virtual_keys":  virtualKeysArray,
-	})
+	}
+	h.mcpFilterDataCache.store(entry, payload)
+	released = true
+	SendJSON(ctx, payload)
 }
 
 // deleteMCPLogs handles DELETE /api/mcp-logs - Delete MCP tool logs by their IDs

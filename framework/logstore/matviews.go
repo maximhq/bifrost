@@ -2,9 +2,11 @@ package logstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -58,39 +60,127 @@ CREATE UNIQUE INDEX IF NOT EXISTS mv_logs_hourly_uniq
 ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id)
 `
 
-// mvLogsFilterdataDDL creates a materialized view of distinct filter values
-// (models, providers, keys, routing rules, engines) from logs in the last 60
-// days. Used to populate filter dropdowns without scanning the raw table.
-const mvLogsFilterdataDDL = `
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_logs_filterdata AS
-SELECT DISTINCT
-    model,
-    provider,
-    selected_key_id,
-    selected_key_name,
-    COALESCE(virtual_key_id, '') AS virtual_key_id,
-    COALESCE(virtual_key_name, '') AS virtual_key_name,
-    COALESCE(routing_rule_id, '') AS routing_rule_id,
-    COALESCE(routing_rule_name, '') AS routing_rule_name,
-    COALESCE(routing_engines_used, '') AS routing_engines_used,
-    COALESCE(user_id, '') AS user_id,
-    COALESCE(team_id, '') AS team_id,
-    COALESCE(team_name, '') AS team_name,
-    COALESCE(customer_id, '') AS customer_id,
-    COALESCE(customer_name, '') AS customer_name,
-    COALESCE(business_unit_id, '') AS business_unit_id,
-    COALESCE(business_unit_name, '') AS business_unit_name
-FROM logs
-WHERE timestamp >= NOW() - INTERVAL '60 days'
-  AND model IS NOT NULL AND model != ''
-`
+// Per-dimension filter matviews. The previous single 16-column DISTINCT view
+// (mv_logs_filterdata) had a row count proportional to the Cartesian-ish product
+// of all dimension cardinalities — for tenants with many users/customers it grew
+// nearly as large as the source `logs` table, which made REFRESH MATERIALIZED
+// VIEW CONCURRENTLY both memory- and disk-intensive (it builds a full second
+// copy and diffs). Splitting per-dimension keeps each view bounded by the
+// cardinality of one column (or one pair), so refreshes are cheap and reads are
+// constant-time.
+//
+// Window matches defaultFilterDataCutoffDays (30 days) so the matview path and
+// raw-table fallback agree on what "recent" means.
+const filterDataMatViewWindow = "30 days"
 
-// mvLogsFilterdataUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
-// Includes both ID and name columns so renamed keys don't cause duplicate violations.
-const mvLogsFilterdataUniqueIdx = `
-CREATE UNIQUE INDEX IF NOT EXISTS mv_logs_filterdata_uniq
-ON mv_logs_filterdata (model, provider, selected_key_id, selected_key_name, virtual_key_id, virtual_key_name, routing_rule_id, routing_rule_name, routing_engines_used, user_id, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name)
-`
+// filterMatViewDef describes a single per-dimension materialized view.
+//
+//   - name:       view name
+//   - selectExpr: comma-separated list of result columns (already COALESCEd if needed)
+//   - whereExpr:  predicate that filters out empty rows for this dimension
+//   - uniqueIdx:  comma-separated columns for the unique index (required for
+//     REFRESH ... CONCURRENTLY)
+type filterMatViewDef struct {
+	name       string
+	selectExpr string
+	whereExpr  string
+	uniqueIdx  string
+}
+
+// filterMatViews enumerates every per-dimension materialized view used to
+// populate filter dropdowns on the logs page. Order matters only for
+// deterministic startup logs.
+var filterMatViews = []filterMatViewDef{
+	{
+		name:       "mv_filter_models",
+		selectExpr: "model, provider",
+		whereExpr:  "model IS NOT NULL AND model != ''",
+		uniqueIdx:  "model, provider",
+	},
+	{
+		name:       "mv_filter_aliases",
+		selectExpr: "alias",
+		whereExpr:  "alias IS NOT NULL AND alias != ''",
+		uniqueIdx:  "alias",
+	},
+	{
+		name:       "mv_filter_stop_reasons",
+		selectExpr: "stop_reason",
+		whereExpr:  "stop_reason IS NOT NULL AND stop_reason != ''",
+		uniqueIdx:  "stop_reason",
+	},
+	{
+		name:       "mv_filter_routing_engines",
+		selectExpr: "routing_engines_used",
+		whereExpr:  "routing_engines_used IS NOT NULL AND routing_engines_used != ''",
+		uniqueIdx:  "routing_engines_used",
+	},
+	{
+		name:       "mv_filter_selected_keys",
+		selectExpr: "selected_key_id AS id, selected_key_name AS name",
+		whereExpr:  "selected_key_id IS NOT NULL AND selected_key_id != '' AND selected_key_name IS NOT NULL AND selected_key_name != ''",
+		uniqueIdx:  "id, name",
+	},
+	{
+		name:       "mv_filter_virtual_keys",
+		selectExpr: "virtual_key_id AS id, virtual_key_name AS name",
+		whereExpr:  "virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != ''",
+		uniqueIdx:  "id, name",
+	},
+	{
+		name:       "mv_filter_routing_rules",
+		selectExpr: "routing_rule_id AS id, routing_rule_name AS name",
+		whereExpr:  "routing_rule_id IS NOT NULL AND routing_rule_id != '' AND routing_rule_name IS NOT NULL AND routing_rule_name != ''",
+		uniqueIdx:  "id, name",
+	},
+	{
+		name:       "mv_filter_teams",
+		selectExpr: "team_id AS id, team_name AS name",
+		whereExpr:  "team_id IS NOT NULL AND team_id != '' AND team_name IS NOT NULL AND team_name != ''",
+		uniqueIdx:  "id, name",
+	},
+	{
+		name:       "mv_filter_customers",
+		selectExpr: "customer_id AS id, customer_name AS name",
+		whereExpr:  "customer_id IS NOT NULL AND customer_id != '' AND customer_name IS NOT NULL AND customer_name != ''",
+		uniqueIdx:  "id, name",
+	},
+	{
+		name:       "mv_filter_users",
+		selectExpr: "user_id AS id, user_id AS name",
+		whereExpr:  "user_id IS NOT NULL AND user_id != ''",
+		uniqueIdx:  "id",
+	},
+	{
+		name:       "mv_filter_business_units",
+		selectExpr: "business_unit_id AS id, business_unit_name AS name",
+		whereExpr:  "business_unit_id IS NOT NULL AND business_unit_id != '' AND business_unit_name IS NOT NULL AND business_unit_name != ''",
+		uniqueIdx:  "id, name",
+	},
+}
+
+// filterMatViewKeyPairColumns maps the (idCol, nameCol) pair callers pass into
+// GetDistinctKeyPairs to the per-dimension matview that pre-aggregates it.
+var filterMatViewKeyPairColumns = map[[2]string]string{
+	{"selected_key_id", "selected_key_name"}:     "mv_filter_selected_keys",
+	{"virtual_key_id", "virtual_key_name"}:       "mv_filter_virtual_keys",
+	{"routing_rule_id", "routing_rule_name"}:     "mv_filter_routing_rules",
+	{"team_id", "team_name"}:                     "mv_filter_teams",
+	{"customer_id", "customer_name"}:             "mv_filter_customers",
+	{"user_id", "user_id"}:                       "mv_filter_users",
+	{"business_unit_id", "business_unit_name"}:   "mv_filter_business_units",
+}
+
+func filterMatViewDDL(v filterMatViewDef) string {
+	return fmt.Sprintf(
+		"CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS SELECT DISTINCT %s FROM logs WHERE timestamp >= NOW() - INTERVAL '%s' AND (%s)",
+		v.name, v.selectExpr, filterDataMatViewWindow, v.whereExpr,
+	)
+}
+
+func filterMatViewUniqueIdx(v filterMatViewDef) string {
+	return fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s_uniq ON %s (%s)", v.name, v.name, v.uniqueIdx)
+}
 
 // ---------------------------------------------------------------------------
 // View lifecycle
@@ -99,12 +189,11 @@ ON mv_logs_filterdata (model, provider, selected_key_id, selected_key_name, virt
 // ensureMatViews creates materialized views and their unique indexes if they
 // don't already exist. Called once on startup.
 func ensureMatViews(ctx context.Context, db *gorm.DB) error {
-	for _, ddl := range []string{
-		mvLogsHourlyDDL,
-		mvLogsHourlyUniqueIdx,
-		mvLogsFilterdataDDL,
-		mvLogsFilterdataUniqueIdx,
-	} {
+	stmts := []string{mvLogsHourlyDDL, mvLogsHourlyUniqueIdx}
+	for _, v := range filterMatViews {
+		stmts = append(stmts, filterMatViewDDL(v), filterMatViewUniqueIdx(v))
+	}
+	for _, ddl := range stmts {
 		if err := db.WithContext(ctx).Exec(ddl).Error; err != nil {
 			return fmt.Errorf("failed to create materialized view: %w", err)
 		}
@@ -112,9 +201,104 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// allMatViewNames returns the names of every materialized view this package
+// manages, in refresh order (hourly first so dashboards prioritize over
+// filter-dropdown freshness).
+func allMatViewNames() []string {
+	names := []string{"mv_logs_hourly"}
+	for _, v := range filterMatViews {
+		names = append(names, v.name)
+	}
+	return names
+}
+
+// matViewRefreshSafetyInterval forces a periodic refresh even when
+// pg_stat_user_tables shows no DML on `logs`. This guards against two
+// edge cases:
+//  1. The 30-day window in mv_filter_* — old rows aging past the cutoff need
+//     to be evicted from the matview even on write-quiet clusters.
+//  2. Any drift if the stat collector lags or undercounts.
+//
+// 10 minutes is short enough that aged-out filter values disappear within an
+// acceptable window, long enough that idle clusters do ~6 refreshes/hour
+// instead of 120.
+const matViewRefreshSafetyInterval = 10 * time.Minute
+
+// matViewRefreshGate tracks the last-seen activity counter on `logs` from
+// pg_stat_user_tables so refreshMatViews can short-circuit when nothing has
+// changed. Per-process state — multi-replica deployments still serialize via
+// the advisory lock.
+type matViewRefreshGate struct {
+	mu               sync.Mutex
+	lastActivity     int64
+	lastForcedAt     time.Time
+	initialized      bool
+}
+
+var refreshGate matViewRefreshGate
+
+// logsActivityCounter returns the cumulative INSERT+UPDATE+DELETE count for
+// the `logs` table from pg_stat_user_tables. The stat collector is eventually
+// consistent (lags a few seconds under load) which is fine for a 30s tick.
+//
+// Returns (0, false) if the row is missing (fresh DB before any writes) or the
+// query fails — callers treat that as "fall back to always-refresh."
+func logsActivityCounter(ctx context.Context, conn *sql.Conn) (int64, bool) {
+	var activity sql.NullInt64
+	err := conn.QueryRowContext(ctx, `
+		SELECT COALESCE(n_tup_ins, 0) + COALESCE(n_tup_upd, 0) + COALESCE(n_tup_del, 0)
+		FROM pg_stat_user_tables
+		WHERE relname = 'logs' AND schemaname = current_schema()
+	`).Scan(&activity)
+	if err != nil || !activity.Valid {
+		return 0, false
+	}
+	return activity.Int64, true
+}
+
+// shouldSkip reports whether refreshMatViews can no-op for this tick.
+// Returns true only when (a) we have a baseline from a prior refresh,
+// (b) the activity counter is unchanged, AND (c) we're inside the safety
+// interval. Any uncertainty falls through to "do the refresh."
+func (g *matViewRefreshGate) shouldSkip(currentActivity int64, currentActivityOK bool) bool {
+	if !currentActivityOK {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.initialized {
+		return false
+	}
+	if time.Since(g.lastForcedAt) >= matViewRefreshSafetyInterval {
+		return false
+	}
+	return currentActivity == g.lastActivity
+}
+
+// markRefreshed records a successful refresh. activityAtStart is the counter
+// captured BEFORE the refresh ran — using it (rather than the post-refresh
+// counter) ensures writes that landed during the refresh are picked up on the
+// next tick.
+func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK bool) {
+	if !activityOK {
+		// We refreshed but couldn't read the counter — keep state uninitialized so
+		// the next tick will refresh again rather than silently skipping forever.
+		return
+	}
+	g.mu.Lock()
+	g.lastActivity = activityAtStart
+	g.lastForcedAt = time.Now()
+	g.initialized = true
+	g.mu.Unlock()
+}
+
 // refreshMatViews refreshes all materialized views concurrently (non-blocking
 // for readers). Uses a PostgreSQL advisory try-lock so that in multi-replica
 // deployments only one instance refreshes at a time — others skip silently.
+//
+// Also short-circuits when pg_stat_user_tables reports no INSERT/UPDATE/DELETE
+// on `logs` since the last refresh. A periodic safety-interval refresh runs
+// regardless so the rolling 30-day filter window evicts aged-out rows.
 func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -127,6 +311,15 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("failed to get dedicated connection for matview refresh: %w", err)
 	}
 	defer conn.Close()
+
+	// Activity check happens before the advisory lock so write-quiet replicas
+	// don't even contend for it. Capture the counter BEFORE refreshing — any
+	// writes that land during refresh will bump it again and trigger the next
+	// tick.
+	activityAtStart, activityOK := logsActivityCounter(ctx, conn)
+	if refreshGate.shouldSkip(activityAtStart, activityOK) {
+		return nil
+	}
 
 	// Try to acquire advisory lock; skip refresh if another replica holds it.
 	var acquired bool
@@ -141,11 +334,12 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
 	}()
 
-	for _, view := range []string{"mv_logs_hourly", "mv_logs_filterdata"} {
+	for _, view := range allMatViewNames() {
 		if _, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view); err != nil {
 			return fmt.Errorf("failed to refresh %s: %w", view, err)
 		}
 	}
+	refreshGate.markRefreshed(activityAtStart, activityOK)
 	return nil
 }
 
@@ -1143,37 +1337,82 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 // Filterdata from mat view
 // ---------------------------------------------------------------------------
 
-// getDistinctModelsFromMatView returns unique model names from mv_logs_filterdata.
+// getDistinctModelsFromMatView returns unique model names from mv_filter_models.
+// Limit matches the raw-table fallback so callers see the same row cap regardless
+// of which path served the request.
 func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context) ([]string, error) {
 	var models []string
-	if err := s.db.WithContext(ctx).Table("mv_logs_filterdata").
+	if err := s.db.WithContext(ctx).Table("mv_filter_models").
 		Distinct("model").
+		Where("model != ''").
+		Limit(defaultFilterDataLimit).
 		Pluck("model", &models).Error; err != nil {
 		return nil, err
 	}
 	return models, nil
 }
 
-// getDistinctKeyPairsFromMatView returns unique ID-Name pairs for the given
-// columns (e.g. selected_key_id/name, virtual_key_id/name) from mv_logs_filterdata.
-func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
-	var results []KeyPairResult
-	if err := s.db.WithContext(ctx).Table("mv_logs_filterdata").
-		Select(fmt.Sprintf("DISTINCT %s AS id, %s AS name", idCol, nameCol)).
-		Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol)).
-		Find(&results).Error; err != nil {
+// getDistinctAliasesFromMatView returns unique alias values from mv_filter_aliases.
+func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context) ([]string, error) {
+	var aliases []string
+	if err := s.db.WithContext(ctx).Table("mv_filter_aliases").
+		Distinct("alias").
+		Where("alias != ''").
+		Limit(defaultFilterDataLimit).
+		Pluck("alias", &aliases).Error; err != nil {
 		return nil, err
 	}
-	return results, nil
+	return aliases, nil
+}
+
+// getDistinctStopReasonsFromMatView returns unique stop reasons from mv_filter_stop_reasons.
+func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context) ([]string, error) {
+	var stopReasons []string
+	if err := s.db.WithContext(ctx).Table("mv_filter_stop_reasons").
+		Distinct("stop_reason").
+		Where("stop_reason != ''").
+		Limit(defaultFilterDataLimit).
+		Pluck("stop_reason", &stopReasons).Error; err != nil {
+		return nil, err
+	}
+	return stopReasons, nil
+}
+
+// getDistinctKeyPairsFromMatView returns unique ID-Name pairs for the given
+// (idCol, nameCol) by selecting from the per-dimension matview pre-aggregated
+// for that pair. Returns (nil, false) if no matview is registered for the pair —
+// callers fall back to the raw-table path.
+func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, bool, error) {
+	view, ok := filterMatViewKeyPairColumns[[2]string{idCol, nameCol}]
+	if !ok {
+		return nil, false, nil
+	}
+	var results []KeyPairResult
+	q := s.db.WithContext(ctx).Table(view).Where("id != ''")
+	// User matview stores name = id and the view-level WHERE already filters
+	// empty ids; other matviews include name and we additionally guard against
+	// stragglers with empty names.
+	if !(idCol == "user_id" && nameCol == "user_id") {
+		q = q.Where("name != ''")
+	}
+	if err := q.
+		Select("DISTINCT id, name").
+		Limit(defaultFilterDataLimit).
+		Find(&results).Error; err != nil {
+		return nil, true, err
+	}
+	return results, true, nil
 }
 
 // getDistinctRoutingEnginesFromMatView returns unique routing engine names by
-// parsing the comma-separated routing_engines_used values from mv_logs_filterdata.
+// parsing the comma-separated routing_engines_used values from
+// mv_filter_routing_engines.
 func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context) ([]string, error) {
 	var rawValues []string
-	if err := s.db.WithContext(ctx).Table("mv_logs_filterdata").
+	if err := s.db.WithContext(ctx).Table("mv_filter_routing_engines").
 		Distinct("routing_engines_used").
 		Where("routing_engines_used != ''").
+		Limit(defaultFilterDataLimit).
 		Pluck("routing_engines_used", &rawValues).Error; err != nil {
 		return nil, err
 	}
