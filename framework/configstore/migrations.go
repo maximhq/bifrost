@@ -716,6 +716,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOAuthRelationalConstraints(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDeleteOrphanedOAuthConfigs(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7569,7 +7572,7 @@ type fkEntry struct {
 // migrationAddOAuthRelationalConstraints adds new FK columns and constraints that wire up
 // the OAuth lifecycle chain. Must run after migrationCleanupOAuthOrphans.
 func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_oauth_relational_constraints",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -7661,5 +7664,41 @@ func migrationAddOAuthRelationalConstraints(ctx context.Context, db *gorm.DB) er
 			_ = mg.DropColumn(&tables.TableOauthConfig{}, "ConfigMCPClientID")
 			return nil
 		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(0)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_oauth_relational_constraints migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDeleteOrphanedOAuthConfigs removes oauth_configs rows where config_mcp_client_id is null
+func migrationDeleteOrphanedOAuthConfigs(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "delete_orphaned_oauth_configs",
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Exec(`
+				DELETE FROM oauth_configs
+				WHERE config_mcp_client_id IS NULL
+			`).Error
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
 	})
 }

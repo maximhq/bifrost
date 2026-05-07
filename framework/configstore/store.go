@@ -119,9 +119,9 @@ type ConfigStore interface {
 	GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
-	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
-	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
-	DeleteMCPClientConfig(ctx context.Context, id string) error
+	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig, tx ...*gorm.DB) error
+	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient, tx ...*gorm.DB) error
+	DeleteMCPClientConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Vector store config CRUD
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
@@ -302,6 +302,7 @@ type ConfigStore interface {
 	GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error)
 	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
 	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
+	DeleteOauthConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// OAuth token CRUD
 	GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error)
