@@ -127,7 +127,6 @@ These settings are also configurable via the UI (**MCP Gateway → MCP Settings*
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allowed_origins` | array | `["*"]` | CORS allowed origins (use URIs or `"*"`) |
-| `allow_direct_keys` | boolean | `false` | Allow callers to pass provider keys directly in requests |
 | `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes |
 | `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB |
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
@@ -140,7 +139,6 @@ These settings are also configurable via the UI (**MCP Gateway → MCP Settings*
       "https://app.yourcompany.com",
       "https://admin.yourcompany.com"
     ],
-    "allow_direct_keys": false,
     "enforce_auth_on_inference": true,
     "max_request_body_size_mb": 50,
     "whitelisted_routes": ["/health", "/metrics"]
@@ -324,7 +322,6 @@ A top-level `auth_config` is also accepted for backwards compatibility, but `gov
     "mcp_external_client_url": "env.BIFROST_EXTERNAL_URL",
 
     "allowed_origins": ["https://app.yourcompany.com"],
-    "allow_direct_keys": false,
     "enforce_auth_on_inference": true,
     "max_request_body_size_mb": 100,
 

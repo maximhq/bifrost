@@ -1473,6 +1473,17 @@ func ParseAndSetRawRequestIfJSON(fasthttpReq *fasthttp.Request, extraFields *sch
 	}
 }
 
+// PassthroughJSONBody returns body only when the passthrough request carries a
+// JSON Content-Type. Pass the return value into HandleStreamCancellation /
+// HandleStreamTimeout so non-JSON passthrough payloads (multipart, binary, etc.)
+// are not wrapped as json.RawMessage in error responses.
+func PassthroughJSONBody(fasthttpReq *fasthttp.Request, body []byte) []byte {
+	if strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
+		return body
+	}
+	return nil
+}
+
 // NewUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
 func NewUnsupportedOperationError(requestType schemas.RequestType, providerName schemas.ModelProvider) *schemas.BifrostError {
@@ -2171,6 +2182,7 @@ func HandleStreamCancellation(
 	responseChan chan *schemas.BifrostStreamChunk,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2185,6 +2197,10 @@ func HandleStreamCancellation(
 			Message: "Request cancelled: client disconnected",
 			Type:    schemas.Ptr(schemas.RequestCancelled),
 		},
+	}
+
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
 	// Send through PostHook chain - this updates the log to "error" status
@@ -2205,6 +2221,7 @@ func HandleStreamTimeout(
 	responseChan chan *schemas.BifrostStreamChunk,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2219,6 +2236,10 @@ func HandleStreamTimeout(
 			Message: "Request timed out: deadline exceeded",
 			Type:    schemas.Ptr(schemas.RequestTimedOut),
 		},
+	}
+
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
 	// Send through PostHook chain - this updates the log to "error" status
@@ -2826,11 +2847,11 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 // CheckAndSetDefaultProvider checks if the default provider should be used based on the context.
 // It returns the default provider if it should be used, otherwise it returns an empty string.
-// Checks if the direct key is set in the context, or if key selection is skipped.
-// Or if the available providers are set in the context and the default provider is in the list.
+// Checks if key selection is skipped, or if the available providers are set in the context
+// and the default provider is in the list.
 func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
 	if ctx != nil {
-		if ctx.Value(schemas.BifrostContextKeyDirectKey) != nil || ctx.Value(schemas.BifrostContextKeySkipKeySelection) != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skip {
 			return defaultProvider
 		}
 		if ctx.Value(schemas.BifrostContextKeyAvailableProviders) != nil {

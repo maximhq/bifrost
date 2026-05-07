@@ -16,7 +16,6 @@ var reservedKeys = []any{
 	BifrostContextKeyAPIKeyID,
 	BifrostContextKeyRequestID,
 	BifrostContextKeyFallbackRequestID,
-	BifrostContextKeyDirectKey,
 	BifrostContextKeySelectedKeyID,
 	BifrostContextKeySelectedKeyName,
 	BifrostContextKeyNumberOfRetries,
@@ -48,13 +47,6 @@ var pluginLogStorePool = sync.Pool{
 	},
 }
 
-// pluginScopePool pools BifrostContext instances used as scoped plugin contexts.
-var pluginScopePool = sync.Pool{
-	New: func() any {
-		return &BifrostContext{}
-	},
-}
-
 // BifrostContext is a custom context.Context implementation that tracks user-set values.
 // It supports deadlines, can be derived from other contexts, and provides layered
 // value inheritance when derived from another BifrostContext.
@@ -82,6 +74,18 @@ type BifrostContext struct {
 func NewBifrostContext(parent context.Context, deadline time.Time) *BifrostContext {
 	if parent == nil {
 		parent = context.Background()
+	}
+	// Unwrap pooled scoped BifrostContexts to their delegate root. A scoped
+	// context (from WithPluginScope) is reset and returned to a sync.Pool when
+	// ReleasePluginScope is called, which can happen before a derived context's
+	// watchCancellation goroutine has finished observing parent.Deadline()/Done().
+	// Pointing the derived parent at the long-lived root avoids that race.
+	for {
+		bc, ok := parent.(*BifrostContext)
+		if !ok || bc.valueDelegate == nil {
+			break
+		}
+		parent = bc.valueDelegate
 	}
 	ctx := &BifrostContext{
 		parent:                parent,
@@ -408,10 +412,17 @@ func AppendToContextList[T any](ctx *BifrostContext, key BifrostContextKey, valu
 	ctx.SetValue(key, append(existingValues, value))
 }
 
-// WithPluginScope returns a lightweight scoped BifrostContext from the pool.
-// The scoped context shares the root's pluginLogs store and delegates all
-// Value/SetValue operations to the root context.
-// Call ReleasePluginScope() when done to return the scoped context to the pool.
+// WithPluginScope returns a scoped BifrostContext that shares the root's
+// pluginLogs store and delegates Value/SetValue/Deadline/Err/Done operations
+// to the root.
+//
+// Scoped contexts are NOT pool-reused. Plugins routinely pass the scoped ctx
+// to stdlib helpers (context.WithDeadline, HTTP clients, vector store SDKs)
+// which spawn watcher goroutines via context.propagateCancel — those watchers
+// can read the scoped struct's fields long after the plugin returns. Reusing
+// the struct across requests would race those reads. Allocating fresh is
+// idiomatic Go context handling (the stdlib context types are not pooled
+// either) and keeps the lifecycle race-free without atomics.
 func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
 	// Lazily initialize the plugin log store on the root context (CAS to avoid race)
 	if bc.pluginLogs.Load() == nil {
@@ -422,28 +433,44 @@ func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
 		}
 	}
 
-	scoped := pluginScopePool.Get().(*BifrostContext)
-	scoped.parent = bc.parent
-	scoped.done = bc.done
-	scoped.pluginScope = name
+	scoped := &BifrostContext{
+		parent:        bc.parent,
+		done:          bc.done,
+		pluginScope:   name,
+		valueDelegate: bc,
+	}
 	scoped.pluginLogs.Store(bc.pluginLogs.Load())
-	scoped.valueDelegate = bc
 	return scoped
 }
 
-// ReleasePluginScope returns a scoped context to the pool.
-// Safe no-op if called on a non-scoped context.
-// Do not use the scoped context after calling this method.
+// ReleasePluginScope marks a scoped context as released. Safe no-op if called
+// on a non-scoped context.
+//
+// We deliberately do NOT mutate the scoped struct's fields here. External
+// watcher goroutines spawned via stdlib context helpers (e.g. propagateCancel
+// from context.WithDeadline) may still hold references and read parent/done
+// asynchronously. Mutating those fields would race the watchers. The struct
+// becomes garbage and is reclaimed by the GC once all watchers have exited.
+//
+// We still release the plugin log store reference so it can be drained or
+// reclaimed independently of the scope's lifetime.
 func (bc *BifrostContext) ReleasePluginScope() {
 	if bc.valueDelegate == nil {
 		return // not a scoped context
 	}
-	bc.parent = nil
-	bc.done = nil
-	bc.pluginScope = nil
 	bc.pluginLogs.Store(nil)
-	bc.valueDelegate = nil
-	pluginScopePool.Put(bc)
+}
+
+// AddSpanAttribute adds an attribute to the span.
+// For scoped contexts, delegates to the root context via valueDelegate.
+// This is thread-safe and can be called concurrently.
+func (bc *BifrostContext) SetTraceAttribute(key string, value any) {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return
+	}
+	tr.SetAttribute(tid, key, value)
 }
 
 // Log appends a structured log entry for the current plugin scope.

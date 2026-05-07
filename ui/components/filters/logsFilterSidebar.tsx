@@ -331,7 +331,7 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(undefined, { skip: !opened && !hasActive });
 	const availableStopReasons = filterData?.stop_reasons || [];
 
-	if (!isUninitialized && !isLoading && availableStopReasons.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableStopReasons.length === 0 && !hasActive && !opened) return null;
 
 	return (
 		<FilterSection
@@ -368,8 +368,8 @@ function ProvidersFilter({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	const { data: providersData, isUninitialized, isLoading } = useGetProvidersQuery(undefined, { skip: !opened && !hasActive });
 	const availableProviders = providersData || [];
 
-	// Hide only if data was fetched (not loading) and came back empty
-	if (!isUninitialized && !isLoading && availableProviders.length === 0 && !hasActive) return null;
+	// Hide only if data was fetched (not loading) and came back empty, and the user hasn't opened the section
+	if (!isUninitialized && !isLoading && availableProviders.length === 0 && !hasActive && !opened) return null;
 
 	return (
 		<FilterSection
@@ -434,7 +434,7 @@ function ModelsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(undefined, { skip: !opened && !hasActive });
 	const availableModels = filterData?.models || [];
 
-	if (!isUninitialized && !isLoading && availableModels.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableModels.length === 0 && !hasActive && !opened) return null;
 
 	return (
 		<FilterSection
@@ -471,7 +471,7 @@ function AliasesFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(undefined, { skip: !opened && !hasActive });
 	const availableAliases = filterData?.aliases || [];
 
-	if (!isUninitialized && !isLoading && availableAliases.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableAliases.length === 0 && !hasActive && !opened) return null;
 
 	return (
 		<FilterSection
@@ -509,7 +509,7 @@ function SelectedKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 	const availableSelectedKeys = filterData?.selected_keys || [];
 	const nameToIds = useMemo(() => groupByName(availableSelectedKeys), [availableSelectedKeys]);
 
-	if (!isUninitialized && !isLoading && availableSelectedKeys.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableSelectedKeys.length === 0 && !hasActive && !opened) return null;
 
 	const toggle = (name: string) => {
 		const resolvedIds = nameToIds.get(name) || [name];
@@ -559,7 +559,7 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const nameToIds = useMemo(() => groupByName(availableVirtualKeys), [availableVirtualKeys]);
 
-	if (!isUninitialized && !isLoading && availableVirtualKeys.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableVirtualKeys.length === 0 && !hasActive && !opened) return null;
 
 	const toggle = (name: string) => {
 		const resolvedIds = nameToIds.get(name) || [name];
@@ -608,7 +608,7 @@ function RoutingEnginesFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(undefined, { skip: !opened && !hasActive });
 	const availableRoutingEngines = filterData?.routing_engines || [];
 
-	if (!isUninitialized && !isLoading && availableRoutingEngines.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableRoutingEngines.length === 0 && !hasActive && !opened) return null;
 
 	return (
 		<FilterSection
@@ -649,7 +649,7 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 	const availableRoutingRules = filterData?.routing_rules || [];
 	const nameToIds = useMemo(() => groupByName(availableRoutingRules), [availableRoutingRules]);
 
-	if (!isUninitialized && !isLoading && availableRoutingRules.length === 0 && !hasActive) return null;
+	if (!isUninitialized && !isLoading && availableRoutingRules.length === 0 && !hasActive && !opened) return null;
 
 	const toggle = (name: string) => {
 		const resolvedIds = nameToIds.get(name) || [name];

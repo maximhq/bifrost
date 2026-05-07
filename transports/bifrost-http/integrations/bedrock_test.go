@@ -16,14 +16,9 @@ import (
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {
-	allowDirectKeys            bool
 	headerMatcher              *lib.HeaderMatcher
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
-}
-
-func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
-	return m.allowDirectKeys
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -127,7 +122,7 @@ func Test_parseS3URI(t *testing.T) {
 }
 
 func Test_createBedrockRouteConfigs(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 
 	assert.Len(t, routes, 6, "should have 6 bedrock routes")
@@ -154,7 +149,7 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 }
 
 func Test_createBedrockConverseRouteConfig(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	route := createBedrockConverseRouteConfig("/bedrock", handlerStore)
 
 	assert.Equal(t, "/bedrock/model/{modelId}/converse", route.Path)
@@ -173,7 +168,7 @@ func Test_createBedrockConverseRouteConfig(t *testing.T) {
 }
 
 func Test_createBedrockConverseStreamRouteConfig(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	route := createBedrockConverseStreamRouteConfig("/bedrock", handlerStore)
 
 	assert.Equal(t, "/bedrock/model/{modelId}/converse-stream", route.Path)
@@ -189,7 +184,7 @@ func Test_createBedrockConverseStreamRouteConfig(t *testing.T) {
 }
 
 func Test_createBedrockInvokeRouteConfig(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	route := createBedrockInvokeRouteConfig("/bedrock", handlerStore)
 
 	assert.Equal(t, "/bedrock/model/{modelId}/invoke", route.Path)
@@ -205,7 +200,7 @@ func Test_createBedrockInvokeRouteConfig(t *testing.T) {
 }
 
 func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	route := createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", handlerStore)
 
 	assert.Equal(t, "/bedrock/model/{modelId}/invoke-with-response-stream", route.Path)
@@ -222,7 +217,7 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 }
 
 func Test_createBedrockRerankRouteConfig(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
 
 	assert.Equal(t, "/bedrock/rerank", route.Path)
@@ -243,7 +238,7 @@ func Test_createBedrockRerankRouteConfig(t *testing.T) {
 }
 
 func Test_createBedrockRerankResponseConverterUsesRawResponse(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
 	require.NotNil(t, route.RerankResponseConverter)
 
@@ -260,7 +255,7 @@ func Test_createBedrockRerankResponseConverterUsesRawResponse(t *testing.T) {
 }
 
 func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
 	require.NotNil(t, route.RequestConverter)
 
@@ -307,7 +302,7 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 }
 
 func Test_createBedrockRouteConfigsIncludesRerankForCompositePrefixes(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	prefixes := []string{"/litellm", "/langchain", "/pydanticai"}
 
 	for _, prefix := range prefixes {
@@ -324,7 +319,7 @@ func Test_createBedrockRouteConfigsIncludesRerankForCompositePrefixes(t *testing
 }
 
 func Test_createBedrockBatchRouteConfigs(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := createBedrockBatchRouteConfigs("/bedrock", handlerStore)
 
 	assert.Len(t, routes, 4, "should have 4 batch routes")
@@ -351,7 +346,7 @@ func Test_createBedrockBatchRouteConfigs(t *testing.T) {
 }
 
 func Test_createBedrockFilesRouteConfigs(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := createBedrockFilesRouteConfigs("/bedrock/files", handlerStore)
 
 	assert.Len(t, routes, 5, "should have 5 file routes")
@@ -616,7 +611,7 @@ func Test_s3ListObjectsV2PostCallback(t *testing.T) {
 }
 
 func Test_extractBedrockBatchListQueryParams(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: false}
+	handlerStore := &mockHandlerStore{}
 
 	tests := []struct {
 		name           string
@@ -683,7 +678,7 @@ func Test_extractBedrockBatchListQueryParams(t *testing.T) {
 }
 
 func Test_extractBedrockJobArnFromPath(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: false}
+	handlerStore := &mockHandlerStore{}
 
 	tests := []struct {
 		name        string
@@ -758,7 +753,7 @@ func Test_extractBedrockJobArnFromPath(t *testing.T) {
 }
 
 func Test_extractS3ListObjectsV2Params(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: false}
+	handlerStore := &mockHandlerStore{}
 
 	tests := []struct {
 		name                  string
@@ -836,7 +831,7 @@ func Test_extractS3ListObjectsV2Params(t *testing.T) {
 }
 
 func Test_extractS3BucketKeyFromPath(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: false}
+	handlerStore := &mockHandlerStore{}
 
 	tests := []struct {
 		name       string

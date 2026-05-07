@@ -15,7 +15,7 @@ type TableRoutingRule struct {
 	ConfigHash    string `gorm:"type:varchar(255)" json:"config_hash"` // Hash of config.json version, used for change detection
 	Name          string `gorm:"type:varchar(255);not null;uniqueIndex:idx_routing_rule_scope_name" json:"name"`
 	Description   string `gorm:"type:text" json:"description"`
-	Enabled       bool   `gorm:"not null;default:true" json:"enabled"`
+	Enabled       *bool  `gorm:"not null;default:true" json:"enabled,omitempty"` // nil = DB default (true); use EnabledValue() to read
 	CelExpression string `gorm:"type:text;not null" json:"cel_expression"`
 
 	// Routing Targets (output) — 1:many relationship; weights must sum to 1
@@ -44,6 +44,17 @@ type TableRoutingRule struct {
 
 // TableName for TableRoutingRule
 func (TableRoutingRule) TableName() string { return "routing_rules" }
+
+// EnabledValue returns the effective Enabled bool, treating nil as true (DB default).
+func (r *TableRoutingRule) EnabledValue() bool {
+	if r == nil {
+		return false
+	}
+	if r.Enabled == nil {
+		return true
+	}
+	return *r.Enabled
+}
 
 // BeforeSave hook for TableRoutingRule to serialize JSON fields
 func (r *TableRoutingRule) BeforeSave(tx *gorm.DB) error {
@@ -92,7 +103,7 @@ type TableRoutingTarget struct {
 	Provider        *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"provider,omitempty"` // nil = use incoming provider
 	Model           *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"model,omitempty"`    // nil = use incoming model
 	KeyID           *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"key_id,omitempty"`   // persisted key pin
-	ProviderKeyName *string `gorm:"-" json:"provider_key_name,omitempty"`                                               // config-only alias; resolved to key_id during load
+	ProviderKeyName *string `gorm:"-" json:"provider_key_name,omitempty"`                                              // config-only alias; resolved to key_id during load
 	Weight          float64 `gorm:"not null;default:1" json:"weight"`                                                  // must sum to 1 across all targets in a rule
 }
 

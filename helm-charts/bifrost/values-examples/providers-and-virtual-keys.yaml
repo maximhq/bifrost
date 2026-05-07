@@ -92,7 +92,6 @@ bifrost:
       - "*"
     enableLogging: true
     enforceGovernanceHeader: false
-    allowDirectKeys: false
     maxRequestBodySizeMb: 100
 
   # ==========================================================================

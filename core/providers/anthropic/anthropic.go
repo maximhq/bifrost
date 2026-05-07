@@ -677,9 +677,9 @@ func HandleAnthropicChatCompletionStreaming(
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
 			close(responseChan)
 		}()
@@ -1144,9 +1144,9 @@ func HandleAnthropicResponsesStream(
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			}
 			close(responseChan)
 		}()
@@ -1461,7 +1461,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper (Anthropic uses AfterID for pagination)
-	helper, err := providerUtils.NewSerialListHelper(keys, request.AfterID, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.AfterID, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -2029,7 +2029,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Initialize serial pagination helper
-	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
@@ -2694,9 +2694,9 @@ func (provider *AnthropicProvider) PassthroughStream(
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, req.Body)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, req.Body)
 			}
 			close(ch)
 		}()

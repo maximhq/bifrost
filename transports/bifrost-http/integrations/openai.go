@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
-	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -155,10 +154,6 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 		hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
 		schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
 
-		azureKey := ctx.Request.Header.Peek("authorization")
-		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
-		apiVersion := string(ctx.QueryArgs().Peek("api-version"))
-
 		// -----------------------------
 		// Parse deploymentPath wildcard
 		// -----------------------------
@@ -266,40 +261,6 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 			}
 		}
 
-		// -----------------------------
-		// Direct Azure Keys
-		// -----------------------------
-
-		if deploymentEndpoint == nil || azureKey == nil || !handlerStore.ShouldAllowDirectKeys() {
-			return nil
-		}
-
-		// Non-Azure providers skip direct Azure keys
-		if deploymentProviderStr != "" && deploymentProviderStr != string(schemas.Azure) {
-			return nil
-		}
-
-		azureKeyStr := string(azureKey)
-		deploymentEndpointStr := string(deploymentEndpoint)
-		apiVersionStr := apiVersion
-
-		key := schemas.Key{
-			ID:             uuid.New().String(),
-			Models:         schemas.WhiteList{"*"},
-			AzureKeyConfig: &schemas.AzureKeyConfig{},
-		}
-
-		if deploymentEndpointStr != "" && deploymentIDStr != "" && azureKeyStr != "" {
-			key.Value = *schemas.NewEnvVar(strings.TrimPrefix(azureKeyStr, "Bearer "))
-			key.AzureKeyConfig.Endpoint = *schemas.NewEnvVar(deploymentEndpointStr)
-		}
-
-		if apiVersionStr != "" {
-			key.AzureKeyConfig.APIVersion = schemas.NewEnvVar(apiVersionStr)
-		}
-
-		ctx.SetUserValue(schemas.BifrostContextKeyDirectKey, key)
-
 		return nil
 	}
 }
@@ -352,6 +313,12 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			case strings.HasSuffix(path, "/chat/completions"):
 				return schemas.ChatCompletionRequest
 
+			case strings.HasSuffix(path, "/responses/input_tokens"):
+				return schemas.CountTokensRequest
+
+			case strings.HasSuffix(path, "/responses"):
+				return schemas.ResponsesRequest
+
 			case strings.HasSuffix(path, "/completions"):
 				return schemas.TextCompletionRequest
 
@@ -381,6 +348,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				switch requestType {
 				case schemas.ChatCompletionRequest:
 					return &openai.OpenAIChatRequest{}
+				case schemas.ResponsesRequest, schemas.CountTokensRequest:
+					return &openai.OpenAIResponsesRequest{}
 				case schemas.TextCompletionRequest:
 					return &openai.OpenAITextCompletionRequest{}
 				case schemas.EmbeddingRequest:
@@ -426,6 +395,15 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
 				return &schemas.BifrostRequest{
 					ChatRequest: openaiReq.ToBifrostChatRequest(ctx),
+				}, nil
+			} else if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
+				if reqType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); reqType == schemas.CountTokensRequest {
+					return &schemas.BifrostRequest{
+						CountTokensRequest: openaiReq.ToBifrostResponsesRequest(ctx),
+					}, nil
+				}
+				return &schemas.BifrostRequest{
+					ResponsesRequest: openaiReq.ToBifrostResponsesRequest(ctx),
 				}, nil
 			} else if openaiReq, ok := req.(*openai.OpenAITextCompletionRequest); ok {
 				return &schemas.BifrostRequest{
@@ -509,6 +487,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			}
 			return resp, nil
 		},
+		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp.WithDefaults(), nil
+		},
 		StreamConfig: &StreamConfig{
 			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
@@ -549,6 +535,18 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 				}
 				return "", resp, nil
+			},
+			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
+					}
+				}
+				converted := resp.WithDefaults()
+				if converted == nil {
+					return "", nil, nil
+				}
+				return string(resp.Type), converted, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err

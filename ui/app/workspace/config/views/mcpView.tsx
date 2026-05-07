@@ -392,6 +392,14 @@ export default function MCPView() {
                 Notion/Jira will redirect the browser to after login (
                 <code className="text-xs">{"<URL>/api/oauth/callback"}</code>).
               </p>
+              <p className="text-muted-foreground mt-1 text-xs">
+                <strong>Heads up:</strong> changing this after MCP clients have already completed OAuth
+                will break them. The upstream provider locks the <code className="text-xs">redirect_uri</code>{" "}
+                to whatever was registered initially, so existing clients will fail with{" "}
+                <em>&quot;Invalid redirect URI&quot;</em>. Clear the stored OAuth client credentials
+                for affected MCP servers and re-authorize so Bifrost re-runs Dynamic Client Registration
+                with the new URL.
+              </p>
             </div>
             <EnvVarInput
               id="external-client-url"

@@ -191,15 +191,17 @@ export function RoutingRulesTable({
 									</TableCell>
 									<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
 										<div className="flex items-center justify-end gap-2">
-											<Button
-												variant="ghost"
-												size="sm"
-												onClick={() => onEdit(rule)}
-												aria-label="Edit routing rule"
-												data-testid={`routing-rule-edit-${rule.id}-btn`}
-											>
-												<Edit className="h-4 w-4" />
-											</Button>
+											{canUpdate && (
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={() => onEdit(rule)}
+													aria-label="Edit routing rule"
+													data-testid={`routing-rule-edit-${rule.id}-btn`}
+												>
+													<Edit className="h-4 w-4" />
+												</Button>
+											)}
 											{canDelete && (
 												<Button
 													variant="ghost"

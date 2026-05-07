@@ -348,7 +348,7 @@ func (h *ConsentHandler) handleSubmitVK(ctx *fasthttp.RequestCtx) {
 		redirectToIdentityPage(ctx, flowID, "Failed to validate Virtual Key. Please try again.")
 		return
 	}
-	if vk == nil || !vk.IsActive {
+	if vk == nil || !vk.IsActiveValue() {
 		redirectToIdentityPage(ctx, flowID, "Virtual Key not found or inactive. Please check and try again.")
 		return
 	}

@@ -101,10 +101,6 @@
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"
         },
-        "allow_direct_keys": {
-          "type": "boolean",
-          "description": "Allow provider keys"
-        },
         "max_request_body_size_mb": {
           "type": "integer",
           "minimum": 1,
@@ -2364,9 +2360,31 @@
                 "api_version": {
                   "type": "string",
                   "description": "Azure API version"
+                },
+                "client_id": {
+                  "type": "string",
+                  "description": "Azure client ID for Entra authentication (can use env. prefix)"
+                },
+                "client_secret": {
+                  "type": "string",
+                  "description": "Azure client secret for Entra authentication (can use env. prefix)"
+                },
+                "tenant_id": {
+                  "type": "string",
+                  "description": "Azure tenant ID for Entra authentication (can use env. prefix)"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "OAuth2 scopes for Entra authentication"
                 }
               },
-              "required": ["endpoint", "api_version"],
+              "required": ["endpoint"],
+              "dependentRequired": {
+                "client_id": ["client_secret", "tenant_id"],
+                "client_secret": ["client_id", "tenant_id"],
+                "tenant_id": ["client_id", "client_secret"]
+              },
               "additionalProperties": false
             }
           },
@@ -2834,6 +2852,11 @@
         "allow_on_all_virtual_keys": {
           "type": "boolean",
           "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server, that config takes precedence and overrides this behaviour.",
+          "default": false
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "When true, this MCP client is disabled (connection and workers are stopped while preserving configuration).",
           "default": false
         }
       },
@@ -4292,6 +4315,21 @@
               "type": "boolean"
             },
             "realtime": {
+              "type": "boolean"
+            },
+            "cached_content_create": {
+              "type": "boolean"
+            },
+            "cached_content_list": {
+              "type": "boolean"
+            },
+            "cached_content_retrieve": {
+              "type": "boolean"
+            },
+            "cached_content_update": {
+              "type": "boolean"
+            },
+            "cached_content_delete": {
               "type": "boolean"
             }
           },

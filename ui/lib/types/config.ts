@@ -477,7 +477,6 @@ export interface CoreConfig {
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
-	allow_direct_keys: boolean;
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
@@ -509,7 +508,6 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
-	allow_direct_keys: false,
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },

@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -619,58 +618,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 	return routes
 }
 
-// bedrockBatchPreCallback returns a pre-callback for Bedrock batch create requests
+// bedrockBatchPreCallback returns a pre-callback for Bedrock batch create requests.
 func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		// Handle direct key authentication if allowed
-		if !handlerStore.ShouldAllowDirectKeys() {
-			return nil
-		}
-
-		// Check for Bedrock API Key (alternative to AWS Credentials)
-		apiKey := string(ctx.Request.Header.Peek("x-bf-bedrock-api-key"))
-
-		// Check for AWS Credentials
-		accessKey := string(ctx.Request.Header.Peek("x-bf-bedrock-access-key"))
-		secretKey := string(ctx.Request.Header.Peek("x-bf-bedrock-secret-key"))
-		region := string(ctx.Request.Header.Peek("x-bf-bedrock-region"))
-		sessionToken := string(ctx.Request.Header.Peek("x-bf-bedrock-session-token"))
-
-		if apiKey != "" {
-			key := schemas.Key{
-				ID:               uuid.New().String(),
-				Value:            *schemas.NewEnvVar(apiKey),
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{},
-			}
-			if region != "" {
-				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-			return nil
-		}
-
-		if accessKey != "" && secretKey != "" {
-			if region == "" {
-				return errors.New("x-bf-bedrock-region header is required when using direct keys")
-			}
-
-			key := schemas.Key{
-				ID: uuid.New().String(),
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewEnvVar(accessKey),
-					SecretKey: *schemas.NewEnvVar(secretKey),
-				},
-			}
-
-			key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-
-			if sessionToken != "" {
-				key.BedrockKeyConfig.SessionToken = schemas.NewEnvVar(sessionToken)
-			}
-
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-		}
-
 		return nil
 	}
 }
@@ -1277,59 +1227,6 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			r.ModelID = fullModelID
 		default:
 			return errors.New("invalid request type for bedrock model extraction")
-		}
-
-		// Handle direct key authentication if allowed
-		if !handlerStore.ShouldAllowDirectKeys() {
-			return nil
-		}
-
-		// Check for Bedrock API Key (alternative to AWS Credentials)
-		apiKey := string(ctx.Request.Header.Peek("x-bf-bedrock-api-key"))
-
-		// Check for AWS Credentials
-		accessKey := string(ctx.Request.Header.Peek("x-bf-bedrock-access-key"))
-		secretKey := string(ctx.Request.Header.Peek("x-bf-bedrock-secret-key"))
-		region := string(ctx.Request.Header.Peek("x-bf-bedrock-region"))
-		sessionToken := string(ctx.Request.Header.Peek("x-bf-bedrock-session-token"))
-
-		if apiKey != "" {
-			// Case 1: API Key Authentication
-			key := schemas.Key{
-				ID:    uuid.New().String(),
-				Value: *schemas.NewEnvVar(apiKey),
-				// BedrockKeyConfig is required by the provider even if using API Key
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{},
-			}
-
-			if region != "" {
-				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-			return nil
-		} else if accessKey != "" && secretKey != "" {
-			// Case 2: AWS Credentials Authentication
-			if region == "" {
-				return errors.New("x-bf-bedrock-region header is required when using direct keys")
-			}
-
-			key := schemas.Key{
-				ID: uuid.New().String(),
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewEnvVar(accessKey),
-					SecretKey: *schemas.NewEnvVar(secretKey),
-				},
-			}
-
-			if region != "" {
-				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-			}
-
-			if sessionToken != "" {
-				key.BedrockKeyConfig.SessionToken = schemas.NewEnvVar(sessionToken)
-			}
-
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 
 		return nil

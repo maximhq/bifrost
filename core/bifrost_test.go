@@ -3163,15 +3163,14 @@ func TestProviderOverride(t *testing.T) {
 		}
 	})
 
-	t.Run("OverrideWinsOverDirectKey", func(t *testing.T) {
-		// Mirrors the precedence established by getAllSupportedKeys and
-		// getKeysForBatchAndFileOps: a per-request override injected via PreLLMHook beats
-		// a ctx-level BifrostContextKeyDirectKey. The override is a deliberate runtime
-		// decision made after all context has been gathered.
-		const (
-			directKeyValue   = "sk-direct-ctx-key"
-			overrideKeyValue = "sk-override-wins"
-		)
+	t.Run("OverrideWinsOverPinnedAPIKey", func(t *testing.T) {
+		// Mirrors the precedence established by selectKeyFromProviderForModelWithPool:
+		// a per-request override injected via PreLLMHook beats an explicit
+		// BifrostContextKeyAPIKeyID pin set on the request context. The override is a
+		// deliberate runtime decision made after all context has been gathered.
+		const overrideKeyValue = "sk-override-wins"
+		const pinnedKeyID = "pinned-id"
+		const pinnedKeyValue = "sk-pinned-ctx-key"
 
 		cap := &safeCapture{}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3183,6 +3182,10 @@ func TestProviderOverride(t *testing.T) {
 
 		account := NewMockAccount()
 		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
+		// Seed a key with a known ID so BifrostContextKeyAPIKeyID can pin it.
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{ID: pinnedKeyID, Name: "Pinned", Value: *schemas.NewEnvVar(pinnedKeyValue), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
 
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		bf, err := Init(ctx, schemas.BifrostConfig{
@@ -3195,13 +3198,10 @@ func TestProviderOverride(t *testing.T) {
 		}
 		t.Cleanup(func() { bf.Shutdown() })
 
-		// Set BifrostContextKeyDirectKey on the request context before the call — the
-		// override injected by the plugin must win.
+		// Pin a specific key on the request context — the override injected by the
+		// plugin must still win.
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		reqCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
-			Value:  *schemas.NewEnvVar(directKeyValue),
-			Models: schemas.WhiteList{"*"},
-		})
+		reqCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, pinnedKeyID)
 
 		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
@@ -3218,7 +3218,7 @@ func TestProviderOverride(t *testing.T) {
 
 		wantAuth := "Bearer " + overrideKeyValue
 		if got := cap.Auth(); got != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q — DirectKey beat the override", got, wantAuth)
+			t.Errorf("Authorization header: got %q, want %q — pinned API key beat the override", got, wantAuth)
 		}
 	})
 

@@ -349,6 +349,11 @@ type AllowedRequests struct {
 	PassthroughStream     bool `json:"passthrough_stream"`
 	WebSocketResponses    bool `json:"websocket_responses"`
 	Realtime              bool `json:"realtime"`
+	CachedContentCreate   bool `json:"cached_content_create"`
+	CachedContentList     bool `json:"cached_content_list"`
+	CachedContentRetrieve bool `json:"cached_content_retrieve"`
+	CachedContentUpdate   bool `json:"cached_content_update"`
+	CachedContentDelete   bool `json:"cached_content_delete"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -458,6 +463,16 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.WebSocketResponses
 	case RealtimeRequest:
 		return ar.Realtime
+	case CachedContentCreateRequest:
+		return ar.CachedContentCreate
+	case CachedContentListRequest:
+		return ar.CachedContentList
+	case CachedContentRetrieveRequest:
+		return ar.CachedContentRetrieve
+	case CachedContentUpdateRequest:
+		return ar.CachedContentUpdate
+	case CachedContentDeleteRequest:
+		return ar.CachedContentDelete
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -636,6 +651,16 @@ type Provider interface {
 	FileDelete(ctx *BifrostContext, keys []Key, request *BifrostFileDeleteRequest) (*BifrostFileDeleteResponse, *BifrostError)
 	// FileContent downloads file content from the provider
 	FileContent(ctx *BifrostContext, keys []Key, request *BifrostFileContentRequest) (*BifrostFileContentResponse, *BifrostError)
+	// CachedContentCreate creates a new cached content (Gemini / Vertex AI named cache lifecycle)
+	CachedContentCreate(ctx *BifrostContext, key Key, request *BifrostCachedContentCreateRequest) (*BifrostCachedContentCreateResponse, *BifrostError)
+	// CachedContentList lists cached contents
+	CachedContentList(ctx *BifrostContext, keys []Key, request *BifrostCachedContentListRequest) (*BifrostCachedContentListResponse, *BifrostError)
+	// CachedContentRetrieve retrieves a single cached content by name
+	CachedContentRetrieve(ctx *BifrostContext, keys []Key, request *BifrostCachedContentRetrieveRequest) (*BifrostCachedContentRetrieveResponse, *BifrostError)
+	// CachedContentUpdate updates a cached content's expiration (TTL or expireTime)
+	CachedContentUpdate(ctx *BifrostContext, keys []Key, request *BifrostCachedContentUpdateRequest) (*BifrostCachedContentUpdateResponse, *BifrostError)
+	// CachedContentDelete deletes a cached content by name
+	CachedContentDelete(ctx *BifrostContext, keys []Key, request *BifrostCachedContentDeleteRequest) (*BifrostCachedContentDeleteResponse, *BifrostError)
 	// ContainerCreate creates a new container
 	ContainerCreate(ctx *BifrostContext, key Key, request *BifrostContainerCreateRequest) (*BifrostContainerCreateResponse, *BifrostError)
 	// ContainerList lists containers

@@ -1273,6 +1273,17 @@ func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
 }
 
+// IsLlamaModel checks if the model is a Meta Llama model.
+//
+// Used by the Bedrock provider to gate tool_choice handling: Bedrock Converse
+// rejects toolConfig.toolChoice.tool on Meta Llama variants with HTTP 400
+// ("This model doesn't support the toolConfig.toolChoice.tool field"). See
+// AWS docs for the per-model tool_choice support matrix:
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+func IsLlamaModel(model string) bool {
+	return strings.Contains(model, "llama")
+}
+
 func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
 }

@@ -96,7 +96,6 @@ bifrost:
       - "*"
     enableLogging: true    
     enforceGovernanceHeader: false
-    allowDirectKeys: true
     maxRequestBodySizeMb: 100
   
   # Provider configuration - empty by default, configure via UI or uncomment below

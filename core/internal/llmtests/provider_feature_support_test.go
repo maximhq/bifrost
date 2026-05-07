@@ -1256,7 +1256,8 @@ func TestRawBodyToolVersionRemapping(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := anthropic.RemapRawToolVersionsForProvider([]byte(tt.inputJSON), tt.provider)
+			model := providerUtils.GetJSONField([]byte(tt.inputJSON), "model").String()
+			result, err := anthropic.RemapRawToolVersionsForProvider([]byte(tt.inputJSON), tt.provider, model)
 
 			if tt.expectErr {
 				require.Error(t, err)

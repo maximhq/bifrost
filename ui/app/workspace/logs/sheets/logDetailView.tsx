@@ -208,6 +208,60 @@ const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
   return "assistant";
 };
 
+const isPlainAssistantResponsesMessage = (m: ResponsesMessage): boolean => {
+  if (m.type && m.type !== "message") return false;
+  return getResponsesRole(m) === "assistant";
+};
+
+const isReasoningResponsesMessage = (m: ResponsesMessage): boolean =>
+  m.type === "reasoning";
+
+// Streaming providers can emit a single logical assistant turn (or reasoning
+// item) as many small messages. Collapse adjacent ones so the UI shows one
+// bubble per turn instead of N "1 line" bubbles.
+const coalesceResponsesMessages = (
+  msgs: ResponsesMessage[],
+): ResponsesMessage[] => {
+  const out: ResponsesMessage[] = [];
+  for (const m of msgs) {
+    const last = out[out.length - 1];
+    if (
+      last &&
+      isPlainAssistantResponsesMessage(last) &&
+      isPlainAssistantResponsesMessage(m)
+    ) {
+      const merged = extractResponsesText(last) + extractResponsesText(m);
+      out[out.length - 1] = {
+        ...last,
+        content: [{ type: "output_text", text: merged } as any],
+      };
+      continue;
+    }
+    if (
+      last &&
+      isReasoningResponsesMessage(last) &&
+      isReasoningResponsesMessage(m)
+    ) {
+      const aSum = last.summary ?? [];
+      const bSum = m.summary ?? [];
+      const aEnc = (last as any).encrypted_content ?? "";
+      const bEnc = (m as any).encrypted_content ?? "";
+      const joinedEnc = `${aEnc}${bEnc}`;
+      out[out.length - 1] = {
+        ...last,
+        summary: [...aSum, ...bSum],
+        encrypted_content: joinedEnc ? joinedEnc : undefined,
+      } as ResponsesMessage;
+      continue;
+    }
+    out.push(m);
+  }
+  return out.filter((m) => {
+    if (!isPlainAssistantResponsesMessage(m)) return true;
+    return extractResponsesText(m).length > 0;
+  });
+};
+
 const extractMessageText = (message: any): string => {
   if (!message || message.content == null) return "";
   if (typeof message.content === "string") return message.content;
@@ -599,6 +653,7 @@ export function LogDetailView({
     resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
   const isContainer = isContainerOperation(log.object);
+  const showTabs = !isContainer;
   const isPassthrough = isPassthroughOperation(log.object);
   const passthroughParams = isPassthrough
     ? (log.params as {
@@ -1574,18 +1629,20 @@ export function LogDetailView({
           )}
         </div>
       </details>
-      <Tabs defaultValue="messages" className="gap-2">
+      <Tabs key={log.id} defaultValue={showTabs ? "messages" : "plugins"} className="gap-2">
         <TabsList className="bg-muted/60 h-10 w-fit">
-          <TabsTrigger value="messages" className="px-3">
-            Messages
-            {log.input_history?.length ? (
-              <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-                {log.input_history.length + (log.output_message ? 1 : 0)}
-              </span>
-            ) : null}
-          </TabsTrigger>
+          {showTabs && (
+            <TabsTrigger value="messages" className="px-3">
+              Messages
+              {log.input_history?.length ? (
+                <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+                  {log.input_history.length + (log.output_message ? 1 : 0)}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          )}
 
-          {!isPassthrough && !log.list_models_output && (
+          {showTabs && !isPassthrough && !log.list_models_output && (
             <TabsTrigger value="tools" className="px-3">
               Tools
               {log.params?.tools?.length ? (
@@ -1595,14 +1652,16 @@ export function LogDetailView({
               ) : null}
             </TabsTrigger>
           )}
-          <TabsTrigger value="routing" className="px-3">
-            Routing
-            {log.routing_engine_logs ? (
-              <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-                {log.routing_engine_logs.split("\n").filter(Boolean).length}
-              </span>
-            ) : null}
-          </TabsTrigger>
+          {showTabs && (
+            <TabsTrigger value="routing" className="px-3">
+              Routing
+              {log.routing_engine_logs ? (
+                <span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+                  {log.routing_engine_logs.split("\n").filter(Boolean).length}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="plugins" className="px-3">
             Plugin Logs
             {pluginLogCount > 0 ? (
@@ -2036,7 +2095,10 @@ export function LogDetailView({
             const outputMsgs = visibleRoles.size < allRoles.length
               ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m)))
               : rawOutput;
-            const all: ResponsesMessage[] = [...inputMsgs, ...outputMsgs];
+            const all: ResponsesMessage[] = coalesceResponsesMessages([
+              ...inputMsgs,
+              ...outputMsgs,
+            ]);
             if (all.length === 0) return null;
             return (
               <div className="bg-card rounded-sm border p-5">
@@ -2506,7 +2568,7 @@ export function LogDetailView({
           )}
           {rawResponse && log.status !== "processing" && (
             <>
-              <div className="text-muted-foreground text-[12px]">
+              <div className="text-muted-foreground text-[12px] pt-4">
                 Raw Response from{" "}
                 <span className="text-foreground font-medium capitalize">
                   {log.provider}

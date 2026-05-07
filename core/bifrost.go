@@ -69,6 +69,9 @@ type Bifrost struct {
 	providers           atomic.Pointer[[]schemas.Provider]  // list of providers
 	requestQueues       sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
 	waitGroups          sync.Map                            // wait groups for each provider (thread-safe)
+	oldWorkerCleanups   sync.WaitGroup                      // tracks async cleanup of old workers after provider updates
+	retiredWorkerWaits  sync.Map                            // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
+	providerLifecycleMu sync.RWMutex                        // prevents provider updates from racing with shutdown cleanup waits
 	providerMutexes     sync.Map                            // mutexes for each provider to prevent concurrent updates (thread-safe)
 	channelMessagePool  sync.Pool                           // Pool for ChannelMessage objects, initial pool size is set in Init
 	responseChannelPool sync.Pool                           // Pool for response channels, initial pool size is set in Init
@@ -2303,6 +2306,123 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 	return response.FileContentResponse, nil
 }
 
+// CachedContentCreateRequest creates a new cached content (Gemini / Vertex AI named cache lifecycle).
+func (bifrost *Bifrost) CachedContentCreateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentCreateRequest) (*schemas.BifrostCachedContentCreateResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content create request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content create request"}}
+	}
+	if req.Model == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "model is required for cached content create request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentCreateRequest
+	bifrostReq.CachedContentCreateRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentCreateResponse, nil
+}
+
+// CachedContentListRequest lists cached contents.
+func (bifrost *Bifrost) CachedContentListRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentListRequest) (*schemas.BifrostCachedContentListResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content list request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content list request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentListRequest
+	bifrostReq.CachedContentListRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentListResponse, nil
+}
+
+// CachedContentRetrieveRequest retrieves a single cached content by name.
+func (bifrost *Bifrost) CachedContentRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentRetrieveRequest) (*schemas.BifrostCachedContentRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content retrieve request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content retrieve request"}}
+	}
+	if req.Name == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content retrieve request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentRetrieveRequest
+	bifrostReq.CachedContentRetrieveRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentRetrieveResponse, nil
+}
+
+// CachedContentUpdateRequest updates expiration on a cached content.
+func (bifrost *Bifrost) CachedContentUpdateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentUpdateRequest) (*schemas.BifrostCachedContentUpdateResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content update request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content update request"}}
+	}
+	if req.Name == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content update request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentUpdateRequest
+	bifrostReq.CachedContentUpdateRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentUpdateResponse, nil
+}
+
+// CachedContentDeleteRequest deletes a cached content by name.
+func (bifrost *Bifrost) CachedContentDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content delete request is nil"}}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content delete request"}}
+	}
+	if req.Name == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content delete request"}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CachedContentDeleteRequest
+	bifrostReq.CachedContentDeleteRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.CachedContentDeleteResponse, nil
+}
+
 func (bifrost *Bifrost) Passthrough(
 	ctx *schemas.BifrostContext,
 	provider schemas.ModelProvider,
@@ -3187,6 +3307,15 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 	// Step 3b: Final drain sweep — see drainQueueWithErrors for full explanation.
 	bifrost.drainQueueWithErrors(pq)
 
+	// Step 3c: Wait for retired worker generations from earlier provider updates.
+	// They are no longer tracked in bifrost.waitGroups after a new generation is
+	// published, but removing the provider must still wait for their in-flight work.
+	if retiredWaitValue, exists := bifrost.retiredWorkerWaits.Load(providerKey); exists {
+		retiredWaitValue.(*sync.WaitGroup).Wait()
+		bifrost.retiredWorkerWaits.Delete(providerKey)
+		bifrost.logger.Debug("all retired workers for provider %s have stopped", providerKey)
+	}
+
 	// Step 4: Remove the provider from the request queues.
 	bifrost.requestQueues.Delete(providerKey)
 
@@ -3224,15 +3353,19 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 // while the transition occurs. In-flight requests will complete before workers are stopped.
 // Buffered requests in the old queue will be transferred to the new queue to prevent loss.
 //
-// Concurrency safety — no-worker window:
-// UpdateProvider holds a per-provider write lock (providerMutex.Lock) for its entire
-// duration. All producer paths (tryRequest, tryStreamRequest) acquire the corresponding
-// read lock inside getProviderQueue before they can look up or enqueue into any queue.
-// This means no producer can observe or enqueue into newPq until UpdateProvider returns
-// and releases the write lock — at which point new workers are already running and
-// consuming newPq. There is therefore no window where newPq is visible to producers
-// but has zero workers.
+// Concurrency safety — update handoff:
+// UpdateProvider holds a per-provider write lock only while publishing the new
+// provider instance, queue, and workers. It starts the new workers before the
+// old queue is signalled closed, then releases the lock before old workers are
+// waited on. This avoids high-load updates blocking new requests behind the
+// provider read lock while slow in-flight old-worker requests finish.
 func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error {
+	bifrost.providerLifecycleMu.RLock()
+	defer bifrost.providerLifecycleMu.RUnlock()
+	if bifrost.ctx.Err() != nil {
+		return fmt.Errorf("bifrost is shutting down")
+	}
+
 	bifrost.logger.Info(fmt.Sprintf("Updating provider configuration for provider %s", providerKey))
 	// Get the updated configuration from the account
 	providerConfig, err := bifrost.account.GetConfigForProvider(providerKey)
@@ -3242,7 +3375,8 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 	if providerConfig == nil {
 		return fmt.Errorf("config is nil for provider %s", providerKey)
 	}
-	// Lock the provider to prevent concurrent access during update
+	// Lock the provider while publishing the new runtime state. The slow cleanup
+	// of old workers happens after unlock so new requests can route to newPq.
 	providerMutex := bifrost.getProviderMutex(providerKey)
 	providerMutex.Lock()
 	defer providerMutex.Unlock()
@@ -3256,29 +3390,91 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 	}
 
 	oldPq := oldPqValue.(*ProviderQueue)
+	var oldWaitGroup *sync.WaitGroup
+	if waitGroupValue, exists := bifrost.waitGroups.Load(providerKey); exists {
+		oldWaitGroup = waitGroupValue.(*sync.WaitGroup)
+	}
 
-	bifrost.logger.Debug("gracefully stopping existing workers for provider %s", providerKey)
+	bifrost.logger.Debug("gracefully replacing existing workers for provider %s", providerKey)
 
-	// Step 1: Create new ProviderQueue with updated buffer size
+	// Step 1: Create provider instance before touching live routing state. If
+	// provider construction fails, the old provider/queue continues serving.
+	provider, err := bifrost.createBaseProvider(providerKey, providerConfig)
+	if err != nil {
+		return fmt.Errorf("provider update for %s failed during initialization; old provider is still active: %v", providerKey, err)
+	}
+
+	// Step 2: Create new ProviderQueue and wait group with updated settings.
 	newPq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize),
 		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
 	}
+	newWaitGroup := &sync.WaitGroup{}
 
-	// Step 2: Atomically replace the queue so new producers immediately use newPq.
+	// Step 3: Atomically replace the provider in the providers slice before new
+	// workers start so all fresh worker executions use the updated provider.
+	bifrost.logger.Debug("atomically replacing provider instance in providers slice for %s", providerKey)
+
+	replacementAttempts := 0
+	maxReplacementAttempts := 100 // Prevent infinite loops in high-contention scenarios
+
+	for {
+		replacementAttempts++
+		if replacementAttempts > maxReplacementAttempts {
+			return fmt.Errorf("failed to replace provider %s in providers slice after %d attempts; old provider is still active", providerKey, maxReplacementAttempts)
+		}
+
+		oldPtr := bifrost.providers.Load()
+		var oldSlice []schemas.Provider
+		if oldPtr != nil {
+			oldSlice = *oldPtr
+		}
+
+		newSlice := make([]schemas.Provider, 0, len(oldSlice))
+		oldProviderFound := false
+
+		for _, existingProvider := range oldSlice {
+			if existingProvider.GetProviderKey() != providerKey {
+				newSlice = append(newSlice, existingProvider)
+			} else {
+				oldProviderFound = true
+			}
+		}
+
+		newSlice = append(newSlice, provider)
+
+		if bifrost.providers.CompareAndSwap(oldPtr, &newSlice) {
+			if oldProviderFound {
+				bifrost.logger.Debug("successfully replaced existing provider instance for %s in providers slice", providerKey)
+			} else {
+				bifrost.logger.Debug("successfully added new provider instance for %s to providers slice", providerKey)
+			}
+			break
+		}
+		// Retrying as swapping did not work (likely due to concurrent modification)
+	}
+
+	// Step 4: Publish the new queue/wait group and start new workers before old
+	// workers are stopped. This avoids the update-induced no-worker window while
+	// still preventing new producers from seeing partial state until unlock.
 	bifrost.requestQueues.Store(providerKey, newPq)
+	bifrost.waitGroups.Store(providerKey, newWaitGroup)
 	bifrost.logger.Debug("stored new queue for provider %s, new producers will use it", providerKey)
 
-	// Step 3: Transfer buffered requests from the old queue to the new queue BEFORE
-	// signalling workers to stop. This ensures buffered requests are processed by the
-	// new workers rather than being drained with errors.
-	// Old workers are still running and may consume some items concurrently — that is
-	// fine, they process them normally.
-	// If newPq is full during transfer, all remaining buffered requests are cancelled
-	// immediately rather than blocking — this avoids the deadlock where transfer goroutines
-	// wait for space that only opens once new workers start (which can't happen until
-	// the transfer completes).
+	bifrost.logger.Debug("starting %d new workers for provider %s with buffer size %d",
+		providerConfig.ConcurrencyAndBufferSize.Concurrency,
+		providerKey,
+		providerConfig.ConcurrencyAndBufferSize.BufferSize)
+	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
+		newWaitGroup.Add(1)
+		go bifrost.requestWorker(provider, providerConfig, newPq, newWaitGroup)
+	}
+
+	// Step 5: Transfer buffered requests from the old queue to the new queue BEFORE
+	// signalling workers to stop. Old workers are still running and may consume some
+	// items concurrently — that is fine, they process them normally. Since new
+	// workers are already running, successful transfers can be processed immediately.
 	transferredCount := 0
 	cancelledCount := 0
 	for {
@@ -3330,123 +3526,34 @@ transferComplete:
 		bifrost.logger.Warn("cancelled %d buffered requests during transfer for provider %s: new queue was full", cancelledCount, providerKey)
 	}
 
-	// Step 4: Signal the old queue is closing. Producers that still hold a reference to
-	// oldPq will detect this via isClosing() and transparently re-route to newPq.
-	// This happens after the transfer so the new queue is already populated before
-	// stale producers attempt their re-route.
+	// Step 6: Register cleanup before signalling the old queue. Otherwise
+	// Shutdown/RemoveProvider can observe no pending old-worker cleanup after the
+	// old wait group is replaced, then return while old in-flight requests run.
+	var retiredWaitGroup *sync.WaitGroup
+	if oldWaitGroup != nil {
+		retiredWaitGroup = bifrost.getRetiredWorkerWaitGroup(providerKey)
+		retiredWaitGroup.Add(1)
+		bifrost.oldWorkerCleanups.Add(1)
+	}
+
+	// Step 7: Signal the old queue is closing. Stale producers that still hold a
+	// reference to oldPq will detect this via isClosing() and re-route to newPq.
 	oldPq.signalClosing()
 	bifrost.logger.Debug("signaled closing for old queue of provider %s", providerKey)
 
-	// Step 5: Wait for all existing workers to finish processing in-flight requests.
-	// Workers exit via oldPq.done (signalled above).
-	waitGroup, exists := bifrost.waitGroups.Load(providerKey)
-	if exists {
-		waitGroup.(*sync.WaitGroup).Wait()
-		bifrost.logger.Debug("all workers for provider %s have stopped", providerKey)
-	}
-
-	// Step 5b: Final drain sweep — see drainQueueWithErrors for full explanation.
-	bifrost.drainQueueWithErrors(oldPq)
-
-	// Step 6: Create new wait group for the updated workers.
-	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
-
-	// Step 7: Create provider instance.
-	provider, err := bifrost.createBaseProvider(providerKey, providerConfig)
-	if err != nil {
-		// Roll back: signal closing, remove from map, then drain.
-		// Order matters: Delete before drainQueueWithErrors so that producers
-		// re-routing via requestQueues.Load find nothing and return "provider
-		// shutting down" immediately, narrowing the TOCTOU window before the sweep.
-		newPq.signalClosing()
-		bifrost.requestQueues.Delete(providerKey)
-		bifrost.waitGroups.Delete(providerKey)
-		bifrost.drainQueueWithErrors(newPq)
-		if sliceErr := bifrost.removeProviderFromSlice(providerKey); sliceErr != nil {
-			bifrost.logger.Error(
-				"UpdateProvider rollback for %s is incomplete — provider was removed from queues "+
-					"but could not be removed from the providers slice: %v. "+
-					"bifrost.providers is now inconsistent. "+
-					"To recover: call RemoveProvider(%s) then AddProvider to re-register it, "+
-					"or restart Bifrost if that fails.",
-				providerKey, sliceErr, providerKey,
-			)
-		}
-		return fmt.Errorf("provider update for %s failed during initialization; provider has been removed — re-add or retry UpdateProvider to restore it: %v", providerKey, err)
-	}
-
-	// Step 8: Atomically replace the provider in the providers slice.
-	// This must happen before starting new workers to prevent stale reads
-	bifrost.logger.Debug("atomically replacing provider instance in providers slice for %s", providerKey)
-
-	replacementAttempts := 0
-	maxReplacementAttempts := 100 // Prevent infinite loops in high-contention scenarios
-
-	for {
-		replacementAttempts++
-		if replacementAttempts > maxReplacementAttempts {
-			newPq.signalClosing()
-			bifrost.requestQueues.Delete(providerKey)
-			bifrost.waitGroups.Delete(providerKey)
-			bifrost.drainQueueWithErrors(newPq)
-			if sliceErr := bifrost.removeProviderFromSlice(providerKey); sliceErr != nil {
-				bifrost.logger.Error(
-					"UpdateProvider rollback for %s is incomplete — provider was removed from queues "+
-						"but could not be removed from the providers slice: %v. "+
-						"bifrost.providers is now inconsistent. "+
-						"To recover: call RemoveProvider(%s) then AddProvider to re-register it, "+
-						"or restart Bifrost if that fails.",
-					providerKey, sliceErr, providerKey,
-				)
-			}
-			return fmt.Errorf("failed to replace provider %s in providers slice after %d attempts; provider has been removed — re-add or retry UpdateProvider to restore it", providerKey, maxReplacementAttempts)
-		}
-
-		oldPtr := bifrost.providers.Load()
-		var oldSlice []schemas.Provider
-		if oldPtr != nil {
-			oldSlice = *oldPtr
-		}
-
-		// Create new slice without the old provider of this key
-		// Use exact capacity to avoid allocations
-		newSlice := make([]schemas.Provider, 0, len(oldSlice))
-		oldProviderFound := false
-
-		for _, existingProvider := range oldSlice {
-			if existingProvider.GetProviderKey() != providerKey {
-				newSlice = append(newSlice, existingProvider)
-			} else {
-				oldProviderFound = true
-			}
-		}
-
-		// Add the new provider
-		newSlice = append(newSlice, provider)
-
-		if bifrost.providers.CompareAndSwap(oldPtr, &newSlice) {
-			if oldProviderFound {
-				bifrost.logger.Debug("successfully replaced existing provider instance for %s in providers slice", providerKey)
-			} else {
-				bifrost.logger.Debug("successfully added new provider instance for %s to providers slice", providerKey)
-			}
-			break
-		}
-		// Retrying as swapping did not work (likely due to concurrent modification)
-	}
-
-	// Step 9: Start new workers with updated concurrency.
-	bifrost.logger.Debug("starting %d new workers for provider %s with buffer size %d",
-		providerConfig.ConcurrencyAndBufferSize.Concurrency,
-		providerKey,
-		providerConfig.ConcurrencyAndBufferSize.BufferSize)
-
-	waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
-	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
-
-	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
-		currentWaitGroup.Add(1)
-		go bifrost.requestWorker(provider, providerConfig, newPq)
+	// Step 8: Cleanup old workers asynchronously. Waiting here under the provider
+	// lock caused high-load provider updates to block new requests until every slow
+	// in-flight old-worker request completed.
+	if oldWaitGroup != nil {
+		go func(pq *ProviderQueue, wg *sync.WaitGroup, cleanupWg *sync.WaitGroup, key schemas.ModelProvider) {
+			defer bifrost.oldWorkerCleanups.Done()
+			defer cleanupWg.Done()
+			wg.Wait()
+			bifrost.logger.Debug("all old workers for provider %s have stopped", key)
+			bifrost.drainQueueWithErrors(pq)
+		}(oldPq, oldWaitGroup, retiredWaitGroup, providerKey)
+	} else {
+		bifrost.drainQueueWithErrors(oldPq)
 	}
 
 	bifrost.logger.Info("successfully updated provider configuration for provider %s", providerKey)
@@ -3469,6 +3576,13 @@ func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *sync.RWMutex {
 	mutexValue, _ := bifrost.providerMutexes.LoadOrStore(providerKey, &sync.RWMutex{})
 	return mutexValue.(*sync.RWMutex)
+}
+
+// getRetiredWorkerWaitGroup gets or creates a wait group for retired worker
+// generations for the given provider.
+func (bifrost *Bifrost) getRetiredWorkerWaitGroup(providerKey schemas.ModelProvider) *sync.WaitGroup {
+	waitGroupValue, _ := bifrost.retiredWorkerWaits.LoadOrStore(providerKey, &sync.WaitGroup{})
+	return waitGroupValue.(*sync.WaitGroup)
 }
 
 // removeProviderFromSlice atomically removes the provider with the given key
@@ -3713,6 +3827,14 @@ func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPCli
 	return bifrost.MCPManager.UpdateClient(id, updatedConfig)
 }
 
+// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
+func (bifrost *Bifrost) UpdateMCPClientConnection(id string, newConfig *schemas.MCPClientConfig) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.UpdateClientConnection(id, newConfig)
+}
+
 // ReconnectMCPClient attempts to reconnect an MCP client if it is disconnected.
 //
 // Parameters:
@@ -3726,6 +3848,25 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	}
 
 	return bifrost.MCPManager.ReconnectClient(id)
+}
+
+// DisableMCPClient shuts down an MCP client's connection, health monitor, and tool
+// syncer without removing it. The client entry is kept in a "disabled" state so it
+// can be re-enabled via EnableMCPClient.
+func (bifrost *Bifrost) DisableMCPClient(id string) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.DisableClient(id)
+}
+
+// EnableMCPClient reconnects a previously disabled MCP client and restarts its
+// health monitor and tool syncer.
+func (bifrost *Bifrost) EnableMCPClient(id string) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.EnableClient(id)
 }
 
 // VerifyPerUserOAuthConnection delegates to the MCP manager to verify an MCP
@@ -3902,7 +4043,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		currentWaitGroup.Add(1)
-		go bifrost.requestWorker(provider, config, pq)
+		go bifrost.requestWorker(provider, config, pq, currentWaitGroup)
 	}
 
 	return nil
@@ -5491,13 +5632,8 @@ func executeRequestWithRetries[T any](
 
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
-func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue) {
-	defer func() {
-		if waitGroupValue, ok := bifrost.waitGroups.Load(provider.GetProviderKey()); ok {
-			waitGroup := waitGroupValue.(*sync.WaitGroup)
-			waitGroup.Done()
-		}
-	}()
+func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
+	defer waitGroup.Done()
 
 	for {
 		var req *ChannelMessage
@@ -5576,13 +5712,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// upstream commit 54afe9e7f.
 		effectiveSendBackReq := config.SendBackRawRequest
 		allowRawOverride, _ := req.Context.Value(schemas.BifrostContextKeyAllowPerRequestRawOverride).(bool)
-		if allowRawOverride {
+		passthroughOverridePresent, _ := req.Context.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+
+		if allowRawOverride || passthroughOverridePresent {
 			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok {
 				effectiveSendBackReq = override
 			}
 		}
 		effectiveSendBackResp := config.SendBackRawResponse
-		if allowRawOverride {
+		if allowRawOverride || passthroughOverridePresent {
 			if override, ok := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
 				effectiveSendBackResp = override
 			}
@@ -5645,8 +5783,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				isMultiKeyBatchOp := isBatchRequestType(req.RequestType) && req.RequestType != schemas.BatchCreateRequest
 				isMultiKeyFileOp := isFileRequestType(req.RequestType) && req.RequestType != schemas.FileUploadRequest
 				isMultiKeyContainerOp := isContainerRequestType(req.RequestType) && req.RequestType != schemas.ContainerCreateRequest && req.RequestType != schemas.ContainerFileCreateRequest
+				isMultiKeyCachedContentOp := isCachedContentRequestType(req.RequestType) && req.RequestType != schemas.CachedContentCreateRequest
 
-				if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp {
+				if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp || isMultiKeyCachedContentOp {
 					var modelPtr *string
 					if model != "" {
 						modelPtr = &model
@@ -5695,7 +5834,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if len(supportedKeys) == 0 {
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
 					} else if !canRotate {
-						// Fixed key (DirectKey, explicit ID/name, session stickiness): always
+						// Fixed key (explicit ID/name, session stickiness): always
 						// return the same key regardless of usedKeyIDs.
 						fixedKey := supportedKeys[0]
 						keyProvider = func(_ map[string]bool) (schemas.Key, error) {
@@ -5958,6 +6097,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		embeddingResponse.BackfillParams(req.BifrostRequest.EmbeddingRequest)
 		response.EmbeddingResponse = embeddingResponse
 	case schemas.RerankRequest:
 		rerankResponse, bifrostError := provider.Rerank(req.Context, key, req.BifrostRequest.RerankRequest)
@@ -6083,6 +6223,36 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.FileContentResponse = fileContentResponse
+	case schemas.CachedContentCreateRequest:
+		cachedContentCreateResponse, bifrostError := provider.CachedContentCreate(req.Context, key, req.BifrostRequest.CachedContentCreateRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentCreateResponse = cachedContentCreateResponse
+	case schemas.CachedContentListRequest:
+		cachedContentListResponse, bifrostError := provider.CachedContentList(req.Context, keys, req.BifrostRequest.CachedContentListRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentListResponse = cachedContentListResponse
+	case schemas.CachedContentRetrieveRequest:
+		cachedContentRetrieveResponse, bifrostError := provider.CachedContentRetrieve(req.Context, keys, req.BifrostRequest.CachedContentRetrieveRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentRetrieveResponse = cachedContentRetrieveResponse
+	case schemas.CachedContentUpdateRequest:
+		cachedContentUpdateResponse, bifrostError := provider.CachedContentUpdate(req.Context, keys, req.BifrostRequest.CachedContentUpdateRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentUpdateResponse = cachedContentUpdateResponse
+	case schemas.CachedContentDeleteRequest:
+		cachedContentDeleteResponse, bifrostError := provider.CachedContentDelete(req.Context, keys, req.BifrostRequest.CachedContentDeleteRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CachedContentDeleteResponse = cachedContentDeleteResponse
 	case schemas.BatchCreateRequest:
 		batchCreateResponse, bifrostError := provider.BatchCreate(req.Context, key, req.BifrostRequest.BatchCreateRequest)
 		if bifrostError != nil {
@@ -6971,6 +7141,11 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.FileRetrieveRequest = nil
 	req.FileDeleteRequest = nil
 	req.FileContentRequest = nil
+	req.CachedContentCreateRequest = nil
+	req.CachedContentListRequest = nil
+	req.CachedContentRetrieveRequest = nil
+	req.CachedContentUpdateRequest = nil
+	req.CachedContentDeleteRequest = nil
 	req.BatchCreateRequest = nil
 	req.BatchListRequest = nil
 	req.BatchRetrieveRequest = nil
@@ -7029,7 +7204,7 @@ func (bifrost *Bifrost) releaseMCPRequest(req *schemas.BifrostMCPRequest) {
 // The override key is copied before validation so that validateKey's normalisation
 // side-effects (e.g. materialising an empty BedrockKeyConfig for IRSA-style ambient
 // auth) apply only to the returned copy, leaving the plugin-supplied original
-// untouched. This matches the contract of the parallel DirectKey path.
+// untouched.
 func getOverrideKey(ctx *schemas.BifrostContext, baseProviderType schemas.ModelProvider) (*schemas.Key, error) {
 	if ctx == nil {
 		return nil, nil
@@ -7055,17 +7230,6 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 	}
 	if overrideKey != nil {
 		return []schemas.Key{*overrideKey}, nil
-	}
-	// Check if key has been set in the context explicitly
-	if ctx != nil {
-		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
-		if ok {
-			if err := validateKey(baseProviderType, &key); err != nil {
-				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
-			}
-			// If a direct key is specified, return it as a single-element slice
-			return []schemas.Key{key}, nil
-		}
 	}
 
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
@@ -7113,17 +7277,6 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 	}
 	if overrideKey != nil {
 		return []schemas.Key{*overrideKey}, nil
-	}
-	// Check if key has been set in the context explicitly
-	if ctx != nil {
-		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
-		if ok {
-			if err := validateKey(baseProviderType, &key); err != nil {
-				return nil, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
-			}
-			// If a direct key is specified, return it as a single-element slice
-			return []schemas.Key{key}, nil
-		}
 	}
 
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
@@ -7197,7 +7350,6 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // via the keyProvider closure built by the caller.
 //
 // canRotate=false is returned for cases where the caller must always use the same key:
-//   - DirectKey (caller-supplied key bypasses all selection)
 //   - SkipKeySelection (provider allows keyless requests; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
 //   - Session stickiness (key persisted in KV store for the session lifetime)
@@ -7207,25 +7359,15 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // or stickiness constraint is in effect.
 func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) ([]schemas.Key, bool, error) {
 	// ProviderOverride: plugin injected a per-request key via req.UpdateAPIKey — no pool,
-	// no rotation. The key is validated/normalised against baseProviderType (matching the
-	// DirectKey path below) so provider-specific invariants like Bedrock's BedrockKeyConfig
-	// being non-nil hold even for plugin-injected keys. Override wins over DirectKey:
-	// a PreLLMHook sets it as a deliberate runtime decision.
+	// no rotation. The key is validated/normalised against baseProviderType so
+	// provider-specific invariants like Bedrock's BedrockKeyConfig being non-nil hold
+	// even for plugin-injected keys.
 	overrideKey, err := getOverrideKey(ctx, baseProviderType)
 	if err != nil {
 		return nil, false, err
 	}
 	if overrideKey != nil {
 		return []schemas.Key{*overrideKey}, false, nil
-	}
-	// DirectKey: caller supplied a key directly — no pool, no rotation.
-	if ctx != nil {
-		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
-			if err := validateKey(baseProviderType, &key); err != nil {
-				return nil, false, fmt.Errorf("invalid direct key for provider %v: %w", baseProviderType, err)
-			}
-			return []schemas.Key{key}, false, nil
-		}
 	}
 	// SkipKeySelection: provider allows keyless requests — return empty pool, no rotation.
 	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
@@ -7261,7 +7403,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 
 	// Skip model check conditions
 	// We can improve these conditions in the future
-	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType))) || requestType == schemas.ListModelsRequest
+	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isCachedContentRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType))) || requestType == schemas.ListModelsRequest
 	if skipModelCheck {
 		// When skipping model check: just verify keys are enabled and have values
 		for _, key := range keys {
@@ -7439,6 +7581,9 @@ func getCachedKeyFromStore(kvStore schemas.KVStore, kvKey string, supportedKeys 
 // Shutdown gracefully stops all workers when triggered.
 // It closes all request channels and waits for workers to exit.
 func (bifrost *Bifrost) Shutdown() {
+	bifrost.providerLifecycleMu.Lock()
+	defer bifrost.providerLifecycleMu.Unlock()
+
 	bifrost.logger.Info("closing all request channels...")
 	// Cancel the context if not already done
 	if bifrost.ctx.Err() == nil && bifrost.cancel != nil {
@@ -7459,6 +7604,11 @@ func (bifrost *Bifrost) Shutdown() {
 		waitGroup.Wait()
 		return true
 	})
+
+	// Wait for async cleanup of old workers from provider updates. Those old
+	// wait groups are no longer in bifrost.waitGroups after the new queue is
+	// published, but Shutdown must still wait for their in-flight requests.
+	bifrost.oldWorkerCleanups.Wait()
 
 	// Final drain sweep — same reasoning as RemoveProvider's Step 3b.
 	bifrost.requestQueues.Range(func(key, value interface{}) bool {

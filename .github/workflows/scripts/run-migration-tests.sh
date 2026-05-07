@@ -3509,8 +3509,10 @@ compare_postgres_snapshots() {
     # calendar_aligned was dropped from governance_budgets in prerelease2 (add_multi_budget_tables) but
     # re-added in prerelease4 (migrateCalendarAlignedToBudgetsAndRateLimitsTable) - no longer dropped
     # enable_litellm_fallbacks (dropped from config_client in latest cut - behavior moved elsewhere)
+    # allow_direct_keys (dropped from config_client in v1.5.0 - direct-keys-only mode removed; HTTP header
+    # pass-through is no longer accepted)
     if [ "$table" = "config_client" ]; then
-      dropped_columns="$dropped_columns enable_litellm_fallbacks"
+      dropped_columns="$dropped_columns enable_litellm_fallbacks allow_direct_keys"
     fi
 
     local before_col_array

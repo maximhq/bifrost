@@ -455,7 +455,7 @@ func TestEncryptPlaintextOAuthConfigs_EncryptsAndDecryptsCorrectly(t *testing.T)
 	// GORM hooks should decrypt on read
 	var found tables.TableOauthConfig
 	require.NoError(t, db.Where("id = ?", "cfg-batch-1").First(&found).Error)
-	assert.Equal(t, "batch-client-secret", found.ClientSecret)
+	assert.Equal(t, "batch-client-secret", found.ClientSecret.GetValue())
 	assert.Equal(t, "batch-verifier", found.CodeVerifier)
 }
 
@@ -1353,7 +1353,7 @@ func TestEncryptPlaintextRows_SkipsAlreadyEncryptedVirtualKeys(t *testing.T) {
 		ID:       "vk-already-enc",
 		Name:     "already-encrypted-vk",
 		Value:    "vk-secret-already",
-		IsActive: true,
+		IsActive: bifrost.Ptr(true),
 	}
 	require.NoError(t, db.Create(vk).Error)
 

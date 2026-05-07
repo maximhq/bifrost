@@ -3,7 +3,7 @@ import { EnvVar } from "./schemas";
 
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
-export type MCPConnectionState = "connected" | "disconnected" | "error";
+export type MCPConnectionState = "connected" | "disconnected" | "error" | "pending_tools" | "disabled";
 
 export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth";
 
@@ -16,13 +16,19 @@ export interface MCPStdioConfig {
 }
 
 export interface OAuthConfig {
-	client_id: string;
-	client_secret?: string; // Optional for public clients using PKCE
+	client_id: EnvVar;
+	client_secret?: EnvVar; // Optional for public clients using PKCE
 	authorize_url?: string; // Optional, will be discovered from server_url if not provided
 	token_url?: string; // Optional, will be discovered from server_url if not provided
 	registration_url?: string; // Optional, for dynamic client registration
 	scopes?: string[]; // Optional, can be discovered
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
+}
+
+/** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */
+export interface OAuthConfigUpdate {
+	client_id?: EnvVar;
+	client_secret?: EnvVar;
 }
 
 export interface MCPClientConfig {
@@ -34,6 +40,8 @@ export interface MCPClientConfig {
 	stdio_config?: MCPStdioConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
+	oauth_client_id?: EnvVar;     // Redacted existing client ID (populated on GET for oauth clients)
+	oauth_client_secret?: EnvVar; // Redacted existing client secret (populated on GET for oauth clients)
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, EnvVar>;
@@ -42,6 +50,7 @@ export interface MCPClientConfig {
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	disabled?: boolean; // When true, connection/workers are shut down; tools are unavailable until re-enabled
 }
 
 export interface MCPVKConfigResponse {
@@ -106,6 +115,8 @@ export interface UpdateMCPClientRequest {
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
+	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 

@@ -632,6 +632,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAllowPerRequestRawOverrideColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPClientDisabledColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationUniqueTeamNames(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDropAllowDirectKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1012,16 +1021,17 @@ func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB) erro
 	return nil
 }
 
-// migrationAddAllowDirectKeysColumn adds the allow_direct_keys column to the client config table
+// migrationAddAllowDirectKeysColumn adds the allow_direct_keys column to the client config table.
+// Use raw SQL since the struct field was removed in v1.5 when the feature was retired.
+// This column is subsequently dropped by migrationDropAllowDirectKeysColumn.
 func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_allow_direct_keys_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
-
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				if err := migrator.AddColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
 			}
@@ -1031,6 +1041,93 @@ func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropAllowDirectKeysColumn drops the allow_direct_keys column.
+// The "Allow Direct Keys" feature was retired in v1.5 — keys passed through
+// HTTP headers are no longer accepted.
+//
+// AllowDirectKeys was previously included in GenerateClientConfigHash, so
+// every existing config_hash on disk would mismatch on first v1.5 startup
+// and trigger a spurious config-reload cycle. Recompute config_hash for all
+// rows here to avoid that, mirroring migrationAddRoutingChainMaxDepthColumn.
+func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_allow_direct_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := mig.DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+					return err
+				}
+			}
+
+			var clientConfigs []tables.TableClientConfig
+			if err := tx.Find(&clientConfigs).Error; err != nil {
+				return fmt.Errorf("failed to fetch client configs for hash recompute: %w", err)
+			}
+			for _, cc := range clientConfigs {
+				if cc.ConfigHash == "" {
+					continue
+				}
+				clientConfig := ClientConfig{
+					DropExcessRequests:                    cc.DropExcessRequests,
+					InitialPoolSize:                       cc.InitialPoolSize,
+					PrometheusLabels:                      cc.PrometheusLabels,
+					EnableLogging:                         cc.EnableLogging,
+					DisableContentLogging:                 cc.DisableContentLogging,
+					AllowPerRequestContentStorageOverride: cc.AllowPerRequestContentStorageOverride,
+					AllowPerRequestRawOverride:            cc.AllowPerRequestRawOverride,
+					DisableDBPingsInHealth:                cc.DisableDBPingsInHealth,
+					LogRetentionDays:                      cc.LogRetentionDays,
+					EnforceAuthOnInference:                cc.EnforceAuthOnInference,
+					AllowedOrigins:                        cc.AllowedOrigins,
+					AllowedHeaders:                        cc.AllowedHeaders,
+					MaxRequestBodySizeMB:                  cc.MaxRequestBodySizeMB,
+					MCPAgentDepth:                         cc.MCPAgentDepth,
+					MCPToolExecutionTimeout:               cc.MCPToolExecutionTimeout,
+					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
+					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
+					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					HeaderFilterConfig:                    cc.HeaderFilterConfig,
+					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
+					RequiredHeaders:                       cc.RequiredHeaders,
+					LoggingHeaders:                        cc.LoggingHeaders,
+					WhitelistedRoutes:                     cc.WhitelistedRoutes,
+					HideDeletedVirtualKeysInFilters:       cc.HideDeletedVirtualKeysInFilters,
+					RoutingChainMaxDepth:                  cc.RoutingChainMaxDepth,
+					Compat: CompatConfig{
+						ConvertTextToChat:      cc.CompatConvertTextToChat,
+						ConvertChatToResponses: cc.CompatConvertChatToResponses,
+						ShouldDropParams:       cc.CompatShouldDropParams,
+						ShouldConvertParams:    cc.CompatShouldConvertParams,
+					},
+				}
+				newHash, err := clientConfig.GenerateClientConfigHash()
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for client config %d: %w", cc.ID, err)
+				}
+				if err := tx.Model(&cc).Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for client config %d: %w", cc.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running drop_allow_direct_keys_column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -2414,7 +2511,6 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 							DisableContentLogging:   cc.DisableContentLogging,
 							LogRetentionDays:        cc.LogRetentionDays,
 							EnforceGovernanceHeader: cc.EnforceGovernanceHeader,
-							AllowDirectKeys:         cc.AllowDirectKeys,
 							AllowedOrigins:          cc.AllowedOrigins,
 							MaxRequestBodySizeMB:    cc.MaxRequestBodySizeMB,
 						}
@@ -5997,7 +6093,6 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 						DisableDBPingsInHealth:          cc.DisableDBPingsInHealth,
 						LogRetentionDays:                cc.LogRetentionDays,
 						EnforceAuthOnInference:          cc.EnforceAuthOnInference,
-						AllowDirectKeys:                 cc.AllowDirectKeys,
 						AllowedOrigins:                  cc.AllowedOrigins,
 						AllowedHeaders:                  cc.AllowedHeaders,
 						MaxRequestBodySizeMB:            cc.MaxRequestBodySizeMB,
@@ -7247,4 +7342,97 @@ func migrationSplitMCPExternalBaseURL(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error running split_mcp_external_base_url_into_server_client migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddMCPClientDisabledColumn adds the disabled column to the config_mcp_clients table
+func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_disabled_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableMCPClient{}, "disabled") {
+				if err := mg.AddColumn(&tables.TableMCPClient{}, "disabled"); err != nil {
+					return fmt.Errorf("failed to add disabled column: %w", err)
+				}
+				// Initialize existing rows with false (default value)
+				if err := tx.Exec("UPDATE config_mcp_clients SET disabled = false WHERE disabled IS NULL").Error; err != nil {
+					return fmt.Errorf("failed to initialize disabled column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableMCPClient{}, "disabled") {
+				if err := mg.DropColumn(&tables.TableMCPClient{}, "disabled"); err != nil {
+					return fmt.Errorf("failed to drop disabled column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_disabled_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationUniqueTeamNames deduplicates governance_teams.name and adds a unique
+// index. Duplicate rows (same name, different ID) have a short UUID suffix
+// appended so no data is lost. The struct tag uniqueIndex makes GORM enforce
+// this on new rows going forward.
+func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "gov_unique_team_names",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Find all names that appear more than once.
+			type dupRow struct {
+				Name string
+			}
+			var dups []dupRow
+			if err := tx.Raw(`
+				SELECT name FROM governance_teams
+				GROUP BY name HAVING COUNT(*) > 1
+			`).Scan(&dups).Error; err != nil {
+				return fmt.Errorf("find duplicate team names: %w", err)
+			}
+
+			for _, d := range dups {
+				// oldest row keeps the original name
+				type row struct {
+					ID string
+				}
+				var rows []row
+				if err := tx.Raw(`
+					SELECT id FROM governance_teams
+					WHERE name = ?
+					ORDER BY created_at ASC, id ASC
+				`, d.Name).Scan(&rows).Error; err != nil {
+					return fmt.Errorf("fetch duplicates for %q: %w", d.Name, err)
+				}
+				for _, r := range rows[1:] {
+					newName := d.Name + "-" + r.ID[:8]
+					if err := tx.Exec(`UPDATE governance_teams SET name = ? WHERE id = ?`, newName, r.ID).Error; err != nil {
+						return fmt.Errorf("rename duplicate team %s: %w", r.ID, err)
+					}
+				}
+			}
+
+			// Add the unique index. Skip if it already exists.
+			if !tx.Migrator().HasIndex(&tables.TableTeam{}, "idx_governance_teams_name") {
+				if err := tx.Migrator().CreateIndex(&tables.TableTeam{}, "Name"); err != nil {
+					return fmt.Errorf("create unique index on governance_teams.name: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			_ = tx.Migrator().DropIndex(&tables.TableTeam{}, "idx_governance_teams_name")
+			return nil
+		},
+	})
 }

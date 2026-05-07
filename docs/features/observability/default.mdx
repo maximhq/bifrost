@@ -120,7 +120,6 @@ curl --location 'http://localhost:8080/api/config' \
         "drop_excess_requests": false,
         "initial_pool_size": 300,
          "enforce_auth_on_inference": false,
-        "allow_direct_keys": false,
         "prometheus_labels": [],
         "allowed_origins": []
     }
@@ -157,8 +156,7 @@ In your `config.json` file, you can enable logging and configure the log store:
         "enable_logging": true,
         "disable_content_logging": false,
         "drop_excess_requests": false,
-        "initial_pool_size": 300,
-        "allow_direct_keys": false
+        "initial_pool_size": 300
     },
     "logs_store": {
         "enabled": true,

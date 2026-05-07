@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
@@ -11,26 +12,26 @@ import (
 // TableOauthConfig represents an OAuth configuration in the database
 // This stores the OAuth client configuration and flow state
 type TableOauthConfig struct {
-	ID                  string    `gorm:"type:varchar(255);primaryKey" json:"id"`          // UUID
-	ClientID            string    `gorm:"type:varchar(512)" json:"client_id"`              // OAuth provider's client ID (optional for public clients)
-	ClientSecret        string    `gorm:"type:text" json:"-"`                              // Encrypted OAuth client secret (optional for public clients)
-	AuthorizeURL        string    `gorm:"type:text" json:"authorize_url"`                  // Provider's authorization endpoint (optional, can be discovered)
-	TokenURL            string    `gorm:"type:text" json:"token_url"`                      // Provider's token endpoint (optional, can be discovered)
-	RegistrationURL     *string   `gorm:"type:text" json:"registration_url,omitempty"`     // Provider's dynamic registration endpoint (optional, can be discovered)
-	RedirectURI         string    `gorm:"type:text;not null" json:"redirect_uri"`          // Callback URL
-	Scopes              string    `gorm:"type:text" json:"scopes"`                         // JSON array of scopes (optional, can be discovered)
-	State               string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"` // CSRF state token
-	CodeVerifier        string    `gorm:"type:text" json:"-"`                              // PKCE code verifier (generated, kept secret)
-	CodeChallenge       string    `gorm:"type:varchar(255)" json:"code_challenge"`         // PKCE code challenge (sent to provider)
-	Status              string    `gorm:"type:varchar(50);not null;index" json:"status"`   // "pending", "authorized", "failed", "expired", "revoked"
-	TokenID             *string   `gorm:"type:varchar(255);index" json:"token_id"`         // Foreign key to oauth_tokens.ID (set after callback)
-	ServerURL           string    `gorm:"type:text" json:"server_url"`                     // MCP server URL for OAuth discovery
-	UseDiscovery        bool      `gorm:"default:false" json:"use_discovery"`              // Flag to enable OAuth discovery
-	MCPClientConfigJSON *string   `gorm:"type:text" json:"-"`                              // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
-	EncryptionStatus    string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
-	CreatedAt           time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt           time.Time `gorm:"index;not null" json:"updated_at"`
-	ExpiresAt           time.Time `gorm:"index;not null" json:"expires_at"` // State expiry (15 min)
+	ID                  string          `gorm:"type:varchar(255);primaryKey" json:"id"`          // UUID
+	ClientID            *schemas.EnvVar `gorm:"type:varchar(512)" json:"client_id"`              // OAuth provider's client ID (optional for public clients)
+	ClientSecret        *schemas.EnvVar `gorm:"type:text" json:"-"`                              // Encrypted OAuth client secret (optional for public clients)
+	AuthorizeURL        string          `gorm:"type:text" json:"authorize_url"`                  // Provider's authorization endpoint (optional, can be discovered)
+	TokenURL            string          `gorm:"type:text" json:"token_url"`                      // Provider's token endpoint (optional, can be discovered)
+	RegistrationURL     *string         `gorm:"type:text" json:"registration_url,omitempty"`     // Provider's dynamic registration endpoint (optional, can be discovered)
+	RedirectURI         string          `gorm:"type:text;not null" json:"redirect_uri"`          // Callback URL
+	Scopes              string          `gorm:"type:text" json:"scopes"`                         // JSON array of scopes (optional, can be discovered)
+	State               string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"` // CSRF state token
+	CodeVerifier        string          `gorm:"type:text" json:"-"`                              // PKCE code verifier (generated, kept secret)
+	CodeChallenge       string          `gorm:"type:varchar(255)" json:"code_challenge"`         // PKCE code challenge (sent to provider)
+	Status              string          `gorm:"type:varchar(50);not null;index" json:"status"`   // "pending", "authorized", "failed", "expired", "revoked"
+	TokenID             *string         `gorm:"type:varchar(255);index" json:"token_id"`         // Foreign key to oauth_tokens.ID (set after callback)
+	ServerURL           string          `gorm:"type:text" json:"server_url"`                     // MCP server URL for OAuth discovery
+	UseDiscovery        bool            `gorm:"default:false" json:"use_discovery"`              // Flag to enable OAuth discovery
+	MCPClientConfigJSON *string         `gorm:"type:text" json:"-"`                              // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
+	EncryptionStatus    string          `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt           time.Time       `gorm:"index;not null" json:"created_at"`
+	UpdatedAt           time.Time       `gorm:"index;not null" json:"updated_at"`
+	ExpiresAt           time.Time       `gorm:"index;not null" json:"expires_at"` // State expiry (15 min)
 }
 
 // TableName sets the table name
@@ -45,11 +46,11 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	// Encrypt sensitive fields
+	// Encrypt sensitive fields (skip if value is an env var reference — the reference itself is not sensitive)
 	if encrypt.IsEnabled() {
 		encrypted := false
-		if c.ClientSecret != "" {
-			if err := encryptString(&c.ClientSecret); err != nil {
+		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && c.ClientSecret.Val != "" {
+			if err := encryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 			}
 			encrypted = true
@@ -70,14 +71,31 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 // AfterFind hook to decrypt sensitive fields
 func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 	if c.EncryptionStatus == EncryptionStatusEncrypted {
-		if err := decryptString(&c.ClientSecret); err != nil {
-			return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
+		if c.ClientSecret != nil && !c.ClientSecret.FromEnv && c.ClientSecret.Val != "" {
+			if err := decryptString(&c.ClientSecret.Val); err != nil {
+				return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
+			}
 		}
 		if err := decryptString(&c.CodeVerifier); err != nil {
 			return fmt.Errorf("failed to decrypt oauth code verifier: %w", err)
 		}
 	}
 	return nil
+}
+
+// GetResolvedClientID returns the resolved ClientID value, expanding env var references at runtime.
+func (c *TableOauthConfig) GetResolvedClientID() string {
+	return c.ClientID.GetValue()
+}
+
+// GetResolvedClientSecret returns the resolved ClientSecret value, expanding env var references at runtime.
+func (c *TableOauthConfig) GetResolvedClientSecret() string {
+	return c.ClientSecret.GetValue()
+}
+
+// GetClientSecretAsEnvVar returns ClientSecret as an EnvVar (preserves env var reference metadata).
+func (c *TableOauthConfig) GetClientSecretAsEnvVar() *schemas.EnvVar {
+	return c.ClientSecret
 }
 
 // TableOauthToken represents an OAuth token in the database
@@ -87,7 +105,7 @@ type TableOauthToken struct {
 	AccessToken      string     `gorm:"type:text;not null" json:"-"`                 // Encrypted access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                          // Encrypted refresh token (optional)
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"` // "Bearer"
-	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`            // Token expiration (nil means unknown/non-expiring)
+	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`           // Token expiration (nil means unknown/non-expiring)
 	Scopes           string     `gorm:"type:text" json:"scopes"`                     // JSON array of granted scopes
 	LastRefreshedAt  *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"`    // Track when token was last refreshed
 	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
@@ -202,7 +220,7 @@ type TableOauthUserToken struct {
 	AccessToken      string     `gorm:"type:text;not null" json:"-"`                                                         // Encrypted user's OAuth access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                                                                  // Encrypted user's OAuth refresh token
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"`                                         // "Bearer"
-	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`                                                    // Token expiry (nil means unknown/non-expiring)
+	ExpiresAt        *time.Time `gorm:"index" json:"expires_at,omitempty"`                                                   // Token expiry (nil means unknown/non-expiring)
 	Scopes           string     `gorm:"type:text" json:"scopes"`                                                             // JSON array of granted scopes
 	LastRefreshedAt  *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"`                                            // Last refresh time
 	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
@@ -277,7 +295,7 @@ type TablePerUserOAuthSession struct {
 	RefreshTokenHash string           `gorm:"type:varchar(64);index" json:"-"`                   // SHA-256 hash for secure lookups (not unique — refresh tokens are optional)
 	ClientID         string           `gorm:"type:varchar(255);not null;index" json:"client_id"` // Which OAuth client registered this session
 	VirtualKeyID     *string          `gorm:"type:varchar(255);index" json:"virtual_key_id"`     // Linked VK identity (set when VK is present during auth)
-	VirtualKey       *TableVirtualKey `gorm:"foreignKey:VirtualKeyID" json:"-"` // Linked VK identity (server-only, not serialized)
+	VirtualKey       *TableVirtualKey `gorm:"foreignKey:VirtualKeyID" json:"-"`                  // Linked VK identity (server-only, not serialized)
 	UserID           *string          `gorm:"type:varchar(255);index" json:"user_id"`            // Linked enterprise user identity (set when user ID is present)
 	ExpiresAt        time.Time        `gorm:"index;not null" json:"expires_at"`
 	EncryptionStatus string           `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
