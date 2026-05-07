@@ -271,7 +271,15 @@
             "group": "Features",
             "icon": "bolt",
             "pages": [
-              "enterprise/guardrails",
+              {
+                "group": "Guardrails",
+                "icon": "road-barrier",
+                "pages": [
+                  "enterprise/guardrails",
+                  "enterprise/guardrails/secrets-detection",
+                  "enterprise/guardrails/custom-regex"
+                ]
+              },
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
               "enterprise/mcp-with-fa",

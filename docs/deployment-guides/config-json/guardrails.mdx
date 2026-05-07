@@ -50,6 +50,34 @@ Runs entirely in-process with no external dependency. Patterns use RE2 syntax. S
 }
 ```
 
+The Web UI's PII Detection template is also a `regex` provider configuration. See [Custom Regex](/enterprise/guardrails/custom-regex) for the full `config.json` and Helm examples.
+
+</Tab>
+<Tab title="Secrets">
+
+Runs entirely in-process with no external dependency. Uses the embedded default Gitleaks rules to detect leaked credentials, API keys, tokens, private keys, and similar secret-shaped values.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 2,
+        "provider_name": "secrets",
+        "policy_name": "block-leaked-credentials",
+        "enabled": true,
+        "timeout": 5,
+        "config": {
+          "ignored_secret_keywords": ["example", "dummy", "sample-token"]
+        }
+      }
+    ]
+  }
+}
+```
+
+`ignored_secret_keywords` is optional. It suppresses a detection when the matched secret value contains one of the listed substrings. Keep these values narrow so real leaked credentials are not hidden.
+
 </Tab>
 <Tab title="AWS Bedrock">
 
@@ -217,7 +245,7 @@ For `auth_type: "default_credential"` (managed identity / Azure CLI - no credent
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
-| `provider_name` | Yes | Backend: `"regex"`, `"bedrock"`, `"azure"`, `"patronus-ai"`, `"grayswan"` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"bedrock"`, `"azure"`, `"patronus-ai"`, `"grayswan"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |
 | `timeout` | No | Execution timeout in seconds |
@@ -297,6 +325,12 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 |-------|----------|-----------------|-------|
 | `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, flags? }` objects |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+
+### Secrets
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `ignored_secret_keywords` | No | **Plain only** | String array of substrings used to suppress known false-positive secret matches |
 
 ---
 

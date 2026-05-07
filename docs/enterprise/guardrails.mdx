@@ -1,12 +1,12 @@
 ---
 title: "Guardrails"
-description: "Enterprise-grade content safety and security validation with support for AWS Bedrock Guardrails, Azure Content Safety, GraySwan Cygnal, and Patronus AI for real-time input and output protection."
+description: "Enterprise-grade content safety and security validation with support for native regex and secrets detection, AWS Bedrock Guardrails, Azure Content Safety, GraySwan Cygnal, and Patronus AI."
 icon: "road-barrier"
 ---
 
 ## Overview
 
-**Guardrails** in Bifrost provide enterprise-grade content safety, security validation, and policy enforcement for LLM requests and responses. The system validates inputs and outputs in real-time against your specified policies, ensuring responsible AI deployment with comprehensive protection against harmful content, prompt injection, PII leakage, and policy violations.
+**Guardrails** in Bifrost provide enterprise-grade content safety, security validation, and policy enforcement for LLM requests and responses. The system validates inputs and outputs in real-time against your specified policies, ensuring responsible AI deployment with protection against harmful content, prompt injection, PII leakage, credential leakage, and policy violations.
 
 <Frame>
   <img src="/media/guardrails/guardrails-overview.png" alt="Guardrails overview showing rules and profiles management" />
@@ -15,6 +15,12 @@ icon: "road-barrier"
 ### Supported Providers
 
 <CardGroup cols={2}>
+  <Card title="Secrets Detection" icon="key" href="/enterprise/guardrails/secrets-detection">
+    Built-in Gitleaks-backed detection for leaked API keys, tokens, private keys, and credentials.
+  </Card>
+  <Card title="Custom Regex" icon="code" href="/enterprise/guardrails/custom-regex">
+    In-process regex guardrails, including the built-in PII Detection template.
+  </Card>
   <Card title="AWS Bedrock Guardrails" icon="aws" href="/integrations/guardrails/aws-bedrock">
     Enterprise content filtering, PII detection, and prompt attack prevention.
   </Card>
@@ -36,10 +42,10 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine what content to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for external guardrail providers (AWS Bedrock, Azure Content Safety, GraySwan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (AWS Bedrock, Azure Content Safety, GraySwan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
-- **Profiles** define *how* content is evaluated using external provider capabilities
+- **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
 - **Rules** define *when* and *what* content gets evaluated using CEL expressions
 - A single rule can use multiple profiles for layered protection
 - Profiles can be reused across different rules for consistency
@@ -48,7 +54,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | AWS Bedrock, Azure Content Safety, GraySwan, and Patronus AI integration |
+| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus AWS Bedrock, Azure Content Safety, GraySwan, and Patronus AI integrations |
 | **Dual-Stage Validation** | Guard both inputs (prompts) and outputs (responses) |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
@@ -83,6 +89,7 @@ flowchart TB
         Rule1[Rule: Block PII]
         Rule2[Rule: Content Filter]
         Rule3[Rule: Prompt Injection]
+        Rule4[Rule: Credential Leakage]
     end
 
     subgraph profiles [Guardrail Profiles]
@@ -90,16 +97,20 @@ flowchart TB
         Profile2[Azure Content Safety Profile]
         Profile3[Patronus AI Profile]
         Profile4[GraySwan Profile]
+        Profile5[Secrets Detection Profile]
+        Profile6[Custom Regex Profile]
     end
 
     InputValidation --> Rule1
     InputValidation --> Rule3
+    InputValidation --> Rule4
     OutputValidation --> Rule2
 
-    Rule1 --> Profile1
+    Rule1 --> Profile6
     Rule2 --> Profile2
     Rule2 --> Profile3
     Rule3 --> Profile1
+    Rule4 --> Profile5
 ```
 
 **Flow Description:**
@@ -345,7 +356,8 @@ Rules can be linked to multiple profiles for comprehensive validation:
 </Frame>
 
 **Best Practices:**
-- Link PII detection rules to profiles with PII capabilities (Bedrock, Patronus)
+- Link credential-leakage rules to [Secrets Detection](/enterprise/guardrails/secrets-detection)
+- Link PII detection rules to profiles with PII capabilities (Custom Regex PII template, Bedrock, Patronus)
 - Link content filtering rules to profiles with content safety features (Azure, Bedrock, GraySwan)
 - Use GraySwan for custom natural language rules when you need flexible, readable policies
 - Use multiple profiles for defense-in-depth (e.g., Bedrock + Patronus for PII, Azure + GraySwan for content)
@@ -355,7 +367,7 @@ Rules can be linked to multiple profiles for comprehensive validation:
 
 ## Managing Profiles
 
-Profiles are reusable configurations for external guardrail providers. Each profile contains provider-specific settings including credentials, endpoints, and detection thresholds.
+Profiles are reusable configurations for guardrail providers. External providers include credentials, endpoints, and detection thresholds. Bifrost-native providers such as Custom Regex and Secrets Detection run locally and do not require external service credentials.
 
 <Frame>
   <img src="/media/guardrails/provider-aws-create.png" alt="Guardrail profiles list showing configured providers" />
@@ -366,7 +378,7 @@ Profiles are reusable configurations for external guardrail providers. Each prof
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `id` | integer | Yes | Unique identifier for the profile |
-| `provider_name` | string | Yes | Provider type: `bedrock`, `azure`, `grayswan`, `patronus_ai` |
+| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `bedrock`, `azure`, `grayswan`, `patronus-ai` |
 | `policy_name` | string | Yes | Descriptive name for the policy |
 | `enabled` | boolean | Yes | Whether the profile is active |
 | `config` | object | No | Provider-specific configuration |
@@ -385,10 +397,10 @@ Profiles are reusable configurations for external guardrail providers. Each prof
 </Frame>
 
 2. **Select Provider Type**
-   - Choose from: AWS Bedrock, Azure Content Safety, GraySwan, or Patronus AI
+   - Choose from: Secrets Detection, Custom Regex, AWS Bedrock, Azure Content Safety, GraySwan, or Patronus AI
 
 3. **Configure Provider Settings**
-   - Enter credentials and endpoint information
+   - Enter credentials and endpoint information for external providers, or local settings for native providers
    - Configure detection thresholds and actions
    - See provider-specific setup sections above for detailed configuration
 
@@ -465,6 +477,27 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
     "guardrail_providers": [
         {
           "id": 1,
+          "provider_name": "secrets",
+          "policy_name": "Block Leaked Credentials",
+          "enabled": true,
+          "config": {
+            "ignored_secret_keywords": ["example", "dummy"]
+          }
+        },
+        {
+          "id": 2,
+          "provider_name": "regex",
+          "policy_name": "PII Detection",
+          "enabled": true,
+          "config": {
+            "patterns": [
+              { "pattern": "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b", "description": "Email address", "flags": "i" },
+              { "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b", "description": "US Social Security Number" }
+            ]
+          }
+        },
+        {
+          "id": 3,
           "provider_name": "bedrock",
           "policy_name": "PII Detection Profile",
           "enabled": true,
@@ -477,7 +510,7 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           }
         },
         {
-          "id": 2,
+          "id": 4,
           "provider_name": "azure",
           "policy_name": "Content Safety Profile",
           "enabled": true,
@@ -491,7 +524,7 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           }
         },
         {
-          "id": 3,
+          "id": 5,
           "provider_name": "grayswan",
           "policy_name": "Custom Safety Rules",
           "enabled": true,
@@ -506,8 +539,8 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           }
         },
         {
-          "id": 4,
-          "provider_name": "patronus_ai",
+          "id": 6,
+          "provider_name": "patronus-ai",
           "policy_name": "Hallucination Detection",
           "enabled": true,
           "config": {
@@ -527,6 +560,25 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
 guardrails_config:
   guardrail_providers:
     - id: 1
+      provider_name: "secrets"
+      policy_name: "Block Leaked Credentials"
+      enabled: true
+      config:
+        ignored_secret_keywords:
+          - "example"
+          - "dummy"
+    - id: 2
+      provider_name: "regex"
+      policy_name: "PII Detection"
+      enabled: true
+      config:
+        patterns:
+          - pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+            description: "Email address"
+            flags: "i"
+          - pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+            description: "US Social Security Number"
+    - id: 3
       provider_name: "bedrock"
       policy_name: "PII Detection Profile"
       enabled: true
@@ -540,7 +592,7 @@ guardrails_config:
         secret_key: "${AWS_SECRET_ACCESS_KEY}"
         # Option 2: IAM Role - omit access_key and secret_key
         # (Bifrost will use IAM credentials from the environment)
-    - id: 2
+    - id: 4
       provider_name: "azure"
       policy_name: "Content Safety Profile"
       enabled: true
@@ -550,7 +602,7 @@ guardrails_config:
         analyze_enabled: true
         analyze_severity_threshold: "medium"
         jailbreak_shield_enabled: true
-    - id: 3
+    - id: 5
       provider_name: "grayswan"
       policy_name: "Custom Safety Rules"
       enabled: true
@@ -561,8 +613,8 @@ guardrails_config:
         rules:
           no_pii: "Do not allow personally identifiable information"
           professional_tone: "Ensure responses maintain a professional tone"
-    - id: 4
-      provider_name: "patronus_ai"
+    - id: 6
+      provider_name: "patronus-ai"
       policy_name: "Hallucination Detection"
       enabled: true
       config:
@@ -574,10 +626,10 @@ guardrails_config:
 
 ### Provider Capabilities
 
-Each provider offers different capabilities. Choose profiles based on your validation needs:
+Third-party guardrail providers offer different capabilities. Bifrost-native providers are documented separately: [Secrets Detection](/enterprise/guardrails/secrets-detection) covers credential leakage, and [Custom Regex](/enterprise/guardrails/custom-regex) covers deterministic pattern checks, including the PII Detection template.
 
 | Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
-|------------|-------------|---------------------|----------|-------------|
+|------------|-------------|----------------------|----------|-------------|
 | PII Detection | Yes | No | No | Yes |
 | Content Filtering | Yes | Yes | Yes | Yes |
 | Prompt Injection | Yes | Yes | Yes | Yes |
