@@ -3127,6 +3127,21 @@ func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T
 	}
 }
 
+func TestGenAIFallbacks_PreservedInBifrostResponsesRequest(t *testing.T) {
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model:     "gemini/gemini-3-flash-preview",
+		Fallbacks: []string{"vertex/gemini-3-flash-preview"},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+
+	require.NotNil(t, bifrostReq)
+	require.Len(t, bifrostReq.Fallbacks, 1)
+	assert.Equal(t, schemas.Vertex, bifrostReq.Fallbacks[0].Provider)
+	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.Fallbacks[0].Model)
+}
+
 // TestFunctionCallingConfigModeAny_RoundTrip verifies that FunctionCallingConfigMode.ANY and
 // AllowedFunctionNames survive the Gemini→Bifrost→Gemini round-trip on the GenAI passthrough path.
 // Regression: ANY was silently downgraded to AUTO (missing case in convertGeminiToolConfigToToolChoice)

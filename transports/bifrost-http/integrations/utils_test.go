@@ -8,6 +8,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,6 +45,28 @@ func newTestGenericRouter() *GenericRouter {
 
 func newTestBifrostContext() *schemas.BifrostContext {
 	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+}
+
+func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
+	router := newTestGenericRouter()
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model:     "gemini/gemini-3-flash-preview",
+		Fallbacks: []string{"vertex/gemini-3-flash-preview"},
+	}
+	bifrostReq := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3-flash-preview",
+		},
+	}
+
+	err := router.extractAndParseFallbacks(geminiReq, bifrostReq)
+
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq.ResponsesRequest)
+	require.Len(t, bifrostReq.ResponsesRequest.Fallbacks, 1)
+	assert.Equal(t, schemas.Vertex, bifrostReq.ResponsesRequest.Fallbacks[0].Provider)
+	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.ResponsesRequest.Fallbacks[0].Model)
 }
 
 // TestSendStreamError_PropagatesProviderStatusCode verifies that sendStreamError

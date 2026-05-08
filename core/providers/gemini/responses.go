@@ -22,8 +22,9 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 
 	// Create the BifrostResponsesRequest
 	bifrostReq := &schemas.BifrostResponsesRequest{
-		Provider: provider,
-		Model:    model,
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
 	params := request.convertGenerationConfigToResponsesParameters()

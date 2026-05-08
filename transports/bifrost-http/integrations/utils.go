@@ -418,7 +418,7 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 		return nil, nil
 	}
 
-	// Try to use reflection to find a "fallbacks" field
+	// Try to use reflection to find a fallbacks field.
 	reqValue := reflect.ValueOf(req)
 	if reqValue.Kind() == reflect.Ptr {
 		reqValue = reqValue.Elem()
@@ -428,10 +428,20 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 		return nil, nil // Not a struct, no fallbacks
 	}
 
-	// Look for the "fallbacks" field
-	fallbacksField := reqValue.FieldByName("fallbacks")
+	fallbacksField := reqValue.FieldByName("Fallbacks")
 	if !fallbacksField.IsValid() {
-		return nil, nil // No fallbacks field found
+		reqType := reqValue.Type()
+		for i := 0; i < reqValue.NumField(); i++ {
+			field := reqType.Field(i)
+			jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+			if jsonName == "fallbacks" {
+				fallbacksField = reqValue.Field(i)
+				break
+			}
+		}
+	}
+	if !fallbacksField.IsValid() {
+		return nil, nil
 	}
 
 	// Handle different types of fallbacks field
