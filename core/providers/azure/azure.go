@@ -1061,7 +1061,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.CloseBodyStream, provider.logger)
 		defer stopCancellation()
 
 		chunkIndex := -1
@@ -3624,7 +3624,7 @@ func (provider *AzureProvider) PassthroughStream(
 	}
 
 	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(rawBodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx))
-	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.CloseBodyStream, provider.logger)
 
 	extraFields := schemas.BifrostResponseExtraFields{
 		ProviderResponseHeaders: headers,

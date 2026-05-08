@@ -916,7 +916,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close body stream on ctx cancellation
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body, provider.logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body.Close, provider.logger)
 		defer stopCancellation()
 
 		// Process AWS Event Stream format
@@ -1142,7 +1142,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close body stream on ctx cancellation
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body, provider.logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body.Close, provider.logger)
 		defer stopCancellation()
 
 		// Process AWS Event Stream format
@@ -1516,7 +1516,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close body stream on ctx cancellation
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body, provider.logger)
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body.Close, provider.logger)
 		defer stopCancellation()
 
 		// Process AWS Event Stream format

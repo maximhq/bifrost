@@ -547,7 +547,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 			// Setup cancellation handler to close the raw network stream on ctx cancellation,
 			// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
-			stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+			stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.CloseBodyStream, logger)
 			defer stopCancellation()
 
 			sseReader := providerUtils.GetSSEDataReader(ctx, reader)

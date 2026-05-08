@@ -2040,8 +2040,10 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 // the context is cancelled or deadline exceeded, unblocking any blocked Read/Scan operations.
 // Returns a cleanup function that MUST be called when streaming is done to
 // prevent the goroutine from closing the stream during normal operation.
-// Works with both fasthttp's BodyStream() (io.Reader) and net/http's resp.Body (io.ReadCloser).
-func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
+// The closeBodyStream function should be resp.CloseBodyStream for fasthttp responses or
+// resp.Body.Close for net/http responses — this ensures the underlying TCP connection
+// is closed, not just the reader, which terminates the upstream request immediately.
+func SetupStreamCancellation(ctx context.Context, closeBodyStream func() error, logger schemas.Logger) (cleanup func()) {
 	done := make(chan struct{})
 	closed := make(chan struct{})
 
@@ -2050,19 +2052,16 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 		select {
 		case <-ctx.Done():
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
-			if closer, ok := bodyStream.(io.Closer); ok {
-				if err := closer.Close(); err != nil {
-					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-				}
+			// and terminate the upstream connection
+			if err := closeBodyStream(); err != nil {
+				getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 			}
 		case <-done:
 			// If context was also cancelled (race between done and ctx.Done),
 			// still close the body stream to unblock the drain in ReleaseStreamingResponse.
 			if ctx.Err() != nil {
-				if closer, ok := bodyStream.(io.Closer); ok {
-					if err := closer.Close(); err != nil {
-						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					}
+				if err := closeBodyStream(); err != nil {
+					getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 				}
 			}
 		}
