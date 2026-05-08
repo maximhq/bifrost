@@ -677,7 +677,6 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					}}
 					onError={(error) => {
 						toast({ title: "OAuth Error", description: error, variant: "destructive" });
-						setOauthFlow(null);
 					}}
 					authorizeUrl={oauthFlow.authorizeUrl}
 					oauthConfigId={oauthFlow.oauthConfigId}
