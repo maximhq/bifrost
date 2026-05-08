@@ -19,10 +19,8 @@ import {
   LogOut,
   Logs,
   Network,
-  PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRight,
   Plug,
   Puzzle,
   ScrollText,
@@ -67,7 +65,6 @@ import {
   useGetVersionQuery,
   useLogoutMutation,
 } from "@/lib/store";
-import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
@@ -583,6 +580,7 @@ export default function AppSidebar() {
   const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
   const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
   const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
+  const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
   const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
   const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
   const hasAnyGovernanceAccess =
@@ -625,7 +623,7 @@ export default function AppSidebar() {
             url: "/workspace/mcp-logs",
             icon: MCPIcon,
             description: "MCP tool execution logs",
-            hasAccess: hasLogsAccess,
+            hasAccess: hasMCPGatewayAccess,
           },
           {
             title: "Connectors",
@@ -910,7 +908,7 @@ export default function AppSidebar() {
             url: "/workspace/config/api-keys",
             icon: KeyRound,
             description: "API keys management",
-            hasAccess: hasSettingsAccess,
+            hasAccess: hasAPIKeyAccess,
           },
           {
             title: "Performance Tuning",
@@ -950,11 +948,26 @@ export default function AppSidebar() {
     ],
   );
 
+  const accessibleItems: SidebarItem[] = useMemo(() => {
+    return items
+      .map((item) => {
+        const hadSubItems = !!item.subItems?.length;
+        if (hadSubItems) {
+          const visibleSubItems = item.subItems!.filter((sub) => sub.hasAccess !== false);
+          if (visibleSubItems.length === 0) return null;
+          return { ...item, subItems: visibleSubItems, hasAccess: true };
+        }
+        if (item.hasAccess === false) return null;
+        return item;
+      })
+      .filter(Boolean) as SidebarItem[];
+  }, [items]);
+
   const filteredItems: SidebarItem[] = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return items;
+    if (!query) return accessibleItems;
 
-    return items
+    return accessibleItems
       .map((item) => {
         const parentMatches = item.title.toLowerCase().includes(query);
         if (parentMatches) return item;
@@ -970,7 +983,7 @@ export default function AppSidebar() {
         return null;
       })
       .filter(Boolean) as SidebarItem[];
-  }, [items, searchQuery]);
+  }, [accessibleItems, searchQuery]);
 
   const { data: version } = useGetVersionQuery();
   const { resolvedTheme } = useTheme();
