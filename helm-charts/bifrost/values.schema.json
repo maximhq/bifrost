@@ -316,10 +316,6 @@
               "type": "boolean",
               "description": "Deprecated: use enforceAuthOnInference"
             },
-            "allowDirectKeys": {
-              "type": "boolean",
-              "description": "Allow provider keys"
-            },
             "maxRequestBodySizeMb": {
               "type": "integer",
               "minimum": 1,
