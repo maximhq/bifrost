@@ -10,8 +10,8 @@ Bifrost follows standard [semantic versioning](https://semver.org/) (`MAJOR.MINO
 
 | Release type | Frequency | Typical contents |
 |---|---|---|
-| **Patch** (`x.y.Z`) | Every 2 - 3 days | Bug fixes, CVE fixes, small feature previews |
-| **Minor** (`x.Y.0`) | Every 2 weeks | Rollup of the period's patches plus new non-breaking features |
+| **Patch** (`x.y.Z`) | Every 2 - 3 days (depending on reports) | Bug fixes, CVE fixes, small feature previews |
+| **Minor** (`x.Y.0`) | Every 3 - 4 weeks | Rollup of the period's patches plus new non-breaking features |
 | **Major** (`X.0.0`) | When breaking changes land | Breaking API/schema changes, large architectural cuts |
 
 ## Patch releases
@@ -22,11 +22,11 @@ Patch versions ship every 2 - 3 days. A patch may include:
 - CVE / security patches
 - Small feature previews (gated behind config flags where applicable)
 
-Each patch is independently installable, but every patch is also rolled into the next minor release, so deployments that follow the bi-weekly minor cadence pick them all up automatically.
+Each patch is independently installable, but every patch is also rolled into the next minor release, so deployments that follow the 3 - 4 week cadence pick them all up automatically.
 
 ## Minor releases
 
-A minor version is cut **once every 2 weeks**. It consolidates every patch released since the previous minor, alongside any new non-breaking features that landed in that window. Picking up the latest minor gives you everything from the intervening patches in a single deploy.
+A minor version is cut **once every 3 - 4 weeks**. It consolidates every patch released since the previous minor, alongside any new non-breaking features that landed in that window. Picking up the latest minor gives you everything from the intervening patches in a single deploy.
 
 ## Major releases
 
