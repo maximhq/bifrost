@@ -394,6 +394,36 @@ func (s *RDBLogStore) canUseMatView(f SearchFilters) bool {
 	return s.matViewsReady.Load() && canUseMatViewFilters(f)
 }
 
+// freshAggregateMatViewMinWindow is the minimum time-range size that justifies
+// serving user-visible aggregates (e.g. /api/logs/stats totals, /api/logs
+// pagination counts) from the materialized view. Below this, the raw `logs`
+// table is fast enough and avoids the up-to-30s freshness lag that would
+// otherwise cause counts to disagree with the row-list view — a visible
+// inconsistency on short, low-traffic windows.
+const freshAggregateMatViewMinWindow = 24 * time.Hour
+
+// canUseMatViewForFreshAggregate narrows canUseMatView with a time-window check.
+// The matview wins on long ranges (multi-day aggregations would otherwise
+// require a full-table scan) but loses on short ranges, where raw aggregation
+// is cheap and the staleness becomes visible. Only fully unbounded ranges
+// (both StartTime and EndTime nil) are treated as matview-safe — a half-bounded
+// range has no measurable width and could still be a short window.
+//
+// Used by both /api/logs/stats (full metric payload) and /api/logs (pagination
+// total count) so those two surfaces stay consistent on the same window.
+func (s *RDBLogStore) canUseMatViewForFreshAggregate(f SearchFilters) bool {
+	if !s.canUseMatView(f) {
+		return false
+	}
+	if f.StartTime == nil && f.EndTime == nil {
+		return true
+	}
+	if f.StartTime == nil || f.EndTime == nil {
+		return false
+	}
+	return f.EndTime.Sub(*f.StartTime) >= freshAggregateMatViewMinWindow
+}
+
 // ---------------------------------------------------------------------------
 // Mat-view filter helpers
 // ---------------------------------------------------------------------------

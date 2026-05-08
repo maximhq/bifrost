@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,88 @@ const filterDataCacheTTL = 30 * time.Second
 // simultaneously) and the PG connection pool. 4 keeps it bounded while
 // preserving most of the latency win over serial.
 const filterDataFanOutLimit = 4
+
+// Filter dimension names accepted by the ?dimensions= query param on
+// /api/logs/filterdata. Each maps to one DB call and one response field.
+const (
+	filterDimModels         = "models"
+	filterDimAliases        = "aliases"
+	filterDimSelectedKeys   = "selected_keys"
+	filterDimVirtualKeys    = "virtual_keys"
+	filterDimRoutingRules   = "routing_rules"
+	filterDimRoutingEngines = "routing_engines"
+	filterDimStopReasons    = "stop_reasons"
+	filterDimTeams          = "teams"
+	filterDimCustomers      = "customers"
+	filterDimUsers          = "users"
+	filterDimBusinessUnits  = "business_units"
+	filterDimMetadataKeys   = "metadata_keys"
+)
+
+// MCP filter dimensions for /api/mcp-logs/filterdata.
+const (
+	mcpFilterDimToolNames    = "tool_names"
+	mcpFilterDimServerLabels = "server_labels"
+	mcpFilterDimVirtualKeys  = "virtual_keys"
+)
+
+var allFilterDimensions = []string{
+	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
+	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons,
+	filterDimTeams, filterDimCustomers, filterDimUsers, filterDimBusinessUnits,
+	filterDimMetadataKeys,
+}
+
+var allMCPFilterDimensions = []string{
+	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimVirtualKeys,
+}
+
+// parseFilterDimensions returns the requested subset of dimensions in a
+// canonical (sorted, deduped) order. Empty/absent param means "all". Unknown
+// dimensions are silently dropped; if nothing valid remains we fall back to all.
+func parseFilterDimensions(raw string, allowed []string) []string {
+	if strings.TrimSpace(raw) == "" {
+		out := make([]string, len(allowed))
+		copy(out, allowed)
+		return out
+	}
+	allow := make(map[string]struct{}, len(allowed))
+	for _, d := range allowed {
+		allow[d] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, item := range strings.Split(raw, ",") {
+		d := strings.TrimSpace(item)
+		if d == "" {
+			continue
+		}
+		if _, ok := allow[d]; !ok {
+			continue
+		}
+		if _, dup := seen[d]; dup {
+			continue
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	if len(out) == 0 {
+		out = make([]string, len(allowed))
+		copy(out, allowed)
+	}
+	// canonicalize for stable cache key
+	sort.Strings(out)
+	return out
+}
+
+// dimSet builds a quick membership lookup.
+func dimSet(dims []string) map[string]struct{} {
+	m := make(map[string]struct{}, len(dims))
+	for _, d := range dims {
+		m[d] = struct{}{}
+	}
+	return m
+}
 
 // filterDataCache stores one cached response per cache key. Entries are simple
 // JSON-ready maps — by the time we reach the cache we've already done all the
@@ -995,9 +1078,12 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
 
-	// Cache key includes hideDeletedVirtualKeys because it changes the output
-	// (deleted virtual keys are filtered out post-redaction when the flag is on).
-	cacheKey := fmt.Sprintf("hide_deleted=%v", hideDeletedVirtualKeys)
+	// Per-dimension subset support: clients pass ?dimensions=models,aliases to
+	// fetch only the slices they need. Cache key includes the canonical dim list
+	// so each subset is cached independently.
+	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
+	want := dimSet(dims)
+	cacheKey := fmt.Sprintf("hide_deleted=%v|dims=%s", hideDeletedVirtualKeys, strings.Join(dims, ","))
 	entry, cached, ok := h.filterDataCache.load(cacheKey)
 	if ok {
 		SendJSON(ctx, cached)
@@ -1032,93 +1118,117 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	// them all at once, which was the dominant Go-heap spike on this endpoint.
 	g.SetLimit(filterDataFanOutLimit)
 
-	g.Go(func() error {
-		result := h.logManager.GetAvailableModels(gCtx)
-		mu.Lock()
-		models = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableAliases(gCtx)
-		mu.Lock()
-		aliases = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableSelectedKeys(gCtx)
-		mu.Lock()
-		selectedKeys = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableVirtualKeys(gCtx)
-		mu.Lock()
-		virtualKeys = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableRoutingRules(gCtx)
-		mu.Lock()
-		routingRules = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableRoutingEngines(gCtx)
-		mu.Lock()
-		routingEngines = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableStopReasons(gCtx)
-		mu.Lock()
-		stopReasons = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableTeams(gCtx)
-		mu.Lock()
-		teams = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableCustomers(gCtx)
-		mu.Lock()
-		customers = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableUsers(gCtx)
-		mu.Lock()
-		users = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result := h.logManager.GetAvailableBusinessUnits(gCtx)
-		mu.Lock()
-		businessUnits = result
-		mu.Unlock()
-		return nil
-	})
-	g.Go(func() error {
-		result, err := h.logManager.GetAvailableMetadataKeys(gCtx)
-		if err != nil {
-			return err
-		}
-		mu.Lock()
-		metadataKeys = result
-		mu.Unlock()
-		return nil
-	})
+	if _, ok := want[filterDimModels]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableModels(gCtx)
+			mu.Lock()
+			models = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimAliases]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableAliases(gCtx)
+			mu.Lock()
+			aliases = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimSelectedKeys]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableSelectedKeys(gCtx)
+			mu.Lock()
+			selectedKeys = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimVirtualKeys]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableVirtualKeys(gCtx)
+			mu.Lock()
+			virtualKeys = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimRoutingRules]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableRoutingRules(gCtx)
+			mu.Lock()
+			routingRules = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimRoutingEngines]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableRoutingEngines(gCtx)
+			mu.Lock()
+			routingEngines = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimStopReasons]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableStopReasons(gCtx)
+			mu.Lock()
+			stopReasons = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimTeams]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableTeams(gCtx)
+			mu.Lock()
+			teams = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimCustomers]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableCustomers(gCtx)
+			mu.Lock()
+			customers = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimUsers]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableUsers(gCtx)
+			mu.Lock()
+			users = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimBusinessUnits]; ok {
+		g.Go(func() error {
+			result := h.logManager.GetAvailableBusinessUnits(gCtx)
+			mu.Lock()
+			businessUnits = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimMetadataKeys]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableMetadataKeys(gCtx)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			metadataKeys = result
+			mu.Unlock()
+			return nil
+		})
+	}
 
 	if err := g.Wait(); err != nil {
 		logger.Error("failed to get filter data: %v", err)
@@ -1126,31 +1236,37 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Extract IDs for redaction lookup
-	selectedKeyIDs := make([]string, len(selectedKeys))
-	for i, key := range selectedKeys {
-		selectedKeyIDs[i] = key.ID
-	}
-	virtualKeyIDs := make([]string, len(virtualKeys))
-	for i, key := range virtualKeys {
-		virtualKeyIDs[i] = key.ID
-	}
-	routingRuleIDs := make([]string, len(routingRules))
-	for i, rule := range routingRules {
-		routingRuleIDs[i] = rule.ID
-	}
-
+	// Redaction lookups are only needed for KeyPair-style dimensions; skip the
+	// extra calls when the caller didn't request them.
 	redactedSelectedKeys := make(map[string]schemas.Key)
-	for _, selectedKey := range h.redactedKeysManager.GetAllRedactedKeys(ctx, selectedKeyIDs) {
-		redactedSelectedKeys[selectedKey.ID] = selectedKey
+	if _, ok := want[filterDimSelectedKeys]; ok {
+		selectedKeyIDs := make([]string, len(selectedKeys))
+		for i, key := range selectedKeys {
+			selectedKeyIDs[i] = key.ID
+		}
+		for _, selectedKey := range h.redactedKeysManager.GetAllRedactedKeys(ctx, selectedKeyIDs) {
+			redactedSelectedKeys[selectedKey.ID] = selectedKey
+		}
 	}
 	redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
-	for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
-		redactedVirtualKeys[virtualKey.ID] = virtualKey
+	if _, ok := want[filterDimVirtualKeys]; ok {
+		virtualKeyIDs := make([]string, len(virtualKeys))
+		for i, key := range virtualKeys {
+			virtualKeyIDs[i] = key.ID
+		}
+		for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
+			redactedVirtualKeys[virtualKey.ID] = virtualKey
+		}
 	}
 	redactedRoutingRules := make(map[string]tables.TableRoutingRule)
-	for _, routingRule := range h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, routingRuleIDs) {
-		redactedRoutingRules[routingRule.ID] = routingRule
+	if _, ok := want[filterDimRoutingRules]; ok {
+		routingRuleIDs := make([]string, len(routingRules))
+		for i, rule := range routingRules {
+			routingRuleIDs[i] = rule.ID
+		}
+		for _, routingRule := range h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, routingRuleIDs) {
+			redactedRoutingRules[routingRule.ID] = routingRule
+		}
 	}
 
 	// Check if all selected key ids are present in the redacted selected keys (will not be present in case a key is deleted, but we still need to show its filter)
@@ -1205,10 +1321,46 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRulesArray = append(routingRulesArray, rule)
 	}
 
-	if metadataKeys == nil {
-		metadataKeys = make(map[string][]string)
+	payload := make(map[string]interface{}, len(dims))
+	if _, ok := want[filterDimModels]; ok {
+		payload[filterDimModels] = models
 	}
-	payload := map[string]interface{}{"models": models, "aliases": aliases, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines, "stop_reasons": stopReasons, "teams": teams, "customers": customers, "users": users, "business_units": businessUnits, "metadata_keys": metadataKeys}
+	if _, ok := want[filterDimAliases]; ok {
+		payload[filterDimAliases] = aliases
+	}
+	if _, ok := want[filterDimSelectedKeys]; ok {
+		payload[filterDimSelectedKeys] = selectedKeysArray
+	}
+	if _, ok := want[filterDimVirtualKeys]; ok {
+		payload[filterDimVirtualKeys] = virtualKeysArray
+	}
+	if _, ok := want[filterDimRoutingRules]; ok {
+		payload[filterDimRoutingRules] = routingRulesArray
+	}
+	if _, ok := want[filterDimRoutingEngines]; ok {
+		payload[filterDimRoutingEngines] = routingEngines
+	}
+	if _, ok := want[filterDimStopReasons]; ok {
+		payload[filterDimStopReasons] = stopReasons
+	}
+	if _, ok := want[filterDimTeams]; ok {
+		payload[filterDimTeams] = teams
+	}
+	if _, ok := want[filterDimCustomers]; ok {
+		payload[filterDimCustomers] = customers
+	}
+	if _, ok := want[filterDimUsers]; ok {
+		payload[filterDimUsers] = users
+	}
+	if _, ok := want[filterDimBusinessUnits]; ok {
+		payload[filterDimBusinessUnits] = businessUnits
+	}
+	if _, ok := want[filterDimMetadataKeys]; ok {
+		if metadataKeys == nil {
+			metadataKeys = make(map[string][]string)
+		}
+		payload[filterDimMetadataKeys] = metadataKeys
+	}
 	h.filterDataCache.store(entry, payload)
 	released = true
 	SendJSON(ctx, payload)
@@ -1696,7 +1848,9 @@ func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
 
-	cacheKey := fmt.Sprintf("hide_deleted=%v", hideDeletedVirtualKeys)
+	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allMCPFilterDimensions)
+	want := dimSet(dims)
+	cacheKey := fmt.Sprintf("hide_deleted=%v|dims=%s", hideDeletedVirtualKeys, strings.Join(dims, ","))
 	entry, cached, ok := h.mcpFilterDataCache.load(cacheKey)
 	if ok {
 		SendJSON(ctx, cached)
@@ -1709,57 +1863,69 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}()
 
-	toolNames, err := h.logManager.GetAvailableToolNames(ctx)
-	if err != nil {
-		logger.Error("failed to get available tool names: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available tool names: %v", err))
-		return
-	}
-
-	serverLabels, err := h.logManager.GetAvailableServerLabels(ctx)
-	if err != nil {
-		logger.Error("failed to get available server labels: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available server labels: %v", err))
-		return
-	}
-
-	virtualKeys := h.logManager.GetAvailableMCPVirtualKeys(ctx)
-
-	// Extract IDs for redaction lookup
-	virtualKeyIDs := make([]string, len(virtualKeys))
-	for i, key := range virtualKeys {
-		virtualKeyIDs[i] = key.ID
-	}
-
-	redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
-	for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
-		redactedVirtualKeys[virtualKey.ID] = virtualKey
-	}
-
-	// Check if all virtual key ids are present in the redacted virtual keys (will not be present in case a virtual key is deleted, but we still need to show its filter)
-	for _, virtualKey := range virtualKeys {
-		if _, ok := redactedVirtualKeys[virtualKey.ID]; !ok {
-			if hideDeletedVirtualKeys {
-				continue
-			}
-			// Create a new virtual key struct directly since we know it doesn't exist
-			redactedVirtualKeys[virtualKey.ID] = tables.TableVirtualKey{
-				ID:   virtualKey.ID,
-				Name: virtualKey.Name + " (deleted)",
-			}
+	var toolNames []string
+	if _, ok := want[mcpFilterDimToolNames]; ok {
+		var err error
+		toolNames, err = h.logManager.GetAvailableToolNames(ctx)
+		if err != nil {
+			logger.Error("failed to get available tool names: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available tool names: %v", err))
+			return
 		}
 	}
 
-	// Convert maps to arrays for frontend consumption
-	virtualKeysArray := make([]tables.TableVirtualKey, 0, len(redactedVirtualKeys))
-	for _, key := range redactedVirtualKeys {
-		virtualKeysArray = append(virtualKeysArray, key)
+	var serverLabels []string
+	if _, ok := want[mcpFilterDimServerLabels]; ok {
+		var err error
+		serverLabels, err = h.logManager.GetAvailableServerLabels(ctx)
+		if err != nil {
+			logger.Error("failed to get available server labels: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available server labels: %v", err))
+			return
+		}
 	}
 
-	payload := map[string]interface{}{
-		"tool_names":    toolNames,
-		"server_labels": serverLabels,
-		"virtual_keys":  virtualKeysArray,
+	var virtualKeysArray []tables.TableVirtualKey
+	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
+		virtualKeys := h.logManager.GetAvailableMCPVirtualKeys(ctx)
+
+		virtualKeyIDs := make([]string, len(virtualKeys))
+		for i, key := range virtualKeys {
+			virtualKeyIDs[i] = key.ID
+		}
+
+		redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
+		for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
+			redactedVirtualKeys[virtualKey.ID] = virtualKey
+		}
+
+		for _, virtualKey := range virtualKeys {
+			if _, ok := redactedVirtualKeys[virtualKey.ID]; !ok {
+				if hideDeletedVirtualKeys {
+					continue
+				}
+				redactedVirtualKeys[virtualKey.ID] = tables.TableVirtualKey{
+					ID:   virtualKey.ID,
+					Name: virtualKey.Name + " (deleted)",
+				}
+			}
+		}
+
+		virtualKeysArray = make([]tables.TableVirtualKey, 0, len(redactedVirtualKeys))
+		for _, key := range redactedVirtualKeys {
+			virtualKeysArray = append(virtualKeysArray, key)
+		}
+	}
+
+	payload := make(map[string]interface{}, len(dims))
+	if _, ok := want[mcpFilterDimToolNames]; ok {
+		payload[mcpFilterDimToolNames] = toolNames
+	}
+	if _, ok := want[mcpFilterDimServerLabels]; ok {
+		payload[mcpFilterDimServerLabels] = serverLabels
+	}
+	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
+		payload[mcpFilterDimVirtualKeys] = virtualKeysArray
 	}
 	h.mcpFilterDataCache.store(entry, payload)
 	released = true
