@@ -648,6 +648,19 @@ export const ProviderIcons = {
       />
     );
   },
+  saladcloud: ({ className = "" }: IconProps) => {
+    return (
+      <img
+        src="/images/saladcloud.svg"
+        alt="saladcloud"
+        width={14}
+        height={14}
+        loading="lazy"
+        decoding="async"
+        className={className}
+      />
+    );
+  },
   xai: ({ size = "md", className = "" }: IconProps) => {
     const resolvedSize = resolveSize(size);
 

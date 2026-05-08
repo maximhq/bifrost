@@ -337,6 +337,9 @@
         "nebius": {
           "$ref": "#/$defs/provider"
         },
+        "saladcloud": {
+          "$ref": "#/$defs/provider"
+        },
         "xai": {
           "$ref": "#/$defs/provider"
         },
@@ -4148,6 +4151,7 @@
             "elevenlabs",
             "huggingface",
             "nebius",
+            "saladcloud",
             "xai",
             "replicate",
             "vllm",
