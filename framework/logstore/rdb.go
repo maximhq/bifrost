@@ -651,14 +651,23 @@ func (s *RDBLogStore) listSelectColumns() string {
 	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
 	switch s.db.Dialector.Name() {
 	case "postgres":
+		// Postgres jsonb cannot represent \u0000 (errcode 22P05) and rejects
+		// malformed JSON (22P02). A single bad row would otherwise abort the
+		// whole list query. Guard the cast: only attempt jsonb conversion
+		// when the TEXT looks like a JSON array and contains no \u0000
+		// escape; otherwise fall back to returning the raw TEXT.
 		inputHistoryExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN input_history
 			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+			     AND position('\u0000' in input_history) = 0
+			     AND left(btrim(input_history), 1) = '['
 			THEN jsonb_build_array(input_history::jsonb->-1)::text
 			ELSE input_history END AS input_history`
 		responsesInputExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN responses_input_history
 			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+			     AND position('\u0000' in responses_input_history) = 0
+			     AND left(btrim(responses_input_history), 1) = '['
 			THEN jsonb_build_array(responses_input_history::jsonb->-1)::text
 			ELSE responses_input_history END AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
