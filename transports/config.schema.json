@@ -1036,6 +1036,12 @@
                     "description": "Maximum number of open connections to the database (default: 50)",
                     "minimum": 2,
                     "default": 50
+                  },
+                  "matview_refresh_interval": {
+                    "type": "string",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '30s', '5m', '1h'). Default 30s. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
+                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "default": "30s"
                   }
                 },
                 "required": [
