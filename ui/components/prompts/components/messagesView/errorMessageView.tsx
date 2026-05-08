@@ -1,5 +1,6 @@
 import { Message } from "@/lib/message";
 import { AlertCircle, XIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 /**
  * Render a styled error message block with an optional delete control.
@@ -10,18 +11,19 @@ import { AlertCircle, XIcon } from "lucide-react";
  * @returns The React element that displays the error message view.
  */
 export default function ErrorMessageView({ message, disabled, onRemove }: { message: Message; disabled?: boolean; onRemove?: () => void }) {
+	const { t } = useTranslation();
 	return (
 		<div className="group hover:border-destructive/30 focus-within:border-destructive/30 rounded-sm border border-transparent px-3 py-2 transition-colors">
 			<div className="mb-1 flex h-5 items-center">
 				<span className="text-destructive flex items-center gap-1 py-0.5 text-xs font-medium uppercase">
 					<AlertCircle className="size-3" />
-					Error
+					{t("workspace.promptRepository.messages.error")}
 				</span>
 				<div className="ml-auto">
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label={t("workspace.promptRepository.messages.deleteMessageAriaLabel")}
 							data-testid="error-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"

@@ -47,7 +47,7 @@ export default function ExternalCacheTokenMeterChart({ data }: ExternalCacheToke
 	return (
 		<ChartErrorBoundary resetKey={`${data?.buckets?.length ?? 0}-${totalCachedRead}-${totalPromptTokens}`}>
 			<div className="grid h-full grid-rows-[104px_auto] items-start overflow-hidden pt-8">
-				<div ref={ref} className="relative grow h-full w-full">
+				<div ref={ref} className="relative h-full w-full grow">
 					{!hasData && <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>}
 					{hasData && gaugeGeometry && (
 						<>
@@ -79,7 +79,7 @@ export default function ExternalCacheTokenMeterChart({ data }: ExternalCacheToke
 
 				{hasData && (
 					<div>
-						<div className="flex flex-col items-center pt-1 leading-none shrink-0">
+						<div className="flex shrink-0 flex-col items-center pt-1 leading-none">
 							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
 							<div className="mt-1 flex items-center gap-1 text-[11px] text-zinc-400">
 								<span>of input tokens cached by provider</span>
@@ -98,7 +98,7 @@ export default function ExternalCacheTokenMeterChart({ data }: ExternalCacheToke
 								</Tooltip>
 							</div>
 						</div>
-						<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none shrink-0">
+						<div className="flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.cached }} />
 								<span className="text-primary">Cached: {formatTokenCount(totalCachedRead)}</span>

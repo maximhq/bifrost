@@ -6,10 +6,12 @@ import { KnownProvider } from "@/lib/types/config";
 import { LogStats } from "@/lib/types/logs";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ModelCatalogEmptyState } from "./modelCatalogEmptyState";
 import ModelCatalogTable, { ModelCatalogRow } from "./modelCatalogTable";
 
 export default function ModelCatalogView() {
+	const { t } = useTranslation();
 	const hasAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 
 	const [providerFilter, setProviderFilter] = useState("");
@@ -54,14 +56,14 @@ export default function ModelCatalogView() {
 						() =>
 							[
 								p.name,
-								{ 
-									total_requests: 0, 
-									success_rate: 0, 
-									user_facing_success_rate: 0, 
-									average_latency: 0, 
-									user_facing_total_requests:0,
-									total_tokens: 0, 
-									total_cost: 0 
+								{
+									total_requests: 0,
+									success_rate: 0,
+									user_facing_success_rate: 0,
+									average_latency: 0,
+									user_facing_total_requests: 0,
+									total_tokens: 0,
+									total_cost: 0,
 								},
 							] as const,
 					),
@@ -134,15 +136,15 @@ export default function ModelCatalogView() {
 	}
 
 	if (!hasAccess) {
-		return <NoPermissionView entity="model catalog" />;
+		return <NoPermissionView entity={t("workspace.modelCatalog.title")} />;
 	}
 
 	if (providersError) {
 		return (
 			<div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-				<p className="text-muted-foreground text-sm">Failed to load providers</p>
+				<p className="text-muted-foreground text-sm">{t("workspace.modelCatalog.failedToLoadProviders")}</p>
 				<button type="button" data-testid="model-catalog-retry-btn" onClick={refetchProviders} className="text-sm underline">
-					Retry
+					{t("common.retry")}
 				</button>
 			</div>
 		);

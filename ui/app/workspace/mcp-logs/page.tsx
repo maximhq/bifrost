@@ -14,6 +14,7 @@ import { useLocation } from "@tanstack/react-router";
 import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { createMCPColumns } from "./views/columns";
 import { MCPEmptyState } from "./views/emptyState";
 import { McpHeaderView } from "./views/mcpHeaderView";
@@ -21,6 +22,7 @@ import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
 import { MCPLogsDataTable } from "./views/mcpLogsTable";
 
 export default function MCPLogsPage() {
+	const { t } = useTranslation();
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
@@ -65,7 +67,6 @@ export default function MCPLogsPage() {
 	const selectedLogId = urlState.selected_log || null;
 	const polling = urlState.polling;
 
-
 	// Convert URL state to filters and pagination for API calls.
 	// When period is set, send it to the backend so the server computes the time window fresh
 	// on every request. For custom absolute ranges (period === "") use the stored timestamps.
@@ -79,9 +80,9 @@ export default function MCPLogsPage() {
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-					start_time: dateUtils.toISOString(urlState.start_time),
-					end_time: dateUtils.toISOString(urlState.end_time),
-				}),
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 		}),
 		[
 			urlState.tool_names,
@@ -211,7 +212,7 @@ export default function MCPLogsPage() {
 				setUrlState({
 					period: p,
 					offset: 0,
-					polling: true
+					polling: true,
 				});
 			} else if (from && to) {
 				setUrlState({
@@ -219,7 +220,7 @@ export default function MCPLogsPage() {
 					end_time: Math.floor(to.getTime() / 1000),
 					offset: 0,
 					polling: false,
-					period: ""
+					period: "",
 				});
 			}
 		},
@@ -237,26 +238,26 @@ export default function MCPLogsPage() {
 	const statCards = useMemo(
 		() => [
 			{
-				title: "Total Executions",
+				title: t("workspace.mcpLogs.totalExecutions"),
 				value: <NumberFlow value={statsData?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
 			{
-				title: "Success Rate",
+				title: t("workspace.mcpLogs.successRate"),
 				value: (
 					<NumberFlow value={statsData?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
 				),
 				icon: <CheckCircle className="size-4" />,
 			},
 			{
-				title: "Avg Latency",
+				title: t("workspace.mcpLogs.avgLatency"),
 				value: (
 					<NumberFlow value={statsData?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 				),
 				icon: <Clock className="size-4" />,
 			},
 			{
-				title: "Total Cost",
+				title: t("workspace.mcpLogs.totalCost"),
 				value: (
 					<NumberFlow
 						value={statsData?.total_cost ?? 0}
@@ -270,7 +271,7 @@ export default function MCPLogsPage() {
 				icon: <DollarSign className="size-4" />,
 			},
 		],
-		[statsData],
+		[statsData, t],
 	);
 
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
@@ -282,13 +283,13 @@ export default function MCPLogsPage() {
 
 	const MCP_COLUMN_LABELS: Record<string, string> = useMemo(
 		() => ({
-			timestamp: "Time",
-			tool_name: "Tool Name",
-			server_label: "Server",
-			latency: "Latency",
-			cost: "Cost",
+			timestamp: t("workspace.mcpLogs.time"),
+			tool_name: t("workspace.mcpLogs.toolNameColumn"),
+			server_label: t("workspace.mcpLogs.server"),
+			latency: t("workspace.mcpLogs.latency"),
+			cost: t("workspace.mcpLogs.cost"),
 		}),
-		[],
+		[t],
 	);
 
 	const {

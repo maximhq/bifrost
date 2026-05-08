@@ -28,8 +28,10 @@ import { useLocation } from "@tanstack/react-router";
 import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash, Info } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 export default function LogsPage() {
+	const { t } = useTranslation();
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
@@ -131,18 +133,20 @@ export default function LogsPage() {
 			missing_cost_only: urlState.missing_cost_only,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-					try {
-						return JSON.parse(urlState.metadata_filters);
-					} catch {
-						return undefined;
-					}
-				})()
+						try {
+							return JSON.parse(urlState.metadata_filters);
+						} catch {
+							return undefined;
+						}
+					})()
 				: undefined,
 			// Use a period if present
-			...(urlState.period ? { period: urlState.period } : {
-				start_time: dateUtils.toISOString(urlState.start_time),
-				end_time: dateUtils.toISOString(urlState.end_time),
-			})
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
@@ -242,7 +246,7 @@ export default function LogsPage() {
 				start_time: startTime,
 				end_time: endTime,
 				offset: 0,
-				polling: false
+				polling: false,
 			});
 		},
 		[setUrlState],
@@ -303,7 +307,7 @@ export default function LogsPage() {
 		refetch: refetchHistogram,
 	} = useGetLogsHistogramQuery(
 		{
-			filters
+			filters,
 		},
 		{
 			pollingInterval: polling ? 10000 : 0,
@@ -372,7 +376,7 @@ export default function LogsPage() {
 				setUrlState({
 					period: p,
 					offset: 0,
-					polling: true
+					polling: true,
 				});
 			} else if (from && to) {
 				setUrlState({
@@ -380,7 +384,7 @@ export default function LogsPage() {
 					end_time: Math.floor(to.getTime() / 1000),
 					offset: 0,
 					polling: false,
-					period: ""
+					period: "",
 				});
 			}
 		},
@@ -390,19 +394,18 @@ export default function LogsPage() {
 	const statCards = useMemo(
 		() => [
 			{
-				title: "Total Requests",
+				title: t("workspace.logs.totalRequests"),
 				value: <NumberFlow value={stats?.total_requests ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <BarChart className="size-4" />,
 			},
 			{
-				title: "Success Rate",
+				title: t("workspace.logs.successRate"),
 				value: <NumberFlow value={stats?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />,
 				icon: <CheckCircle className="size-4" />,
-				description:
-					"Success rate as perceived by the system. Each fallback counts as a separate attempt. Retries on the same request are counted as one attempt.",
+				description: t("workspace.logs.successRateDescSystem"),
 			},
 			{
-				title: "User Success Rate",
+				title: t("workspace.logs.userSuccessRate"),
 				value: (
 					<NumberFlow
 						value={stats?.user_facing_success_rate ?? 0}
@@ -411,22 +414,22 @@ export default function LogsPage() {
 					/>
 				),
 				icon: <CheckCircle className="size-4" />,
-				description: "Success rate as perceived by the end user. It includes fallback chains as one request.",
+				description: t("workspace.logs.successRateDescUser"),
 			},
 			{
-				title: "Avg Latency",
+				title: t("workspace.logs.avgLatency"),
 				value: (
 					<NumberFlow value={stats?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 				),
 				icon: <Clock className="size-4" />,
 			},
 			{
-				title: "Total Tokens",
+				title: t("workspace.logs.totalTokens"),
 				value: <NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
 			{
-				title: "Total Cost",
+				title: t("workspace.logs.totalCost"),
 				value: (
 					<NumberFlow
 						value={stats?.total_cost ?? 0}
@@ -460,14 +463,14 @@ export default function LogsPage() {
 
 	const COLUMN_LABELS: Record<string, string> = useMemo(
 		() => ({
-			timestamp: "Time",
-			request_type: "Type",
-			input: "Message",
-			provider: "Provider",
-			model: "Model",
-			latency: "Latency",
-			tokens: "Tokens",
-			cost: "Cost",
+			timestamp: t("workspace.logs.colTime"),
+			request_type: t("workspace.logs.colType"),
+			input: t("workspace.logs.colMessage"),
+			provider: t("workspace.logs.colProvider"),
+			model: t("workspace.logs.colModel"),
+			latency: t("workspace.logs.colLatency"),
+			tokens: t("workspace.logs.colTokens"),
+			cost: t("workspace.logs.colCost"),
 		}),
 		[],
 	);

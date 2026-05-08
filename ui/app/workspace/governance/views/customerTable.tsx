@@ -23,6 +23,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Input } from "@/components/ui/input";
 import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import CustomerDialog from "./customerDialog";
 import { CustomersEmptyState } from "./customersEmptyState";
@@ -57,6 +58,7 @@ export default function CustomersTable({
 	limit,
 	onOffsetChange,
 }: CustomersTableProps) {
+	const { t } = useTranslation();
 	const [showCustomerDialog, setShowCustomerDialog] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 
@@ -69,7 +71,7 @@ export default function CustomersTable({
 	const handleDelete = async (customerId: string) => {
 		try {
 			await deleteCustomer(customerId).unwrap();
-			toast.success("Customer deleted successfully");
+			toast.success(t("workspace.governance.customers.deleteSuccess"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -124,12 +126,12 @@ export default function CustomersTable({
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
 						<div>
-							<h2 className="text-lg font-semibold">Customers</h2>
-							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
+							<h2 className="text-lg font-semibold">{t("workspace.governance.customers.title")}</h2>
+							<p className="text-muted-foreground text-sm">{t("workspace.governance.customers.description")}</p>
 						</div>
 						<Button data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
 							<Plus className="h-4 w-4" />
-							Add Customer
+							{t("workspace.governance.customers.addCustomer")}
 						</Button>
 					</div>
 
@@ -137,8 +139,8 @@ export default function CustomersTable({
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
-								aria-label="Search customers by name"
-								placeholder="Search by name..."
+								aria-label={t("workspace.governance.customers.searchAriaLabel")}
+								placeholder={t("workspace.governance.customers.searchPlaceholder")}
 								value={search}
 								onChange={(e) => onSearchChange(e.target.value)}
 								className="pl-9"
@@ -151,11 +153,11 @@ export default function CustomersTable({
 						<Table>
 							<TableHeader>
 								<TableRow>
-									<TableHead>Name</TableHead>
-									<TableHead>Teams</TableHead>
-									<TableHead>Budget</TableHead>
-									<TableHead>Rate Limit</TableHead>
-									<TableHead>Virtual Keys</TableHead>
+									<TableHead>{t("workspace.governance.customers.name")}</TableHead>
+									<TableHead>{t("workspace.governance.customers.teams")}</TableHead>
+									<TableHead>{t("workspace.governance.customers.budget")}</TableHead>
+									<TableHead>{t("workspace.governance.customers.rateLimit")}</TableHead>
+									<TableHead>{t("workspace.governance.customers.virtualKeys")}</TableHead>
 									<TableHead className="text-right"></TableHead>
 								</TableRow>
 							</TableHeader>
@@ -163,7 +165,7 @@ export default function CustomersTable({
 								{customers.length === 0 ? (
 									<TableRow>
 										<TableCell colSpan={6} className="h-24 text-center">
-											<span className="text-muted-foreground text-sm">No matching customers found.</span>
+											<span className="text-muted-foreground text-sm">{t("workspace.governance.customers.noMatching")}</span>
 										</TableCell>
 									</TableRow>
 								) : (
@@ -213,7 +215,7 @@ export default function CustomersTable({
 														<span className="truncate font-medium">{customer.name}</span>
 														{isExhausted && (
 															<Badge variant="destructive" className="w-fit text-xs">
-																Limit Reached
+																{t("workspace.governance.customers.limitReached")}
 															</Badge>
 														)}
 													</div>
@@ -224,7 +226,7 @@ export default function CustomersTable({
 															<Tooltip>
 																<TooltipTrigger>
 																	<Badge variant="outline" className="text-xs">
-																		{customerTeams.length} {customerTeams.length === 1 ? "team" : "teams"}
+																		{t("workspace.governance.customers.teamCount", { count: customerTeams.length })}
 																	</Badge>
 																</TooltipTrigger>
 																<TooltipContent>{customerTeams.map((team) => team.name).join(", ")}</TooltipContent>
@@ -263,7 +265,9 @@ export default function CustomersTable({
 																	{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
 																</p>
 																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(customer.budget.reset_duration)}
+																	{t("workspace.governance.customers.resets", {
+																		duration: formatResetDuration(customer.budget.reset_duration),
+																	})}
 																</p>
 															</TooltipContent>
 														</Tooltip>
@@ -279,7 +283,10 @@ export default function CustomersTable({
 																	<TooltipTrigger asChild>
 																		<div className="space-y-1.5">
 																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{customer.rate_limit.token_max_limit.toLocaleString()} tokens</span>
+																				<span className="font-medium">
+																					{customer.rate_limit.token_max_limit.toLocaleString()}{" "}
+																					{t("workspace.governance.customers.tokensUnit")}
+																				</span>
 																				<span className="text-muted-foreground">
 																					{formatResetDuration(customer.rate_limit.token_reset_duration || "1h")}
 																				</span>
@@ -300,10 +307,13 @@ export default function CustomersTable({
 																	<TooltipContent>
 																		<p className="font-medium">
 																			{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																			{customer.rate_limit.token_max_limit.toLocaleString()} tokens
+																			{customer.rate_limit.token_max_limit.toLocaleString()}{" "}
+																			{t("workspace.governance.customers.tokensUnit")}
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(customer.rate_limit.token_reset_duration || "1h")}
+																			{t("workspace.governance.customers.resets", {
+																				duration: formatResetDuration(customer.rate_limit.token_reset_duration || "1h"),
+																			})}
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -313,7 +323,10 @@ export default function CustomersTable({
 																	<TooltipTrigger asChild>
 																		<div className="space-y-1.5">
 																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{customer.rate_limit.request_max_limit.toLocaleString()} req</span>
+																				<span className="font-medium">
+																					{customer.rate_limit.request_max_limit.toLocaleString()}{" "}
+																					{t("workspace.governance.customers.requestUnitShort")}
+																				</span>
 																				<span className="text-muted-foreground">
 																					{formatResetDuration(customer.rate_limit.request_reset_duration || "1h")}
 																				</span>
@@ -334,10 +347,13 @@ export default function CustomersTable({
 																	<TooltipContent>
 																		<p className="font-medium">
 																			{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																			{customer.rate_limit.request_max_limit.toLocaleString()} requests
+																			{customer.rate_limit.request_max_limit.toLocaleString()}{" "}
+																			{t("workspace.governance.customers.requestsUnit")}
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(customer.rate_limit.request_reset_duration || "1h")}
+																			{t("workspace.governance.customers.resets", {
+																				duration: formatResetDuration(customer.rate_limit.request_reset_duration || "1h"),
+																			})}
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -353,7 +369,7 @@ export default function CustomersTable({
 															<Tooltip>
 																<TooltipTrigger>
 																	<Badge variant="outline" className="text-xs">
-																		{vks.length} {vks.length === 1 ? "key" : "keys"}
+																		{t("workspace.governance.customers.keyCount", { count: vks.length })}
 																	</Badge>
 																</TooltipTrigger>
 																<TooltipContent>{vks.map((vk) => vk.name).join(", ")}</TooltipContent>
@@ -371,7 +387,7 @@ export default function CustomersTable({
 															className="h-8 w-8"
 															onClick={() => handleEditCustomer(customer)}
 															disabled={!hasUpdateAccess}
-															aria-label={`Edit customer ${customer.name}`}
+															aria-label={t("workspace.governance.customers.editAriaLabel", { name: customer.name })}
 															data-testid={`customer-button-edit-${customer.id}`}
 														>
 															<Edit className="h-4 w-4" />
@@ -383,7 +399,7 @@ export default function CustomersTable({
 																	size="icon"
 																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
 																	disabled={!hasDeleteAccess}
-																	aria-label={`Delete customer ${customer.name}`}
+																	aria-label={t("workspace.governance.customers.deleteAriaLabel", { name: customer.name })}
 																	data-testid={`customer-button-delete-${customer.id}`}
 																>
 																	<Trash2 className="h-4 w-4" />
@@ -391,21 +407,20 @@ export default function CustomersTable({
 															</AlertDialogTrigger>
 															<AlertDialogContent>
 																<AlertDialogHeader>
-																	<AlertDialogTitle>Delete Customer</AlertDialogTitle>
+																	<AlertDialogTitle>{t("workspace.governance.customers.deleteTitle")}</AlertDialogTitle>
 																	<AlertDialogDescription>
-																		Are you sure you want to delete &quot;{customer.name}&quot;? This will also delete all associated teams
-																		and unassign any virtual keys. This action cannot be undone.
+																		{t("workspace.governance.customers.deleteDescription", { name: customer.name })}
 																	</AlertDialogDescription>
 																</AlertDialogHeader>
 																<AlertDialogFooter>
-																	<AlertDialogCancel data-testid="customer-button-delete-cancel">Cancel</AlertDialogCancel>
+																	<AlertDialogCancel data-testid="customer-button-delete-cancel">{t("common.cancel")}</AlertDialogCancel>
 																	<AlertDialogAction
 																		data-testid="customer-button-delete-confirm"
 																		onClick={() => handleDelete(customer.id)}
 																		disabled={isDeleting}
 																		className="bg-red-600 hover:bg-red-700"
 																	>
-																		{isDeleting ? "Deleting..." : "Delete"}
+																		{isDeleting ? t("workspace.providers.deleteDialog.deleting") : t("common.delete")}
 																	</AlertDialogAction>
 																</AlertDialogFooter>
 															</AlertDialogContent>
@@ -424,7 +439,11 @@ export default function CustomersTable({
 					{totalCount > 0 && (
 						<div className="flex items-center justify-between px-2">
 							<p className="text-muted-foreground text-sm">
-								Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+								{t("workspace.governance.customers.showing", {
+									from: offset + 1,
+									to: Math.min(offset + limit, totalCount),
+									total: totalCount,
+								})}
 							</p>
 							<div className="flex gap-2">
 								<Button
@@ -434,7 +453,7 @@ export default function CustomersTable({
 									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 									data-testid="customers-pagination-prev-btn"
 								>
-									<ChevronLeft className="mr-1 h-4 w-4" /> Previous
+									<ChevronLeft className="mr-1 h-4 w-4" /> {t("workspace.governance.customers.previous")}
 								</Button>
 								<Button
 									variant="outline"
@@ -443,7 +462,7 @@ export default function CustomersTable({
 									onClick={() => onOffsetChange(offset + limit)}
 									data-testid="customers-pagination-next-btn"
 								>
-									Next <ChevronRight className="ml-1 h-4 w-4" />
+									{t("workspace.governance.customers.next")} <ChevronRight className="ml-1 h-4 w-4" />
 								</Button>
 							</div>
 						</div>

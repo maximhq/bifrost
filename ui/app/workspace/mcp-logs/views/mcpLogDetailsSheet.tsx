@@ -12,12 +12,19 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import i18n from "@/lib/i18n";
 import { addMilliseconds, format, isValid } from "date-fns";
 import { ChevronDown, ChevronUp, Download, MoreVertical, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -83,7 +90,11 @@ export function MCPLogDetailSheet({
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-							{log.id && <p className="text-md max-w-full truncate">Request ID: {log.id}</p>}
+							{log.id && (
+								<p className="text-md max-w-full truncate">
+									{i18n.t("workspace.mcpLogs.details.requestId")} {log.id}
+								</p>
+							)}
 							<Badge variant="outline" className={`${StatusColors[getValidatedStatus(log.status)]} uppercase`}>
 								{log.status}
 							</Badge>
@@ -95,7 +106,7 @@ export function MCPLogDetailSheet({
 							className="size-8"
 							disabled={!hasPrev}
 							onClick={() => onNavigate?.("prev")}
-							aria-label="Previous log"
+							aria-label={i18n.t("workspace.mcpLogs.details.previousLog")}
 							data-testid="mcp-log-nav-prev"
 							type="button"
 						>
@@ -106,7 +117,7 @@ export function MCPLogDetailSheet({
 							className="size-8"
 							disabled={!hasNext}
 							onClick={() => onNavigate?.("next")}
-							aria-label="Next log"
+							aria-label={i18n.t("workspace.mcpLogs.details.nextLog")}
 							data-testid="mcp-log-nav-next"
 							type="button"
 						>
@@ -121,28 +132,27 @@ export function MCPLogDetailSheet({
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
-								<DropdownMenuItem
-									data-testid="export-log-json"
-									onClick={() => downloadAsJson(log, `mcp-log-${log.id ?? "export"}.json`)}
-								>
+								<DropdownMenuItem data-testid="export-log-json" onClick={() => downloadAsJson(log, `mcp-log-${log.id ?? "export"}.json`)}>
 									<Download className="h-4 w-4" />
-									Export as JSON
+									{i18n.t("workspace.mcpLogs.details.exportJson")}
 								</DropdownMenuItem>
-								{handleDelete ? <>
-									<DropdownMenuSeparator />
-									<AlertDialogTrigger asChild>
-										<DropdownMenuItem variant="destructive">
-											<Trash2 className="h-4 w-4" />
-											Delete log
-										</DropdownMenuItem>
-									</AlertDialogTrigger>
-								</> : null}
+								{handleDelete ? (
+									<>
+										<DropdownMenuSeparator />
+										<AlertDialogTrigger asChild>
+											<DropdownMenuItem variant="destructive">
+												<Trash2 className="h-4 w-4" />
+												{i18n.t("workspace.mcpLogs.details.deleteLog")}
+											</DropdownMenuItem>
+										</AlertDialogTrigger>
+									</>
+								) : null}
 							</DropdownMenuContent>
 						</DropdownMenu>
 						<AlertDialogContent>
 							<AlertDialogHeader>
-								<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-								<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+								<AlertDialogTitle>{i18n.t("workspace.mcpLogs.details.deleteConfirmTitle")}</AlertDialogTitle>
+								<AlertDialogDescription>{i18n.t("workspace.mcpLogs.details.deleteConfirmDescription")}</AlertDialogDescription>
 							</AlertDialogHeader>
 							<AlertDialogFooter>
 								<AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -155,7 +165,7 @@ export function MCPLogDetailSheet({
 											setDeleteDialogOpen(false);
 											onOpenChange(false);
 										} catch (err) {
-											const errorMessage = err instanceof Error ? err.message : "Failed to delete log";
+											const errorMessage = err instanceof Error ? err.message : i18n.t("workspace.mcpLogs.details.deleteFailed");
 											toast.error(errorMessage);
 											// Keep dialog open on error so user can see the error and retry
 										}
@@ -169,37 +179,45 @@ export function MCPLogDetailSheet({
 				</SheetHeader>
 				<div className="space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">
-						<BlockHeader title="Timings" />
+						<BlockHeader title={i18n.t("workspace.mcpLogs.details.timings")} />
 						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 							<LogEntryDetailsView
 								className="w-full"
-								label="Start Timestamp"
-								value={isValid(new Date(log.timestamp)) ? format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa") : "Invalid date"}
+								label={i18n.t("workspace.mcpLogs.details.startTimestamp")}
+								value={
+									isValid(new Date(log.timestamp))
+										? format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa")
+										: i18n.t("workspace.mcpLogs.invalidDate")
+								}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="End Timestamp"
+								label={i18n.t("workspace.mcpLogs.details.endTimestamp")}
 								value={
 									isValid(new Date(log.timestamp))
 										? format(addMilliseconds(new Date(log.timestamp), log.latency || 0), "yyyy-MM-dd hh:mm:ss aa")
-										: "Invalid date"
+										: i18n.t("workspace.mcpLogs.invalidDate")
 								}
 							/>
-							<LogEntryDetailsView className="w-full" label="Latency" value={log.latency ? `${log.latency.toFixed(2)}ms` : "NA"} />
+							<LogEntryDetailsView
+								className="w-full"
+								label={i18n.t("workspace.mcpLogs.latency")}
+								value={log.latency ? `${log.latency.toFixed(2)}ms` : i18n.t("workspace.mcpLogs.na")}
+							/>
 						</div>
 					</div>
 					<DottedSeparator />
 					<div className="space-y-4">
-						<BlockHeader title="Request Details" />
+						<BlockHeader title={i18n.t("workspace.mcpLogs.details.requestDetails")} />
 						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
 							<LogEntryDetailsView
 								className="col-span-2 w-full"
-								label="Tool Name"
+								label={i18n.t("workspace.mcpLogs.details.toolName")}
 								value={<span className="font-mono text-sm">{log.tool_name}</span>}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="Server"
+								label={i18n.t("workspace.mcpLogs.server")}
 								value={
 									log.server_label ? (
 										<Badge variant="secondary" className="font-mono">
@@ -210,11 +228,17 @@ export function MCPLogDetailSheet({
 									)
 								}
 							/>
-							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
+							{log.virtual_key && (
+								<LogEntryDetailsView
+									className="w-full"
+									label={i18n.t("workspace.mcpLogs.details.virtualKey")}
+									value={log.virtual_key.name}
+								/>
+							)}
 							{log.llm_request_id && (
 								<LogEntryDetailsView
 									className="col-span-3 w-full"
-									label="LLM Request ID"
+									label={i18n.t("workspace.mcpLogs.details.llmRequestId")}
 									value={<span className="font-mono text-xs">{log.llm_request_id}</span>}
 								/>
 							)}
@@ -225,7 +249,7 @@ export function MCPLogDetailSheet({
 				{/* Arguments */}
 				{log.arguments && (
 					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Arguments</div>
+						<div className="border-b px-6 py-2 text-sm font-medium">{i18n.t("workspace.mcpLogs.details.arguments")}</div>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}
@@ -242,7 +266,7 @@ export function MCPLogDetailSheet({
 				{/* Result */}
 				{log.result && log.status !== "processing" && (
 					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Result</div>
+						<div className="border-b px-6 py-2 text-sm font-medium">{i18n.t("workspace.mcpLogs.details.result")}</div>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}
@@ -259,7 +283,7 @@ export function MCPLogDetailSheet({
 				{/* Metadata */}
 				{log.metadata && Object.keys(log.metadata).length > 0 && (
 					<div className="space-y-4 rounded-sm border px-6 py-4">
-						<BlockHeader title="Metadata" />
+						<BlockHeader title={i18n.t("workspace.mcpLogs.details.metadata")} />
 						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
 							{Object.entries(log.metadata).map(([key, value]) => (
 								<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
@@ -271,7 +295,9 @@ export function MCPLogDetailSheet({
 				{/* Error Details */}
 				{log.error_details && (
 					<div className="border-destructive/50 w-full rounded-sm border">
-						<div className="border-destructive/50 text-destructive border-b px-6 py-2 text-sm font-medium">Error Details</div>
+						<div className="border-destructive/50 text-destructive border-b px-6 py-2 text-sm font-medium">
+							{i18n.t("workspace.mcpLogs.details.errorDetails")}
+						</div>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}

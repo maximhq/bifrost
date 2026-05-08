@@ -1,0 +1,13 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "version": 2,
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "value": "env.OPENAI_API_KEY"
+        }
+      ]
+    }
+  }
+}

@@ -14,6 +14,7 @@ import { Folder, ModelParams, Prompt, PromptSession, PromptVersion } from "@/lib
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { executePrompt } from "./utils/executor";
 
@@ -107,6 +108,7 @@ export function usePromptContext() {
 }
 
 export function PromptProvider({ children }: { children: ReactNode }) {
+	const { t } = useTranslation();
 	// RBAC permissions
 	const canCreate = useRbac(RbacResource.PromptRepository, RbacOperation.Create);
 	const canUpdate = useRbac(RbacResource.PromptRepository, RbacOperation.Update);
@@ -382,12 +384,12 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		async (promptId: string, folderId: string | null) => {
 			try {
 				await updatePrompt({ id: promptId, data: { folder_id: folderId } }).unwrap();
-				toast.success("Prompt moved successfully");
+				toast.success(t("workspace.promptRepository.toasts.promptMoved"));
 			} catch (err) {
-				toast.error(getErrorMessage(err) || "Failed to move prompt");
+				toast.error(getErrorMessage(err) || t("workspace.promptRepository.toasts.movePromptFailed"));
 			}
 		},
-		[updatePrompt],
+		[updatePrompt, t],
 	);
 
 	const handleDeleteFolder = useCallback(async () => {
@@ -395,30 +397,30 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 
 		try {
 			await deleteFolder(deleteFolderDialog.folder.id).unwrap();
-			toast.success("Folder deleted");
+			toast.success(t("workspace.promptRepository.toasts.folderDeleted"));
 			setDeleteFolderDialog({ open: false });
 			if (selectedPrompt?.folder_id === deleteFolderDialog.folder.id) {
 				setUrlState({ promptId: null, sessionId: null, versionId: null });
 			}
 		} catch (err) {
-			toast.error("Failed to delete folder", { description: getErrorMessage(err) });
+			toast.error(t("workspace.promptRepository.toasts.deleteFolderFailed"), { description: getErrorMessage(err) });
 		}
-	}, [deleteFolderDialog.folder, deleteFolder, selectedPrompt, setUrlState]);
+	}, [deleteFolderDialog.folder, deleteFolder, selectedPrompt, setUrlState, t]);
 
 	const handleDeletePrompt = useCallback(async () => {
 		if (!deletePromptDialog.prompt) return;
 
 		try {
 			await deletePrompt(deletePromptDialog.prompt.id).unwrap();
-			toast.success("Prompt deleted");
+			toast.success(t("workspace.promptRepository.toasts.promptDeleted"));
 			setDeletePromptDialog({ open: false });
 			if (selectedPromptId === deletePromptDialog.prompt.id) {
 				setUrlState({ promptId: null, sessionId: null, versionId: null });
 			}
 		} catch (err) {
-			toast.error("Failed to delete prompt", { description: getErrorMessage(err) });
+			toast.error(t("workspace.promptRepository.toasts.deletePromptFailed"), { description: getErrorMessage(err) });
 		}
-	}, [deletePromptDialog.prompt, deletePrompt, selectedPromptId, setUrlState]);
+	}, [deletePromptDialog.prompt, deletePrompt, selectedPromptId, setUrlState, t]);
 
 	const handleSendMessage = useCallback(
 		async (pendingMessage?: Message) => {

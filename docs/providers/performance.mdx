@@ -1,38 +1,40 @@
 ---
-title: "Performance Tuning"
-description: "Optimize Bifrost for high throughput with concurrency, buffer sizing, and memory pool configuration"
+title: "性能调优"
+description: "通过并发、缓冲区大小和内存池配置优化 Bifrost 的高吞吐性能"
 icon: "gauge-high"
 ---
 
-## Overview
+## 概览
 
-Bifrost provides three key performance configuration parameters that control throughput, memory usage, and request handling behavior:
+Bifrost 提供三个关键性能配置参数，用于控制吞吐量、内存使用和请求处理行为：
 
-| Parameter | Scope | Default | Description |
+| 参数 | 作用范围 | 默认值 | 说明 |
 |-----------|-------|---------|-------------|
-| **Concurrency** | Per Provider | 1000 | Number of worker goroutines processing requests simultaneously |
-| **Buffer Size** | Per Provider | 5000 | Maximum requests that can be queued before blocking/dropping |
-| **Initial Pool Size** | Global | 5000 | Pre-allocated objects in sync pools to reduce GC pressure |
+| **并发数** | 每个 Provider | 1000 | 同时处理请求的 worker goroutine 数量 |
+| **缓冲区大小** | 每个 Provider | 5000 | 在阻塞或丢弃前最多可排队的请求数 |
+| **初始池大小** | 全局 | 5000 | sync pool 中预分配的对象数量，用于降低 GC 压力 |
 
 <Info>
-These defaults are suitable for most production deployments handling up to ~5000 RPS. For higher throughput or constrained environments, tuning these parameters can significantly improve performance.
+这些默认值适用于大多数最高约 5000 RPS 的生产部署。对于更高吞吐量或资源受限的环境，调优这些参数可以显著提升性能。
 </Info>
 
 ---
 
-## Understanding the Parameters
+## 理解参数
 
-### Concurrency (Per Provider)
+### 并发数（每个 Provider）
 
-**What it does:** Controls two aspects of provider performance:
-1. **Worker Goroutines:** The number of goroutines that process requests for each provider. Each worker pulls requests from the provider's queue and executes them against the provider's API.
-2. **Provider Pool Pre-warming:** Pre-allocates provider-specific response objects (e.g., `AnthropicMessageResponse`, `OpenAIResponse`) in sync pools to reduce allocations during request handling.
+**作用：** 控制 Provider 性能的两个方面：
 
-**Impact:**
-- **Higher concurrency** = More parallel requests to the provider, higher throughput, more pre-allocated response objects
-- **Lower concurrency** = Fewer parallel requests, lower resource usage, respects provider rate limits
+1. **Worker Goroutine：** 每个 Provider 用于处理请求的 goroutine 数量。每个 worker 会从 Provider 队列中取出请求，并调用对应 Provider 的 API。
+2. **Provider 池预热：** 在 sync pool 中预分配 Provider 专用响应对象（例如 `AnthropicMessageResponse`、`OpenAIResponse`），减少请求处理期间的内存分配。
 
-**Default:** `1000` workers per provider
+**影响：**
+
+- **更高并发数** = 更多并行 Provider 请求、更高吞吐量、更多预分配响应对象
+- **更低并发数** = 更少并行请求、更低资源使用，并更容易遵守 Provider 速率限制
+
+**默认值：** 每个 Provider `1000` 个 worker
 
 <Tabs>
 <Tab title="Gateway (config.json)">
@@ -59,8 +61,8 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
     return &schemas.ProviderConfig{
         NetworkConfig: schemas.DefaultNetworkConfig,
         ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-            Concurrency: 100, // 100 concurrent workers
-            BufferSize:  500, // 500 request queue capacity
+            Concurrency: 100, // 100 个并发 worker
+            BufferSize:  500, // 请求队列容量为 500
         },
     }, nil
 }
@@ -69,41 +71,45 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 </Tab>
 </Tabs>
 
-### Buffer Size (Per Provider)
+### 缓冲区大小（每个 Provider）
 
-**What it does:** Sets the capacity of the buffered channel (queue) for each provider. Incoming requests are queued here before being picked up by workers.
+**作用：** 设置每个 Provider 的带缓冲 channel（队列）容量。传入请求会先进入此队列，随后由 worker 取出处理。
 
-**Impact:**
-- **Larger buffer** = More requests can be queued during traffic spikes, handles burst traffic better
-- **Smaller buffer** = Lower memory footprint, faster backpressure signals to clients
+**影响：**
 
-**Default:** `5000` requests per provider queue
+- **更大缓冲区** = 流量峰值期间可排队更多请求，更好处理突发流量
+- **更小缓冲区** = 更低内存占用，更快向客户端施加背压
 
-**Queue Full Behavior:** Controlled by `drop_excess_requests`:
-- `false` (default): New requests block until queue space is available
-- `true`: New requests are immediately dropped with an error when queue is full
+**默认值：** 每个 Provider 队列 `5000` 个请求
+
+**队列满时行为：** 由 `drop_excess_requests` 控制：
+
+- `false`（默认）：新请求会阻塞，直到队列有可用空间
+- `true`：队列满时，新请求会立即被丢弃并返回错误
 
 <Warning>
-**Constraint:** Buffer size must be greater than or equal to concurrency. If `concurrency > buffer_size`, provider setup will fail.
+**约束：** 缓冲区大小必须大于或等于并发数。如果 `concurrency > buffer_size`，Provider 初始化会失败。
 </Warning>
 
-### Initial Pool Size (Global)
+### 初始池大小（全局）
 
-**What it does:** Controls the number of pre-allocated objects in Bifrost's internal sync pools at startup. These pools recycle objects to reduce garbage collection overhead.
+**作用：** 控制 Bifrost 启动时内部 sync pool 的预分配对象数量。这些池会复用对象，以降低垃圾回收开销。
 
-**Pooled Objects:**
-- Channel messages (request wrappers)
-- Response channels
-- Error channels
-- Stream channels
-- Plugin pipelines
-- Request objects
+**池化对象：**
 
-**Impact:**
-- **Higher initial pool** = Less GC pressure during high traffic, more consistent latency, higher initial memory usage
-- **Lower initial pool** = Lower initial memory footprint, may cause more allocations under load
+- Channel message（请求包装对象）
+- 响应 channel
+- 错误 channel
+- 流式 channel
+- 插件 pipeline
+- 请求对象
 
-**Default:** `5000` objects per pool
+**影响：**
+
+- **更高初始池大小** = 高流量下 GC 压力更低、延迟更稳定、初始内存使用更高
+- **更低初始池大小** = 初始内存占用更低，但负载下可能产生更多分配
+
+**默认值：** 每个池 `5000` 个对象
 
 <Tabs>
 <Tab title="Gateway (config.json)">
@@ -123,7 +129,7 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 ```go
 bifrostConfig := schemas.BifrostConfig{
     Account:            myAccount,
-    InitialPoolSize:    10000, // Pre-warm pools with 10,000 objects
+    InitialPoolSize:    10000, // 使用 10,000 个对象预热池
     DropExcessRequests: false,
 }
 
@@ -135,13 +141,13 @@ client, err := bifrost.Init(ctx, bifrostConfig)
 
 ---
 
-## Sizing Guidelines
+## 容量建议
 
-### Concurrency & Buffer Size (Per Provider)
+### 并发数和缓冲区大小（每个 Provider）
 
-Configure these settings **per provider** based on the expected RPS for that specific provider:
+根据特定 Provider 的预期 RPS，**按 Provider** 配置这些设置：
 
-| Provider RPS | Concurrency | Buffer Size |
+| Provider RPS | 并发数 | 缓冲区大小 |
 |--------------|-------------|-------------|
 | 100 | 100 | 150 |
 | 500 | 500 | 750 |
@@ -151,25 +157,27 @@ Configure these settings **per provider** based on the expected RPS for that spe
 | 10000 | 10000 | 15000 |
 
 <Info>
-**Example:** If you expect 2000 RPS to OpenAI and 500 RPS to Anthropic, configure OpenAI with `concurrency: 2000, buffer_size: 3000` and Anthropic with `concurrency: 500, buffer_size: 750`.
+**示例：** 如果你预计 OpenAI 为 2000 RPS、Anthropic 为 500 RPS，则可将 OpenAI 配置为 `concurrency: 2000, buffer_size: 3000`，Anthropic 配置为 `concurrency: 500, buffer_size: 750`。
 </Info>
 
-**Formula:**
+**公式：**
+
 ```
 concurrency = expected_rps
 buffer_size = 1.5 × expected_rps
 ```
 
-This ratio ensures:
-- Enough queue capacity to absorb traffic bursts
-- Workers are never starved for work
-- Backpressure is applied before memory exhaustion
+该比例可确保：
 
-### Initial Pool Size (Global)
+- 有足够队列容量吸收突发流量
+- Worker 不会因为没有任务而空闲
+- 在内存耗尽前施加背压
 
-Configure this setting based on **total RPS across all providers combined**:
+### 初始池大小（全局）
 
-| Total RPS (All Providers) | Initial Pool Size | Memory Estimate |
+根据**所有 Provider 合计总 RPS**配置此设置：
+
+| 总 RPS（所有 Provider） | 初始池大小 | 内存估算 |
 |---------------------------|-------------------|-----------------|
 | 100 | 150 | ~50 MB |
 | 500 | 750 | ~100 MB |
@@ -179,28 +187,30 @@ Configure this setting based on **total RPS across all providers combined**:
 | 10000 | 15000 | ~1.5 GB |
 
 <Note>
-Memory estimates are approximate and vary based on request/response sizes, number of providers, and plugins. Monitor actual memory usage in your environment.
+内存估算为近似值，会随请求/响应大小、Provider 数量和插件而变化。请监控你所在环境的实际内存使用。
 </Note>
 
-**Formula:**
+**公式：**
+
 ```
 initial_pool_size = 1.5 × total_expected_rps
 ```
 
-Additionally, ensure:
+此外，确保：
+
 ```
 initial_pool_size >= max(buffer_size across all providers)
 ```
 
-This ensures pools are pre-warmed to handle peak queue depths without runtime allocations.
+这可确保池在运行时无需额外分配的情况下，预热到足以处理峰值队列深度。
 
 ---
 
-## Multi-Node Deployments
+## 多节点部署
 
-When running multiple Bifrost instances behind a load balancer, **divide the per-node settings by the number of nodes** based on your total expected RPS.
+当多个 Bifrost 实例位于负载均衡器后方运行时，应根据总预期 RPS，**将每节点设置除以节点数量**。
 
-### Formula
+### 公式
 
 ```
 Per-Node Concurrency = Total Concurrency / Number of Nodes
@@ -208,24 +218,26 @@ Per-Node Buffer Size = Total Buffer Size / Number of Nodes
 Per-Node Initial Pool Size = Total Initial Pool Size / Number of Nodes
 ```
 
-### Example: 10,000 RPS Across 4 Nodes
+### 示例：4 个节点承载 10,000 RPS
 
-**Total capacity (aggregate across all 4 nodes):**
-- Total RPS: 10,000 RPS
-- Per-node RPS: ~2,500 RPS per node
+**总容量（4 个节点合计）：**
 
-**Single node settings for 10,000 RPS (if running on one node):**
-- Concurrency: 10000
-- Buffer Size: 15000
-- Initial Pool Size: 15000
+- 总 RPS：10,000 RPS
+- 单节点 RPS：每节点约 2,500 RPS
 
-**Per-node settings (4 nodes, 10,000 RPS total):**
+**单节点承载 10,000 RPS 时的设置：**
 
-| Parameter | Total (Aggregate) | Per Node (4 nodes) |
+- 并发数：10000
+- 缓冲区大小：15000
+- 初始池大小：15000
+
+**每节点设置（4 个节点，总计 10,000 RPS）：**
+
+| 参数 | 总计（聚合） | 每节点（4 个节点） |
 |-----------|-------------------|-------------------|
-| Concurrency | 10000 | 2500 |
-| Buffer Size | 15000 | 3750 |
-| Initial Pool Size | 15000 | 3750 |
+| 并发数 | 10000 | 2500 |
+| 缓冲区大小 | 15000 | 3750 |
+| 初始池大小 | 15000 | 3750 |
 
 <Tabs>
 <Tab title="Gateway (config.json)">
@@ -262,21 +274,21 @@ Per-Node Initial Pool Size = Total Initial Pool Size / Number of Nodes
 const numNodes = 4
 
 func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-    // Total capacity divided by number of nodes
-    // Total: 10,000 RPS across 4 nodes = 2,500 RPS per node
+    // 总容量除以节点数量
+    // 总计：4 个节点共 10,000 RPS = 每节点 2,500 RPS
     return &schemas.ProviderConfig{
         NetworkConfig: schemas.DefaultNetworkConfig,
         ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-            Concurrency: 10000 / numNodes, // 2500 per node
-            BufferSize:  15000 / numNodes, // 3750 per node
+            Concurrency: 10000 / numNodes, // 每节点 2500
+            BufferSize:  15000 / numNodes, // 每节点 3750
         },
     }, nil
 }
 
-// In main initialization
+// 在 main 初始化中
 bifrostConfig := schemas.BifrostConfig{
     Account:         myAccount,
-    InitialPoolSize: 15000 / numNodes, // 3750 per node
+    InitialPoolSize: 15000 / numNodes, // 每节点 3750
 }
 ```
 
@@ -284,28 +296,28 @@ bifrostConfig := schemas.BifrostConfig{
 </Tabs>
 
 <Tip>
-**Kubernetes Horizontal Pod Autoscaling:** When using HPA, configure settings for your minimum replica count. As pods scale up, each node handles a smaller portion of traffic. Consider using environment variables or ConfigMaps to dynamically adjust settings based on replica count.
+**Kubernetes Horizontal Pod Autoscaling：** 使用 HPA 时，请按最小副本数配置这些设置。随着 Pod 扩容，每个节点会承载更小比例的流量。可以考虑使用环境变量或 ConfigMap，根据副本数动态调整设置。
 </Tip>
 
 ---
 
-## Provider-Specific Tuning
+## Provider 专项调优
 
-Different providers have different rate limits and latency characteristics. Tune each provider independently:
+不同 Provider 具有不同的速率限制和延迟特征。应分别调优每个 Provider：
 
-### Provider Rate Limit Considerations
+### Provider 速率限制注意事项
 
-| Provider | Typical Rate Limits | Recommended Concurrency | Notes |
+| Provider | 典型速率限制 | 推荐并发数 | 说明 |
 |----------|---------------------|------------------------|-------|
-| OpenAI | 500-10000 RPM (varies by tier) | 100-500 | Higher tiers support more concurrency |
-| Anthropic | 1000-4000 RPM (varies by tier) | 50-200 | More conservative rate limits |
-| Bedrock | Per-model limits | 100-300 | Check AWS quotas for your account |
-| Azure OpenAI | Deployment-specific | 100-500 | Configure per-deployment |
-| Vertex AI | Per-model quotas | 100-300 | Check GCP quotas |
-| Groq | Very high throughput | 500-1000 | Designed for high concurrency |
-| Ollama | Local resource bound | 10-50 | Limited by local GPU/CPU |
+| OpenAI | 500-10000 RPM（因层级而异） | 100-500 | 更高层级支持更高并发 |
+| Anthropic | 1000-4000 RPM（因层级而异） | 50-200 | 速率限制更保守 |
+| Bedrock | 按模型限制 | 100-300 | 检查你的 AWS 账户配额 |
+| Azure OpenAI | 按部署限制 | 100-500 | 按 deployment 配置 |
+| Vertex AI | 按模型配额 | 100-300 | 检查 GCP 配额 |
+| Groq | 极高吞吐量 | 500-1000 | 为高并发设计 |
+| Ollama | 受本地资源约束 | 10-50 | 受本地 GPU/CPU 限制 |
 
-### Example: Mixed Provider Configuration
+### 示例：混合 Provider 配置
 
 <Tabs>
 <Tab title="Gateway (config.json)">
@@ -397,11 +409,11 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 
 ---
 
-## Queue Overflow Handling
+## 队列溢出处理
 
-When the provider queue reaches capacity, Bifrost's behavior is controlled by `drop_excess_requests`:
+当 Provider 队列达到容量上限时，Bifrost 的行为由 `drop_excess_requests` 控制：
 
-### Blocking Mode (Default)
+### 阻塞模式（默认）
 
 ```json
 {
@@ -411,12 +423,12 @@ When the provider queue reaches capacity, Bifrost's behavior is controlled by `d
 }
 ```
 
-- New requests **wait** until queue space is available
-- Ensures no requests are lost
-- May increase latency during high load
-- Suitable for critical workloads where every request matters
+- 新请求会**等待**，直到队列有可用空间
+- 确保没有请求丢失
+- 高负载期间可能增加延迟
+- 适合每个请求都很重要的关键工作负载
 
-### Drop Mode
+### 丢弃模式
 
 ```json
 {
@@ -426,82 +438,82 @@ When the provider queue reaches capacity, Bifrost's behavior is controlled by `d
 }
 ```
 
-- New requests are **immediately rejected** when queue is full
-- Returns error: `"request dropped: queue is full"`
-- Maintains consistent latency for accepted requests
-- Suitable for real-time applications where stale requests are useless
+- 队列满时，新请求会被**立即拒绝**
+- 返回错误：`"request dropped: queue is full"`
+- 保持已接受请求的延迟稳定
+- 适合过期请求没有价值的实时应用
 
 <Tip>
-**Best Practice:** Use `drop_excess_requests: true` with buffer sizes at 1.5x concurrency for production workloads. This prevents memory exhaustion while still handling reasonable traffic bursts.
+**最佳实践：** 在生产工作负载中使用 `drop_excess_requests: true`，并将缓冲区大小设置为并发数的 1.5 倍。这样既能处理合理的流量突发，又能防止内存耗尽。
 </Tip>
 
 ---
 
-## Monitoring and Diagnostics
+## 监控和诊断
 
-### Key Metrics to Monitor
+### 需要监控的关键指标
 
-| Metric | Healthy Range | Action if Exceeded |
+| 指标 | 健康范围 | 超出时的操作 |
 |--------|---------------|-------------------|
-| Queue depth | < 50% of buffer_size | Increase buffer or concurrency |
-| Request latency (p99) | < 2x average | Check provider rate limits |
-| Dropped requests | 0 | Increase buffer_size |
-| Memory usage | Stable | Reduce pool/buffer sizes |
-| Goroutine count | Stable | Check for goroutine leaks |
+| 队列深度 | < `buffer_size` 的 50% | 增加缓冲区或并发数 |
+| 请求延迟（p99） | < 平均值的 2 倍 | 检查 Provider 速率限制 |
+| 被丢弃请求 | 0 | 增加 `buffer_size` |
+| 内存使用 | 稳定 | 降低池/缓冲区大小 |
+| Goroutine 数量 | 稳定 | 检查 goroutine 泄漏 |
 
-### Health Check Endpoint
+### 健康检查端点
 
-The Gateway exposes health and metrics endpoints:
+Gateway 暴露健康检查和指标端点：
 
 ```bash
-# Health check
+# 健康检查
 curl http://localhost:8080/health
 
-# Prometheus metrics
+# Prometheus 指标
 curl http://localhost:8080/metrics
 ```
 
 ---
 
-## Best Practices Summary
+## 最佳实践总结
 
 <CardGroup cols={2}>
-  <Card title="Start Conservative" icon="shield">
-    Begin with lower values and scale up based on observed performance. Over-provisioning wastes resources.
+  <Card title="保守起步" icon="shield">
+    从较低值开始，并根据观测到的性能逐步扩容。过度配置会浪费资源。
   </Card>
-  <Card title="Monitor Continuously" icon="chart-line">
-    Track queue depths, latencies, and error rates. Adjust settings based on real traffic patterns.
+  <Card title="持续监控" icon="chart-line">
+    跟踪队列深度、延迟和错误率。根据真实流量模式调整设置。
   </Card>
-  <Card title="Match Provider Limits" icon="scale-balanced">
-    Don't set concurrency higher than provider rate limits allow. You'll just get rate-limited.
+  <Card title="匹配 Provider 限制" icon="scale-balanced">
+    不要将并发数设置得高于 Provider 速率限制允许的范围，否则只会触发限流。
   </Card>
-  <Card title="Plan for Bursts" icon="bolt">
-    Set buffer_size to 1.5x concurrency to handle traffic spikes without dropping requests.
+  <Card title="为突发流量预留空间" icon="bolt">
+    将 `buffer_size` 设置为并发数的 1.5 倍，以便在不丢弃请求的情况下处理流量峰值。
   </Card>
 </CardGroup>
 
-### Quick Reference
+### 快速参考
 
 ```
-// Formula
-concurrency      = expected_rps
-buffer_size      = 1.5 × expected_rps
+// 公式
+concurrency       = expected_rps
+buffer_size       = 1.5 × expected_rps
 initial_pool_size = 1.5 × total_rps (across all providers)
 
-// Example: 500 RPS per provider, 2 providers (1000 total RPS)
+// 示例：每个 Provider 500 RPS，2 个 Provider（总计 1000 RPS）
 concurrency: 500, buffer_size: 750, initial_pool_size: 1500
 
-// Example: 2000 RPS per provider, 3 providers (6000 total RPS)
+// 示例：每个 Provider 2000 RPS，3 个 Provider（总计 6000 RPS）
 concurrency: 2000, buffer_size: 3000, initial_pool_size: 9000
 
-// Multi-node formula
+// 多节点公式
 per_node_value = total_value / number_of_nodes
 ```
 
 ---
 
-## Related Documentation
+## 相关文档
 
-- **[Provider Configuration](../quickstart/gateway/provider-configuration)** - Complete provider setup guide
-- **[Custom Providers](./custom-providers)** - Creating custom provider integrations
-- **[Deployment](../deployment-guides/)** - Production deployment guides
+- **[Provider 配置](../quickstart/gateway/provider-configuration)** - 完整 Provider 设置指南
+- **[自定义 Provider](./custom-providers)** - 创建自定义 Provider 集成
+- **[部署](../deployment-guides/)** - 生产部署指南

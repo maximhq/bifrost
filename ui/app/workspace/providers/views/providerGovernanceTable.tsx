@@ -7,6 +7,7 @@ import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useTranslation } from "react-i18next";
 
 interface Props {
 	className?: string;
@@ -80,6 +81,7 @@ function CircularProgress({
 
 // Metric card component
 function MetricCard({
+	t,
 	title,
 	value,
 	max,
@@ -87,6 +89,7 @@ function MetricCard({
 	resetDuration,
 	isExhausted,
 }: {
+	t: (key: string, values?: Record<string, unknown>) => string;
 	title: string;
 	value: number;
 	max: number;
@@ -115,7 +118,7 @@ function MetricCard({
 						<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">{title}</span>
 						{isExhausted && (
 							<Badge variant="destructive" className="text-xs whitespace-nowrap">
-								Exhausted
+								{t("workspace.providers.governance.exhausted")}
 							</Badge>
 						)}
 					</div>
@@ -133,13 +136,15 @@ function MetricCard({
 										</span>
 									</div>
 									<div className="text-xs">
-										<span className="text-muted-foreground">Resets {formatResetDuration(resetDuration)}</span>
+										<span className="text-muted-foreground">
+											{t("workspace.providers.governance.resets", { duration: formatResetDuration(resetDuration) })}
+										</span>
 									</div>
 								</div>
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
 								<p className="font-medium">
-									{clampedPercentage}% of {title.toLowerCase()} used
+									{t("workspace.providers.governance.usedMetric", { percent: clampedPercentage, name: title.toLowerCase() })}
 								</p>
 							</TooltipContent>
 						</Tooltip>
@@ -153,6 +158,7 @@ function MetricCard({
 }
 
 export default function ProviderGovernanceTable({ provider, className }: Props) {
+	const { t } = useTranslation();
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const { data: providerGovernanceData, isLoading } = useGetProviderGovernanceQuery(undefined, {
 		skip: !hasViewAccess,
@@ -170,7 +176,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 			<div className={cn("w-full", className)}>
 				<CardHeader className="mb-4 px-0">
 					<CardTitle className="flex items-center justify-between">
-						<div className="flex items-center gap-2">Governance</div>
+						<div className="flex items-center gap-2">{t("workspace.providers.governance.title")}</div>
 					</CardTitle>
 				</CardHeader>
 				<div className="flex items-center justify-center py-12">
@@ -204,7 +210,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 		<div className={cn("w-full", className)}>
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
-					<div className="flex items-center gap-2">Governance</div>
+					<div className="flex items-center gap-2">{t("workspace.providers.governance.title")}</div>
 				</CardTitle>
 			</CardHeader>
 
@@ -212,7 +218,8 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 				{/* Budget Card */}
 				{budget && (
 					<MetricCard
-						title="Budget"
+						t={t}
+						title={t("workspace.providers.governance.budget")}
 						value={budget.current_usage}
 						max={budget.max_limit}
 						unit="$"
@@ -224,7 +231,8 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 				{/* Token Rate Limit Card */}
 				{rateLimit?.token_max_limit && (
 					<MetricCard
-						title="Token Limit"
+						t={t}
+						title={t("workspace.providers.governance.tokenLimit")}
 						value={rateLimit.token_current_usage}
 						max={rateLimit.token_max_limit}
 						unit="tokens"
@@ -236,7 +244,8 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 				{/* Request Rate Limit Card */}
 				{rateLimit?.request_max_limit && (
 					<MetricCard
-						title="Request Limit"
+						t={t}
+						title={t("workspace.providers.governance.requestLimit")}
 						value={rateLimit.request_current_usage}
 						max={rateLimit.request_max_limit}
 						unit="requests"

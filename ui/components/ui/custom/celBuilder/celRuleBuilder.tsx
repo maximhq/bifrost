@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { useTranslation } from "react-i18next";
 import { Check, Copy, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Field, QueryBuilder, RuleGroupType } from "react-querybuilder";
@@ -76,6 +77,7 @@ export function CELRuleBuilder({
 		hideCELExpression: false,
 	},
 }: CELRuleBuilderProps) {
+	const { t } = useTranslation();
 	const normalizedInitial = normalizeRoutingRuleGroupQuery(initialQuery ?? defaultQuery);
 	const [query, setQuery] = useState<RuleGroupType>(normalizedInitial);
 	const [celExpression, setCelExpression] = useState("");
@@ -116,7 +118,7 @@ export function CELRuleBuilder({
 		return (
 			<div className="flex items-center justify-center space-x-2 rounded-md border p-8">
 				<Loader2 className="h-5 w-5 animate-spin" />
-				<span className="text-muted-foreground text-sm">Loading CEL builder...</span>
+				<span className="text-muted-foreground text-sm">{t("common.loadingCelBuilder")}</span>
 			</div>
 		);
 	}
@@ -152,8 +154,8 @@ export function CELRuleBuilder({
 								combinatorSelector: CombinatorSelector,
 							}}
 							translations={{
-								addRule: { label: "Add Rule" },
-								addGroup: { label: "Add Rule Group" },
+								addRule: { label: t("common.addRule") },
+								addGroup: { label: t("common.addRuleGroup") },
 							}}
 						/>
 					</QueryBuilderWrapper>
@@ -175,17 +177,17 @@ export function CELRuleBuilder({
 							{copied ? (
 								<>
 									<Check className="h-4 w-4" />
-									Copied
+									{t("common.copied")}
 								</>
 							) : (
 								<>
 									<Copy className="h-4 w-4" />
-									Copy
+									{t("common.copy")}
 								</>
 							)}
 						</Button>
 					</div>
-					<Textarea value={celExpression || "No rules defined yet"} readOnly className="font-mono text-sm" rows={4} />
+					<Textarea value={celExpression || t("common.noRulesDefinedYet")} readOnly className="font-mono text-sm" rows={4} />
 				</div>
 			)}
 		</div>

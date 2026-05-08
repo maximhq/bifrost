@@ -41,6 +41,7 @@ import UserRankingsTab from "@enterprise/components/user-rankings/userRankingsTa
 import { useLocation } from "@tanstack/react-router";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
 import { ExportPopover } from "./components/exportPopover";
@@ -61,6 +62,7 @@ const sanitizeSeriesLabels = (values?: string[]): string[] => {
 };
 
 export default function DashboardPage() {
+	const { t } = useTranslation();
 	// Data states - Overview
 	const [histogramData, setHistogramData] = useState<LogsHistogramResponse | null>(null);
 	const [tokenData, setTokenData] = useState<TokenHistogramResponse | null>(null);
@@ -769,7 +771,7 @@ export default function DashboardPage() {
 				{/* Header */}
 				<div className="flex items-center justify-between p-4">
 					<div className="flex items-center gap-2">
-						<h1 className="text-lg font-semibold">Dashboard</h1>
+						<h1 className="text-lg font-semibold">{t("workspace.dashboard.title")}</h1>
 					</div>
 					<div className="flex items-center gap-2">
 						<ExportPopover
@@ -791,7 +793,7 @@ export default function DashboardPage() {
 												setUrlState({ mcp_tool_names: value });
 											}
 										}}
-										placeholder="All Tools"
+										placeholder={t("workspace.dashboard.allTools")}
 										data-testid="dashboard-mcp-tool-filter"
 									/>
 								)}
@@ -806,7 +808,7 @@ export default function DashboardPage() {
 												setUrlState({ mcp_server_labels: value });
 											}
 										}}
-										placeholder="All Servers"
+										placeholder={t("workspace.dashboard.allServers")}
 										data-testid="dashboard-mcp-server-filter"
 									/>
 								)}
@@ -829,19 +831,19 @@ export default function DashboardPage() {
 					<Tabs value={urlState.tab} onValueChange={handleTabChange}>
 						<TabsList className="mb-2">
 							<TabsTrigger value="overview" data-testid="dashboard-tab-overview">
-								Overview
+								{t("workspace.dashboard.overview")}
 							</TabsTrigger>
 							<TabsTrigger value="provider-usage" data-testid="dashboard-tab-provider-usage">
-								Provider Usage
+								{t("workspace.dashboard.providerUsage")}
 							</TabsTrigger>
 							<TabsTrigger value="rankings" data-testid="dashboard-tab-rankings">
-								Model Rankings
+								{t("workspace.dashboard.modelRankings")}
 							</TabsTrigger>
 							<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
-								MCP usage
+								{t("workspace.dashboard.mcpUsage")}
 							</TabsTrigger>
 							<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
-								User Rankings
+								{t("workspace.dashboard.userRankings")}
 							</TabsTrigger>
 						</TabsList>
 

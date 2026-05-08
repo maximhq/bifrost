@@ -12,6 +12,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 
 interface OtelFormFragmentProps {
 	currentConfig?: {
@@ -42,6 +43,7 @@ export function OtelFormFragment({
 	isDeleting = false,
 	isLoading = false,
 }: OtelFormFragmentProps) {
+	const { t } = useTranslation();
 	const hasOtelAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [isSaving, setIsSaving] = useState(false);
 	const form = useForm<OtelFormSchema, any, OtelFormSchema>({
@@ -110,19 +112,28 @@ export function OtelFormFragment({
 	}, [form, initialConfig]);
 
 	const traceTypeOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
-		{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
-		{ value: "vercel", label: "Vercel AI SDK", disabled: true, disabledReason: "Coming soon" },
-		{ value: "open_inference", label: "Arize OpenInference", disabled: true, disabledReason: "Coming soon" },
+		{ value: "genai_extension", label: t("workspace.observability.otelForm.traceTypeGenAi") },
+		{
+			value: "vercel",
+			label: t("workspace.observability.otelForm.traceTypeVercel"),
+			disabled: true,
+			disabledReason: t("workspace.observability.otelForm.traceTypeVercelSoon"),
+		},
+		{
+			value: "open_inference",
+			label: t("workspace.observability.otelForm.traceTypeOpenInference"),
+			disabled: true,
+			disabledReason: t("workspace.observability.otelForm.traceTypeOpenInferenceSoon"),
+		},
 	];
-	const protocolOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
-		{ value: "http", label: "HTTP" },
-		{ value: "grpc", label: "GRPC" },
+	const protocolOptions: { value: string; label: string }[] = [
+		{ value: "http", label: t("workspace.observability.otelForm.protocolHttp") },
+		{ value: "grpc", label: t("workspace.observability.otelForm.protocolGrpc") },
 	];
 
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-				{/* OTEL Configuration */}
 				<div className="space-y-4">
 					<div className="flex flex-col gap-4">
 						<FormField
@@ -130,10 +141,14 @@ export function OtelFormFragment({
 							name="otel_config.service_name"
 							render={({ field }) => (
 								<FormItem className="w-full">
-									<FormLabel>Service Name</FormLabel>
-									<FormDescription>If kept empty, the service name will be set to "bifrost"</FormDescription>
+									<FormLabel>{t("workspace.observability.otelForm.serviceName")}</FormLabel>
+									<FormDescription>{t("workspace.observability.otelForm.serviceNameDescription")}</FormDescription>
 									<FormControl>
-										<Input placeholder="bifrost" disabled={!hasOtelAccess} {...field} />
+										<Input
+											placeholder={t("workspace.observability.otelForm.serviceNamePlaceholder")}
+											disabled={!hasOtelAccess}
+											{...field}
+										/>
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -144,7 +159,7 @@ export function OtelFormFragment({
 							name="otel_config.collector_url"
 							render={({ field }) => (
 								<FormItem className="w-full">
-									<FormLabel>OTLP Collector URL</FormLabel>
+									<FormLabel>{t("workspace.observability.otelForm.collectorUrl")}</FormLabel>
 									<div className="text-muted-foreground text-xs">
 										<code>{form.watch("otel_config.protocol") === "http" ? "http(s)://<host>:<port>/v1/traces" : "<host>:<port>"}</code>
 									</div>
@@ -152,8 +167,8 @@ export function OtelFormFragment({
 										<Input
 											placeholder={
 												form.watch("otel_config.protocol") === "http"
-													? "https://otel-collector.example.com:4318/v1/traces"
-													: "otel-collector.example.com:4317"
+													? t("workspace.observability.otelForm.collectorUrlPlaceholder")
+													: t("workspace.observability.otelForm.collectorUrlPlaceholderGrpc")
 											}
 											disabled={!hasOtelAccess}
 											{...field}
@@ -181,11 +196,11 @@ export function OtelFormFragment({
 								name="otel_config.trace_type"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Format</FormLabel>
+										<FormLabel>{t("workspace.observability.otelForm.traceType")}</FormLabel>
 										<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
 											<FormControl>
 												<SelectTrigger className="w-full">
-													<SelectValue placeholder="Select trace type" />
+													<SelectValue />
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
@@ -211,21 +226,16 @@ export function OtelFormFragment({
 								name="otel_config.protocol"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Protocol</FormLabel>
+										<FormLabel>{t("workspace.observability.otelForm.protocol")}</FormLabel>
 										<Select onValueChange={field.onChange} value={field.value} disabled={!hasOtelAccess}>
 											<FormControl>
 												<SelectTrigger className="w-full">
-													<SelectValue placeholder="Select protocol" />
+													<SelectValue />
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
 												{protocolOptions.map((option) => (
-													<SelectItem
-														key={option.value}
-														value={option.value}
-														disabled={option.disabled}
-														disabledReason={option.disabledReason}
-													>
+													<SelectItem key={option.value} value={option.value}>
 														{option.label}
 													</SelectItem>
 												))}
@@ -246,10 +256,8 @@ export function OtelFormFragment({
 									<FormItem className="flex flex-row items-center gap-2">
 										<div className="flex w-full flex-row items-center gap-2">
 											<div className="flex flex-col gap-1">
-												<FormLabel>Insecure (Skip TLS)</FormLabel>
-												<FormDescription>
-													Skip TLS verification. Disable this to use TLS with system root CAs or a custom CA certificate.
-												</FormDescription>
+												<FormLabel>{t("workspace.observability.otelForm.insecure")}</FormLabel>
+												<FormDescription>{t("workspace.observability.otelForm.insecureDescription")}</FormDescription>
 											</div>
 											<div className="ml-auto">
 												<Switch
@@ -273,12 +281,14 @@ export function OtelFormFragment({
 									name="otel_config.tls_ca_cert"
 									render={({ field }) => (
 										<FormItem className="w-full">
-											<FormLabel>TLS CA Certificate Path</FormLabel>
-											<FormDescription>
-												File path to the CA certificate on the Bifrost server. Leave empty to use system root CAs.
-											</FormDescription>
+											<FormLabel>{t("workspace.observability.otelForm.tlsCaCertPath")}</FormLabel>
+											<FormDescription>{t("workspace.observability.otelForm.tlsCaCertPathDescription")}</FormDescription>
 											<FormControl>
-												<Input placeholder="/path/to/ca.crt" disabled={!hasOtelAccess} {...field} />
+												<Input
+													placeholder={t("workspace.observability.otelForm.tlsCaCertPathPlaceholder")}
+													disabled={!hasOtelAccess}
+													{...field}
+												/>
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -299,11 +309,10 @@ export function OtelFormFragment({
 								<div className="flex w-full flex-row items-center gap-2">
 									<div className="flex flex-col gap-1">
 										<h3 className="flex flex-row items-center gap-2 text-sm font-medium">
-											Enable Metrics Export <Badge variant="secondary">BETA</Badge>
+											{t("workspace.observability.otelForm.metricsEnabled")}{" "}
+											<Badge variant="secondary">{t("workspace.observability.otelForm.metricsEnabledBeta")}</Badge>
 										</h3>
-										<p className="text-muted-foreground text-xs">
-											Push metrics to an OTEL Collector for proper aggregation in cluster deployments
-										</p>
+										<p className="text-muted-foreground text-xs">{t("workspace.observability.otelForm.pushMetricsDescription")}</p>
 									</div>
 									<div className="ml-auto">
 										<Switch
@@ -325,14 +334,16 @@ export function OtelFormFragment({
 								name="otel_config.metrics_endpoint"
 								render={({ field }) => (
 									<FormItem className="w-full">
-										<FormLabel>Metrics Endpoint</FormLabel>
+										<FormLabel>{t("workspace.observability.otelForm.metricsEndpoint")}</FormLabel>
 										<div className="text-muted-foreground text-xs">
 											<code>{form.watch("otel_config.protocol") === "http" ? "http(s)://<host>:<port>/v1/metrics" : "<host>:<port>"}</code>
 										</div>
 										<FormControl>
 											<Input
 												placeholder={
-													form.watch("otel_config.protocol") === "http" ? "https://otel-collector:4318/v1/metrics" : "otel-collector:4317"
+													form.watch("otel_config.protocol") === "http"
+														? t("workspace.observability.otelForm.metricsEndpointPlaceholder")
+														: t("workspace.observability.otelForm.metricsEndpointPlaceholderGrpc")
 												}
 												disabled={!hasOtelAccess}
 												{...field}
@@ -348,7 +359,7 @@ export function OtelFormFragment({
 								name="otel_config.metrics_push_interval"
 								render={({ field }) => (
 									<FormItem className="w-full max-w-xs">
-										<FormLabel>Push Interval (seconds)</FormLabel>
+										<FormLabel>{t("workspace.observability.otelForm.pushInterval")}</FormLabel>
 										<FormControl>
 											<Input
 												type="number"
@@ -360,7 +371,7 @@ export function OtelFormFragment({
 												onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
 											/>
 										</FormControl>
-										<FormDescription>How often to push metrics (1-300 seconds)</FormDescription>
+										<FormDescription>{t("workspace.observability.otelForm.pushIntervalDescription")}</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -376,7 +387,7 @@ export function OtelFormFragment({
 						name="enabled"
 						render={({ field }) => (
 							<FormItem className="flex items-center gap-2 py-2">
-								<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+								<FormLabel className="text-muted-foreground text-sm font-medium">{t("workspace.observability.otelForm.enabled")}</FormLabel>
 								<FormControl>
 									<Switch
 										checked={field.value}
@@ -396,8 +407,8 @@ export function OtelFormFragment({
 								onClick={onDelete}
 								disabled={isDeleting || !hasOtelAccess}
 								data-testid="otel-connector-delete-btn"
-								title="Delete connector"
-								aria-label="Delete connector"
+								title={t("workspace.observability.otelForm.deleteConnector")}
+								aria-label={t("workspace.observability.otelForm.deleteConnector")}
 							>
 								<Trash2 className="size-4" />
 							</Button>
@@ -429,22 +440,18 @@ export function OtelFormFragment({
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button
-										type="submit"
-										disabled={!hasOtelAccess || !form.formState.isDirty}
-										isLoading={isSaving}
-									>
-										Save OTEL Configuration
+									<Button type="submit" disabled={!hasOtelAccess || !form.formState.isDirty} isLoading={isSaving}>
+										{t("workspace.observability.otelForm.save")}
 									</Button>
 								</TooltipTrigger>
-								{(!form.formState.isDirty) && (
+								{!form.formState.isDirty && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty && !form.formState.isValid
-												? "No changes made and validation errors present"
+												? t("workspace.observability.otelForm.noChangesAndErrors")
 												: !form.formState.isDirty
-													? "No changes made"
-													: "Please fix validation errors"}
+													? t("workspace.observability.otelForm.noChanges")
+													: t("workspace.observability.otelForm.pleaseFixErrors")}
 										</p>
 									</TooltipContent>
 								)}

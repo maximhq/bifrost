@@ -8,6 +8,7 @@ import { useCreateFolderMutation, useUpdateFolderMutation } from "@/lib/store/ap
 import { Folder } from "@/lib/types/prompts";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface FolderFormData {
@@ -23,6 +24,7 @@ interface FolderSheetProps {
 }
 
 export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheetProps) {
+	const { t } = useTranslation();
 	const [createFolder, { isLoading: isCreating }] = useCreateFolderMutation();
 	const [updateFolder, { isLoading: isUpdating }] = useUpdateFolderMutation();
 
@@ -54,20 +56,25 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 					id: folder.id,
 					data: { name: data.name.trim(), description: data.description.trim() || undefined },
 				}).unwrap();
-				toast.success("Folder updated");
+				toast.success(t("workspace.promptRepository.sheets.folderUpdated"));
 			} else {
 				await createFolder({
 					name: data.name.trim(),
 					description: data.description.trim() || undefined,
 				}).unwrap();
-				toast.success("Folder created");
+				toast.success(t("workspace.promptRepository.sheets.folderCreated"));
 			}
 			onSaved();
 			onOpenChange(false);
 		} catch (err) {
-			toast.error(`Failed to ${isEditing ? "update" : "create"} folder`, {
-				description: getErrorMessage(err),
-			});
+			toast.error(
+				t("workspace.promptRepository.sheets.folderSaveFailed", {
+					action: isEditing ? t("workspace.promptRepository.sheets.actionUpdate") : t("workspace.promptRepository.sheets.actionCreate"),
+				}),
+				{
+					description: getErrorMessage(err),
+				},
+			);
 		}
 	}
 
@@ -82,22 +89,26 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 			>
 				<form onSubmit={handleSubmit(onSubmit)}>
 					<SheetHeader className="flex flex-col items-start">
-						<SheetTitle>{isEditing ? "Edit Folder" : "Create Folder"}</SheetTitle>
+						<SheetTitle>
+							{isEditing ? t("workspace.promptRepository.sheets.editFolder") : t("workspace.promptRepository.sheets.createFolder")}
+						</SheetTitle>
 						<SheetDescription>
-							{isEditing ? "Update the folder name and description." : "Create a new folder to organize your prompts."}
+							{isEditing
+								? t("workspace.promptRepository.sheets.updateFolderDescription")
+								: t("workspace.promptRepository.sheets.createFolderDescription")}
 						</SheetDescription>
 					</SheetHeader>
 
 					<div className="mt-6 space-y-4">
 						<div className="space-y-2">
-							<Label htmlFor="name">Name</Label>
+							<Label htmlFor="name">{t("workspace.promptRepository.sheets.name")}</Label>
 							<Input
 								id="name"
 								data-testid="folder-name-input"
-								placeholder="My Prompts"
+								placeholder={t("workspace.promptRepository.sheets.folderNamePlaceholder")}
 								{...register("name", {
-									required: "Folder name is required",
-									validate: (v) => v.trim().length > 0 || "Folder name cannot be blank",
+									required: t("workspace.promptRepository.sheets.folderNameRequired"),
+									validate: (v) => v.trim().length > 0 || t("workspace.promptRepository.sheets.folderNameBlank"),
 								})}
 								autoFocus
 							/>
@@ -105,11 +116,11 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 						</div>
 
 						<div className="space-y-2">
-							<Label htmlFor="description">Description (optional)</Label>
+							<Label htmlFor="description">{t("workspace.promptRepository.sheets.descriptionOptional")}</Label>
 							<Textarea
 								id="description"
 								data-testid="folder-description-input"
-								placeholder="Prompts for customer support use cases..."
+								placeholder={t("workspace.promptRepository.sheets.folderDescriptionPlaceholder")}
 								className="resize-none"
 								{...register("description")}
 							/>
@@ -118,10 +129,14 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 
 					<SheetFooter className="mt-6 flex flex-row items-center justify-end gap-2 p-0">
 						<Button type="button" variant="outline" data-testid="folder-cancel" onClick={() => onOpenChange(false)}>
-							Cancel
+							{t("workspace.promptRepository.sheets.cancel")}
 						</Button>
 						<Button type="submit" data-testid="folder-submit" disabled={isLoading}>
-							{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+							{isLoading
+								? t("workspace.promptRepository.sheets.saving")
+								: isEditing
+									? t("workspace.promptRepository.sheets.update")
+									: t("workspace.promptRepository.sheets.create")}
 						</Button>
 					</SheetFooter>
 				</form>

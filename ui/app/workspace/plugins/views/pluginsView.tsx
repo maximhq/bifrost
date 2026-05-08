@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import * as z from "zod";
+import i18n from "@/lib/i18n";
 
 interface Props {
 	onDelete: () => void;
@@ -94,7 +95,7 @@ export default function PluginsView(props: Props) {
 				try {
 					config = JSON.parse(values.config);
 				} catch {
-					toast.error("Invalid JSON in configuration");
+					toast.error(i18n.t("workspace.plugins.invalidJsonConfiguration"));
 					return;
 				}
 			}
@@ -107,15 +108,15 @@ export default function PluginsView(props: Props) {
 					...(config !== undefined && { config }),
 				},
 			}).unwrap();
-			toast.success("Plugin updated successfully");
+			toast.success(i18n.t("workspace.plugins.pluginUpdated"));
 			form.reset(values);
 		} catch {
-			toast.error("Failed to update plugin");
+			toast.error(i18n.t("workspace.plugins.failedToUpdatePlugin"));
 		}
 	};
 
 	const onError = () => {
-		toast.error("Please fix the form errors before submitting");
+		toast.error(i18n.t("workspace.plugins.fixFormErrors"));
 	};
 
 	const handleDeleteClick = () => {
@@ -128,14 +129,14 @@ export default function PluginsView(props: Props) {
 
 	const handleDeleteSuccess = () => {
 		setShowDeleteDialog(false);
-		toast.success("Plugin deleted successfully");
+		toast.success(i18n.t("workspace.plugins.pluginDeleted"));
 		props.onDelete();
 	};
 
 	if (!selectedPlugin) {
 		return (
 			<div className="ml-4 flex w-full items-center justify-center">
-				<p className="text-muted-foreground">No plugin selected</p>
+				<p className="text-muted-foreground">{i18n.t("workspace.plugins.noPluginSelected")}</p>
 			</div>
 		);
 	}
@@ -150,18 +151,24 @@ export default function PluginsView(props: Props) {
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit, onError)} className="space-y-6">
 					<div className="">
-						<h3 className="mb-4 text-lg font-semibold">Plugin Configuration</h3>
+						<h3 className="mb-4 text-lg font-semibold">{i18n.t("workspace.plugins.pluginConfiguration")}</h3>
 						<div className="space-y-6">
 							<FormField
 								control={form.control}
 								name="name"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Name</FormLabel>
+										<FormLabel>{i18n.t("workspace.plugins.name")}</FormLabel>
 										<FormControl>
-											<Input placeholder="Plugin name" {...field} readOnly disabled className="cursor-not-allowed" />
+											<Input
+												placeholder={i18n.t("workspace.plugins.pluginName")}
+												{...field}
+												readOnly
+												disabled
+												className="cursor-not-allowed"
+											/>
 										</FormControl>
-										<FormDescription>The name of the plugin</FormDescription>
+										<FormDescription>{i18n.t("workspace.plugins.nameDescription")}</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -169,7 +176,7 @@ export default function PluginsView(props: Props) {
 
 							{selectedPlugin.status?.types && selectedPlugin.status.types.length > 0 && (
 								<FormItem>
-									<FormLabel>Types</FormLabel>
+									<FormLabel>{i18n.t("workspace.plugins.types")}</FormLabel>
 									<FormControl>
 										<div className="flex flex-wrap gap-1">
 											{selectedPlugin.status.types.map((type) => (
@@ -192,8 +199,8 @@ export default function PluginsView(props: Props) {
 								render={({ field }) => (
 									<FormItem className="flex flex-row items-center justify-between">
 										<div className="space-y-0.5">
-											<FormLabel>Enabled</FormLabel>
-											<FormDescription>Enable or disable this plugin</FormDescription>
+											<FormLabel>{i18n.t("workspace.plugins.enabled")}</FormLabel>
+											<FormDescription>{i18n.t("workspace.plugins.enableOrDisablePlugin")}</FormDescription>
 										</div>
 										<FormControl>
 											<Switch checked={field.value} onCheckedChange={field.onChange} />
@@ -207,11 +214,11 @@ export default function PluginsView(props: Props) {
 								name="path"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Path</FormLabel>
+										<FormLabel>{i18n.t("workspace.plugins.path")}</FormLabel>
 										<FormControl>
-											<Input placeholder="Plugin path" {...field} value={field.value || ""} />
+											<Input placeholder={i18n.t("workspace.plugins.pluginPath")} {...field} value={field.value || ""} />
 										</FormControl>
-										<FormDescription>The file system path to the plugin</FormDescription>
+										<FormDescription>{i18n.t("workspace.plugins.pathDescription")}</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -232,7 +239,7 @@ export default function PluginsView(props: Props) {
 									className="w-full"
 								>
 									<PlusIcon className="mr-2 h-4 w-4" />
-									Add Configuration
+									{i18n.t("workspace.plugins.addConfiguration")}
 								</Button>
 							) : (
 								<FormField
@@ -241,7 +248,7 @@ export default function PluginsView(props: Props) {
 									render={({ field }) => (
 										<FormItem>
 											<div className="flex items-center justify-between">
-												<FormLabel>Configuration (JSON)</FormLabel>
+												<FormLabel>{i18n.t("workspace.plugins.configurationJson")}</FormLabel>
 												<Button
 													type="button"
 													variant="ghost"
@@ -253,7 +260,7 @@ export default function PluginsView(props: Props) {
 													}}
 													className="h-auto p-1 text-xs"
 												>
-													Remove
+													{i18n.t("workspace.plugins.remove")}
 												</Button>
 											</div>
 											<FormControl>
@@ -275,7 +282,7 @@ export default function PluginsView(props: Props) {
 													/>
 												</div>
 											</FormControl>
-											<FormDescription>Plugin configuration in JSON format</FormDescription>
+											<FormDescription>{i18n.t("workspace.plugins.pluginConfigurationFormat")}</FormDescription>
 											<FormMessage />
 										</FormItem>
 									)}
@@ -288,7 +295,7 @@ export default function PluginsView(props: Props) {
 								<div className="space-y-4">
 									{selectedPlugin.status?.logs && selectedPlugin.status.logs.length > 0 && (
 										<div className="grid gap-2">
-											<label className="text-sm font-medium">Logs</label>
+											<label className="text-sm font-medium">{i18n.t("workspace.plugins.logs")}</label>
 											<div className="rounded-md border px-4 py-2 font-mono text-xs">
 												<div className="flex flex-row items-center gap-2">
 													{selectedPlugin.status.logs.map((log, index) => (
@@ -314,7 +321,7 @@ export default function PluginsView(props: Props) {
 							disabled={!hasDeletePluginAccess}
 						>
 							<Trash2Icon className="h-4 w-4" />
-							Delete Plugin
+							{i18n.t("workspace.plugins.deletePlugin")}
 						</Button>
 						<Button
 							type="button"
@@ -322,11 +329,11 @@ export default function PluginsView(props: Props) {
 							onClick={() => form.reset()}
 							disabled={!form.formState.isDirty || !hasUpdatePluginAccess}
 						>
-							Reset
+							{i18n.t("workspace.plugins.reset")}
 						</Button>
 						<Button type="submit" disabled={isLoading || !form.formState.isDirty || !hasUpdatePluginAccess}>
 							<SaveIcon className="h-4 w-4" />
-							{isLoading ? "Saving..." : "Save Changes"}
+							{isLoading ? i18n.t("workspace.plugins.saving") : i18n.t("workspace.plugins.saveChanges")}
 						</Button>
 					</div>
 				</form>

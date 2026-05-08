@@ -25,6 +25,7 @@ import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
 import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
@@ -61,6 +62,7 @@ export default function ModelLimitsTable({
 	limit,
 	onOffsetChange,
 }: ModelLimitsTableProps) {
+	const { t } = useTranslation();
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
 	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
 
@@ -79,7 +81,7 @@ export default function ModelLimitsTable({
 	const handleDelete = async (id: string) => {
 		try {
 			await deleteModelConfig(id).unwrap();
-			toast.success("Model limit deleted successfully");
+			toast.success(t("workspace.modelLimits.deleteSuccess"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -124,14 +126,12 @@ export default function ModelLimitsTable({
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
-						<h1 className="text-lg font-semibold">Model Limits</h1>
-						<p className="text-muted-foreground text-sm">
-							Configure budgets and rate limits at the model level. For provider-specific limits, visit each provider&apos;s settings.
-						</p>
+						<h1 className="text-lg font-semibold">{t("workspace.modelLimits.title")}</h1>
+						<p className="text-muted-foreground text-sm">{t("workspace.modelLimits.description")}</p>
 					</div>
 					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
 						<Plus className="h-4 w-4" />
-						Add Model Limit
+						{t("workspace.modelLimits.addModelLimit")}
 					</Button>
 				</div>
 
@@ -140,8 +140,8 @@ export default function ModelLimitsTable({
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
-							aria-label="Search model limits by model name"
-							placeholder="Search by model name..."
+							aria-label={t("workspace.modelLimits.searchAriaLabel")}
+							placeholder={t("workspace.modelLimits.searchPlaceholder")}
 							value={search}
 							onChange={(e) => onSearchChange(e.target.value)}
 							className="pl-9"
@@ -154,10 +154,10 @@ export default function ModelLimitsTable({
 					<Table>
 						<TableHeader>
 							<TableRow className="hover:bg-transparent">
-								<TableHead className="font-medium">Model</TableHead>
-								<TableHead className="font-medium">Provider</TableHead>
-								<TableHead className="font-medium">Budget</TableHead>
-								<TableHead className="font-medium">Rate Limit</TableHead>
+								<TableHead className="font-medium">{t("workspace.modelLimits.model")}</TableHead>
+								<TableHead className="font-medium">{t("workspace.modelLimits.provider")}</TableHead>
+								<TableHead className="font-medium">{t("workspace.modelLimits.budget")}</TableHead>
+								<TableHead className="font-medium">{t("workspace.modelLimits.rateLimit")}</TableHead>
 								<TableHead className="w-[100px]"></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -165,7 +165,7 @@ export default function ModelLimitsTable({
 							{modelConfigs.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={5} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching model limits found.</span>
+										<span className="text-muted-foreground text-sm">{t("workspace.modelLimits.noMatching")}</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -206,7 +206,7 @@ export default function ModelLimitsTable({
 													<span className="truncate font-mono text-sm font-medium">{config.model_name}</span>
 													{isExhausted && (
 														<Badge variant="destructive" className="w-fit text-xs">
-															Limit Reached
+															{t("workspace.modelLimits.limitReached")}
 														</Badge>
 													)}
 												</div>
@@ -218,7 +218,7 @@ export default function ModelLimitsTable({
 														<span className="text-sm">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
 													</div>
 												) : (
-													<span className="text-muted-foreground text-sm">All Providers</span>
+													<span className="text-muted-foreground text-sm">{t("workspace.modelLimits.allProviders")}</span>
 												)}
 											</TableCell>
 											<TableCell className="min-w-[180px]">
@@ -251,7 +251,7 @@ export default function ModelLimitsTable({
 																	{formatCurrency(config.budget.current_usage)} / {formatCurrency(config.budget.max_limit)}
 																</p>
 																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(config.budget.reset_duration)}
+																	{t("workspace.modelLimits.resets", { duration: formatResetDuration(config.budget.reset_duration) })}
 																</p>
 															</TooltipContent>
 														</Tooltip>
@@ -293,7 +293,9 @@ export default function ModelLimitsTable({
 																			{config.rate_limit.token_max_limit.toLocaleString()} tokens
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
+																			{t("workspace.modelLimits.resets", {
+																				duration: formatResetDuration(config.rate_limit.token_reset_duration || "1h"),
+																			})}
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -329,7 +331,9 @@ export default function ModelLimitsTable({
 																			{config.rate_limit.request_max_limit.toLocaleString()} requests
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(config.rate_limit.request_reset_duration || "1h")}
+																			{t("workspace.modelLimits.resets", {
+																				duration: formatResetDuration(config.rate_limit.request_reset_duration || "1h"),
+																			})}
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -369,21 +373,21 @@ export default function ModelLimitsTable({
 														</AlertDialogTrigger>
 														<AlertDialogContent>
 															<AlertDialogHeader>
-																<AlertDialogTitle>Delete Model Limit</AlertDialogTitle>
+																<AlertDialogTitle>{t("workspace.modelLimits.deleteTitle")}</AlertDialogTitle>
 																<AlertDialogDescription>
-																	Are you sure you want to delete the limit for &quot;
-																	{config.model_name.length > 30 ? `${config.model_name.slice(0, 30)}...` : config.model_name}
-																	&quot;? This action cannot be undone.
+																	{t("workspace.modelLimits.deleteDescription", {
+																		name: config.model_name.length > 30 ? `${config.model_name.slice(0, 30)}...` : config.model_name,
+																	})}
 																</AlertDialogDescription>
 															</AlertDialogHeader>
 															<AlertDialogFooter>
-																<AlertDialogCancel>Cancel</AlertDialogCancel>
+																<AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
 																<AlertDialogAction
 																	onClick={() => handleDelete(config.id)}
 																	disabled={isDeleting}
 																	className="bg-red-600 hover:bg-red-700"
 																>
-																	{isDeleting ? "Deleting..." : "Delete"}
+																	{isDeleting ? t("workspace.providers.deleteDialog.deleting") : t("common.delete")}
 																</AlertDialogAction>
 															</AlertDialogFooter>
 														</AlertDialogContent>
@@ -402,7 +406,7 @@ export default function ModelLimitsTable({
 				{totalCount > 0 && (
 					<div className="flex items-center justify-between px-2">
 						<p className="text-muted-foreground text-sm">
-							Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+							{t("workspace.modelLimits.showing", { from: offset + 1, to: Math.min(offset + limit, totalCount), total: totalCount })}
 						</p>
 						<div className="flex gap-2">
 							<Button
@@ -413,7 +417,7 @@ export default function ModelLimitsTable({
 								data-testid="model-limits-pagination-prev-btn"
 							>
 								<ChevronLeft className="mr-1 h-4 w-4" />
-								Previous
+								{t("workspace.modelLimits.previous")}
 							</Button>
 							<Button
 								variant="outline"

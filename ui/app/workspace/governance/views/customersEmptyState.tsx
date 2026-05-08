@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { WalletCards } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 const CUSTOMERS_DOCS_URL = "https://docs.getbifrost.ai/features/governance/virtual-keys#customers";
 
@@ -10,29 +11,36 @@ interface CustomersEmptyStateProps {
 }
 
 export function CustomersEmptyState({ onAddClick, canCreate = true }: CustomersEmptyStateProps) {
+	const { t } = useTranslation();
+
 	return (
 		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center">
 			<div className="text-muted-foreground">
 				<WalletCards className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
 			<div className="flex flex-col gap-1">
-				<h1 className="text-muted-foreground text-xl font-medium">Customers have their own teams, budgets, and access controls</h1>
+				<h1 className="text-muted-foreground text-xl font-medium">{t("workspace.governance.customers.emptyTitle")}</h1>
 				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
-					Create customer accounts to manage multi-tenant usage, assign teams, and set spending and rate limits per customer.
+					{t("workspace.governance.customers.emptyDescription")}
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 					<Button
 						variant="outline"
-						aria-label="Read more about customers (opens in new tab)"
+						aria-label={t("workspace.governance.customers.readMoreAriaLabel")}
 						data-testid="customer-button-read-more"
 						onClick={() => {
 							window.open(`${CUSTOMERS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
 					>
-						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+						{t("common.readMore")} <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Add your first customer" onClick={onAddClick} disabled={!canCreate} data-testid="customer-button-create">
-						Add Customer
+					<Button
+						aria-label={t("workspace.governance.customers.addFirstCustomerAriaLabel")}
+						onClick={onAddClick}
+						disabled={!canCreate}
+						data-testid="customer-button-create"
+					>
+						{t("workspace.governance.customers.addCustomer")}
 					</Button>
 				</div>
 			</div>

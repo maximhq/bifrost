@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
+import i18n from "@/lib/i18n";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
@@ -111,8 +112,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		],
 		[allToolNames],
 	);
-	const supportsOAuthCredentialUpdate = false;
-	// mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
+	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
 	const addVKConfig = (vkId: string) => {
 		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
@@ -228,13 +228,13 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			}
 
 			toast({
-				title: "Success",
-				description: "MCP client updated successfully",
+				title: i18n.t("workspace.mcpClientSheet.success"),
+				description: i18n.t("workspace.mcpClientSheet.mcpClientUpdated"),
 			});
 			onSubmitSuccess();
 		} catch (error) {
 			toast({
-				title: "Error",
+				title: i18n.t("workspace.mcpClientSheet.error"),
 				description: getErrorMessage(error),
 				variant: "destructive",
 			});
@@ -355,7 +355,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 								{mcpClient.config.name}
 								<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
 							</SheetTitle>
-							<SheetDescription>MCP server configuration and available tools</SheetDescription>
+							<SheetDescription>{i18n.t("workspace.mcpClientSheet.mcpServerConfiguration")}</SheetDescription>
 						</div>
 					</div>
 				</SheetHeader>
@@ -364,32 +364,32 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 						<div className="gap-6 space-y-6 px-8">
 							{/* Name and Header Section */}
 							<div className="space-y-4">
-								<h3 className="font-semibold">Basic Information</h3>
+								<h3 className="font-semibold">{i18n.t("workspace.mcpClientSheet.basicInformation")}</h3>
 								<FormField
 									control={form.control}
 									name="name"
 									render={({ field }) => (
 										<FormItem className="flex flex-col gap-3">
 											<div className="flex items-center gap-2">
-												<FormLabel>Name</FormLabel>
+												<FormLabel>{i18n.t("workspace.mcpClientSheet.name")}</FormLabel>
 												<TooltipProvider>
 													<Tooltip>
 														<TooltipTrigger asChild>
 															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
-															<p>
-																Use a descriptive, meaningful name that clearly identifies the server. For example, use "google_drive"
-																instead of "gdrive", or "hacker_news" instead of "hn". This name is used as the Python module name in code
-																mode.
-															</p>
+															<p>{i18n.t("workspace.mcpClientSheet.nameDescription")}</p>
 														</TooltipContent>
 													</Tooltip>
 												</TooltipProvider>
 											</div>
 											<div>
 												<FormControl>
-													<Input placeholder="Client name" {...field} value={field.value || ""} />
+													<Input
+														placeholder={i18n.t("workspace.mcpClientSheet.clientNamePlaceholder")}
+														{...field}
+														value={field.value || ""}
+													/>
 												</FormControl>
 												<FormMessage />
 											</div>
@@ -401,7 +401,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									name="is_code_mode_client"
 									render={({ field }) => (
 										<FormItem className="flex items-center justify-between rounded-lg border p-4">
-											<FormLabel>Code Mode Client</FormLabel>
+											<FormLabel>{i18n.t("workspace.mcpClientSheet.codeModeClient")}</FormLabel>
 											<FormControl>
 												<Switch checked={field.value || false} onCheckedChange={field.onChange} />
 											</FormControl>
@@ -414,17 +414,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									render={({ field }) => (
 										<FormItem className="flex items-center justify-between rounded-lg border p-4">
 											<div className="flex items-center gap-2">
-												<FormLabel>Ping Available for Health Check</FormLabel>
+												<FormLabel>{i18n.t("workspace.mcpClientSheet.pingAvailableForHealthCheck")}</FormLabel>
 												<TooltipProvider>
 													<Tooltip>
 														<TooltipTrigger asChild>
 															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
-															<p>
-																Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support ping -
-																will use listTools instead.
-															</p>
+															<p>{i18n.t("workspace.mcpClientSheet.pingAvailableDescription")}</p>
 														</TooltipContent>
 													</Tooltip>
 												</TooltipProvider>
@@ -441,18 +438,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									render={({ field }) => (
 										<FormItem className="flex items-center justify-between rounded-lg border p-4">
 											<div className="flex items-center gap-2">
-												<FormLabel>Allow on All Virtual Keys</FormLabel>
+												<FormLabel>{i18n.t("workspace.mcpClientSheet.allowOnAllVirtualKeys")}</FormLabel>
 												<TooltipProvider>
 													<Tooltip>
 														<TooltipTrigger asChild>
 															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
-															<p>
-																When enabled, this MCP server is accessible to all virtual keys without requiring explicit per-key
-																assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server,
-																that config takes precedence and overrides this behaviour.
-															</p>
+															<p>{i18n.t("workspace.mcpClientSheet.allowOnAllVirtualKeysDescription")}</p>
 														</TooltipContent>
 													</Tooltip>
 												</TooltipProvider>
@@ -481,8 +474,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
 															<p>
-																When enabled, the client's connection, health monitor, and tool syncer are shut down. Tools from this
-																client will not be available for inference until it is re-enabled.
+																When enabled, the client's connection, health monitor, and tool syncer are shut down. Tools from this client
+																will not be available for inference until it is re-enabled.
 															</p>
 														</TooltipContent>
 													</Tooltip>
@@ -513,7 +506,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 												<div className="flex flex-col items-start gap-0.5">
 													<div className="flex items-start gap-2">
 														<div>
-															<FormLabel>Tool Sync Interval (minutes)</FormLabel>
+															<FormLabel>{i18n.t("workspace.mcpClientSheet.toolSyncIntervalMinutes")}</FormLabel>
 														</div>
 														<TooltipProvider>
 															<Tooltip>
@@ -521,15 +514,16 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																	<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs">
-																	<p>
-																		Override the global tool sync interval for this server. Leave empty to use global setting. Set to -1 to
-																		disable sync for this server.
-																	</p>
+																	<p>{i18n.t("workspace.mcpClientSheet.toolSyncIntervalDescription")}</p>
 																</TooltipContent>
 															</Tooltip>
 														</TooltipProvider>
 													</div>
-													<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+													<div>
+														{isUsingGlobal && (
+															<p className="text-muted-foreground text-xs">{i18n.t("workspace.mcpClientSheet.usingGlobalSetting")}</p>
+														)}
+													</div>
 												</div>
 												<FormControl>
 													<Input
@@ -557,9 +551,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 												<HeadersTable
 													value={field.value || {}}
 													onChange={field.onChange}
-													keyPlaceholder="Header name"
-													valuePlaceholder="Header value"
-													label="Headers"
+													keyPlaceholder="Key"
+													valuePlaceholder="Value"
+													label={i18n.t("workspace.mcpClientSheet.headers")}
 													useEnvVarInput
 												/>
 											</FormControl>
@@ -580,7 +574,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
-															<p>Allowlist of headers that callers can forward to this MCP server at request time.</p>
+															<p>{i18n.t("workspace.mcpClientSheet.allowedExtraHeadersDescription")}</p>
 														</TooltipContent>
 													</Tooltip>
 												</TooltipProvider>
@@ -588,7 +582,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											<FormControl>
 												<Input
 													data-testid="mcpclient-input-allowed-extra-headers"
-													placeholder="*, or: authorization, x-user-id"
+													placeholder={i18n.t("workspace.mcpClientSheet.allowedExtraHeadersPlaceholder")}
 													name={field.name}
 													ref={field.ref}
 													value={allowedExtraHeadersRaw}
@@ -598,32 +592,69 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													onBlur={() => {
 														const parsed = allowedExtraHeadersRaw.trim()
 															? allowedExtraHeadersRaw
-																.split(",")
-																.map((h) => h.trim())
-																.filter(Boolean)
+																	.split(",")
+																	.map((h) => h.trim())
+																	.filter(Boolean)
 															: [];
 														field.onChange(parsed);
 														field.onBlur();
 													}}
 												/>
 											</FormControl>
-											<p className="text-muted-foreground text-xs">
-												Comma-separated header names, or <code>*</code> to allow all. Leave empty to block all extra headers.
-											</p>
+											<p
+												className="text-muted-foreground text-xs"
+												dangerouslySetInnerHTML={{ __html: i18n.t("workspace.mcpClientSheet.allowedExtraHeadersHint") }}
+											/>
 											<FormMessage />
 										</FormItem>
 									)}
 								/>
 							</div>
+							{/* Client Configuration */}
+							<div className="space-y-4">
+								<h3 className="font-semibold">{i18n.t("workspace.mcpClientSheet.configuration")}</h3>
+								<div className="rounded-sm border">
+									<div className="bg-muted/50 text-muted-foreground border-b px-6 py-2 text-xs font-medium">
+										{i18n.t("workspace.mcpClientSheet.clientConnectionConfig")}
+									</div>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={300}
+										wrap={true}
+										code={JSON.stringify(
+											(() => {
+												const {
+													client_id: _client_id,
+													name: _name,
+													tools_to_execute: _tools_to_execute,
+													headers: _headers,
+													...rest
+												} = mcpClient.config;
+												return rest;
+											})(),
+											null,
+											2,
+										)}
+										lang="json"
+										readonly={true}
+										options={{
+											scrollBeyondLastLine: false,
+											collapsibleBlocks: true,
+											lineNumbers: "off",
+											alwaysConsumeMouseWheel: false,
+										}}
+									/>
+								</div>
+							</div>
+
 							{supportsOAuthCredentialUpdate ? (
 								<div className="space-y-4">
 									<h3 className="font-semibold">OAuth Credentials</h3>
 									{isDisabled ? (
 										<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
 											<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-											<p>
-												OAuth credentials cannot be rotated while the client is disabled. Re-enable the client to update credentials.
-											</p>
+											<p>OAuth credentials cannot be rotated while the client is disabled. Re-enable the client to update credentials.</p>
 										</div>
 									) : (
 										<p className="text-muted-foreground text-sm">
@@ -647,9 +678,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														/>
 													</FormControl>
 													{!isDisabled && (
-														<p className="text-muted-foreground text-xs">
-															Leave empty to keep existing credentials unchanged.
-														</p>
+														<p className="text-muted-foreground text-xs">Leave empty to keep existing credentials unchanged.</p>
 													)}
 													<FormMessage />
 												</FormItem>
@@ -682,7 +711,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 							{/* Tools Section */}
 							<div className="space-y-4 pb-10">
 								<div className="flex items-center justify-between">
-									<h3 className="font-semibold">Available Tools ({mcpClient.tools?.length || 0})</h3>
+									<h3 className="font-semibold">
+										{i18n.t("workspace.mcpClientSheet.availableTools")} ({mcpClient.tools?.length || 0})
+									</h3>
 									{mcpClient.tools && mcpClient.tools.length > 0 && (
 										<div className="flex items-center gap-4">
 											{/* Enable All */}
@@ -701,7 +732,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 															<FormControl>
 																<div className="flex items-center gap-2">
 																	<span className="text-muted-foreground text-sm">
-																		{isAllEnabled ? "All enabled" : isNoneEnabled ? "None enabled" : `${currentTools.length} enabled`}
+																		{isAllEnabled
+																			? i18n.t("workspace.mcpClientSheet.allEnabled")
+																			: isNoneEnabled
+																				? i18n.t("workspace.mcpClientSheet.noneEnabled")
+																				: `${currentTools.length} ${i18n.t("common.enabled")}`}
 																	</span>
 																	<TriStateCheckbox
 																		allIds={allToolNames}
@@ -751,10 +786,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																<div className="flex items-center gap-2">
 																	<span className="text-muted-foreground text-sm">
 																		{isAllAutoExecute
-																			? "All auto-execute"
+																			? i18n.t("workspace.mcpClientSheet.allAutoExecute")
 																			: isNoneAutoExecute
-																				? "None auto-execute"
-																				: `${autoExecuteCount} auto-execute`}
+																				? i18n.t("workspace.mcpClientSheet.noneAutoExecute")
+																				: `${autoExecuteCount} ${i18n.t("common.autoExecute")}`}
 																	</span>
 																	<TriStateCheckbox
 																		allIds={enabledToolNames}
@@ -786,10 +821,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											<TableHeader>
 												<TableRow>
 													<TableHead className="w-10"></TableHead>
-													<TableHead className="max-w-[300px]">Tool Name</TableHead>
-													<TableHead className="w-24 text-center">Enabled</TableHead>
-													<TableHead className="w-28 text-center">Auto-execute</TableHead>
-													<TableHead className="w-32 text-center">Cost (USD)</TableHead>
+													<TableHead className="max-w-[300px]">{i18n.t("workspace.mcpClientSheet.toolName")}</TableHead>
+													<TableHead className="w-24 text-center">{i18n.t("workspace.mcpClientSheet.enabled")}</TableHead>
+													<TableHead className="w-28 text-center">{i18n.t("workspace.mcpClientSheet.autoExecute")}</TableHead>
+													<TableHead className="w-32 text-center">{i18n.t("workspace.mcpClientSheet.costUsd")}</TableHead>
 												</TableRow>
 											</TableHeader>
 											<TableBody>
@@ -893,7 +928,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																<tr>
 																	<td colSpan={5} className="p-0">
 																		<div className="bg-muted/30 border-b px-4 py-3">
-																			<div className="text-muted-foreground mb-2 text-xs font-medium">Parameters Schema</div>
+																			<div className="text-muted-foreground mb-2 text-xs font-medium">
+																				{i18n.t("workspace.mcpClientSheet.parametersSchema")}
+																			</div>
 																			{tool.parameters ? (
 																				<CodeEditor
 																					className="z-0 w-full rounded-sm border"
@@ -911,7 +948,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																					}}
 																				/>
 																			) : (
-																				<div className="text-muted-foreground text-sm">No parameters defined</div>
+																				<div className="text-muted-foreground text-sm">
+																					{i18n.t("workspace.mcpClientSheet.noParametersDefined")}
+																				</div>
 																			)}
 																		</div>
 																	</td>
@@ -925,7 +964,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									</div>
 								) : (
 									<div className="text-muted-foreground rounded-sm border p-6 text-center">
-										<p className="text-sm">No tools available</p>
+										<p className="text-sm">{i18n.t("workspace.mcpClientSheet.noToolsAvailable")}</p>
 									</div>
 								)}
 
@@ -934,14 +973,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										<div className="flex flex-col gap-2">
 											<div className="flex items-center justify-between">
 												<div className="flex items-center gap-2">
-													<div className="text-md font-semibold">Virtual Key Access</div>
+													<div className="text-md font-semibold">{i18n.t("workspace.mcpClientSheet.virtualKeyAccess")}</div>
 													<TooltipProvider>
 														<Tooltip>
 															<TooltipTrigger asChild>
 																<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 															</TooltipTrigger>
 															<TooltipContent className="max-w-xs">
-																<p>Control which virtual keys can use this MCP server and which specific tools they can call.</p>
+																<p>{i18n.t("workspace.mcpClientSheet.virtualKeyAccessDescription")}</p>
 															</TooltipContent>
 														</Tooltip>
 													</TooltipProvider>
@@ -962,14 +1001,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 															data-testid="mcpclient-virtualkey-add-trigger"
 														>
 															<Plus className="h-4 w-4" />
-															Add Virtual Key
+															{i18n.t("workspace.mcpClientSheet.addVirtualKey")}
 														</Button>
 													</PopoverTrigger>
 													<PopoverContent side="top" align="end" className="w-56 p-0" noPortal>
 														<div className="pb-1">
 															<Input
 																data-testid="mcpclient-virtualkey-search-input"
-																placeholder="Start typing to search…"
+																placeholder={i18n.t("workspace.mcpClientSheet.searchVirtualKeysPlaceholder")}
 																value={vkSearch}
 																onChange={(e) => setVKSearch(e.target.value)}
 																onKeyDown={(e) => {
@@ -998,18 +1037,19 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																	</button>
 																))
 															) : (
-																<div className="text-muted-foreground px-2 py-1.5 text-sm">No virtual keys found</div>
+																<div className="text-muted-foreground px-2 py-1.5 text-sm">
+																	{i18n.t("workspace.mcpClientSheet.noVirtualKeysFound")}
+																</div>
 															)}
 														</div>
 													</PopoverContent>
 												</Popover>
 											</div>
 											{form.watch("allow_on_all_virtual_keys") && (
-												<p className="text-muted-foreground flex items-center gap-1 text-xs">
-													<Info className="h-3 w-3 shrink-0" />
-													Configuring access for a virtual key here overrides the{" "}
-													<span className="font-medium">Allow on All Virtual Keys</span>&nbsp;setting for that key.
-												</p>
+												<p
+													className="text-muted-foreground flex items-center gap-1 text-xs"
+													dangerouslySetInnerHTML={{ __html: i18n.t("workspace.mcpClientSheet.overrideNotice") }}
+												/>
 											)}
 										</div>
 
@@ -1018,8 +1058,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 												<Table>
 													<TableHeader>
 														<TableRow>
-															<TableHead>Virtual Key</TableHead>
-															<TableHead>Allowed Tools</TableHead>
+															<TableHead>{i18n.t("workspace.mcpClientSheet.virtualKey")}</TableHead>
+															<TableHead>{i18n.t("workspace.mcpClientSheet.allowedTools")}</TableHead>
 															<TableHead className="w-12"></TableHead>
 														</TableRow>
 													</TableHeader>
@@ -1048,10 +1088,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																		}}
 																		placeholder={
 																			vc.tools_to_execute.includes("*")
-																				? "All tools allowed"
+																				? i18n.t("workspace.mcpClientSheet.allToolsAllowed")
 																				: vc.tools_to_execute.length === 0
-																					? "No tools allowed"
-																					: "Select tools..."
+																					? i18n.t("workspace.mcpClientSheet.noToolsAllowed")
+																					: i18n.t("workspace.mcpClientSheet.selectTools")
 																		}
 																		maxCount={3}
 																		className="bg-background dark:bg-input/30 border-input text-foreground hover:bg-accent hover:text-accent-foreground rounded-sm font-normal"
@@ -1076,11 +1116,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											</div>
 										) : form.watch("allow_on_all_virtual_keys") ? (
 											<div className="text-muted-foreground rounded-sm border p-6 text-center">
-												<p className="text-sm">All virtual keys can access this MCP server unless a key has an explicit override.</p>
+												<p className="text-sm">{i18n.t("workspace.mcpClientSheet.allVirtualKeysAccess")}</p>
 											</div>
 										) : (
 											<div className="text-muted-foreground rounded-sm border p-6 text-center">
-												<p className="text-sm">No virtual keys have access to this MCP server</p>
+												<p className="text-sm">{i18n.t("workspace.mcpClientSheet.noVirtualKeysAccess")}</p>
 											</div>
 										)}
 									</div>
@@ -1090,14 +1130,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-8 py-4">
 							<Button type="button" variant="outline" onClick={onClose}>
-								Cancel
+								{i18n.t("workspace.mcpClientSheet.cancel")}
 							</Button>
 							<Button
 								type="submit"
 								disabled={isUpdating || (!form.formState.isDirty && !vkConfigsDirty) || !hasUpdateMCPClientAccess}
 								isLoading={isUpdating}
 							>
-								Save Changes
+								{i18n.t("workspace.mcpClientSheet.saveChanges")}
 							</Button>
 						</div>
 					</form>

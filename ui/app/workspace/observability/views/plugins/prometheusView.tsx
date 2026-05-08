@@ -1,5 +1,6 @@
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { PrometheusFormSchema } from "@/lib/types/schemas";
+import { useTranslation } from "react-i18next";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { PrometheusFormFragment } from "../../fragments/prometheusFormFragment";
@@ -26,6 +27,7 @@ interface PrometheusViewProps {
 }
 
 export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewProps) {
+	const { t } = useTranslation();
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(() => {
 		const telemetryConfig = (selectedPlugin?.config as TelemetryConfig) ?? {};
@@ -42,7 +44,6 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 
 	const handlePrometheusConfigSave = (config: PrometheusFormSchema): Promise<void> => {
 		return new Promise((resolve, reject) => {
-			// Transform the form data to the telemetry plugin's push_gateway config format
 			const pushGatewayConfig: PushGatewayConfig = {
 				enabled: config.enabled,
 				push_gateway_url: config.prometheus_config.push_gateway_url,
@@ -51,7 +52,6 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 				push_interval: config.prometheus_config.push_interval,
 			};
 
-			// Add basic auth if both username and password are provided
 			if (config.prometheus_config.basic_auth_username?.trim() && config.prometheus_config.basic_auth_password?.trim()) {
 				pushGatewayConfig.basic_auth = {
 					username: config.prometheus_config.basic_auth_username,
@@ -71,10 +71,10 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 				.unwrap()
 				.then(() => {
 					resolve();
-					toast.success("Prometheus configuration updated successfully");
+					toast.success(t("workspace.observability.prometheusForm.configurationUpdated"));
 				})
 				.catch((err) => {
-					toast.error("Failed to update Prometheus configuration", {
+					toast.error(t("workspace.observability.prometheusForm.configurationUpdateFailed"), {
 						description: getErrorMessage(err),
 					});
 					reject(err);

@@ -1,5 +1,6 @@
 import { MessageContent } from "@/lib/message";
 import { Mic, FileIcon, XIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 /**
  * Renders a compact badge for a single attachment with an inline remove control.
@@ -14,6 +15,7 @@ import { Mic, FileIcon, XIcon } from "lucide-react";
  * @returns The rendered attachment badge element.
  */
 export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageContent; onRemove: () => void }) {
+	const { t } = useTranslation();
 	const isImage = attachment.type === "image_url";
 	const isAudio = attachment.type === "input_audio";
 
@@ -22,17 +24,21 @@ export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageC
 			{isImage && attachment.image_url?.url ? (
 				<>
 					<img src={attachment.image_url.url} alt="attachment" className="h-8 w-8 rounded object-cover" />
-					<span className="text-muted-foreground max-w-[100px] truncate">Image</span>
+					<span className="text-muted-foreground max-w-[100px] truncate">{t("workspace.promptRepository.messages.image")}</span>
 				</>
 			) : isAudio ? (
 				<>
 					<Mic className="text-muted-foreground size-3" />
-					<span className="text-muted-foreground max-w-[100px] truncate">{attachment.input_audio?.format?.toUpperCase() || "Audio"}</span>
+					<span className="text-muted-foreground max-w-[100px] truncate">
+						{attachment.input_audio?.format?.toUpperCase() || t("workspace.promptRepository.messages.audio")}
+					</span>
 				</>
 			) : (
 				<>
 					<FileIcon className="text-muted-foreground size-3" />
-					<span className="text-muted-foreground max-w-[120px] truncate">{attachment.file?.filename || "File"}</span>
+					<span className="text-muted-foreground max-w-[120px] truncate">
+						{attachment.file?.filename || t("workspace.promptRepository.messages.file")}
+					</span>
 				</>
 			)}
 			<button
@@ -70,6 +76,7 @@ export function AttachmentDisplay({
 	editable?: boolean;
 	onRemoveAttachment?: (index: number) => void;
 }) {
+	const { t } = useTranslation();
 	if (attachments.length === 0) return null;
 
 	return (
@@ -123,7 +130,7 @@ export function AttachmentDisplay({
 							className="group/att bg-muted/30 text-muted-foreground relative flex max-w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm"
 						>
 							<FileIcon className="size-3 shrink-0" />
-							<span className="min-w-0 truncate">{att.file?.filename || "File"}</span>
+							<span className="min-w-0 truncate">{att.file?.filename || t("workspace.promptRepository.messages.file")}</span>
 							{att.file?.file_type && <span className="shrink-0 text-xs opacity-60">{att.file.file_type}</span>}
 							{editable && onRemoveAttachment && (
 								<button

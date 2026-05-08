@@ -6,6 +6,7 @@ import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/con
 import { isJson } from "@/lib/utils/validation";
 import { PencilIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
 /**
@@ -28,6 +29,7 @@ export function SystemMessageView({
 	onChange: (serialized: SerializedMessage) => void;
 	onRemove?: () => void;
 }) {
+	const { t } = useTranslation();
 	const [editMode, setEditMode] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const messageRef = useRef(message);
@@ -111,7 +113,7 @@ export function SystemMessageView({
 					{!disabled && (
 						<button
 							type="button"
-							aria-label="Edit message"
+							aria-label={t("workspace.promptRepository.messages.editMessageAriaLabel")}
 							data-testid="system-msg-edit"
 							onClick={() => setEditMode(true)}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -122,7 +124,7 @@ export function SystemMessageView({
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label={t("workspace.promptRepository.messages.deleteMessageAriaLabel")}
 							data-testid="system-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -158,7 +160,9 @@ export function SystemMessageView({
 						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
 					/>
 				) : isEmpty ? (
-					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter system message...</div>
+					<div className="text-muted-foreground min-h-[20px] text-sm italic">
+						{t("workspace.promptRepository.messages.enterSystemMessage")}
+					</div>
 				) : contentIsJson ? (
 					<CodeEditor
 						wrap

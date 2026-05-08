@@ -4,12 +4,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Message, type MessageContent } from "@/lib/message";
 import { Loader2, Paperclip, Play, Plus } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { usePromptContext } from "../context";
 import { fileToAttachment } from "../utils/attachment";
 import { AttachmentBadge } from "./messagesView/attachmentViews";
 import MessageRoleSwitcher from "./messagesView/messageRoleSwitcher";
 
 export function NewMessageInputView() {
+	const { t } = useTranslation();
 	const {
 		messages,
 		setMessages: onUpdateMessages,
@@ -179,7 +181,7 @@ export function NewMessageInputView() {
 				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-sm border-2 border-dashed backdrop-blur-sm">
 					<div className="text-primary flex flex-col items-center gap-1">
 						<Paperclip className="h-5 w-5" />
-						<span className="text-xs font-medium">Drop files to attach</span>
+						<span className="text-xs font-medium">{t("workspace.promptRepository.input.dropFiles")}</span>
 					</div>
 				</div>
 			)}
@@ -205,7 +207,7 @@ export function NewMessageInputView() {
 						/>
 						<button
 							type="button"
-							aria-label="Attach file"
+							aria-label={t("workspace.promptRepository.input.attachFileAriaLabel")}
 							data-testid="new-message-attach-file"
 							onClick={() => fileInputRef.current?.click()}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1"
@@ -224,7 +226,7 @@ export function NewMessageInputView() {
 			)}
 			<div className="relative">
 				<Textarea
-					placeholder="Type a message..."
+					placeholder={t("workspace.promptRepository.input.messagePlaceholder")}
 					value={userInput}
 					ref={userInputRef}
 					onChange={(e) => setUserInput(e.target.value)}
@@ -243,7 +245,7 @@ export function NewMessageInputView() {
 						className="text-muted-foreground hover:text-foreground flex items-center gap-1 rounded px-1.5 py-1 text-xs disabled:pointer-events-none disabled:opacity-50"
 					>
 						<Plus className="h-3.5 w-3.5" />
-						Add
+						{t("workspace.promptRepository.input.add")}
 					</Button>
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -255,11 +257,15 @@ export function NewMessageInputView() {
 								className="text-muted-foreground hover:text-foreground flex items-center gap-1 rounded px-1.5 py-1 text-xs disabled:pointer-events-none disabled:opacity-50"
 							>
 								{isStreaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-								Run
+								{t("workspace.promptRepository.input.run")}
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent side="top">
-							{!canRun ? <span>Select a provider and model to run</span> : <span>Run prompt</span>}
+							{!canRun ? (
+								<span>{t("workspace.promptRepository.input.selectProviderAndModel")}</span>
+							) : (
+								<span>{t("workspace.promptRepository.input.runPrompt")}</span>
+							)}
 							<kbd className="bg-primary-foreground/20 ml-1.5 rounded px-1 py-0.5 font-mono text-[10px]">↵</kbd>
 						</TooltipContent>
 					</Tooltip>

@@ -1,12 +1,13 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { cn } from "@/lib/utils";
 import { ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 const AVAILABLE_ROLES = [
-	{ value: "system", label: "System" },
-	{ value: "user", label: "User" },
-	{ value: "assistant", label: "Assistant" },
-	{ value: "tool", label: "Tool" },
+	{ value: "system", labelKey: "roleSystem" },
+	{ value: "user", labelKey: "roleUser" },
+	{ value: "assistant", labelKey: "roleAssistant" },
+	{ value: "tool", labelKey: "roleTool" },
 ] as const;
 
 /**
@@ -29,6 +30,7 @@ export default function MessageRoleSwitcher({
 	onRoleChange: (role: string) => void;
 	restrictedRoles?: (typeof AVAILABLE_ROLES)[number]["value"][];
 }) {
+	const { t } = useTranslation();
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild disabled={disabled}>
@@ -45,7 +47,7 @@ export default function MessageRoleSwitcher({
 			<DropdownMenuContent align="start">
 				{AVAILABLE_ROLES.filter((r) => r.value !== role && (!restrictedRoles || !restrictedRoles.includes(r.value))).map((option) => (
 					<DropdownMenuItem key={option.value} onSelect={() => onRoleChange(option.value)}>
-						{option.label.toUpperCase()}
+						{t(`workspace.promptRepository.messages.${option.labelKey}`).toUpperCase()}
 					</DropdownMenuItem>
 				))}
 			</DropdownMenuContent>

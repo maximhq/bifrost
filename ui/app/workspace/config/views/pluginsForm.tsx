@@ -12,6 +12,7 @@ import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { cacheConfigSchema } from "@/lib/types/schemas";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const defaultCacheConfig: EditorCacheConfig = {
@@ -70,6 +71,7 @@ interface PluginsFormProps {
 }
 
 export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) {
+	const { t } = useTranslation();
 	const [cacheConfig, setCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
 	const [originalCacheEnabled, setOriginalCacheEnabled] = useState<boolean>(false);
 	const [serverCacheConfig, setServerCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
@@ -81,9 +83,9 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 
 	useEffect(() => {
 		if (providersError) {
-			toast.error(`Failed to load providers: ${getErrorMessage(providersError as any)}`);
+			toast.error(t("workspace.config.caching.failedToLoadProviders", { error: getErrorMessage(providersError as any) }));
 		}
-	}, [providersError]);
+	}, [providersError, t]);
 
 	// RTK Query hooks
 	const { data: plugins, isLoading: loading } = useGetPluginsQuery();
@@ -149,15 +151,13 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	// Save all changes
 	const handleSave = async () => {
 		if (hasInvalidProviderBackedDimension) {
-			toast.error(
-				"Provider-backed semantic cache requires the embedding model's real dimension. Use a value greater than 1, or remove the provider to keep direct-only mode.",
-			);
+			toast.error(t("workspace.config.caching.providerBackedDimensionError"));
 			return;
 		}
 
 		const parseResult = cacheConfigSchema.safeParse(normalizeCacheConfigForSave(cacheConfig));
 		if (!parseResult.success) {
-			const firstIssue = parseResult.error.issues[0]?.message ?? "Semantic cache configuration is invalid.";
+			const firstIssue = parseResult.error.issues[0]?.message ?? t("workspace.config.caching.invalidConfig");
 			toast.error(firstIssue);
 			return;
 		}
@@ -180,7 +180,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 					path: "",
 				}).unwrap();
 			}
-			toast.success("Plugin configuration updated successfully");
+			toast.success(t("workspace.config.caching.pluginConfigUpdated"));
 			// Update server state to match current state
 			const normalizedConfig = toEditorCacheConfig(savedConfig);
 			setCacheConfig(normalizedConfig);
@@ -188,7 +188,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 			setServerCacheEnabled(originalCacheEnabled);
 		} catch (error) {
 			const errorMessage = getErrorMessage(error);
-			toast.error(`Failed to update plugin configuration: ${errorMessage}`);
+			toast.error(t("workspace.config.caching.pluginConfigUpdateFailed", { error: errorMessage }));
 		}
 	};
 
@@ -196,7 +196,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 		return (
 			<Card>
 				<CardContent className="p-6">
-					<div className="text-muted-foreground">Loading plugins configuration...</div>
+					<div className="text-muted-foreground">{t("workspace.config.caching.loadingPluginsConfiguration")}</div>
 				</CardContent>
 			</Card>
 		);
@@ -209,15 +209,16 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 				<div className="flex items-center justify-between space-x-2">
 					<div className="flex-1 space-y-0.5">
 						<label htmlFor="enable-caching" className="text-sm font-medium">
-							Enable Semantic Caching
+							{t("workspace.config.caching.enableSemanticCaching")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Enable semantic caching for requests. Send <b>x-bf-cache-key</b> header with requests to use semantic caching.{" "}
+							{t("workspace.config.caching.enableSemanticCachingDescPrefix")} <b>x-bf-cache-key</b>{" "}
+							{t("workspace.config.caching.enableSemanticCachingDescSuffix")}{" "}
 							{!isVectorStoreEnabled && (
-								<span className="text-destructive font-medium">Requires vector store to be configured and enabled in config.json.</span>
+								<span className="text-destructive font-medium">{t("workspace.config.caching.vectorStoreRequired")}</span>
 							)}
 							{!providersLoading && providers?.length === 0 && (
-								<span className="text-destructive font-medium"> Requires at least one provider to be configured.</span>
+								<span className="text-destructive font-medium"> {t("workspace.config.caching.providerRequired")}</span>
 							)}
 						</p>
 					</div>
@@ -239,7 +240,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 								disabled={!hasChanges || isUpdating || isCreating || hasInvalidProviderBackedDimension}
 								size="sm"
 							>
-								{isUpdating || isCreating ? "Saving..." : "Save"}
+								{isUpdating || isCreating ? t("common.saving") : t("common.save")}
 							</Button>
 						)}
 					</div>
@@ -257,28 +258,29 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							<Separator />
 							{loadedDirectOnlyConfig && (
 								<div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-									This plugin was loaded in direct-only mode via <code>config.json</code>. The Web UI currently edits provider-backed
-									semantic cache settings; keep using <code>config.json</code> if you want to stay in direct-only mode.
+									{t("workspace.config.caching.directOnlyModePrefix")} <code>config.json</code>.{" "}
+									{t("workspace.config.caching.directOnlyModeSuffix")} <code>config.json</code>{" "}
+									{t("workspace.config.caching.directOnlyModeTail")}
 								</div>
 							)}
 							{hasInvalidProviderBackedDimension && (
 								<div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900">
-									You selected a provider while keeping <code>dimension: 1</code>. That is only valid for direct-only mode. Set the
-									embedding model&apos;s real dimension before saving, or remove the provider to stay in direct-only mode.
+									{t("workspace.config.caching.invalidDimensionPrefix")} <code>dimension: 1</code>.{" "}
+									{t("workspace.config.caching.invalidDimensionSuffix")}
 								</div>
 							)}
 							{/* Provider and Model Settings */}
 							<div className="space-y-4">
-								<h3 className="text-sm font-medium">Provider and Model Settings</h3>
+								<h3 className="text-sm font-medium">{t("workspace.config.caching.providerAndModelSettings")}</h3>
 								<div className="grid grid-cols-2 gap-4">
 									<div className="space-y-2">
-										<Label htmlFor="provider">Configured Providers</Label>
+										<Label htmlFor="provider">{t("workspace.config.caching.configuredProviders")}</Label>
 										<Select
 											value={cacheConfig.provider}
 											onValueChange={(value: ModelProviderName) => updateCacheConfigLocal({ provider: value })}
 										>
 											<SelectTrigger className="w-full">
-												<SelectValue placeholder="Select provider" />
+												<SelectValue placeholder={t("workspace.config.caching.selectProvider")} />
 											</SelectTrigger>
 											<SelectContent>
 												{providers
@@ -292,7 +294,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										</Select>
 									</div>
 									<div className="space-y-2">
-										<Label htmlFor="embedding_model">Embedding Model*</Label>
+										<Label htmlFor="embedding_model">{t("workspace.config.caching.embeddingModel")}</Label>
 										<Input
 											id="embedding_model"
 											placeholder="text-embedding-3-small"
@@ -305,10 +307,10 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 
 							{/* Cache Settings */}
 							<div className="space-y-4">
-								<h3 className="text-sm font-medium">Cache Settings</h3>
+								<h3 className="text-sm font-medium">{t("workspace.config.caching.cacheSettings")}</h3>
 								<div className="grid grid-cols-2 gap-4">
 									<div className="space-y-2">
-										<Label htmlFor="ttl">TTL (seconds)</Label>
+										<Label htmlFor="ttl">{t("workspace.config.caching.ttlSeconds")}</Label>
 										<Input
 											id="ttl"
 											type="number"
@@ -328,7 +330,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										/>
 									</div>
 									<div className="space-y-2">
-										<Label htmlFor="threshold">Similarity Threshold</Label>
+										<Label htmlFor="threshold">{t("workspace.config.caching.similarityThreshold")}</Label>
 										<Input
 											id="threshold"
 											type="number"
@@ -350,7 +352,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										/>
 									</div>
 									<div className="space-y-2">
-										<Label htmlFor="dimension">Dimension</Label>
+										<Label htmlFor="dimension">{t("workspace.config.caching.dimension")}</Label>
 										<Input
 											id="dimension"
 											type="number"
@@ -370,18 +372,15 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										/>
 									</div>
 								</div>
-								<p className="text-muted-foreground text-xs">
-									API keys for the embedding provider will be inherited from the main provider configuration. The semantic cache will use
-									the configured provider&apos;s keys automatically.
-								</p>
+								<p className="text-muted-foreground text-xs">{t("workspace.config.caching.embeddingProviderKeysDesc")}</p>
 							</div>
 
 							{/* Conversation Settings */}
 							<div className="space-y-4">
-								<h3 className="text-sm font-medium">Conversation Settings</h3>
+								<h3 className="text-sm font-medium">{t("workspace.config.caching.conversationSettings")}</h3>
 								<div className="grid grid-cols-2 gap-4">
 									<div className="space-y-2">
-										<Label htmlFor="conversation_history_threshold">Conversation History Threshold</Label>
+										<Label htmlFor="conversation_history_threshold">{t("workspace.config.caching.conversationHistoryThreshold")}</Label>
 										<Input
 											id="conversation_history_threshold"
 											type="number"
@@ -390,16 +389,14 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											value={cacheConfig.conversation_history_threshold || 3}
 											onChange={(e) => updateCacheConfigLocal({ conversation_history_threshold: parseInt(e.target.value) || 3 })}
 										/>
-										<p className="text-muted-foreground text-xs">
-											Skip caching for conversations with more than this number of messages (prevents false positives)
-										</p>
+										<p className="text-muted-foreground text-xs">{t("workspace.config.caching.conversationHistoryThresholdDesc")}</p>
 									</div>
 								</div>
 								<div className="space-y-2">
 									<div className="flex h-fit items-center justify-between space-x-2 rounded-lg border p-3">
 										<div className="space-y-0.5">
-											<Label className="text-sm font-medium">Exclude System Prompt</Label>
-											<p className="text-muted-foreground text-xs">Exclude system messages from cache key generation</p>
+											<Label className="text-sm font-medium">{t("workspace.config.caching.excludeSystemPrompt")}</Label>
+											<p className="text-muted-foreground text-xs">{t("workspace.config.caching.excludeSystemPromptDesc")}</p>
 										</div>
 										<Switch
 											checked={cacheConfig.exclude_system_prompt || false}
@@ -412,12 +409,12 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 
 							{/* Cache Behavior */}
 							<div className="space-y-4">
-								<h3 className="text-sm font-medium">Cache Behavior</h3>
+								<h3 className="text-sm font-medium">{t("workspace.config.caching.cacheBehavior")}</h3>
 								<div className="space-y-3">
 									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
 										<div className="space-y-0.5">
-											<Label className="text-sm font-medium">Cache by Model</Label>
-											<p className="text-muted-foreground text-xs">Include model name in cache key</p>
+											<Label className="text-sm font-medium">{t("workspace.config.caching.cacheByModel")}</Label>
+											<p className="text-muted-foreground text-xs">{t("workspace.config.caching.cacheByModelDesc")}</p>
 										</div>
 										<Switch
 											checked={cacheConfig.cache_by_model}
@@ -427,8 +424,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 									</div>
 									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
 										<div className="space-y-0.5">
-											<Label className="text-sm font-medium">Cache by Provider</Label>
-											<p className="text-muted-foreground text-xs">Include provider name in cache key</p>
+											<Label className="text-sm font-medium">{t("workspace.config.caching.cacheByProvider")}</Label>
+											<p className="text-muted-foreground text-xs">{t("workspace.config.caching.cacheByProviderDesc")}</p>
 										</div>
 										<Switch
 											checked={cacheConfig.cache_by_provider}
@@ -440,19 +437,21 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							</div>
 
 							<div className="space-y-2">
-								<Label className="text-sm font-medium">Notes</Label>
+								<Label className="text-sm font-medium">{t("workspace.config.caching.notes")}</Label>
 								<ul className="text-muted-foreground list-inside list-disc text-xs">
 									<li>
-										You can pass <b>x-bf-cache-ttl</b> header with requests to use request-specific TTL.
+										{t("workspace.config.caching.noteTtlPrefix")} <b>x-bf-cache-ttl</b> {t("workspace.config.caching.noteTtlSuffix")}
 									</li>
 									<li>
-										You can pass <b>x-bf-cache-threshold</b> header with requests to use request-specific similarity threshold.
+										{t("workspace.config.caching.noteThresholdPrefix")} <b>x-bf-cache-threshold</b>{" "}
+										{t("workspace.config.caching.noteThresholdSuffix")}
 									</li>
 									<li>
-										You can pass <b>x-bf-cache-type</b> header with &quot;direct&quot; or &quot;semantic&quot; to control cache behavior.
+										{t("workspace.config.caching.noteTypePrefix")} <b>x-bf-cache-type</b> {t("workspace.config.caching.noteTypeSuffix")}
 									</li>
 									<li>
-										You can pass <b>x-bf-cache-no-store</b> header with &quot;true&quot; to disable response caching.
+										{t("workspace.config.caching.noteNoStorePrefix")} <b>x-bf-cache-no-store</b>{" "}
+										{t("workspace.config.caching.noteNoStoreSuffix")}
 									</li>
 								</ul>
 							</div>

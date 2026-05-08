@@ -7,6 +7,7 @@ import { getExampleBaseUrl } from "@/lib/utils/port";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { AlertTriangle, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 type Language = "python" | "typescript";
 
@@ -40,6 +41,7 @@ interface CodeBlockProps {
 
 function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = false, readonly = true }: CodeBlockProps) {
 	const { copy: copyToClipboard } = useCopyToClipboard();
+	const { t } = useTranslation();
 
 	return (
 		<div className="relative">
@@ -59,7 +61,7 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 						</SelectContent>
 					</Select>
 				)}
-				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)} aria-label="Copy to clipboard">
+				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)} aria-label={t("workspace.mcpLogs.copyToClipboard")}>
 					<Copy className="size-4" />
 				</Button>
 			</div>
@@ -74,6 +76,7 @@ interface MCPEmptyStateProps {
 }
 
 export function MCPEmptyState({ error, statusIndicator }: MCPEmptyStateProps) {
+	const { t } = useTranslation();
 	const [language, setLanguage] = useState<Language>("python");
 
 	// Generate examples dynamically using the port utility
@@ -248,30 +251,28 @@ if (response.choices[0].message.tool_calls) {
 			{error && (
 				<Alert>
 					<AlertTriangle className="h-4 w-4" />
-					<AlertDescription>
-						{isUnexpectedError ? "Looks like you haven't configured the log store in your config file." : error}
-					</AlertDescription>
+					<AlertDescription>{isUnexpectedError ? t("workspace.mcpLogs.logsStoreMissing") : error}</AlertDescription>
 				</Alert>
 			)}
 
 			<div className="w-full space-y-6">
 				<div className="flex flex-row items-center gap-2">
 					<div>
-						<h3 className="text-lg font-semibold">Get Started with MCP Tool Execution</h3>
-						<p className="text-muted-foreground text-sm">Execute your first MCP tool call to see logs appear</p>
+						<h3 className="text-lg font-semibold">{t("workspace.mcpLogs.getStartedTitle")}</h3>
+						<p className="text-muted-foreground text-sm">{t("workspace.mcpLogs.getStartedDescription")}</p>
 					</div>
 					<div className="ml-auto">{statusIndicator}</div>
 				</div>
 
 				<Tabs defaultValue="manual" className="w-full rounded-lg border">
 					<TabsList className="grid h-10 w-full grid-cols-2 rounded-t-lg rounded-b-none">
-						<TabsTrigger value="manual">Manual Tool Execution</TabsTrigger>
-						<TabsTrigger value="agent">Agent Mode (Auto-Execute)</TabsTrigger>
+						<TabsTrigger value="manual">{t("workspace.mcpLogs.manualExecution")}</TabsTrigger>
+						<TabsTrigger value="agent">{t("workspace.mcpLogs.agentMode")}</TabsTrigger>
 					</TabsList>
 
 					<TabsContent value="manual" className="px-4">
 						<div className="text-muted-foreground mb-3 text-sm">
-							<p>Full control over tool approval. You explicitly execute each tool call via the API.</p>
+							<p>{t("workspace.mcpLogs.manualDescription")}</p>
 						</div>
 						<CodeBlock
 							code={examples.manual[language]}
@@ -283,7 +284,7 @@ if (response.choices[0].message.tool_calls) {
 
 					<TabsContent value="agent" className="px-4">
 						<div className="text-muted-foreground mb-3 text-sm">
-							<p>Autonomous execution for pre-approved tools. Configure auto-executable tools in MCP Gateway settings.</p>
+							<p>{t("workspace.mcpLogs.agentDescription")}</p>
 						</div>
 						<CodeBlock
 							code={examples.agentMode[language]}
@@ -295,7 +296,7 @@ if (response.choices[0].message.tool_calls) {
 				</Tabs>
 
 				<div className="bg-muted/50 rounded-lg border p-4">
-					<h4 className="mb-2 text-sm font-semibold">Prerequisites</h4>
+					<h4 className="mb-2 text-sm font-semibold">{t("workspace.mcpLogs.prerequisites")}</h4>
 					<ul className="text-muted-foreground space-y-1 text-sm">
 						<li className="flex items-start gap-2">
 							<span className="text-primary">1.</span>

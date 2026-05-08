@@ -1,5 +1,6 @@
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { OtelConfigSchema, OtelFormSchema } from "@/lib/types/schemas";
+import { useTranslation } from "react-i18next";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { OtelFormFragment } from "../../fragments/otelFormFragment";
@@ -10,6 +11,7 @@ interface OtelViewProps {
 }
 
 export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
+	const { t } = useTranslation();
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(
 		() => ({ ...((selectedPlugin?.config as OtelConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
@@ -30,10 +32,10 @@ export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 				.unwrap()
 				.then(() => {
 					resolve();
-					toast.success("OTEL configuration updated successfully");
+					toast.success(t("workspace.observability.otelForm.configurationUpdated"));
 				})
 				.catch((err) => {
-					toast.error("Failed to update OTEL configuration", {
+					toast.error(t("workspace.observability.otelForm.configurationUpdateFailed"), {
 						description: getErrorMessage(err),
 					});
 					reject(err);

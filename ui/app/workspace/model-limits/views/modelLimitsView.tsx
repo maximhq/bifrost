@@ -2,6 +2,7 @@ import { getErrorMessage, useGetModelConfigsQuery } from "@/lib/store";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import ModelLimitsTable from "./modelLimitsTable";
 
@@ -9,6 +10,7 @@ const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export default function ModelLimitsView() {
+	const { t } = useTranslation();
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
 	const [search, setSearch] = useState("");
@@ -44,9 +46,9 @@ export default function ModelLimitsView() {
 	// Handle query errors
 	useEffect(() => {
 		if (modelConfigsError) {
-			toast.error(`Failed to load model configs: ${getErrorMessage(modelConfigsError)}`);
+			toast.error(t("workspace.modelLimits.loadFailed", { error: getErrorMessage(modelConfigsError) }));
 		}
-	}, [modelConfigsError]);
+	}, [modelConfigsError, t]);
 
 	return (
 		<div className="mx-auto w-full max-w-7xl">

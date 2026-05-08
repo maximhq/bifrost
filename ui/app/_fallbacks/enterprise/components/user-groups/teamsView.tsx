@@ -5,12 +5,14 @@ import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualK
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export function TeamsView() {
+	const { t } = useTranslation();
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
@@ -78,13 +80,13 @@ export function TeamsView() {
 		if (shownErrorsRef.current.has(errorKey)) return;
 		shownErrorsRef.current.add(errorKey);
 		if (vkError && customersError && teamsError) {
-			toast.error("Failed to load governance data.");
+			toast.error(t("workspace.governance.teams.loadGovernanceDataFailed"));
 		} else {
-			if (vkError) toast.error(`Failed to load virtual keys: ${getErrorMessage(vkError)}`);
-			if (customersError) toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
-			if (teamsError) toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
+			if (vkError) toast.error(t("workspace.governance.teams.loadVirtualKeysFailed", { error: getErrorMessage(vkError) }));
+			if (customersError) toast.error(t("workspace.governance.teams.loadCustomersFailed", { error: getErrorMessage(customersError) }));
+			if (teamsError) toast.error(t("workspace.governance.teams.loadTeamsFailed", { error: getErrorMessage(teamsError) }));
 		}
-	}, [vkError, customersError, teamsError]);
+	}, [vkError, customersError, teamsError, t]);
 
 	if (isLoading) {
 		return <FullPageLoader />;
@@ -105,7 +107,9 @@ export function TeamsView() {
 				onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
 				selectedTeamId={urlState.selected_team || null}
 				onTeamAdd={() => setUrlState({ selected_team: "new" })}
-				onTeamSelect={(team) => { setUrlState({ selected_team: team?.id ?? null }) }}
+				onTeamSelect={(team) => {
+					setUrlState({ selected_team: team?.id ?? null });
+				}}
 				onDialogClose={() => setUrlState({ selected_team: null })}
 			/>
 		</div>

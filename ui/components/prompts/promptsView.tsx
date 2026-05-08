@@ -2,6 +2,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { AlertCircle, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { PromptSidebar } from "./fragments/sidebar";
 import { PlaygroundPanel } from "./fragments/playgroundPanel";
 import { SettingsPanel } from "./fragments/settingsPanel";
@@ -12,6 +13,7 @@ import PromptsViewHeader from "./components/promptsViewHeader";
 import { usePromptContext } from "./context";
 
 export default function PromptsView() {
+	const { t } = useTranslation();
 	const { folders, prompts, foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } =
 		usePromptContext();
 
@@ -24,7 +26,7 @@ export default function PromptsView() {
 			<div className="no-padding-parent no-border-parent p-4">
 				<Alert variant="destructive">
 					<AlertCircle className="h-4 w-4" />
-					<AlertDescription>Failed to load prompt repository</AlertDescription>
+					<AlertDescription>{t("workspace.promptRepository.loadFailed")}</AlertDescription>
 				</Alert>
 			</div>
 		);

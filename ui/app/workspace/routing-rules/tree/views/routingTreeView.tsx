@@ -17,6 +17,7 @@ import type { Node, NodeChange } from "@xyflow/react";
 import { Background, BackgroundVariant, Controls, Panel, ReactFlow, useEdgesState, useNodesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AlertCircle, ArrowLeft, GitBranch, Info, Link2, Loader2, RotateCcw, Search } from "lucide-react";
+import i18n from "@/lib/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { FIT_VIEW_PADDING, SCOPE_CONFIG, SCOPE_ORDER } from "./constants";
@@ -353,7 +354,7 @@ export function RoutingTreeView() {
 		return (
 			<div className="text-muted-foreground flex h-full items-center justify-center gap-2">
 				<AlertCircle className="h-5 w-5" />
-				<span className="text-sm">Failed to load routing rules</span>
+				<span className="text-sm">{i18n.t("workspace.routingRules.failedToLoadRoutingRules")}</span>
 			</div>
 		);
 	}
@@ -361,7 +362,7 @@ export function RoutingTreeView() {
 		return (
 			<div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-3">
 				<GitBranch className="h-10 w-10 opacity-20" />
-				<p className="text-sm">No routing rules to display</p>
+				<p className="text-sm">{i18n.t("workspace.routingRules.noRoutingRulesToDisplay")}</p>
 				<Button
 					variant="outline"
 					size="sm"
@@ -369,7 +370,7 @@ export function RoutingTreeView() {
 					onClick={() => navigate({ to: "/workspace/routing-rules" })}
 				>
 					<ArrowLeft className="mr-1.5 h-4 w-4" />
-					Back to rules
+					{i18n.t("workspace.routingRules.backToRules")}
 				</Button>
 			</div>
 		);
@@ -414,12 +415,12 @@ export function RoutingTreeView() {
 							onClick={() => navigate({ to: "/workspace/routing-rules" })}
 						>
 							<ArrowLeft className="h-4 w-4" />
-							Back
+							{i18n.t("workspace.routingRules.back")}
 						</Button>
 						<div className="bg-border h-5 w-px" />
 						<div className="flex items-center gap-2">
 							<GitBranch className="text-muted-foreground h-4 w-4" />
-							<p className="text-foreground text-sm leading-tight font-semibold">Routing Tree</p>
+							<p className="text-foreground text-sm leading-tight font-semibold">{i18n.t("workspace.routingRules.routingTree")}</p>
 							<p className="text-muted-foreground text-[11px]">
 								{search
 									? highlightedIds && highlightedIds.size > 0
@@ -434,7 +435,7 @@ export function RoutingTreeView() {
 							<Input
 								value={search}
 								onChange={(e) => setSearch(e.target.value)}
-								placeholder="Search conditions or rules…"
+								placeholder={i18n.t("workspace.routingRules.searchConditionsOrRules")}
 								className="h-8 w-56 pl-8 text-sm"
 							/>
 						</div>

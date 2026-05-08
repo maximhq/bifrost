@@ -4,6 +4,7 @@ import { Message, SerializedMessage } from "@/lib/message";
 import { InfoIcon, PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
@@ -33,6 +34,7 @@ export function AssistantMessageView({
 	onChange: (serialized: SerializedMessage) => void;
 	onRemove?: () => void;
 }) {
+	const { t } = useTranslation();
 	const [editMode, setEditMode] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const content = message.content;
@@ -90,13 +92,16 @@ export function AssistantMessageView({
 							<TooltipContent side="bottom">
 								<div className="flex flex-col gap-0.5 text-xs tabular-nums">
 									<span>
-										<span className="inline-block w-12">Input:</span> {usage.prompt_tokens} tokens
+										<span className="inline-block w-12">{t("workspace.promptRepository.messages.input")}</span> {usage.prompt_tokens}{" "}
+										{t("workspace.promptRepository.messages.tokens")}
 									</span>
 									<span>
-										<span className="inline-block w-12">Output:</span> {usage.completion_tokens} tokens
+										<span className="inline-block w-12">{t("workspace.promptRepository.messages.output")}</span> {usage.completion_tokens}{" "}
+										{t("workspace.promptRepository.messages.tokens")}
 									</span>
 									<span>
-										<span className="inline-block w-12">Total:</span> {usage.total_tokens} tokens
+										<span className="inline-block w-12">{t("workspace.promptRepository.messages.total")}</span> {usage.total_tokens}{" "}
+										{t("workspace.promptRepository.messages.tokens")}
 									</span>
 								</div>
 							</TooltipContent>
@@ -105,7 +110,7 @@ export function AssistantMessageView({
 					{!disabled && !isStreaming && (
 						<button
 							type="button"
-							aria-label="Edit message"
+							aria-label={t("workspace.promptRepository.messages.editMessageAriaLabel")}
 							data-testid="assistant-msg-edit"
 							onClick={() => setEditMode(true)}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -116,7 +121,7 @@ export function AssistantMessageView({
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label={t("workspace.promptRepository.messages.deleteMessageAriaLabel")}
 							data-testid="assistant-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -157,7 +162,9 @@ export function AssistantMessageView({
 						}}
 					/>
 				) : isEmpty ? (
-					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter assistant message...</div>
+					<div className="text-muted-foreground min-h-[20px] text-sm italic">
+						{t("workspace.promptRepository.messages.enterAssistantMessage")}
+					</div>
 				) : contentIsJson ? (
 					<CodeEditor
 						wrap

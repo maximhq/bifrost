@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 
 // Tailwind + global styles (also declares @font-face for local Geist fonts).
 import "@/app/globals.css";
+import "@/lib/i18n";
 
 import { routeTree } from "./routeTree.gen";
 import { ErrorComponent } from "./__error";

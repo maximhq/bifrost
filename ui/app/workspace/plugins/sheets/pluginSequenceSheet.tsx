@@ -2,6 +2,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { getErrorMessage, useUpdatePluginMutation } from "@/lib/store";
+import i18n from "@/lib/i18n";
 import { Plugin } from "@/lib/types/plugins";
 import { cn } from "@/lib/utils";
 import { DragDropProvider } from "@dnd-kit/react";
@@ -62,7 +63,7 @@ function SortableBlock({ item, index }: { item: SequenceItem; index: number }) {
 				</div>
 			)}
 			<span className={cn("text-sm", isBuiltin && "text-muted-foreground font-medium")}>
-				{isBuiltin ? "Built-in Plugins" : item.plugin?.name}
+				{isBuiltin ? i18n.t("workspace.plugins.builtInPlugins") : item.plugin?.name}
 			</span>
 			{!isBuiltin && item.plugin?.status && (
 				<div
@@ -125,7 +126,7 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 					},
 				}).unwrap();
 			}
-			toast.success("Plugin sequence updated");
+			toast.success(i18n.t("workspace.plugins.pluginSequenceUpdated"));
 			onClose();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -136,8 +137,8 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 		<Sheet open={open} onOpenChange={onClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
-					<SheetTitle>Edit Plugin Sequence</SheetTitle>
-					<SheetDescription>Drag plugins above or below the built-in plugins block to control execution order.</SheetDescription>
+					<SheetTitle>{i18n.t("workspace.plugins.pluginSequence")}</SheetTitle>
+					<SheetDescription>{i18n.t("workspace.plugins.dragPluginsDescription")}</SheetDescription>
 				</SheetHeader>
 
 				<div className="mt-4 flex flex-1 flex-col gap-2">
@@ -166,17 +167,14 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 
 				<div className="flex flex-col gap-2">
 					<Alert variant="info">
-						<AlertDescription>
-							If your config.json file has plugin sequence configured, it will take precedence over the sequence configured in the UI after
-							restarting Bifrost.
-						</AlertDescription>
+						<AlertDescription>{i18n.t("workspace.plugins.configPrecedenceWarning")}</AlertDescription>
 					</Alert>
 					<div className="flex justify-end gap-2 pt-4">
 						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="plugin-sequence-cancel-button">
-							Cancel
+							{i18n.t("workspace.plugins.cancel")}
 						</Button>
 						<Button onClick={handleSave} disabled={isLoading} isLoading={isLoading} data-testid="plugin-sequence-save-button" type="button">
-							Save Sequence
+							{i18n.t("workspace.plugins.saveSequence")}
 						</Button>
 					</div>
 				</div>

@@ -13,10 +13,12 @@ import { Check, GitCommit, PencilIcon, Save, Trash2 } from "lucide-react";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useCallback, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { usePromptContext } from "../context";
 
 export default function PromptsViewHeader() {
+	const { t } = useTranslation();
 	const {
 		selectedPrompt,
 		messages,
@@ -92,11 +94,11 @@ export default function PromptsViewHeader() {
 				},
 			}).unwrap();
 			setUrlState({ sessionId: result.session.id, versionId: null });
-			toast.success("Session saved");
+			toast.success(t("workspace.promptRepository.header.sessionSaved"));
 		} catch (err) {
-			toast.error("Failed to save session", { description: getErrorMessage(err) });
+			toast.error(t("workspace.promptRepository.header.saveSessionFailed"), { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, hasChanges, isStreaming]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, hasChanges, isStreaming, t]);
 
 	// Cmd+S / Ctrl+S to save session
 	useHotkeys(
@@ -134,9 +136,21 @@ export default function PromptsViewHeader() {
 			setUrlState({ sessionId: result.session.id, versionId: null });
 			onSessionSaved(result.session);
 		} catch (err) {
-			toast.error("Failed to save session", { description: getErrorMessage(err) });
+			toast.error(t("workspace.promptRepository.header.saveSessionFailed"), { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, onSessionSaved, hasChanges]);
+	}, [
+		selectedPrompt?.id,
+		messages,
+		buildSaveParams,
+		provider,
+		model,
+		variables,
+		createSession,
+		setUrlState,
+		onSessionSaved,
+		hasChanges,
+		t,
+	]);
 
 	const handleRenameSession = useCallback(
 		async (sessionId: number, name: string) => {
@@ -144,10 +158,10 @@ export default function PromptsViewHeader() {
 			try {
 				await renameSession({ id: sessionId, promptId: selectedPrompt.id, data: { name } }).unwrap();
 			} catch (err) {
-				toast.error("Failed to rename session", { description: getErrorMessage(err) });
+				toast.error(t("workspace.promptRepository.header.renameSessionFailed"), { description: getErrorMessage(err) });
 			}
 		},
-		[selectedPrompt?.id, renameSession],
+		[selectedPrompt?.id, renameSession, t],
 	);
 
 	const handleClearConversation = useCallback(() => {
@@ -167,17 +181,19 @@ export default function PromptsViewHeader() {
 		<div className="flex items-center justify-between border-b px-4 py-3">
 			<div className="flex min-w-0 items-center gap-2">
 				<h3 className="truncate font-semibold">
-					{selectedPrompt?.name || "Playground"}
+					{selectedPrompt?.name || t("workspace.promptRepository.header.playground")}
 					{hasChanges && <span className="text-destructive ml-1">*</span>}
 				</h3>
 				{displayVersion && <Badge variant={"secondary"}>v{displayVersion.version_number}</Badge>}
-				{hasVersionChanges && versions.length > 0 && <Badge variant="outline">Unpublished Changes</Badge>}
+				{hasVersionChanges && versions.length > 0 && (
+					<Badge variant="outline">{t("workspace.promptRepository.header.unpublishedChanges")}</Badge>
+				)}
 			</div>
 			<div className="flex shrink-0 items-center gap-4">
 				{messages.length > 1 && (
 					<Button variant="ghost" size="sm" data-testid="header-clear" onClick={handleClearConversation} disabled={isStreaming}>
 						<Trash2 className="h-4 w-4" />
-						Clear
+						{t("workspace.promptRepository.header.clear")}
 					</Button>
 				)}
 				<SplitButton
@@ -190,9 +206,9 @@ export default function PromptsViewHeader() {
 						onOpenChange: setSessionsOpen,
 						children: (
 							<Command>
-								<CommandInput placeholder="Search sessions..." data-testid="header-sessions-search" />
+								<CommandInput placeholder={t("workspace.promptRepository.header.searchSessions")} data-testid="header-sessions-search" />
 								<CommandList>
-									<CommandEmpty>No sessions found.</CommandEmpty>
+									<CommandEmpty>{t("workspace.promptRepository.header.noSessions")}</CommandEmpty>
 									<CommandGroup>
 										{sessions.map((session) => (
 											<SessionItem
@@ -222,7 +238,7 @@ export default function PromptsViewHeader() {
 					}}
 				>
 					<Save className="h-4 w-4" />
-					Save Session
+					{t("workspace.promptRepository.header.saveSession")}
 				</SplitButton>
 				<SplitButton
 					onClick={handleCommitVersion}
@@ -231,10 +247,12 @@ export default function PromptsViewHeader() {
 						className: "w-64 max-h-72 overflow-y-auto",
 						children: (
 							<>
-								<DropdownMenuLabel>Versions</DropdownMenuLabel>
+								<DropdownMenuLabel>{t("workspace.promptRepository.header.versions")}</DropdownMenuLabel>
 								<DropdownMenuSeparator />
 								{versions.length === 0 ? (
-									<div className="text-muted-foreground px-2 py-3 text-center text-sm">No versions yet</div>
+									<div className="text-muted-foreground px-2 py-3 text-center text-sm">
+										{t("workspace.promptRepository.header.noVersions")}
+									</div>
 								) : (
 									versions.map((version) => (
 										<DropdownMenuItem
@@ -245,9 +263,13 @@ export default function PromptsViewHeader() {
 											<div className="flex min-w-0 flex-col">
 												<span className="truncate text-sm">
 													v{version.version_number}
-													{version.is_latest && <span className="text-primary ml-1.5 text-xs">(latest)</span>}
+													{version.is_latest && (
+														<span className="text-primary ml-1.5 text-xs">({t("workspace.promptRepository.header.latest")})</span>
+													)}
 												</span>
-												<span className="text-muted-foreground truncate text-xs">{version.commit_message || "No commit message"}</span>
+												<span className="text-muted-foreground truncate text-xs">
+													{version.commit_message || t("workspace.promptRepository.header.noCommitMessage")}
+												</span>
 												<span className="text-muted-foreground text-xs">{formatSessionDate(version.created_at)}</span>
 											</div>
 											{selectedVersionId === version.id && <Check className="text-primary h-4 w-4 shrink-0" />}
@@ -268,7 +290,7 @@ export default function PromptsViewHeader() {
 					}}
 				>
 					<GitCommit className="h-4 w-4" />
-					Commit Version
+					{t("workspace.promptRepository.sheets.commitVersion")}
 				</SplitButton>
 			</div>
 		</div>
@@ -297,6 +319,7 @@ function SessionItem({
 	onSelect: () => void;
 	onRename: (name: string) => void;
 }) {
+	const { t } = useTranslation();
 	const [isEditing, setIsEditing] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 
@@ -318,7 +341,7 @@ function SessionItem({
 				<Input
 					ref={inputRef}
 					defaultValue={session.name}
-					placeholder="Session name"
+					placeholder={t("workspace.promptRepository.header.sessionName")}
 					className="h-auto border-none bg-transparent p-0 text-sm shadow-none focus-visible:border-none focus-visible:ring-0"
 					data-testid="session-rename-input"
 					autoFocus
@@ -347,7 +370,7 @@ function SessionItem({
 			<div className="flex shrink-0 items-center gap-1">
 				<button
 					type="button"
-					aria-label="Rename session"
+					aria-label={t("workspace.promptRepository.header.renameSessionAriaLabel")}
 					data-testid="session-rename"
 					onPointerDown={(e) => {
 						e.preventDefault();

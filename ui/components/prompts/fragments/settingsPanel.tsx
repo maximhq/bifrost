@@ -13,11 +13,13 @@ import { ModelParams } from "@/lib/types/prompts";
 import { cn } from "@/lib/utils";
 import { PromptDeploymentsAccordionItem } from "@enterprise/components/prompt-deployments/promptDeploymentsAccordionItem";
 import { useCallback, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
 import { VariablesTableView } from "../components/variablesTableView";
 import { usePromptContext } from "../context";
 
 export function SettingsPanel() {
+	const { t } = useTranslation();
 	const {
 		provider,
 		setProvider,
@@ -163,7 +165,7 @@ export function SettingsPanel() {
 							data-testid="prompts-configuration-trigger"
 							className="text-muted-foreground shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline"
 						>
-							<span className="min-w-0 flex-1 text-left font-semibold">Configuration</span>
+							<span className="min-w-0 flex-1 text-left font-semibold">{t("workspace.promptRepository.settings.configuration")}</span>
 						</AccordionTrigger>
 						<AccordionContent
 							containerClassName="data-[state=open]:flex data-[state=open]:min-h-0 data-[state=open]:flex-1 data-[state=open]:flex-col"
@@ -171,18 +173,22 @@ export function SettingsPanel() {
 						>
 							<div className="space-y-6">
 								<div className="flex flex-col gap-2" data-testid="settings-provider">
-									<Label className="text-muted-foreground text-xs font-medium uppercase">Provider</Label>
+									<Label className="text-muted-foreground text-xs font-medium uppercase">
+										{t("workspace.promptRepository.settings.provider")}
+									</Label>
 									<ComboboxSelect
 										options={providerOptions}
 										value={provider}
 										onValueChange={(v) => v && onProviderChange(v)}
-										placeholder="Select provider"
+										placeholder={t("workspace.promptRepository.settings.selectProvider")}
 										hideClear
 									/>
 								</div>
 
 								<div className="flex flex-col gap-2" data-testid="settings-model">
-									<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
+									<Label className="text-muted-foreground text-xs font-medium uppercase">
+										{t("workspace.promptRepository.settings.model")}
+									</Label>
 									<ModelMultiselect
 										provider={provider}
 										keys={filterKeys && filterKeys.length > 0 ? filterKeys : undefined}
@@ -190,7 +196,11 @@ export function SettingsPanel() {
 										value={model}
 										onChange={(v) => onModelChange(v)}
 										isSingleSelect
-										placeholder={!provider ? "Select a provider first" : "Select model"}
+										placeholder={
+											!provider
+												? t("workspace.promptRepository.settings.selectProviderFirst")
+												: t("workspace.promptRepository.settings.selectModel")
+										}
 										disabled={!provider}
 										unfiltered={true}
 									/>

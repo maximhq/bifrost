@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { ReactNode, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
 
@@ -32,12 +33,18 @@ interface Props {
 }
 
 export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless }: Props) {
+	const { t } = useTranslation();
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
 	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
 	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
 	const entityLabelPlural = isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
-	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
+	const entityLabelLocalized = isVLLM
+		? t("workspace.providers.keyTable.model")
+		: isOllamaOrSGL
+			? t("workspace.providers.keyTable.server")
+			: t("workspace.providers.keyTable.apiKey");
+	const entityLabelPluralLocalized = entityLabelLocalized;
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
@@ -58,14 +65,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				<AlertDialog open={showDeleteKeyDialog.show}>
 					<AlertDialogContent onClick={(e) => e.stopPropagation()}>
 						<AlertDialogHeader>
-							<AlertDialogTitle>Delete {EntityLabel}</AlertDialogTitle>
+							<AlertDialogTitle>{t("workspace.providers.keyTable.deleteItemTitle", { entity: entityLabelLocalized })}</AlertDialogTitle>
 							<AlertDialogDescription>
-								Are you sure you want to delete this {entityLabel}. This action cannot be undone.
+								{t("workspace.providers.keyTable.deleteItemDescription", { entity: entityLabelLocalized })}
 							</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter className="pt-4">
 							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isMutatingProviderKey}>
-								Cancel
+								{t("common.cancel")}
 							</AlertDialogCancel>
 							<AlertDialogAction
 								disabled={isMutatingProviderKey || !hasDeleteProviderAccess}
@@ -76,17 +83,17 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									})
 										.unwrap()
 										.then(() => {
-											toast.success(`${EntityLabel} deleted successfully`);
+											toast.success(t("workspace.providers.keyTable.deleteItemSuccess", { entity: entityLabelLocalized }));
 											setShowDeleteKeyDialog(undefined);
 										})
 										.catch((err) => {
-											toast.error(`Failed to delete ${entityLabel}`, {
+											toast.error(t("workspace.providers.keyTable.deleteItemFailed", { entity: entityLabelLocalized }), {
 												description: getErrorMessage(err),
 											});
 										});
 								}}
 							>
-								Delete
+								{t("common.delete")}
 							</AlertDialogAction>
 						</AlertDialogFooter>
 					</AlertDialogContent>
@@ -103,7 +110,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 			)}
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
-					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
+					<div className="flex items-center gap-2">
+						{t("workspace.providers.keyTable.configuredItems", { entity: entityLabelPluralLocalized })}
+					</div>
 					<div className="flex items-center gap-2">
 						{headerActions}
 						{!isKeyless && (
@@ -115,7 +124,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								}}
 							>
 								<PlusIcon className="h-4 w-4" />
-								Add new {entityLabel}
+								{t("workspace.providers.keyTable.addNewItem", { entity: entityLabelLocalized })}
 							</Button>
 						)}
 					</div>
@@ -123,17 +132,17 @@ export default function ModelProviderKeysTableView({ provider, className, header
 			</CardHeader>
 			{isKeyless ? (
 				<div className="text-muted-foreground flex flex-col items-center justify-center gap-2 rounded-sm border py-10 text-center text-sm">
-					<p>This is a keyless provider - no API keys are required.</p>
-					<p>You can edit the provider configuration using the button above.</p>
+					<p>{t("workspace.providers.keyTable.keylessProvider")}</p>
+					<p>{t("workspace.providers.keyTable.keylessProviderHint")}</p>
 				</div>
 			) : (
 				<div className="flex w-full flex-col gap-2 rounded-sm border">
 					<Table className="w-full" data-testid="keys-table">
 						<TableHeader className="w-full">
 							<TableRow>
-								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
-								<TableHead>Weight</TableHead>
-								<TableHead>Enabled</TableHead>
+								<TableHead>{entityLabelLocalized}</TableHead>
+								<TableHead>{t("workspace.providers.keyTable.weight")}</TableHead>
+								<TableHead>{t("workspace.providers.keyTable.enabled")}</TableHead>
 								<TableHead className="text-right"></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -141,7 +150,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							{keys.length === 0 && (
 								<TableRow data-testid="keys-table-empty-state">
 									<TableCell colSpan={4} className="py-6 text-center">
-										No {entityLabelPlural} found.
+										{t("workspace.providers.keyTable.noItemsFound", { entity: entityLabelPluralLocalized })}
 									</TableCell>
 								</TableRow>
 							)}
@@ -161,14 +170,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 														<TooltipTrigger asChild>
 															<button
 																type="button"
-																aria-label="Key status: list models working"
+																aria-label={t("workspace.providers.keyTable.statusListModelsWorking")}
 																data-testid={`key-status-success-${key.name}`}
 																className="inline-flex"
 															>
 																<CheckCircle2 aria-hidden className="h-4 w-4 flex-shrink-0 text-green-600" />
 															</button>
 														</TooltipTrigger>
-														<TooltipContent>List models working</TooltipContent>
+														<TooltipContent>{t("workspace.providers.keyTable.statusListModelsWorking")}</TooltipContent>
 													</Tooltip>
 												)}
 												{key.status === "list_models_failed" &&
@@ -189,7 +198,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																<TooltipTrigger asChild>
 																	<button
 																		type="button"
-																		aria-label="Key status: env var may not be resolved"
+																		aria-label={t("workspace.providers.keyTable.statusEnvVarUnresolved")}
 																		data-testid={`key-status-warning-${key.name}`}
 																		className="inline-flex"
 																	>
@@ -197,7 +206,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																	</button>
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs break-words">
-																	{key.description} — verify the environment variable is set on the server
+																	{t("workspace.providers.keyTable.envVarHint", { description: key.description })}
 																</TooltipContent>
 															</Tooltip>
 														) : (
@@ -205,7 +214,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																<TooltipTrigger asChild>
 																	<button
 																		type="button"
-																		aria-label="Key status: list models failed"
+																		aria-label={t("workspace.providers.keyTable.statusListModelsFailed")}
 																		data-testid={`key-status-error-${key.name}`}
 																		className="inline-flex"
 																	>
@@ -213,7 +222,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																	</button>
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs break-words">
-																	{key.description || "Model discovery failed for this key"}
+																	{key.description || t("workspace.providers.keyTable.discoveryFailed")}
 																</TooltipContent>
 															</Tooltip>
 														);
@@ -241,10 +250,19 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													})
 														.unwrap()
 														.then(() => {
-															toast.success(`${EntityLabel} ${checked ? "enabled" : "disabled"} successfully`);
+															toast.success(
+																t("workspace.providers.keyTable.itemToggledSuccess", {
+																	entity: entityLabelLocalized,
+																	status: checked
+																		? t("workspace.providers.keyTable.itemEnabled")
+																		: t("workspace.providers.keyTable.itemDisabled"),
+																}),
+															);
 														})
 														.catch((err) => {
-															toast.error(`Failed to update ${entityLabel}`, { description: getErrorMessage(err) });
+															toast.error(t("workspace.providers.keyTable.itemUpdateFailed", { entity: entityLabelLocalized }), {
+																description: getErrorMessage(err),
+															});
 														})
 														.finally(() => {
 															setTogglingKeyIds((prev) => {
@@ -272,7 +290,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															disabled={!hasUpdateProviderAccess}
 														>
 															<PencilIcon className="mr-1 h-4 w-4" />
-															Edit
+															{t("common.edit")}
 														</DropdownMenuItem>
 														<DropdownMenuItem
 															variant="destructive"
@@ -282,7 +300,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															disabled={!hasDeleteProviderAccess}
 														>
 															<TrashIcon className="mr-1 h-4 w-4" />
-															Delete
+															{t("common.delete")}
 														</DropdownMenuItem>
 													</DropdownMenuContent>
 												</DropdownMenu>

@@ -3,6 +3,7 @@ import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { SettingsIcon, Trash } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import ProviderConfigSheet from "../dialogs/providerConfigSheet";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
 import ProviderGovernanceTable from "./providerGovernanceTable";
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export default function ModelProviderConfig({ provider, onRequestDelete }: Props) {
+	const { t } = useTranslation();
 	const [showConfigSheet, setShowConfigSheet] = useState(false);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
@@ -32,7 +34,7 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 					variant="outline"
 					onClick={onRequestDelete}
 					className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-					aria-label="Delete provider"
+					aria-label={t("common.delete")}
 					data-testid="provider-delete-btn"
 				>
 					<Trash className="h-4 w-4" />
@@ -40,7 +42,7 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 			)}
 			<Button variant="outline" onClick={() => setShowConfigSheet(true)}>
 				<SettingsIcon className="h-4 w-4" />
-				{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}
+				{hasUpdateProviderAccess ? t("workspace.providers.editConfig") : t("workspace.providers.viewConfig")}
 			</Button>
 		</div>
 	);

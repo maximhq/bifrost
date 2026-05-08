@@ -15,6 +15,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { buildProviderUpdatePayload } from "../views/utils";
 
@@ -54,6 +55,7 @@ const secondsToHumanReadable = (seconds: number) => {
 };
 
 export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
+	const { t } = useTranslation();
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -90,9 +92,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		const requiresBaseUrl = isCustomProvider;
 		if (requiresBaseUrl && (data.network_config?.base_url ?? "").trim() === "") {
 			if ((provider.network_config?.base_url ?? "").trim() !== "") {
-				toast.error("You can't remove network configuration for this provider.");
+				toast.error(t("workspace.providers.cannotRemoveNetworkConfiguration"));
 			} else {
-				toast.error("Base URL is required for this provider.");
+				toast.error(t("workspace.providers.baseUrlRequiredForProvider"));
 			}
 			return;
 		}
@@ -117,11 +119,11 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		updateProvider(updatedProvider)
 			.unwrap()
 			.then(() => {
-				toast.success("Provider configuration updated successfully");
+				toast.success(t("workspace.providers.providerConfigUpdated"));
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update provider configuration", {
+				toast.error(t("workspace.providers.providerConfigUpdateFailed"), {
 					description: getErrorMessage(err),
 				});
 			});
@@ -163,7 +165,10 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.base_url"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Base URL {baseURLRequired ? "(Required)" : "(Optional)"}</FormLabel>
+										<FormLabel>
+											{t("workspace.providers.baseUrl")}{" "}
+											{baseURLRequired ? t("workspace.providers.requiredSuffix") : t("workspace.providers.optionalSuffix")}
+										</FormLabel>
 										<FormControl>
 											<Input
 												placeholder={isCustomProvider ? "https://api.your-provider.com" : "https://api.example.com"}
@@ -183,7 +188,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.default_request_timeout_in_seconds"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Timeout (seconds)</FormLabel>
+										<FormLabel>{t("workspace.providers.timeoutSeconds")}</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="30"
@@ -214,7 +219,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.stream_idle_timeout_in_seconds"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Stream Idle Timeout (seconds)</FormLabel>
+										<FormLabel>{t("workspace.providers.streamIdleTimeoutSeconds")}</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="60"
@@ -237,8 +242,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											/>
 										</FormControl>
 										<FormDescription>
-											{field.value ? secondsToHumanReadable(field.value) : ""} Max time to wait for next chunk before closing a stalled
-											stream
+											{field.value ? secondsToHumanReadable(field.value) : ""} {t("workspace.providers.streamIdleTimeoutDescription")}
 										</FormDescription>
 										<FormMessage />
 									</FormItem>
@@ -249,7 +253,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.max_retries"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Max Retries</FormLabel>
+										<FormLabel>{t("workspace.providers.maxRetries")}</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="0"
@@ -281,7 +285,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.retry_backoff_initial"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Initial Backoff (ms)</FormLabel>
+										<FormLabel>{t("workspace.providers.initialBackoffMs")}</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="e.g 500"
@@ -311,7 +315,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.retry_backoff_max"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Max Backoff (ms)</FormLabel>
+										<FormLabel>{t("workspace.providers.maxBackoffMs")}</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="e.g 10000"
@@ -343,7 +347,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.max_conns_per_host"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Max Connections Per Host</FormLabel>
+										<FormLabel>{t("workspace.providers.maxConnectionsPerHost")}</FormLabel>
 										<FormControl>
 											<Input
 												data-testid="network-config-max-conns-per-host-input"
@@ -365,10 +369,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 												}}
 											/>
 										</FormControl>
-										<FormDescription>
-											Max TCP connections per provider host. For HTTP/2 providers (e.g. Bedrock), each connection supports ~100 concurrent
-											streams.
-										</FormDescription>
+										<FormDescription>{t("workspace.providers.maxConnectionsPerHostDescription")}</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -380,11 +381,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 							render={({ field }) => (
 								<FormItem className="flex flex-row items-center justify-between">
 									<div className="space-y-0.5">
-										<FormLabel>Enforce HTTP/2</FormLabel>
-										<FormDescription>
-											Force HTTP/2 on provider connections. Relevant for net/http-based providers (e.g. Bedrock) where each HTTP/2
-											connection supports ~100 concurrent streams.
-										</FormDescription>
+										<FormLabel>{t("workspace.providers.enforceHttp2")}</FormLabel>
+										<FormDescription>{t("workspace.providers.enforceHttp2Description")}</FormDescription>
 									</div>
 									<FormControl>
 										<Switch
@@ -406,9 +404,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<HeadersTable
 											value={field.value || {}}
 											onChange={field.onChange}
-											keyPlaceholder="Header name"
-											valuePlaceholder="Header value"
-											label="Extra Headers"
+											keyPlaceholder={t("workspace.providers.headerNamePlaceholder")}
+											valuePlaceholder={t("workspace.providers.headerValuePlaceholder")}
+											label={t("workspace.providers.extraHeaders")}
 											disabled={!hasUpdateProviderAccess}
 										/>
 									</FormControl>
@@ -417,19 +415,15 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 							)}
 						/>
 						<div className="space-y-4 rounded-lg border p-4">
-							<h4 className="text-sm font-medium">TLS / Certificate</h4>
+							<h4 className="text-sm font-medium">{t("workspace.providers.tlsCertificate")}</h4>
 							<FormField
 								control={form.control}
 								name="network_config.insecure_skip_verify"
 								render={({ field }) => (
 									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
 										<div className="space-y-0.5">
-											<FormLabel>Skip TLS verification</FormLabel>
-											<FormDescription>
-												Disable TLS certificate verification for provider connections. This bypasses server certificate validation and
-												should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for
-												self-signed or private CA deployments.
-											</FormDescription>
+											<FormLabel>{t("workspace.providers.skipTlsVerification")}</FormLabel>
+											<FormDescription>{t("workspace.providers.skipTlsVerificationDescription")}</FormDescription>
 										</div>
 										<FormControl>
 											<Switch
@@ -447,7 +441,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.ca_cert_pem"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+										<FormLabel>{t("workspace.providers.caCertificatePemOptional")}</FormLabel>
 										<FormControl>
 											<EnvVarInput
 												variant="textarea"
@@ -495,28 +489,24 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								provider.network_config.base_url.trim() === ""
 							}
 						>
-							Remove configuration
+							{t("workspace.providers.removeConfiguration")}
 						</Button>
 					)}
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button
-									type="submit"
-									disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
-									isLoading={isUpdatingProvider}
-								>
-									Save Network Configuration
+								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
+									{t("workspace.providers.saveNetworkConfiguration")}
 								</Button>
 							</TooltipTrigger>
 							{(!form.formState.isDirty || !form.formState.isValid) && (
 								<TooltipContent>
 									<p>
 										{!form.formState.isDirty && !form.formState.isValid
-											? "No changes made and validation errors present"
+											? t("workspace.providers.noChangesAndValidationErrors")
 											: !form.formState.isDirty
-												? "No changes made"
-												: "Please fix validation errors"}
+												? t("workspace.providers.keyForm.noChanges")
+												: t("workspace.providers.pleaseFixValidationErrors")}
 									</p>
 								</TooltipContent>
 							)}

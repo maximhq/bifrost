@@ -13,6 +13,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import isEqual from "lodash.isequal";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface CustomerDialogProps {
@@ -50,6 +51,7 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 };
 
 export default function CustomerDialog({ customer, onSave, onCancel }: CustomerDialogProps) {
+	const { t } = useTranslation();
 	const isEditing = !!customer;
 	const [initialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer));
 	const [formData, setFormData] = useState<CustomerFormData>({
@@ -102,36 +104,36 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 		() =>
 			new Validator([
 				// Basic validation
-				Validator.required(formData.name.trim(), "Customer name is required"),
+				Validator.required(formData.name.trim(), t("workspace.governance.customers.dialog.customerNameRequired")),
 
 				// Check if anything is dirty
-				Validator.custom(formData.isDirty, "No changes to save"),
+				Validator.custom(formData.isDirty, t("workspace.governance.customers.dialog.noChanges")),
 
 				// Budget validation
 				...(formData.budgetMaxLimit !== undefined && formData.budgetMaxLimit !== null
 					? [
-							Validator.minValue(budgetMaxLimitNum ?? 0, 0.01, "Budget max limit must be greater than $0.01"),
-							Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
+							Validator.minValue(budgetMaxLimitNum ?? 0, 0.01, t("workspace.governance.customers.dialog.budgetMaxLimit")),
+							Validator.required(formData.budgetResetDuration, t("workspace.governance.customers.dialog.budgetResetRequired")),
 						]
 					: []),
 
 				// Rate limit validation - token limits
 				...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 					? [
-							Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
-							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+							Validator.minValue(tokenMaxLimitNum ?? 0, 1, t("workspace.governance.customers.dialog.tokenMaxLimit")),
+							Validator.required(formData.tokenResetDuration, t("workspace.governance.customers.dialog.tokenResetRequired")),
 						]
 					: []),
 
 				// Rate limit validation - request limits
 				...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
 					? [
-							Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
-							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+							Validator.minValue(requestMaxLimitNum ?? 0, 1, t("workspace.governance.customers.dialog.requestMaxLimit")),
+							Validator.required(formData.requestResetDuration, t("workspace.governance.customers.dialog.requestResetRequired")),
 						]
 					: []),
 			]),
-		[formData, budgetMaxLimitNum, tokenMaxLimitNum, requestMaxLimitNum],
+		[formData, budgetMaxLimitNum, tokenMaxLimitNum, requestMaxLimitNum, t],
 	);
 
 	const updateField = <K extends keyof CustomerFormData>(field: K, value: CustomerFormData[K]) => {
@@ -183,7 +185,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				}
 
 				await updateCustomer({ customerId: customer.id, data: updateData }).unwrap();
-				toast.success("Customer updated successfully");
+				toast.success(t("workspace.governance.customers.dialog.updatedSuccess"));
 			} else {
 				// Create new customer
 				const createData: CreateCustomerRequest = {
@@ -213,7 +215,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				}
 
 				await createCustomer(createData).unwrap();
-				toast.success("Customer created successfully");
+				toast.success(t("workspace.governance.customers.dialog.createdSuccess"));
 			}
 
 			onSave();
@@ -226,11 +228,13 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 		<Dialog open onOpenChange={onCancel}>
 			<DialogContent className="max-w-2xl" data-testid="customer-dialog-content">
 				<DialogHeader>
-					<DialogTitle className="flex items-center gap-2">{isEditing ? "Edit Customer" : "Create Customer"}</DialogTitle>
+					<DialogTitle className="flex items-center gap-2">
+						{isEditing ? t("workspace.governance.customers.dialog.editTitle") : t("workspace.governance.customers.dialog.createTitle")}
+					</DialogTitle>
 					<DialogDescription>
 						{isEditing
-							? "Update the customer information and settings."
-							: "Create a new customer account to organize teams and manage resources."}
+							? t("workspace.governance.customers.dialog.editDescription")
+							: t("workspace.governance.customers.dialog.createDescription")}
 					</DialogDescription>
 				</DialogHeader>
 
@@ -239,23 +243,23 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						{/* Basic Information */}
 						<div className="space-y-4">
 							<div className="space-y-2">
-								<Label htmlFor="name">Customer Name *</Label>
+								<Label htmlFor="name">{t("workspace.governance.customers.dialog.customerName")}</Label>
 								<Input
 									id="name"
 									data-testid="customer-name-input"
-									placeholder="e.g., Acme Corporation"
+									placeholder={t("workspace.governance.customers.dialog.customerNamePlaceholder")}
 									value={formData.name}
 									maxLength={50}
 									onChange={(e) => updateField("name", e.target.value)}
 								/>
-								<p className="text-muted-foreground text-sm">This name will be used to identify the customer account.</p>
+								<p className="text-muted-foreground text-sm">{t("workspace.governance.customers.dialog.customerNameHint")}</p>
 							</div>
 						</div>
 
 						{/* Budget Configuration */}
 						<NumberAndSelect
 							id="budgetMaxLimit"
-							label="Maximum Spend (USD)"
+							label={t("workspace.governance.customers.dialog.maximumSpendUsd")}
 							value={formData.budgetMaxLimit}
 							selectValue={formData.budgetResetDuration}
 							onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
@@ -267,7 +271,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						{/* Rate Limit Configuration - Token Limits */}
 						<NumberAndSelect
 							id="tokenMaxLimit"
-							label="Maximum Tokens"
+							label={t("workspace.governance.customers.dialog.maximumTokens")}
 							value={formData.tokenMaxLimit}
 							selectValue={formData.tokenResetDuration}
 							onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
@@ -278,7 +282,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						{/* Rate Limit Configuration - Request Limits */}
 						<NumberAndSelect
 							id="requestMaxLimit"
-							label="Maximum Requests"
+							label={t("workspace.governance.customers.dialog.maximumRequests")}
 							value={formData.requestMaxLimit}
 							selectValue={formData.requestResetDuration}
 							onChangeNumber={(value) => updateField("requestMaxLimit", value)}
@@ -289,11 +293,11 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						{/* Current Usage Section (only shown when editing with existing limits) */}
 						{isEditing && (customer?.budget || customer?.rate_limit) && (
 							<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
-								<p className="text-sm font-medium">Current Usage</p>
+								<p className="text-sm font-medium">{t("workspace.governance.customers.dialog.currentUsage")}</p>
 								<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
 									{customer?.budget && (
 										<div className="space-y-1">
-											<p className="text-muted-foreground text-xs">Budget</p>
+											<p className="text-muted-foreground text-xs">{t("workspace.governance.customers.dialog.budget")}</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
 													{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
@@ -306,13 +310,14 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 												</Badge>
 											</div>
 											<p className="text-muted-foreground text-xs">
-												Last Reset: {formatDistanceToNow(new Date(customer.budget.last_reset), { addSuffix: true })}
+												{t("workspace.governance.customers.dialog.lastReset")}{" "}
+												{formatDistanceToNow(new Date(customer.budget.last_reset), { addSuffix: true })}
 											</p>
 										</div>
 									)}
 									{customer?.rate_limit?.token_max_limit && (
 										<div className="space-y-1">
-											<p className="text-muted-foreground text-xs">Tokens</p>
+											<p className="text-muted-foreground text-xs">{t("workspace.governance.customers.dialog.tokens")}</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
 													{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
@@ -328,13 +333,14 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 												</Badge>
 											</div>
 											<p className="text-muted-foreground text-xs">
-												Last Reset: {formatDistanceToNow(new Date(customer.rate_limit.token_last_reset), { addSuffix: true })}
+												{t("workspace.governance.customers.dialog.lastReset")}{" "}
+												{formatDistanceToNow(new Date(customer.rate_limit.token_last_reset), { addSuffix: true })}
 											</p>
 										</div>
 									)}
 									{customer?.rate_limit?.request_max_limit && (
 										<div className="space-y-1">
-											<p className="text-muted-foreground text-xs">Requests</p>
+											<p className="text-muted-foreground text-xs">{t("workspace.governance.customers.dialog.requests")}</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
 													{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
@@ -350,7 +356,8 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 												</Badge>
 											</div>
 											<p className="text-muted-foreground text-xs">
-												Last Reset: {formatDistanceToNow(new Date(customer.rate_limit.request_last_reset), { addSuffix: true })}
+												{t("workspace.governance.customers.dialog.lastReset")}{" "}
+												{formatDistanceToNow(new Date(customer.rate_limit.request_last_reset), { addSuffix: true })}
 											</p>
 										</div>
 									)}
@@ -361,7 +368,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 					<FormFooter
 						validator={validator}
-						label="Customer"
+						label={t("workspace.governance.customers.dialog.customerLabel")}
 						onCancel={onCancel}
 						isLoading={loading}
 						isEditing={isEditing}

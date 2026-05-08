@@ -5,6 +5,7 @@ import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { Wrench, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
 /**
@@ -36,6 +37,7 @@ export default function ToolCallMessageView({
 	onSubmitToolResult?: (toolCallId: string, content: string) => void;
 	respondedToolCallIds?: Set<string>;
 }) {
+	const { t } = useTranslation();
 	const toolCalls = message.toolCalls ?? [];
 	const [responses, setResponses] = useState<Record<string, string>>({});
 	const messageRef = useRef(message);
@@ -98,7 +100,7 @@ export default function ToolCallMessageView({
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label={t("workspace.promptRepository.messages.deleteMessageAriaLabel")}
 							data-testid="tool-call-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -152,10 +154,12 @@ export default function ToolCallMessageView({
 								))}
 							{!disabled && onSubmitToolResult && !respondedToolCallIds?.has(tc.id) && (
 								<div className="mt-2 border-t pt-2">
-									<div className="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">Response</div>
+									<div className="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">
+										{t("workspace.promptRepository.messages.response")}
+									</div>
 									<div className="flex items-end gap-2">
 										<Textarea
-											placeholder="Enter tool response..."
+											placeholder={t("workspace.promptRepository.messages.enterToolResponse")}
 											value={responses[tc.id] ?? ""}
 											onChange={(e) => handleResponseChange(tc.id, e.target.value)}
 											data-testid="tool-call-response-textarea"
@@ -169,7 +173,7 @@ export default function ToolCallMessageView({
 											disabled={!responses[tc.id]?.trim()}
 											onClick={() => handleSubmitResponse(tc.id)}
 										>
-											Submit
+											{t("workspace.promptRepository.messages.submit")}
 										</Button>
 									</div>
 								</div>

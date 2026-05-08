@@ -97,7 +97,9 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 									<div className="grid grid-cols-3 gap-3">
 										<div className="space-y-1">
 											<div className="text-muted-foreground text-xs font-medium">DIMENSIONS</div>
-											<div className="font-mono text-xs">{currentPage.dimensions.width} × {currentPage.dimensions.height}px</div>
+											<div className="font-mono text-xs">
+												{currentPage.dimensions.width} × {currentPage.dimensions.height}px
+											</div>
 										</div>
 										<div className="space-y-1">
 											<div className="text-muted-foreground text-xs font-medium">DPI</div>
@@ -146,13 +148,27 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 
 								{totalPages > 1 && (
 									<div className="mt-3 flex items-center justify-center gap-4">
-										<Button variant="outline" size="sm" onClick={goToPrevious} aria-label="Previous page" title="Previous page" data-testid="ocr-view-pagination-prev-button">
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={goToPrevious}
+											aria-label="Previous page"
+											title="Previous page"
+											data-testid="ocr-view-pagination-prev-button"
+										>
 											<ChevronLeft className="h-4 w-4" />
 										</Button>
 										<span className="text-muted-foreground text-sm">
 											Page {currentIndex + 1} / {totalPages}
 										</span>
-										<Button variant="outline" size="sm" onClick={goToNext} aria-label="Next page" title="Next page" data-testid="ocr-view-pagination-next-button">
+										<Button
+											variant="outline"
+											size="sm"
+											onClick={goToNext}
+											aria-label="Next page"
+											title="Next page"
+											data-testid="ocr-view-pagination-next-button"
+										>
 											<ChevronRight className="h-4 w-4" />
 										</Button>
 									</div>

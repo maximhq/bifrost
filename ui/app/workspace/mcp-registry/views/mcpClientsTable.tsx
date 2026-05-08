@@ -22,6 +22,7 @@ import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import MCPClientSheet from "./mcpClientSheet";
 
@@ -48,6 +49,7 @@ export default function MCPClientsTable({
 	limit,
 	onOffsetChange,
 }: MCPClientsTableProps) {
+	const { t } = useTranslation();
 	const [formOpen, setFormOpen] = useState(false);
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
@@ -71,25 +73,28 @@ export default function MCPClientsTable({
 			setReconnectingClients((prev) => [...prev, client.config.client_id]);
 			await reconnectMCPClient(client.config.client_id).unwrap();
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
-			toast({ title: "Reconnected", description: `Client ${client.config.name} reconnected successfully.` });
+			toast({
+				title: t("workspace.mcp.reconnectedTitle"),
+				description: t("workspace.mcp.clientReconnected", { name: client.config.name }),
+			});
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("workspace.mcp.errorTitle"), description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
 
 	const handleDelete = async (client: MCPClient) => {
 		try {
 			await deleteMCPClient(client.config.client_id).unwrap();
-			toast({ title: "Deleted", description: `Client ${client.config.name} removed successfully.` });
+			toast({ title: t("workspace.mcp.deletedTitle"), description: t("workspace.mcp.clientRemoved", { name: client.config.name }) });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: t("workspace.mcp.errorTitle"), description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
 
@@ -180,12 +185,18 @@ export default function MCPClientsTable({
 
 			<div className="flex items-center justify-between gap-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
-					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
+					<h2 className="text-lg font-semibold tracking-tight">{t("workspace.mcp.catalogTitle")}</h2>
+					<p className="text-muted-foreground text-sm">{t("workspace.mcp.catalogDescription")}</p>
 				</div>
-				<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess} data-testid="create-mcp-client-btn" aria-label="New MCP Server" className="gap-2">
+				<Button
+					onClick={handleCreate}
+					disabled={!hasCreateMCPClientAccess}
+					data-testid="create-mcp-client-btn"
+					aria-label={t("workspace.mcp.newServer")}
+					className="gap-2"
+				>
 					<Plus className="h-4 w-4" />
-					<span className="hidden sm:inline">New MCP Server</span>
+					<span className="hidden sm:inline">{t("workspace.mcp.newServer")}</span>
 				</Button>
 			</div>
 
@@ -194,8 +205,8 @@ export default function MCPClientsTable({
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search MCP servers by name"
-						placeholder="Search by name..."
+						aria-label={t("workspace.mcp.searchAriaLabel")}
+						placeholder={t("workspace.mcp.searchPlaceholder")}
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -208,15 +219,15 @@ export default function MCPClientsTable({
 				<Table data-testid="mcp-clients-table">
 					<TableHeader>
 						<TableRow className="bg-muted/50">
-							<TableHead className="font-semibold">Name</TableHead>
-							<TableHead className="font-semibold">Connection Type</TableHead>
-							<TableHead className="font-semibold">Auth</TableHead>
-							<TableHead className="font-semibold">Code Mode</TableHead>
-							<TableHead className="font-semibold">Connection Info</TableHead>
-							<TableHead className="font-semibold">Enabled Tools</TableHead>
-							<TableHead className="font-semibold">Auto-execute Tools</TableHead>
-							<TableHead className="font-semibold">State</TableHead>
-							<TableHead className="font-semibold">Enabled</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.name")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.connectionType")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.auth")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.codeMode")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.connectionInfo")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.enabledTools")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.autoExecuteTools")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.state")}</TableHead>
+							<TableHead className="font-semibold">{t("workspace.mcp.enabled")}</TableHead>
 							<TableHead className="w-20 text-right"></TableHead>
 						</TableRow>
 					</TableHeader>
@@ -224,7 +235,7 @@ export default function MCPClientsTable({
 						{mcpClients.length === 0 ? (
 							<TableRow>
 								<TableCell colSpan={10} className="h-24 text-center">
-									<span className="text-muted-foreground text-sm">No matching MCP servers found.</span>
+									<span className="text-muted-foreground text-sm">{t("workspace.mcp.noMatchingServers")}</span>
 								</TableCell>
 							</TableRow>
 						) : (
@@ -257,7 +268,11 @@ export default function MCPClientsTable({
 													c.state == "connected" ? MCP_STATUS_COLORS[c.config.is_code_mode_client ? "connected" : "disconnected"] : ""
 												}
 											>
-												{c.state == "connected" ? <>{c.config.is_code_mode_client ? "Enabled" : "Disabled"}</> : "-"}
+												{c.state == "connected" ? (
+													<>{c.config.is_code_mode_client ? t("workspace.mcp.enabled") : t("workspace.mcp.disabled")}</>
+												) : (
+													"-"
+												)}
 											</Badge>
 										</TableCell>
 										<TableCell className="max-w-72 overflow-hidden text-ellipsis whitespace-nowrap">{getConnectionDisplay(c)}</TableCell>
@@ -283,9 +298,7 @@ export default function MCPClientsTable({
 											<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 										</TableCell>
 										<TableCell>
-											<Badge variant={c.config.disabled ? "secondary" : "default"}>
-												{c.config.disabled ? "Disabled" : "Enabled"}
-											</Badge>
+											<Badge variant={c.config.disabled ? "secondary" : "default"}>{c.config.disabled ? "Disabled" : "Enabled"}</Badge>
 										</TableCell>
 										<TableCell className="space-x-2 text-right" onClick={(e) => e.stopPropagation()}>
 											<TooltipProvider>
@@ -298,10 +311,10 @@ export default function MCPClientsTable({
 																size="icon"
 																aria-label={
 																	isPerUserOAuth
-																		? "Reconnect is not applicable for per-user OAuth"
+																		? t("workspace.mcp.reconnectUnsupported")
 																		: c.config.disabled
-																			? "Enable the client before reconnecting"
-																			: "Reconnect"
+																			? t("workspace.mcp.enableBeforeReconnect")
+																			: t("workspace.mcp.reconnect")
 																}
 																onClick={() => handleReconnect(c)}
 																disabled={
@@ -322,10 +335,10 @@ export default function MCPClientsTable({
 													</TooltipTrigger>
 													<TooltipContent>
 														{isPerUserOAuth
-															? "Reconnect is not applicable for per-user OAuth, each user manages their own auth."
+															? t("workspace.mcp.reconnectUnsupportedDescription")
 															: c.config.disabled
-																? "Enable the client before reconnecting."
-																: "Reconnect"}
+																? t("workspace.mcp.enableBeforeReconnect")
+																: t("workspace.mcp.reconnect")}
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
@@ -343,16 +356,15 @@ export default function MCPClientsTable({
 												</AlertDialogTrigger>
 												<AlertDialogContent>
 													<AlertDialogHeader>
-														<AlertDialogTitle>Remove MCP Server</AlertDialogTitle>
+														<AlertDialogTitle>{t("workspace.mcp.removeServerTitle")}</AlertDialogTitle>
 														<AlertDialogDescription>
-															Are you sure you want to remove MCP server {c.config.name}? You will need to reconnect the server to continue
-															using it.
+															{t("workspace.mcp.removeServerDescription", { name: c.config.name })}
 														</AlertDialogDescription>
 													</AlertDialogHeader>
 													<AlertDialogFooter>
-														<AlertDialogCancel>Cancel</AlertDialogCancel>
+														<AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
 														<AlertDialogAction onClick={() => handleDelete(c)} className="bg-destructive hover:bg-destructive/90">
-															Delete
+															{t("common.delete")}
 														</AlertDialogAction>
 													</AlertDialogFooter>
 												</AlertDialogContent>
@@ -370,7 +382,7 @@ export default function MCPClientsTable({
 			{totalCount > 0 && (
 				<div className="flex items-center justify-between px-2">
 					<p className="text-muted-foreground text-sm">
-						Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+						{t("workspace.mcp.showing", { from: offset + 1, to: Math.min(offset + limit, totalCount), total: totalCount })}
 					</p>
 					<div className="flex gap-2">
 						<Button
@@ -381,7 +393,7 @@ export default function MCPClientsTable({
 							data-testid="mcp-clients-pagination-prev-btn"
 						>
 							<ChevronLeft className="mr-1 h-4 w-4" />
-							Previous
+							{t("workspace.mcp.previous")}
 						</Button>
 						<Button
 							variant="outline"
@@ -390,7 +402,7 @@ export default function MCPClientsTable({
 							onClick={() => onOffsetChange(offset + limit)}
 							data-testid="mcp-clients-pagination-next-btn"
 						>
-							Next
+							{t("workspace.mcp.next")}
 							<ChevronRight className="ml-1 h-4 w-4" />
 						</Button>
 					</div>

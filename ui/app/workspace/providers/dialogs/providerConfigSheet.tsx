@@ -4,6 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
 	ApiStructureFormFragment,
 	BetaHeadersFormFragment,
@@ -23,52 +24,59 @@ interface Props {
 
 const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "azure"];
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, isAnthropicFamily: boolean) => {
+const availableTabs = (
+	t: (key: string) => string,
+	hasCustomProviderConfig: boolean,
+	hasGovernanceAccess: boolean,
+	isOpenAI: boolean,
+	isAnthropicFamily: boolean,
+) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
 			id: "api-structure",
-			label: "API Structure",
+			label: t("workspace.providers.configSheet.apiStructure"),
 		});
 	}
 	tabs.push({
 		id: "network",
-		label: "Network",
+		label: t("workspace.providers.configSheet.network"),
 	});
 	tabs.push({
 		id: "proxy",
-		label: "Proxy",
+		label: t("workspace.providers.configSheet.proxy"),
 	});
 	tabs.push({
 		id: "performance",
-		label: "Performance",
+		label: t("workspace.providers.configSheet.performance"),
 	});
 	if (hasGovernanceAccess) {
 		tabs.push({
 			id: "governance",
-			label: "Governance",
+			label: t("workspace.providers.configSheet.governance"),
 		});
 	}
 	if (isAnthropicFamily) {
 		tabs.push({
 			id: "beta-headers",
-			label: "Beta Headers",
+			label: t("workspace.providers.configSheet.betaHeaders"),
 		});
 	}
 	tabs.push({
 		id: "debugging",
-		label: "Debugging",
+		label: t("workspace.providers.configSheet.debugging"),
 	});
 	if (isOpenAI) {
 		tabs.push({
 			id: "openai-config",
-			label: "OpenAI Config",
+			label: t("workspace.providers.configSheet.openaiConfig"),
 		});
 	}
 	return tabs;
 };
 
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
+	const { t } = useTranslation();
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
@@ -76,8 +84,8 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
+		return availableTabs(t, hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
+	}, [t, hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -103,7 +111,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							<div className="flex items-center">
 								<Provider provider={provider.name} size={24} className="mt-0" />
 							</div>
-							Provider configuration
+							{t("workspace.providers.configTitle")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>

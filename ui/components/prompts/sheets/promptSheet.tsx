@@ -7,6 +7,7 @@ import { useCreatePromptMutation, useUpdatePromptMutation } from "@/lib/store/ap
 import { Prompt } from "@/lib/types/prompts";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface PromptFormData {
@@ -22,6 +23,7 @@ interface PromptSheetProps {
 }
 
 export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: PromptSheetProps) {
+	const { t } = useTranslation();
 	const [createPrompt, { isLoading: isCreating }] = useCreatePromptMutation();
 	const [updatePrompt, { isLoading: isUpdating }] = useUpdatePromptMutation();
 
@@ -50,21 +52,26 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 					id: prompt.id,
 					data: { name: data.name.trim() },
 				}).unwrap();
-				toast.success("Prompt updated");
+				toast.success(t("workspace.promptRepository.sheets.promptUpdated"));
 				onSaved();
 			} else {
 				const result = await createPrompt({
 					name: data.name.trim(),
 					...(folderId ? { folder_id: folderId } : {}),
 				}).unwrap();
-				toast.success("Prompt created");
+				toast.success(t("workspace.promptRepository.sheets.promptCreated"));
 				onSaved(result.prompt.id);
 			}
 			onOpenChange(false);
 		} catch (err) {
-			toast.error(`Failed to ${isEditing ? "update" : "create"} prompt`, {
-				description: getErrorMessage(err),
-			});
+			toast.error(
+				t("workspace.promptRepository.sheets.promptSaveFailed", {
+					action: isEditing ? t("workspace.promptRepository.sheets.actionUpdate") : t("workspace.promptRepository.sheets.actionCreate"),
+				}),
+				{
+					description: getErrorMessage(err),
+				},
+			);
 		}
 	}
 
@@ -77,25 +84,31 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 					document.getElementById("name")?.focus();
 				}}
 			>
-				<form onSubmit={handleSubmit(onSubmit)} className="flex flex-col grow">
+				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
 					<SheetHeader className="flex flex-col items-start px-8 pt-8">
-						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
+						<SheetTitle>
+							{isEditing ? t("workspace.promptRepository.sheets.renamePrompt") : t("workspace.promptRepository.sheets.createPrompt")}
+						</SheetTitle>
 						<SheetDescription>
-							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}
+							{isEditing
+								? t("workspace.promptRepository.sheets.updatePromptName")
+								: folderId
+									? t("workspace.promptRepository.sheets.createPromptInFolder")
+									: t("workspace.promptRepository.sheets.createPromptDescription")}
 						</SheetDescription>
 					</SheetHeader>
 
-					<div className="flex flex-col gap-6 grow">
-						<div className="space-y-4 grow px-8" >
+					<div className="flex grow flex-col gap-6">
+						<div className="grow space-y-4 px-8">
 							<div className="space-y-2">
-								<Label htmlFor="name">Name</Label>
+								<Label htmlFor="name">{t("workspace.promptRepository.sheets.name")}</Label>
 								<Input
 									id="name"
 									data-testid="prompt-name-input"
-									placeholder="Customer Support Assistant"
+									placeholder={t("workspace.promptRepository.sheets.promptNamePlaceholder")}
 									{...register("name", {
-										required: "Prompt name is required",
-										validate: (v) => v.trim().length > 0 || "Prompt name cannot be blank",
+										required: t("workspace.promptRepository.sheets.promptNameRequired"),
+										validate: (v) => v.trim().length > 0 || t("workspace.promptRepository.sheets.promptNameBlank"),
 									})}
 									autoFocus
 								/>
@@ -103,12 +116,16 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 							</div>
 						</div>
 
-						<SheetFooter className="flex flex-row items-center justify-end gap-2 py-4 px-8 border-t">
+						<SheetFooter className="flex flex-row items-center justify-end gap-2 border-t px-8 py-4">
 							<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
-								Cancel
+								{t("workspace.promptRepository.sheets.cancel")}
 							</Button>
 							<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
-								{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+								{isLoading
+									? t("workspace.promptRepository.sheets.saving")
+									: isEditing
+										? t("workspace.promptRepository.sheets.update")
+										: t("workspace.promptRepository.sheets.create")}
 							</Button>
 						</SheetFooter>
 					</div>

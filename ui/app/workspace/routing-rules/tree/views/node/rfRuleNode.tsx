@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import i18n from "@/lib/i18n";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { RoutingRule } from "@/lib/types/routingRules";
@@ -51,7 +52,7 @@ export function RFRuleNode({ data }: { data: any }) {
 						{rule.chain_rule && <Link2 className="h-3 w-3" style={{ color: scopeColor }} />}
 						{!rule.enabled && (
 							<Badge variant="secondary" className="px-1 py-0 text-[9px]">
-								Off
+								{i18n.t("workspace.routingRules.off")}
 							</Badge>
 						)}
 					</div>
@@ -60,7 +61,11 @@ export function RFRuleNode({ data }: { data: any }) {
 				{/* rule name */}
 				<div className="px-3 py-2">
 					<p className="text-foreground truncate text-xs font-semibold">{rule.name}</p>
-					{rule.priority > 0 && <p className="text-muted-foreground mt-0.5 text-[10px]">Priority {rule.priority}</p>}
+					{rule.priority > 0 && (
+						<p className="text-muted-foreground mt-0.5 text-[10px]">
+							{i18n.t("workspace.routingRules.priorityRule", { priority: rule.priority })}
+						</p>
+					)}
 				</div>
 
 				{/* targets footer */}
@@ -81,7 +86,9 @@ export function RFRuleNode({ data }: { data: any }) {
 						{rule.targets.length > 4 && <span className="text-muted-foreground text-[9px]">+{rule.targets.length - 4}</span>}
 					</div>
 					<span className="text-muted-foreground ml-auto text-[10px]">
-						{rule.targets.length} target{rule.targets.length !== 1 ? "s" : ""}
+						{rule.targets.length === 1
+							? i18n.t("workspace.routingRules.targets_one")
+							: i18n.t("workspace.routingRules.targets_other", { count: rule.targets.length })}
 					</span>
 				</div>
 
@@ -105,12 +112,12 @@ export function RFRuleNode({ data }: { data: any }) {
 							<div className="mb-1 flex items-start gap-2 border-b px-3 pb-1.5">
 								<Link2 className="mt-0.5 h-3 w-3 shrink-0" style={{ color: scopeColor }} />
 								<p className="text-muted-foreground text-[10px] leading-snug">
-									Chain rule — resolved provider/model feeds back as the new input and the full scope chain re-evaluates.
+									{i18n.t("workspace.routingRules.chainRuleDescriptionNode")}
 								</p>
 							</div>
 						)}
 						<p className="mb-1 px-3 text-[10px] font-semibold tracking-wide uppercase" style={{ color: scopeColor }}>
-							{rule.chain_rule ? "Resolved target (new input)" : "Targets"}
+							{rule.chain_rule ? i18n.t("workspace.routingRules.resolvedTarget") : i18n.t("workspace.routingRules.targetsHeader")}
 						</p>
 						{rule.targets.map((t, i) => {
 							const isPassthrough = !t.provider && !t.model;
@@ -123,10 +130,14 @@ export function RFRuleNode({ data }: { data: any }) {
 									)}
 									<div className="min-w-0 flex-1">
 										<p className="text-foreground truncate text-xs font-medium">
-											{isPassthrough ? "Passthrough" : t.provider ? getProviderLabel(t.provider) : t.model}
+											{isPassthrough ? i18n.t("workspace.routingRules.passthrough") : t.provider ? getProviderLabel(t.provider) : t.model}
 										</p>
 										{t.model && t.provider && <p className="text-muted-foreground truncate font-mono text-[10px]">{t.model}</p>}
-										{isPassthrough && <p className="text-muted-foreground/60 text-[10px] italic">original provider &amp; model</p>}
+										{isPassthrough && (
+											<p className="text-muted-foreground/60 text-[10px] italic">
+												{i18n.t("workspace.routingRules.originalProviderAndModel")}
+											</p>
+										)}
 									</div>
 									{multi && (
 										<span className="ml-1 shrink-0 text-[11px] font-semibold" style={{ color: scopeColor }}>

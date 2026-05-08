@@ -4,6 +4,7 @@ import { setSelectedPlugin, useAppDispatch, useGetPluginsQuery } from "@/lib/sto
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import { useQueryState } from "nuqs";
+import i18n from "@/lib/i18n";
 import { useEffect, useMemo } from "react";
 import BigQueryView from "./plugins/bigqueryView";
 import DatadogView from "./plugins/datadogView";

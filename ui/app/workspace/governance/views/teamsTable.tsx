@@ -23,6 +23,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Input } from "@/components/ui/input";
 import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import TeamDialog from "./teamDialog";
 import { TeamsEmptyState } from "./teamsEmptyState";
@@ -65,10 +66,9 @@ export default function TeamsTable({
 	onTeamSelect,
 	onDialogClose,
 }: TeamsTableProps) {
+	const { t } = useTranslation();
 	const showTeamDialog = selectedTeamId !== null && selectedTeamId !== "";
-	const editingTeam = selectedTeamId && selectedTeamId !== "new"
-		? teams.find((t) => t.id === selectedTeamId) ?? null
-		: null;
+	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
 
 	// If a team ID is in the URL but can't be resolved (deleted or filtered out),
 	// clear it so we don't silently open the dialog in "create" mode.
@@ -87,7 +87,7 @@ export default function TeamsTable({
 	const handleDelete = async (teamId: string) => {
 		try {
 			await deleteTeam(teamId).unwrap();
-			toast.success("Team deleted successfully");
+			toast.success(t("workspace.governance.teams.deleteSuccess"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -112,7 +112,7 @@ export default function TeamsTable({
 	const getCustomerName = (customerId?: string) => {
 		if (!customerId) return "-";
 		const customer = customers.find((c) => c.id === customerId);
-		return customer ? customer.name : "Unknown Customer";
+		return customer ? customer.name : t("workspace.governance.teams.unknownCustomer");
 	};
 
 	const hasActiveFilters = debouncedSearch;
@@ -122,9 +122,7 @@ export default function TeamsTable({
 		return (
 			<>
 				<TooltipProvider>
-					{showTeamDialog && (
-						<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-					)}
+					{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -134,19 +132,17 @@ export default function TeamsTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showTeamDialog && (
-					<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-				)}
+				{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
 						<div>
-							<h2 className="text-lg font-semibold">Teams</h2>
-							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>
+							<h2 className="text-lg font-semibold">{t("workspace.governance.teams.title")}</h2>
+							<p className="text-muted-foreground text-sm">{t("workspace.governance.teams.description")}</p>
 						</div>
 						<Button data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
 							<Plus className="h-4 w-4" />
-							Add Team
+							{t("workspace.governance.teams.addTeam")}
 						</Button>
 					</div>
 
@@ -154,8 +150,8 @@ export default function TeamsTable({
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
-								aria-label="Search teams by name"
-								placeholder="Search by name..."
+								aria-label={t("workspace.governance.teams.searchAriaLabel")}
+								placeholder={t("workspace.governance.teams.searchPlaceholder")}
 								value={search}
 								onChange={(e) => onSearchChange(e.target.value)}
 								className="pl-9"
@@ -168,11 +164,11 @@ export default function TeamsTable({
 						<Table>
 							<TableHeader>
 								<TableRow>
-									<TableHead>Name</TableHead>
-									<TableHead>Customer</TableHead>
-									<TableHead>Budget</TableHead>
-									<TableHead>Rate Limit</TableHead>
-									<TableHead>Virtual Keys</TableHead>
+									<TableHead>{t("workspace.governance.teams.name")}</TableHead>
+									<TableHead>{t("workspace.governance.teams.customer")}</TableHead>
+									<TableHead>{t("workspace.governance.teams.budget")}</TableHead>
+									<TableHead>{t("workspace.governance.teams.rateLimit")}</TableHead>
+									<TableHead>{t("workspace.governance.teams.virtualKeys")}</TableHead>
 									<TableHead className="text-right"></TableHead>
 								</TableRow>
 							</TableHeader>
@@ -180,7 +176,7 @@ export default function TeamsTable({
 								{teams.length === 0 ? (
 									<TableRow>
 										<TableCell colSpan={6} className="h-24 text-center">
-											<span className="text-muted-foreground text-sm">No matching teams found.</span>
+											<span className="text-muted-foreground text-sm">{t("workspace.governance.teams.noMatching")}</span>
 										</TableCell>
 									</TableRow>
 								) : (
@@ -190,9 +186,7 @@ export default function TeamsTable({
 
 										// Budget calculations — any of the team's budgets exhausted
 										const teamBudgets = team.budgets ?? [];
-										const isBudgetExhausted = teamBudgets.some(
-											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
-										);
+										const isBudgetExhausted = teamBudgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -226,7 +220,7 @@ export default function TeamsTable({
 														<span className="truncate font-medium">{team.name}</span>
 														{isExhausted && (
 															<Badge variant="destructive" className="w-fit text-xs">
-																Limit Reached
+																{t("workspace.governance.teams.limitReached")}
 															</Badge>
 														)}
 													</div>
@@ -240,8 +234,7 @@ export default function TeamsTable({
 													{teamBudgets.length > 0 ? (
 														<div className="space-y-2.5">
 															{teamBudgets.map((b) => {
-																const budgetPercentage =
-																	b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
+																const budgetPercentage = b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
 																const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
 																return (
 																	<Tooltip key={b.id}>
@@ -249,9 +242,7 @@ export default function TeamsTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4">
 																					<span className="font-medium">{formatCurrency(b.max_limit)}</span>
-																					<span className="text-muted-foreground text-xs">
-																						{formatResetDuration(b.reset_duration)}
-																					</span>
+																					<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
 																				</div>
 																				<Progress
 																					value={budgetPercentage}
@@ -271,7 +262,7 @@ export default function TeamsTable({
 																				{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(b.reset_duration)}
+																				{t("workspace.governance.teams.resets", { duration: formatResetDuration(b.reset_duration) })}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
@@ -290,7 +281,9 @@ export default function TeamsTable({
 																	<TooltipTrigger asChild>
 																		<div className="space-y-1.5">
 																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{team.rate_limit.token_max_limit.toLocaleString()} tokens</span>
+																				<span className="font-medium">
+																					{team.rate_limit.token_max_limit.toLocaleString()} {t("workspace.governance.teams.tokensUnit")}
+																				</span>
 																				<span className="text-muted-foreground">
 																					{formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
 																				</span>
@@ -311,10 +304,12 @@ export default function TeamsTable({
 																	<TooltipContent>
 																		<p className="font-medium">
 																			{team.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																			{team.rate_limit.token_max_limit.toLocaleString()} tokens
+																			{team.rate_limit.token_max_limit.toLocaleString()} {t("workspace.governance.teams.tokensUnit")}
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
+																			{t("workspace.governance.teams.resets", {
+																				duration: formatResetDuration(team.rate_limit.token_reset_duration || "1h"),
+																			})}
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -324,7 +319,10 @@ export default function TeamsTable({
 																	<TooltipTrigger asChild>
 																		<div className="space-y-1.5">
 																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{team.rate_limit.request_max_limit.toLocaleString()} req</span>
+																				<span className="font-medium">
+																					{team.rate_limit.request_max_limit.toLocaleString()}{" "}
+																					{t("workspace.governance.teams.requestUnitShort")}
+																				</span>
 																				<span className="text-muted-foreground">
 																					{formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
 																				</span>
@@ -345,10 +343,12 @@ export default function TeamsTable({
 																	<TooltipContent>
 																		<p className="font-medium">
 																			{team.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																			{team.rate_limit.request_max_limit.toLocaleString()} requests
+																			{team.rate_limit.request_max_limit.toLocaleString()} {t("workspace.governance.teams.requestsUnit")}
 																		</p>
 																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
+																			{t("workspace.governance.teams.resets", {
+																				duration: formatResetDuration(team.rate_limit.request_reset_duration || "1h"),
+																			})}
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -364,7 +364,7 @@ export default function TeamsTable({
 															<Tooltip>
 																<TooltipTrigger>
 																	<Badge variant="outline" className="text-xs">
-																		{vks.length} {vks.length === 1 ? "key" : "keys"}
+																		{t("workspace.governance.teams.keyCount", { count: vks.length })}
 																	</Badge>
 																</TooltipTrigger>
 																<TooltipContent>{vks.map((vk) => vk.name).join(", ")}</TooltipContent>
@@ -382,7 +382,7 @@ export default function TeamsTable({
 															className="h-8 w-8"
 															onClick={() => handleEditTeam(team)}
 															disabled={!hasUpdateAccess}
-															aria-label={`Edit team ${team.name}`}
+															aria-label={t("workspace.governance.teams.editAriaLabel", { name: team.name })}
 															data-testid={`team-edit-btn-${team.name}`}
 														>
 															<Edit className="h-4 w-4" />
@@ -394,7 +394,7 @@ export default function TeamsTable({
 																	size="icon"
 																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
 																	disabled={!hasDeleteAccess}
-																	aria-label={`Delete team ${team.name}`}
+																	aria-label={t("workspace.governance.teams.deleteAriaLabel", { name: team.name })}
 																	data-testid={`team-delete-btn-${team.name}`}
 																>
 																	<Trash2 className="h-4 w-4" />
@@ -402,20 +402,19 @@ export default function TeamsTable({
 															</AlertDialogTrigger>
 															<AlertDialogContent>
 																<AlertDialogHeader>
-																	<AlertDialogTitle>Delete Team</AlertDialogTitle>
+																	<AlertDialogTitle>{t("workspace.governance.teams.deleteTitle")}</AlertDialogTitle>
 																	<AlertDialogDescription>
-																		Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from
-																		this team. This action cannot be undone.
+																		{t("workspace.governance.teams.deleteDescription", { name: team.name })}
 																	</AlertDialogDescription>
 																</AlertDialogHeader>
 																<AlertDialogFooter>
-																	<AlertDialogCancel>Cancel</AlertDialogCancel>
+																	<AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
 																	<AlertDialogAction
 																		onClick={() => handleDelete(team.id)}
 																		disabled={isDeleting}
 																		className="bg-red-600 hover:bg-red-700"
 																	>
-																		{isDeleting ? "Deleting..." : "Delete"}
+																		{isDeleting ? t("workspace.providers.deleteDialog.deleting") : t("common.delete")}
 																	</AlertDialogAction>
 																</AlertDialogFooter>
 															</AlertDialogContent>
@@ -434,7 +433,7 @@ export default function TeamsTable({
 					{totalCount > 0 && (
 						<div className="flex items-center justify-between px-2">
 							<p className="text-muted-foreground text-sm">
-								Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+								{t("workspace.governance.teams.showing", { from: offset + 1, to: Math.min(offset + limit, totalCount), total: totalCount })}
 							</p>
 							<div className="flex gap-2">
 								<Button
@@ -444,7 +443,7 @@ export default function TeamsTable({
 									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 									data-testid="teams-pagination-prev-btn"
 								>
-									<ChevronLeft className="mr-1 h-4 w-4" /> Previous
+									<ChevronLeft className="mr-1 h-4 w-4" /> {t("workspace.governance.teams.previous")}
 								</Button>
 								<Button
 									variant="outline"
@@ -453,7 +452,7 @@ export default function TeamsTable({
 									onClick={() => onOffsetChange(offset + limit)}
 									data-testid="teams-pagination-next-btn"
 								>
-									Next <ChevronRight className="ml-1 h-4 w-4" />
+									{t("workspace.governance.teams.next")} <ChevronRight className="ml-1 h-4 w-4" />
 								</Button>
 							</div>
 						</div>

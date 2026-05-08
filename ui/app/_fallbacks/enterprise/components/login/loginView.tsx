@@ -7,20 +7,21 @@ import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const externalLinks = [
 	{
-		title: "Discord Server",
+		titleKey: "sidebar.external.discord",
 		url: "https://discord.gg/exN5KAydbU",
 		icon: DiscordLogoIcon,
 	},
 	{
-		title: "GitHub Repository",
+		titleKey: "sidebar.external.github",
 		url: "https://github.com/maximhq/bifrost",
 		icon: GithubLogoIcon,
 	},
 	{
-		title: "Full Documentation",
+		titleKey: "sidebar.external.fullDocs",
 		url: "https://docs.getbifrost.ai",
 		icon: BooksIcon,
 		strokeWidth: 1,
@@ -28,6 +29,7 @@ const externalLinks = [
 ];
 
 export default function LoginView() {
+	const { t } = useTranslation();
 	const { resolvedTheme } = useTheme();
 	const [mounted, setMounted] = useState(false);
 	const [username, setUsername] = useState("");
@@ -52,7 +54,7 @@ export default function LoginView() {
 			return;
 		}
 		if (isAuthEnabledError) {
-			setErrorMessage("Unable to verify authentication status. Please retry.");
+			setErrorMessage(t("login.authError"));
 			return;
 		}
 		if (!isAuthEnabled || hasValidToken) {
@@ -92,7 +94,7 @@ export default function LoginView() {
 							<img src={logoSrc} alt="Bifrost" width={160} height={26} className="" />
 						</div>
 						<div className="flex items-center justify-center py-8">
-							<div className="text-muted-foreground text-sm">Checking authentication...</div>
+							<div className="text-muted-foreground text-sm">{t("login.checkingAuth")}</div>
 						</div>
 					</div>
 				</div>
@@ -110,8 +112,8 @@ export default function LoginView() {
 					</div>
 
 					<div className="space-y-2 text-center">
-						<h1 className="text-foreground text-lg font-semibold">Welcome back</h1>
-						<p className="text-muted-foreground text-sm">Sign in to your account to continue</p>
+						<h1 className="text-foreground text-lg font-semibold">{t("login.welcome")}</h1>
+						<p className="text-muted-foreground text-sm">{t("login.subtitle")}</p>
 					</div>
 
 					<form onSubmit={handleSubmit} className="space-y-5">
@@ -119,12 +121,12 @@ export default function LoginView() {
 
 						<div className="space-y-2">
 							<Label htmlFor="username" className="text-sm font-medium">
-								Username
+								{t("login.username")}
 							</Label>
 							<Input
 								id="username"
 								type="text"
-								placeholder="Enter your username"
+								placeholder={t("login.enterUsername")}
 								value={username}
 								onChange={(e) => setUsername(e.target.value)}
 								required
@@ -135,13 +137,13 @@ export default function LoginView() {
 
 						<div className="space-y-2">
 							<Label htmlFor="password" className="text-sm font-medium">
-								Password
+								{t("login.password")}
 							</Label>
 							<div className="relative">
 								<Input
 									id="password"
 									type={showPassword ? "text" : "password"}
-									placeholder="Enter your password"
+									placeholder={t("login.enterPassword")}
 									value={password}
 									onChange={(e) => setPassword(e.target.value)}
 									required
@@ -160,7 +162,7 @@ export default function LoginView() {
 						</div>
 
 						<Button type="submit" className="h-9 w-full text-sm" isLoading={isLoading} disabled={isLoading}>
-							{isLoading || isLoggingIn ? "Signing in..." : "Sign in"}
+							{isLoading || isLoggingIn ? t("login.signingIn") : t("login.signIn")}
 						</Button>
 					</form>
 
@@ -173,7 +175,7 @@ export default function LoginView() {
 								target="_blank"
 								rel="noopener noreferrer"
 								className="text-muted-foreground hover:text-primary transition-colors"
-								title={item.title}
+								title={t(item.titleKey)}
 							>
 								<item.icon className="h-5 w-5" size={20} weight="regular" strokeWidth={item.strokeWidth} />
 							</a>

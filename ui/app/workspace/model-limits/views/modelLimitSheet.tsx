@@ -22,6 +22,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -45,6 +46,7 @@ const formSchema = z.object({
 type FormData = z.infer<typeof formSchema>;
 
 export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: ModelLimitSheetProps) {
+	const { t } = useTranslation();
 	const [isOpen, setIsOpen] = useState(true);
 	const isEditing = !!modelConfig;
 
@@ -133,12 +135,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 	const onSubmit = async (data: FormData) => {
 		if (!canSubmit) {
-			toast.error("You don't have permission to perform this action");
+			toast.error(t("workspace.modelLimits.permissionDenied"));
 			return;
 		}
 
 		if (!hasAnyLimit) {
-			form.setError("root", { message: "At least one budget or rate limit is required" });
+			form.setError("root", { message: t("workspace.modelLimits.missingLimit") });
 			return;
 		}
 
@@ -192,7 +194,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						rate_limit: rateLimitPayload,
 					},
 				}).unwrap();
-				toast.success("Model limit updated successfully");
+				toast.success(t("workspace.modelLimits.updatedSuccess"));
 			} else {
 				await createModelConfig({
 					model_name: data.modelName,
@@ -217,7 +219,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								}
 							: undefined,
 				}).unwrap();
-				toast.success("Model limit created successfully");
+				toast.success(t("workspace.modelLimits.createdSuccess"));
 			}
 
 			onSave();
@@ -239,9 +241,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				data-testid="model-limit-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
-					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
+					<SheetTitle>{isEditing ? t("workspace.modelLimits.editTitle") : t("workspace.modelLimits.createTitle")}</SheetTitle>
 					<SheetDescription>
-						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a model."}
+						{isEditing ? t("workspace.modelLimits.editDescription") : t("workspace.modelLimits.createDescription")}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -254,7 +256,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								name="provider"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Provider</FormLabel>
+										<FormLabel>{t("workspace.modelLimits.providerLabel")}</FormLabel>
 										<Select
 											value={field.value || "all"}
 											onValueChange={(value) =>
@@ -264,11 +266,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										>
 											<FormControl>
 												<SelectTrigger className="w-full" data-testid="model-limit-provider-select">
-													<SelectValue placeholder="All Providers" />
+													<SelectValue placeholder={t("workspace.modelLimits.allProviders")} />
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
-												<SelectItem value="all">All Providers</SelectItem>
+												<SelectItem value="all">{t("workspace.modelLimits.allProviders")}</SelectItem>
 												{availableProviders
 													.filter((p) => p.name)
 													.map((provider) => (
@@ -296,14 +298,14 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								name="modelName"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Model Name</FormLabel>
+										<FormLabel>{t("workspace.modelLimits.model")}</FormLabel>
 										<FormControl>
 											<div data-testid="model-limit-model-select">
 												<ModelMultiselect
 													provider={form.watch("provider") || undefined}
 													value={field.value}
 													onChange={field.onChange}
-													placeholder="Search for a model..."
+													placeholder={t("workspace.modelLimits.searchModelPlaceholder")}
 													isSingleSelect
 													loadModelsOnEmptyProvider="base_models"
 													disabled={isEditing}
@@ -319,7 +321,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 							{/* Budget Configuration */}
 							<div className="space-y-4">
-								<Label className="text-sm font-medium">Budget</Label>
+								<Label className="text-sm font-medium">{t("workspace.modelLimits.budgetSection")}</Label>
 								<FormField
 									control={form.control}
 									name="budgetMaxLimit"
@@ -328,7 +330,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											<NumberAndSelect
 												id="modelBudgetMaxLimit"
 												labelClassName="font-normal"
-												label="Maximum Spend (USD)"
+												label={t("workspace.modelLimits.maximumSpendUsd")}
 												value={field.value}
 												selectValue={form.watch("budgetResetDuration") || "1M"}
 												onChangeNumber={(value) => field.onChange(value)}
@@ -345,7 +347,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 							{/* Rate Limiting Configuration */}
 							<div className="space-y-4">
-								<Label className="text-sm font-medium">Rate Limits</Label>
+								<Label className="text-sm font-medium">{t("workspace.modelLimits.rateLimitsSection")}</Label>
 
 								<FormField
 									control={form.control}
@@ -355,7 +357,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											<NumberAndSelect
 												id="modelTokenMaxLimit"
 												labelClassName="font-normal"
-												label="Maximum Tokens"
+												label={t("workspace.modelLimits.maximumTokens")}
 												value={field.value}
 												selectValue={form.watch("tokenResetDuration") || "1h"}
 												onChangeNumber={(value) => field.onChange(value)}
@@ -375,7 +377,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											<NumberAndSelect
 												id="modelRequestMaxLimit"
 												labelClassName="font-normal"
-												label="Maximum Requests"
+												label={t("workspace.modelLimits.maximumRequests")}
 												value={field.value}
 												selectValue={form.watch("requestResetDuration") || "1h"}
 												onChangeNumber={(value) => field.onChange(value)}
@@ -386,9 +388,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										</FormItem>
 									)}
 								/>
-								{form.formState.errors.root && (
-									<p className="text-destructive text-sm">{form.formState.errors.root.message}</p>
-								)}
+								{form.formState.errors.root && <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>}
 							</div>
 
 							{/* Current Usage Display (for editing) */}
@@ -396,11 +396,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								<>
 									<DottedSeparator />
 									<div className="space-y-3">
-										<Label className="text-sm font-medium">Current Usage</Label>
+										<Label className="text-sm font-medium">{t("workspace.modelLimits.currentUsage")}</Label>
 										<div className="bg-muted/50 grid grid-cols-2 gap-4 rounded-lg p-4">
 											{modelConfig?.budget && (
 												<div className="space-y-1">
-													<p className="text-muted-foreground text-xs">Budget</p>
+													<p className="text-muted-foreground text-xs">{t("workspace.modelLimits.budget")}</p>
 													<p className="text-sm font-medium">
 														${modelConfig.budget.current_usage.toFixed(2)} / ${modelConfig.budget.max_limit.toFixed(2)}
 													</p>
@@ -408,7 +408,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											)}
 											{modelConfig?.rate_limit?.token_max_limit && (
 												<div className="space-y-1">
-													<p className="text-muted-foreground text-xs">Tokens</p>
+													<p className="text-muted-foreground text-xs">{t("workspace.modelLimits.tokens")}</p>
 													<p className="text-sm font-medium">
 														{modelConfig.rate_limit.token_current_usage.toLocaleString()} /{" "}
 														{modelConfig.rate_limit.token_max_limit.toLocaleString()}
@@ -417,7 +417,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											)}
 											{modelConfig?.rate_limit?.request_max_limit && (
 												<div className="space-y-1">
-													<p className="text-muted-foreground text-xs">Requests</p>
+													<p className="text-muted-foreground text-xs">{t("workspace.modelLimits.requests")}</p>
 													<p className="text-sm font-medium">
 														{modelConfig.rate_limit.request_current_usage.toLocaleString()} /{" "}
 														{modelConfig.rate_limit.request_max_limit.toLocaleString()}
@@ -433,16 +433,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						{/* Footer */}
 						<div className="bg-card sticky bottom-0 shrink-0 border-t px-8 py-4">
 							<div className="flex items-center justify-end gap-3">
-								{!canSubmit && <p className="text-destructive text-sm">You don't have permission to perform this action</p>}
+								{!canSubmit && <p className="text-destructive text-sm">{t("workspace.modelLimits.permissionDenied")}</p>}
 								<Button type="button" variant="outline" onClick={handleClose}>
-									Cancel
+									{t("common.cancel")}
 								</Button>
-								<Button
-									type="submit"
-									data-testid="model-limit-button-submit"
-									disabled={isLoading || !form.formState.isDirty || !canSubmit}
-								>
-									{isLoading ? "Saving..." : isEditing ? "Save Changes" : "Create Limit"}
+								<Button type="submit" data-testid="model-limit-button-submit" disabled={isLoading || !form.formState.isDirty || !canSubmit}>
+									{isLoading ? t("common.saving") : isEditing ? t("workspace.config.saveChanges") : t("workspace.modelLimits.createLimit")}
 								</Button>
 							</div>
 						</div>

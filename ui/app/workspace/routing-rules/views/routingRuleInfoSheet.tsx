@@ -13,6 +13,7 @@ import { getScopeLabel } from "@/lib/utils/routingRules";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
+import i18n from "@/lib/i18n";
 import { RuleGroupType, RuleType } from "react-querybuilder";
 import { toast } from "sonner";
 
@@ -60,7 +61,7 @@ function CopyButton({ value, label, testId }: { value: string; label?: string; t
 			setCopied(true);
 			setTimeout(() => setCopied(false), 1500);
 		} catch {
-			toast.error("Failed to copy to clipboard");
+			toast.error(i18n.t("workspace.routingRules.copyFailed"));
 		}
 	};
 
@@ -73,13 +74,21 @@ function CopyButton({ value, label, testId }: { value: string; label?: string; t
 					size="icon"
 					className="h-6 w-6 shrink-0"
 					onClick={handleCopy}
-					aria-label={copied ? `${label ?? "value"} copied` : `Copy ${label ?? "value"}`}
+					aria-label={
+						copied
+							? i18n.t("workspace.routingRules.copiedLabel")
+							: i18n.t("workspace.routingRules.copyValueLabel", { value: label ?? "value" })
+					}
 					data-testid={testId}
 				>
 					{copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
 				</Button>
 			</TooltipTrigger>
-			<TooltipContent>{copied ? "Copied!" : `Copy ${label ?? "value"}`}</TooltipContent>
+			<TooltipContent>
+				{copied
+					? i18n.t("workspace.routingRules.copiedLabel")
+					: i18n.t("workspace.routingRules.copyValueLabel", { value: label ?? "value" })}
+			</TooltipContent>
 		</Tooltip>
 	);
 }
@@ -112,12 +121,12 @@ function ConditionRow({ rule }: { rule: RuleType }) {
 				<Badge variant="outline" className="shrink-0 font-medium">
 					{isHeader && keyName ? (
 						<span className="flex items-center gap-1">
-							<span className="text-muted-foreground font-normal">header</span>
+							<span className="text-muted-foreground font-normal">{i18n.t("workspace.routingRules.header")}</span>
 							<span className="font-mono">{keyName}</span>
 						</span>
 					) : isParam && keyName ? (
 						<span className="flex items-center gap-1">
-							<span className="text-muted-foreground font-normal">param</span>
+							<span className="text-muted-foreground font-normal">{i18n.t("workspace.routingRules.param")}</span>
 							<span className="font-mono">{keyName}</span>
 						</span>
 					) : (
@@ -158,7 +167,9 @@ function ConditionGroup({ group, depth = 0 }: { group: RuleGroupType; depth?: nu
 
 	return (
 		<div className="border-foreground/25 relative mx-3 my-1 rounded border border-dashed py-1">
-			<span className="bg-background text-muted-foreground absolute -top-2 right-2 rounded px-1 text-[10px] font-medium">Group</span>
+			<span className="bg-background text-muted-foreground absolute -top-2 right-2 rounded px-1 text-[10px] font-medium">
+				{i18n.t("workspace.routingRules.group")}
+			</span>
 			{content}
 		</div>
 	);
@@ -167,7 +178,7 @@ function ConditionGroup({ group, depth = 0 }: { group: RuleGroupType; depth?: nu
 // ─── target card ─────────────────────────────────────────────────────────────
 
 function TargetCard({ target, total }: { target: RoutingRule["targets"][0]; index: number; total: number }) {
-	const providerLabel = target.provider ? getProviderLabel(target.provider) : "Incoming provider";
+	const providerLabel = target.provider ? getProviderLabel(target.provider) : i18n.t("workspace.routingRules.incomingProviderDisplay");
 	const weightPercent = total > 0 ? Math.round(target.weight * 100) : 0;
 
 	return (
@@ -180,7 +191,7 @@ function TargetCard({ target, total }: { target: RoutingRule["targets"][0]; inde
 						{target.model ? (
 							<span className="text-muted-foreground font-mono text-xs">{target.model}</span>
 						) : (
-							<span className="text-muted-foreground text-xs">Incoming model</span>
+							<span className="text-muted-foreground text-xs">{i18n.t("workspace.routingRules.incomingModelInfo")}</span>
 						)}
 					</div>
 				</div>
@@ -193,13 +204,13 @@ function TargetCard({ target, total }: { target: RoutingRule["targets"][0]; inde
 							<span className="text-muted-foreground w-8 text-right font-mono text-xs">{weightPercent}%</span>
 						</div>
 					</TooltipTrigger>
-					<TooltipContent>Weight: {target.weight} (raw)</TooltipContent>
+					<TooltipContent>{i18n.t("workspace.routingRules.weightRaw", { weight: target.weight })}</TooltipContent>
 				</Tooltip>
 			</div>
 			{target.key_id && (
 				<div className="bg-muted/50 flex items-center gap-1.5 rounded-md px-2 py-1">
 					<Key className="text-muted-foreground h-3 w-3 shrink-0" />
-					<span className="text-muted-foreground text-xs">Pinned key:</span>
+					<span className="text-muted-foreground text-xs">{i18n.t("workspace.routingRules.pinnedKey")}</span>
 					<code className="truncate font-mono text-xs">{target.key_id}</code>
 					<CopyButton value={target.key_id} label="key ID" testId="routing-rule-copy-key-id-btn" />
 				</div>
@@ -215,8 +226,8 @@ function FallbackChain({ fallbacks }: { fallbacks: string[] }) {
 		<div className="flex flex-wrap items-center gap-y-2">
 			{fallbacks.map((fb, i) => {
 				const parts = fb.split("/");
-				const provider = parts[0] || "Incoming provider";
-				const model = parts.length > 1 ? parts.slice(1).join("/") : "Incoming model";
+				const provider = parts[0] || i18n.t("workspace.routingRules.incomingProviderDisplay");
+				const model = parts.length > 1 ? parts.slice(1).join("/") : i18n.t("workspace.routingRules.incomingModelFallback");
 
 				return (
 					<div key={i} className="flex items-center">
@@ -248,18 +259,18 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 						<SheetHeader className="flex flex-col items-start gap-1 p-0">
 							<div className="flex w-full flex-wrap items-center gap-2">
 								<SheetTitle className="text-base">{rule.name}</SheetTitle>
-								<Badge variant={rule.enabled ? "default" : "secondary"}>{rule.enabled ? "Enabled" : "Disabled"}</Badge>
+								<Badge variant={rule.enabled ? "default" : "secondary"}>
+									{rule.enabled ? i18n.t("workspace.routingRules.enabledLabel") : i18n.t("workspace.routingRules.disabledLabel")}
+								</Badge>
 								{rule.chain_rule && (
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<Badge variant="outline" className="cursor-default gap-1">
 												<GitMerge className="h-3 w-3" />
-												Chain Rule
+												{i18n.t("workspace.routingRules.chainRuleBadge")}
 											</Badge>
 										</TooltipTrigger>
-										<TooltipContent className="max-w-64">
-											After this rule matches, routing rules are re-evaluated using the resolved provider/model as the new context.
-										</TooltipContent>
+										<TooltipContent className="max-w-64">{i18n.t("workspace.routingRules.chainRuleTooltipInfo")}</TooltipContent>
 									</Tooltip>
 								)}
 							</div>
@@ -269,17 +280,17 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 						<div className="-mx-8 space-y-6 overflow-y-auto px-8 pb-8">
 							{/* Overview */}
 							<div className="space-y-3">
-								<h3 className="text-sm font-semibold">Overview</h3>
+								<h3 className="text-sm font-semibold">{i18n.t("workspace.routingRules.overview")}</h3>
 								<div className="grid gap-3">
 									<div className="grid grid-cols-3 items-center gap-4">
-										<span className="text-muted-foreground text-sm">Scope</span>
+										<span className="text-muted-foreground text-sm">{i18n.t("workspace.routingRules.scope")}</span>
 										<div className="col-span-2 flex items-center gap-1.5">
 											<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
 											{scopeName && <span className="text-sm">{scopeName}</span>}
 										</div>
 									</div>
 									<div className="grid grid-cols-3 items-center gap-4">
-										<span className="text-muted-foreground text-sm">Priority</span>
+										<span className="text-muted-foreground text-sm">{i18n.t("workspace.routingRules.priority")}</span>
 										<div className="col-span-2">
 											<span className="bg-primary text-primary-foreground inline-block rounded px-2.5 py-0.5 text-xs font-medium">
 												{rule.priority}
@@ -293,13 +304,17 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 
 							{/* Conditions */}
 							<div className="space-y-3">
-								<h3 className="text-sm font-semibold">Conditions</h3>
-								{hasQuery ? <ConditionGroup group={rule.query!} /> : <p className="text-muted-foreground text-sm">Matches all requests</p>}
+								<h3 className="text-sm font-semibold">{i18n.t("workspace.routingRules.conditions")}</h3>
+								{hasQuery ? (
+									<ConditionGroup group={rule.query!} />
+								) : (
+									<p className="text-muted-foreground text-sm">{i18n.t("workspace.routingRules.matchesAllRequests")}</p>
+								)}
 
 								{/* CEL expression */}
 								<div className="space-y-1.5">
 									<div className="flex items-center justify-between">
-										<span className="text-sm font-semibold">CEL Expression</span>
+										<span className="text-sm font-semibold">{i18n.t("workspace.routingRules.celExpression")}</span>
 										<CopyButton value={rule.cel_expression} label="expression" testId="routing-rule-copy-expression-btn" />
 									</div>
 									<code className="bg-muted/50 block w-full rounded-md border px-3 py-2 font-mono text-xs break-all">
@@ -312,7 +327,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 
 							{/* Targets */}
 							<div className="space-y-3">
-								<h3 className="text-sm font-semibold">Targets ({targets.length})</h3>
+								<h3 className="text-sm font-semibold">{i18n.t("workspace.routingRules.targetsSection", { count: targets.length })}</h3>
 								{targets.length > 0 ? (
 									<div className="space-y-2">
 										{targets.map((target, i) => (
@@ -320,7 +335,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 										))}
 									</div>
 								) : (
-									<p className="text-muted-foreground text-sm">No targets configured</p>
+									<p className="text-muted-foreground text-sm">{i18n.t("workspace.routingRules.noTargetsConfigured")}</p>
 								)}
 							</div>
 
@@ -328,11 +343,11 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 
 							{/* Fallback Chain */}
 							<div className="space-y-3">
-								<h3 className="text-sm font-semibold">Fallback Chain</h3>
+								<h3 className="text-sm font-semibold">{i18n.t("workspace.routingRules.fallbackChainSection")}</h3>
 								{fallbacks.length > 0 ? (
 									<FallbackChain fallbacks={fallbacks} />
 								) : (
-									<p className="text-muted-foreground text-sm">No fallbacks configured</p>
+									<p className="text-muted-foreground text-sm">{i18n.t("workspace.routingRules.noFallbacksConfiguredInfo")}</p>
 								)}
 							</div>
 
@@ -341,11 +356,15 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 							{/* Timestamps */}
 							<div className="grid grid-cols-2 gap-4">
 								<div>
-									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Created</p>
+									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">
+										{i18n.t("workspace.routingRules.created")}
+									</p>
 									<span className="text-sm">{formatDistanceToNow(new Date(rule.created_at), { addSuffix: true })}</span>
 								</div>
 								<div>
-									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Last Updated</p>
+									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">
+										{i18n.t("workspace.routingRules.lastUpdated")}
+									</p>
 									<span className="text-sm">{formatDistanceToNow(new Date(rule.updated_at), { addSuffix: true })}</span>
 								</div>
 							</div>

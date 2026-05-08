@@ -9,6 +9,7 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
+import i18n from "@/lib/i18n";
 import { PluginFormFragment } from "../fragments/pluginFormFragments";
 
 const pluginFormSchema = z.object({
@@ -105,7 +106,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 				try {
 					parsedConfig = JSON.parse(data.config);
 				} catch {
-					toast.error("Invalid JSON configuration");
+					toast.error(i18n.t("workspace.plugins.invalidJsonConfiguration"));
 					return;
 				}
 			}
@@ -119,7 +120,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 						config: parsedConfig,
 					},
 				}).unwrap();
-				toast.success("Plugin updated successfully");
+				toast.success(i18n.t("workspace.plugins.pluginUpdated"));
 			} else {
 				// Create new plugin
 				await createPlugin({
@@ -128,7 +129,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 					enabled: true,
 					config: parsedConfig,
 				}).unwrap();
-				toast.success("Plugin created successfully");
+				toast.success(i18n.t("workspace.plugins.pluginCreated"));
 				// Notify parent with the config name to select it
 				onCreate?.(data.name);
 			}
@@ -151,11 +152,9 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 		<Sheet open={open} onOpenChange={handleClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4">
 				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky top-0 bg-card z-10">
-					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
+					<SheetTitle>{isEditMode ? i18n.t("workspace.plugins.updatePlugin") : i18n.t("workspace.plugins.installNewPlugin")}</SheetTitle>
 					<SheetDescription>
-						{isEditMode
-							? "Update the plugin configuration. Note: Plugin name and path cannot be changed."
-							: "Add a custom plugin by providing its name, path/URL, and optional configuration."}
+						{isEditMode ? i18n.t("workspace.plugins.updatePluginDescription") : i18n.t("workspace.plugins.installPluginDescription")}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -165,12 +164,12 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 							<PluginFormFragment form={form} isEditMode={isEditMode} />
 						</div>
 
-						<div className="flex justify-end gap-2 bg-card sticky bottom-0 border-t px-8 py-4">
+						<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-8 py-4">
 							<Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>
-								Cancel
+								{i18n.t("workspace.plugins.cancel")}
 							</Button>
 							<Button type="submit" disabled={isLoading || !form.formState.isValid || disableAction} isLoading={isLoading}>
-								{isEditMode ? "Update Plugin" : "Install Plugin"}
+								{isEditMode ? i18n.t("workspace.plugins.updatePlugin") : i18n.t("workspace.plugins.installNewPlugin")}
 							</Button>
 						</div>
 					</form>

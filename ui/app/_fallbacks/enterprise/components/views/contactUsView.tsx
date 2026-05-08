@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
 	className?: string;
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export default function ContactUsView({ icon, title, description, className, readmeLink, align = "middle", testIdPrefix }: Props) {
+	const { t } = useTranslation();
 	return (
 		<div className={cn("flex flex-col items-center gap-4 text-center", align === "middle" ? "justify-center" : "justify-start", className)}>
 			<div className="text-muted-foreground">{icon}</div>
@@ -22,14 +24,14 @@ export default function ContactUsView({ icon, title, description, className, rea
 				<div className="mx-auto flex flex-row items-center gap-2">
 					<Button
 						variant="outline"
-						aria-label="Read more about this feature (opens in new tab)"
+						aria-label={`${t("common.readMore")} (opens in new tab)`}
 						className="mx-auto mt-6"
 						data-testid={testIdPrefix ? `${testIdPrefix}-read-more` : undefined}
 						onClick={() => {
 							window.open(`${readmeLink}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
 					>
-						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+						{t("common.readMore")} <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
 					<Button
 						className="mx-auto mt-6"
@@ -39,7 +41,7 @@ export default function ContactUsView({ icon, title, description, className, rea
 							window.open("https://calendly.com/maximai/bifrost-demo?utm_source=bfd_ent", "_blank", "noopener,noreferrer");
 						}}
 					>
-						Book a demo
+						{t("sidebar.productionSetup.bookDemo")}
 					</Button>
 				</div>
 			</div>
