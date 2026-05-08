@@ -561,6 +561,7 @@ export default function AppSidebar() {
   const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
   const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
   const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
+  const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
   const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
   const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
   const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
@@ -623,7 +624,7 @@ export default function AppSidebar() {
             url: "/workspace/mcp-logs",
             icon: MCPIcon,
             description: "MCP tool execution logs",
-            hasAccess: hasMCPGatewayAccess,
+            hasAccess: hasMCPLogsAccess,
           },
           {
             title: "Connectors",
@@ -921,11 +922,12 @@ export default function AppSidebar() {
       },
     ],
     [
-      hasLogsAccess,
-      hasObservabilityAccess,
-      hasModelProvidersAccess,
-      hasMCPGatewayAccess,
-      hasPluginsAccess,
+        hasLogsAccess,
+        hasObservabilityAccess,
+        hasModelProvidersAccess,
+        hasMCPGatewayAccess,
+        hasMCPLogsAccess,
+        hasPluginsAccess,
       hasUsersAccess,
       hasUserProvisioningAccess,
       hasAuditLogsAccess,
