@@ -561,6 +561,7 @@ export default function AppSidebar() {
   const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
   const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
   const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
+  const hasMCPToolGroupsAccess = useRbac(RbacResource.MCPToolGroups, RbacOperation.View);
   const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
   const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
   const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
@@ -698,7 +699,7 @@ export default function AppSidebar() {
         icon: MCPIcon,
         description: "MCP configuration",
         url: "/workspace/mcp-gateway",
-        hasAccess: hasMCPGatewayAccess,
+        hasAccess: hasMCPGatewayAccess || hasMCPToolGroupsAccess,
         subItems: [
           {
             title: "MCP Catalog",
@@ -712,7 +713,7 @@ export default function AppSidebar() {
             url: "/workspace/mcp-tool-groups",
             icon: ToolCase,
             description: "Tool Groups",
-            hasAccess: hasMCPGatewayAccess,
+            hasAccess: hasMCPToolGroupsAccess,
           },
           {
             title: "MCP Settings",
@@ -926,6 +927,7 @@ export default function AppSidebar() {
         hasObservabilityAccess,
         hasModelProvidersAccess,
         hasMCPGatewayAccess,
+        hasMCPToolGroupsAccess,
         hasMCPLogsAccess,
         hasPluginsAccess,
       hasUsersAccess,
