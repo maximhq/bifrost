@@ -418,7 +418,12 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+		// Pagination total count uses the same time-window hybrid as
+		// /api/logs/stats: short windows go raw so the count stays consistent
+		// with the (always-raw) row list rendered alongside it. Long windows
+		// keep the matview win because raw COUNT over multi-day ranges is the
+		// expensive path.
+		if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 			var err error
 			totalCount, err = s.getCountFromMatView(gCtx, filters)
 			return err
@@ -676,7 +681,11 @@ func (s *RDBLogStore) listSelectColumns() string {
 
 // GetStats calculates statistics for logs matching the given filters.
 func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+	// Stats has a stricter matview gate than other paths: short windows go to
+	// the raw table even if matview-eligible, so /api/logs/stats stays
+	// consistent with the real-time /api/logs row list. See
+	// canUseMatViewForFreshAggregate.
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		return s.getStatsFromMatView(ctx, filters)
 	}
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
