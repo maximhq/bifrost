@@ -49,9 +49,13 @@ func (s *updateStatusOnlyConfigStore) UpdateStatus(ctx context.Context, provider
 
 func TestRegisterAPIRoutes_SkipsGovernanceHandlerWithoutConfigStore(t *testing.T) {
 	prevLogger := logger
+	prevHandlersLogger := handlers.GetLogger()
 	logger = noopTestLogger{}
 	handlers.SetLogger(noopTestLogger{})
-	defer func() { logger = prevLogger }()
+	defer func() {
+		logger = prevLogger
+		handlers.SetLogger(prevHandlersLogger)
+	}()
 
 	governancePlugin, err := governance.Init(
 		context.Background(),

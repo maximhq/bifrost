@@ -10,6 +10,11 @@ func SetLogger(l schemas.Logger) {
 	logger = l
 }
 
+// GetLogger returns the current logger for the application.
+func GetLogger() schemas.Logger {
+	return logger
+}
+
 // SetVersion sets the version for the application.
 func SetVersion(v string) {
 	version = v
