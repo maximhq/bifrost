@@ -2830,8 +2830,6 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 	offset := params.Offset
 	if limit <= 0 {
 		limit = 25
-	} else if limit > 100 {
-		limit = 100
 	}
 	if offset < 0 {
 		offset = 0
