@@ -443,7 +443,9 @@ export default function LogsPage() {
 		[stats],
 	);
 
-	const { data: filterData } = useGetAvailableFilterDataQuery();
+	// Only need metadata_keys here (used to render dynamic columns even when the
+	// current page has no rows). Scope the request to that one dimension.
+	const { data: filterData } = useGetAvailableFilterDataQuery({ dimensions: ["metadata_keys"] });
 
 	// Get metadata keys from filterdata API so columns always show even with no data on current page
 	const metadataKeys = useMemo(() => {

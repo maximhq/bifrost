@@ -147,9 +147,15 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: ["MCPLogs"],
 		}),
 
-		// Get available filter data (tool names, server labels)
-		getMCPAvailableFilterData: builder.query<MCPToolLogFilterData, void>({
-			query: () => "/mcp-logs/filterdata",
+		// Get available MCP filter data. Pass `dimensions` to fetch only a subset
+		// (tool_names, server_labels, virtual_keys); omit for all.
+		getMCPAvailableFilterData: builder.query<Partial<MCPToolLogFilterData>, { dimensions?: string[] } | void>({
+			query: (arg) => {
+				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
+				if (!dims || dims.length === 0) return "/mcp-logs/filterdata";
+				const sorted = [...dims].sort().join(",");
+				return `/mcp-logs/filterdata?dimensions=${encodeURIComponent(sorted)}`;
+			},
 			providesTags: ["MCPLogs"],
 		}),
 
