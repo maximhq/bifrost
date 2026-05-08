@@ -472,26 +472,29 @@ export const createColumns = (
     },
   }));
 
-  const actionsColumn: ColumnDef<LogEntry> = {
-    id: "actions",
-    size: 72,
-    cell: ({ row }) => {
-      const log = row.original;
-      return (
-        <Button
-          variant="outline"
-          size="icon"
-          data-testid="log-delete-btn"
-          aria-label="Delete log"
-          className="text-secondary-foreground/30 hover:bg-destructive/10 hover:text-destructive border-destructive/10"
-          onClick={() => onDelete(log)}
-          disabled={!hasDeleteAccess}
-        >
-          <Trash2 strokeWidth={1.5} />
-        </Button>
-      );
-    },
-  };
+  const actionsColumn: ColumnDef<LogEntry>[] = hasDeleteAccess
+    ? [
+      {
+        id: "actions",
+        size: 72,
+        cell: ({ row }) => {
+          const log = row.original;
+          return (
+            <Button
+              variant="outline"
+              size="icon"
+              data-testid="log-delete-btn"
+              aria-label="Delete log"
+              className="text-destructive/60 border-destructive/60 hover:text-destructive hover:bg-destructive/10"
+              onClick={() => onDelete(log)}
+            >
+              <Trash2 strokeWidth={1.5} />
+            </Button>
+          );
+        },
+      },
+    ]
+    : [];
 
-  return [...baseColumns, ...metadataColumns, actionsColumn];
+  return [...baseColumns, ...metadataColumns, ...actionsColumn];
 };
