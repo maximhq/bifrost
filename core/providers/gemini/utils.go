@@ -1285,8 +1285,7 @@ func applyUnionType(schema *Schema, nonNullTypes []string, hasNull bool) {
 	case 1:
 		schema.Type = Type(nonNullTypes[0])
 		if hasNull {
-			trueVal := true
-			schema.Nullable = &trueVal
+			schema.Nullable = schemas.Ptr(true)
 		}
 	default:
 		anyOfSchemas := make([]*Schema, 0, len(nonNullTypes))
@@ -1294,8 +1293,7 @@ func applyUnionType(schema *Schema, nonNullTypes []string, hasNull bool) {
 			anyOfSchemas = append(anyOfSchemas, &Schema{Type: Type(t)})
 		}
 		if hasNull {
-			trueVal := true
-			schema.Nullable = &trueVal
+			schema.Nullable = schemas.Ptr(true)
 		}
 		schema.AnyOf = anyOfSchemas
 	}
