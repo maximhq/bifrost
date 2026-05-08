@@ -24,6 +24,7 @@ ModelProvider:
     - elevenlabs
     - huggingface
     - nebius
+    - saladcloud
     - xai
     - runway
     - fireworks

@@ -43,9 +43,9 @@ func TestSaladCloud(t *testing.T) {
 			ListModels:                 true,
 			Embedding:                  false,
 			ImageGeneration:            false,
-			ImageURL:                   false,
-			ImageBase64:                false,
-			MultipleImages:             false,
+			ImageURL:                   true,
+			ImageBase64:                true,
+			MultipleImages:             true,
 		},
 	}
 

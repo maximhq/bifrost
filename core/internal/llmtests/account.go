@@ -496,6 +496,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.SaladCloud:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.SALAD_CLOUD_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
 	case schemas.Ollama:
 		return []schemas.Key{
 			{
