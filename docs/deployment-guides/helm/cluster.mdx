@@ -61,6 +61,8 @@ bifrost:
         timeoutSeconds: 10
         successThreshold: 3
         failureThreshold: 3
+    grpc:
+      port: 10102 # this is the default port if grpc is not mentioned, can be overridden
 
 # Spread replicas across nodes for true HA
 affinity:
