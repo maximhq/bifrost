@@ -1,0 +1,39 @@
+---
+title: "Release Cadence"
+description: "How Bifrost OSS releases are versioned and shipped"
+icon: "box-open"
+---
+
+Bifrost follows standard [semantic versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`). The cadence below describes when each release type ships, what it typically contains, and how to decide whether you need to upgrade.
+
+## Cadence at a glance
+
+| Release type | Frequency | Typical contents |
+|---|---|---|
+| **Patch** (`x.y.Z`) | Every 2 - 3 days | Bug fixes, CVE fixes, small feature previews |
+| **Minor** (`x.Y.0`) | Every 2 weeks | Rollup of the period's patches plus new non-breaking features |
+| **Major** (`X.0.0`) | When breaking changes land | Breaking API/schema changes, large architectural cuts |
+
+## Patch releases
+
+Patch versions ship every 2 - 3 days. A patch may include:
+
+- Bug fixes
+- CVE / security patches
+- Small feature previews (gated behind config flags where applicable)
+
+Each patch is independently installable, but every patch is also rolled into the next minor release, so deployments that follow the bi-weekly minor cadence pick them all up automatically.
+
+## Minor releases
+
+A minor version is cut **once every 2 weeks**. It consolidates every patch released since the previous minor, alongside any new non-breaking features that landed in that window. Picking up the latest minor gives you everything from the intervening patches in a single deploy.
+
+## Major releases
+
+Major versions are reserved for **breaking changes** or **major architectural cuts**. Each major release is paired with a [migration guide](/migration-guides/v1.5.0) listing every breaking change with before/after examples and a step-by-step checklist.
+
+## Do you need to upgrade every release?
+
+**No.** Patch and minor releases are cumulative, so skipping intermediate versions is safe - you can stay on whichever release line matches your deployment cadence.
+
+**Upgrade immediately only when the release notes explicitly say so.** That signal is reserved for high-severity CVEs, data-correctness fixes, or production-impacting regressions. Everything else can ride the regular cadence.
