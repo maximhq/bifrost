@@ -1,0 +1,112 @@
+---
+title: "v1.4.0"
+description: "Enterprise v1.4.0"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.0">
+
+## Changelog
+
+This release unifies the API authentication path so password-mode admin and API-key auth share the OSS `AuthMiddleware`/RBAC pipeline, splits SCIM provider configuration into per-provider forms, keeps governance usage snapshots alive across idle periods, and pulls in OSS base `transports/v1.5.0-prerelease8` with `objectStorageExcludeFields`, MCP server/client URL split, and a stack of provider correctness fixes (Anthropic routing, Bedrock structured-output streaming, SGL extra-params passthrough).
+
+## ✨ Features
+
+### Authentication & API Surface
+
+- **Unified API Auth Pipeline** - Removed the enterprise `SessionMiddleware` in favor of the OSS `AuthMiddleware.APIMiddleware()` on API routes; password-mode admin sessions and API-key auth now flow through the same middleware chain and share `schemas.IsLocalAdminContextKey` / `schemas.IsAPIKeyAuthContextKey` from core, eliminating the previous duplicated context-key constants.
+- **RBAC Always Initialized** - RBAC controller and permission cache are now bootstrapped unconditionally (no longer gated on the SCIM controller being present), so API-key permission checks and local-admin RBAC bypass work in non-SSO deployments.
+- **Auth Middleware Context Keys (OSS)** - Core v1.5.7 adds `IsAPIKeyAuthContextKey` (short-circuit when API-key auth already passed) and `IsLocalAdminContextKey` (bypass RBAC when auth is disabled).
+
+### SCIM & Identity
+
+- **Per-Provider SCIM Config Forms** - The single SCIM config form has been split into dedicated forms per provider (Entra, Google, Keycloak, Okta, SailPoint, Zitadel), each with its own validation and field set, replacing the shared switch-case form for better maintainability.
+- **Dedicated SCIM `config_hash` Migration** - Added `addSCIMProviderConfigHashColumn` (id `ent_add_scim_provider_config_hash_column`) so installations that already ran `ent_add_config_hash_columns` still receive the column on `enterprise_scim_providers`. Migration also reordered to run alongside other config-hash migrations, before access-profile migrations.
+
+### Governance & Cluster
+
+- **Governance Snapshot Heartbeat** - Added a 10s heartbeat for unchanged governance usage snapshots, tracking `lastBroadcastAt` per node so peers don't expire idle nodes' usage state under the 30s stale-node TTL. Cluster-wide budget and rate-limit enforcement no longer falls back to a partial local view when a node's usage simply stops changing.
+
+### OSS Base (transports/v1.5.0-prerelease8)
+
+- **`objectStorageExcludeFields`** - Configurable list of log payload fields that stay in the database instead of being offloaded to object storage.
+- **MCP External Base URL Split** - MCP external base URL split into separate server and client URL fields for clearer reverse-proxy configuration.
+- **Schema Normalizer** - New `NormalizeSchemaForAnthropicRaw` (gjson/sjson) avoids `map[string]interface{}` round-trips during Anthropic schema preparation.
+- **Bedrock Structured Output** - New `extractJSONSchemaObject` helper unifies composite and decomposed JSON schema fields for OpenAI-compat structured output on Bedrock.
+- **Provider Capability Matrix** - Re-enabled `ContextEditing` and `ContextManagementField` for Vertex; disabled `TaskBudgets` for Azure (not documented upstream); `claude-4.6-sonnet` mapped for the Bedrock test account.
+
+### Infrastructure
+
+- **New Customer Envs** - Added `bluestaq` and `onbe` Terraform/Docker scaffolding (hub backend, perimeter, terraform.tfvars); refreshed `falconx` and `constructor` Dockerfiles.
+
+## 🐞 Fixed
+
+- **API Middleware Wiring** - Auth middleware now runs before RBAC on API routes so `IsLocalAdminContextKey` is set before RBAC evaluates; cluster-message handler updated to use the unified `s.AuthMiddleware` reference.
+- **Prompts Plugin Missing Header** - Prompts plugin's deployment resolver no longer returns an error when `x-bf-prompt-id` is absent - missing header is treated as "plugin not needed for this request" instead of a failure.
+- **SCIM Teams Page Styling** - Fixed layout/style regressions on the SCIM teams pages (`usersView` and `usersTable`).
+- **Anthropic Integration Routing (OSS)** - Skip model catalog routing when loadbalancer or governance routing has already set the provider.
+- **SGL Extra Params Passthrough (OSS)** - SGL provider now sets `BifrostContextKeyPassthroughExtraParams`, so SGLang vLLM-style extra-body params (`chat_template_kwargs`, `guided_json`, `guided_regex`, `separate_reasoning`) are no longer dropped.
+- **Bedrock Structured-Output Streaming (OSS)** - Suppress non-tool content events (text deltas, reasoning, non-tool content-block starts) in structured-output mode so prose/preamble no longer corrupts the assembled JSON.
+- **MCP Tool Field Resolution (OSS)** - Resolve `tools_to_execute` and `tools_to_auto_execute` from existing config before validation on MCP client update.
+- **Auth Config Disabled Context (OSS)** - Update request context correctly when auth config is disabled.
+- **`BifrostError` String Output (OSS)** - Added `String()` method so logged errors render as JSON instead of decimal byte dumps.
+- **Streaming Latency Validation (OSS)** - Zero-millisecond latency values are now accepted (valid for sub-millisecond cache hits).
+- **`NewUnsupportedOperationError` Context (OSS)** - Now populates `Provider` and `RequestType` in `ExtraFields`.
+- **SCIM Page Layout (OSS)** - Added `no-scrollbar` utility class and applied `no-padding-parent` to the SCIM page.
+
+## 📀 Base OSS version
+
+`transports/v1.5.0-prerelease8`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2 v1.41.5
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.8-0.20260501201305-734f02d4cd7d
+	github.com/maximhq/bifrost/framework v1.3.8-0.20260501201305-734f02d4cd7d
+	github.com/maximhq/bifrost/plugins/governance v1.5.8-0.20260501201305-734f02d4cd7d
+	github.com/maximhq/bifrost/plugins/prompts v1.0.8-0.20260501201305-734f02d4cd7d
+	github.com/maximhq/bifrost/transports v1.5.0-prerelease8.0.20260501201305-734f02d4cd7d
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/grpc v1.80.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>
