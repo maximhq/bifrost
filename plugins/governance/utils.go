@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	modelEqualsLiteralRegexp = regexp.MustCompile(`\bmodel\s*==\s*["']([^"']+)["']`)
+	modelEqualsLiteralRegexp = regexp.MustCompile(`\bmodel\s*==\s*(?:"([^"]+)"|'([^']+)')`)
 	modelInLiteralRegexp     = regexp.MustCompile(`\bmodel\s+in\s*\[([^\]]*)\]`)
-	stringLiteralRegexp      = regexp.MustCompile(`["']([^"']+)["']`)
+	stringLiteralRegexp      = regexp.MustCompile(`"([^"]+)"|'([^']+)'`)
 )
 
 // ParseVirtualKeyFromFastHTTPRequest parses the virtual key from FastHTTP request headers.
