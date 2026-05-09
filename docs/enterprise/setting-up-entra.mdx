@@ -168,26 +168,23 @@ Ensure your application has the necessary permissions.
    - `User.Read.All`
    - `GroupMember.Read.All`
    - `Group.Read.All`
-   - `Application.Read.All` — required for syncing app-role-based role mappings during user import. If you don't want to do bulk syncing, you can skip this permission.
-   - `AppRoleAssignment.ReadWrite.All` — required to read each user's app role assignments via Microsoft Graph
+   - `Application.Read.All` — required for verification and user provisioning. Bifrost reads the Enterprise Application service principal, its assigned users/groups, and the App Registration claim configuration.
 
 <Warning>
   Permission **type** matters: `openid`, `profile`, `email`, `offline_access`,
   and `User.Read` must be **Delegated**, while `User.Read.All`,
   `GroupMember.Read.All`, `Group.Read.All`, `Application.Read.All`, and
-  `AppRoleAssignment.ReadWrite.All` must be **Application**. The same name can
-  exist under both types — adding the wrong one will cause sign-in or sync
-  failures even though the permission appears granted.
+  any other Graph provisioning permissions must be **Application**. The same
+  name can exist under both types — adding the wrong one will cause sign-in or
+  sync failures even though the permission appears granted.
 </Warning>
 
 7. Click **Add permissions**
 8. Click **Grant admin consent for [Your Organization]** (this is required — without admin consent, Application permissions are not effective even though they appear in the list)
 
 <Note>
-	`Application.Read.All` and `AppRoleAssignment.ReadWrite.All` are only needed if you plan to use **app role based role mappings** (i.e.
-	mappings whose attribute is `roles`) during the bulk user sync. Login-time role mapping works from the JWT alone, but bulk sync from
-	Microsoft Graph needs these permissions to read each user's app-role assignments and resolve them to their role values (e.g. `admin`,
-	`developer`).
+	Provisioning is scoped to the Enterprise Application assignments from Step 7. If the app has no users assigned directly and no assigned
+	groups with enabled direct user members, verification and import will return no users even if the directory contains users.
 </Note>
 
 ---
@@ -220,6 +217,11 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 5. Select the appropriate role (Admin, Developer, or Viewer)
 6. Click **Assign**
 
+<Note>
+	Bifrost uses this **Users and groups** assignment list as the source of truth for provisioning. Directly assigned users are included, and
+	users inside assigned groups are included as long as they are enabled direct members of the group.
+</Note>
+
 <Warning>
 	You **must** select a role when assigning a user or group. Adding a user to the application without picking a role causes Entra to omit
 	the `roles` claim from the issued ID token, and login will be rejected with `Claim "roles" is not present in the token`. If you don't want
@@ -230,6 +232,11 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 <Tip>
 	You can assign roles to groups for easier management. All users in a group will inherit the assigned role. The group itself must be added
 	as an assignment with a role selected — adding users to a group that isn't assigned to the application will not propagate roles.
+</Tip>
+
+<Tip>
+	If you are not using app roles and instead map Bifrost roles or teams from the `groups` claim, assign the relevant groups to the
+	Enterprise Application here. The mapping value in Bifrost should be the group's Entra **Object ID**, not the display name.
 </Tip>
 
 ---
@@ -291,7 +298,9 @@ Restrict the `groups` claim to groups assigned to this application (recommended)
   Enterprise application — not every group the user belongs to tenant-wide.
   This keeps your team and role mappings predictable and avoids leaking
   unrelated group memberships into the token. Use `"SecurityGroup"` or
-  `"All"` only if you intentionally want broader group visibility.
+  `"All"` only if you intentionally want broader group visibility. Entra emits
+  group **Object IDs** in the token, so Bifrost `groups` mappings should match
+  those Object IDs.
 </Note>
 
 ## Step 9: Configure Bifrost
@@ -344,7 +353,7 @@ Attribute mappings let you translate Entra claim values into Bifrost roles, team
 - **`attributeTeamMappings`**: map a claim value to a Bifrost team
 - **`attributeBusinessUnitMappings`**: map a claim value to a Bifrost business unit
 
-These mappings work with any Entra claim - the `groups` claim from Step 6, the app-role `roles` claim from Step 3, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
+These mappings work with any Entra claim - the `groups` claim from Step 6, the app-role `roles` claim from Step 3, or any other claim your authorization server includes in the token (e.g., `department`, `organization`). For `groups` mappings, use the Entra group **Object ID** as the value, not the group display name.
 
 To configure attribute mappings:
 
@@ -435,8 +444,20 @@ If you don't want to use app roles at all, switch your Bifrost mappings to use t
 If users come in via **User Provisioning → Import users** and end up on the default role (Viewer) despite having a matching app-role-based mapping configured:
 
 - Confirm the user actually has the app role assigned in Entra (**Enterprise applications → Bifrost Enterprise → Users and groups**).
-- Confirm both `Application.Read.All` and `AppRoleAssignment.ReadWrite.All` are granted **with admin consent** in Step 5. Without these, Bifrost cannot read the app role catalog or per-user assignments via Microsoft Graph, so the synthetic `roles` claim used by the importer will be empty.
-- Server logs will contain `[ENTRA-ROLES] failed to fetch app role catalog: ... 403` if the permission is missing.
+- Confirm `Application.Read.All` is granted **with admin consent** in Step 5. Without it, Bifrost cannot read the Enterprise Application assignments or validate the App Registration claim configuration during verification.
+- Confirm the `roles` claim is present in the user's ID token. Import and login mappings are evaluated from the claims Entra emits; if the claim is missing, update the app-role assignment or token configuration above.
+
+### Verify or import finds no users when only groups are assigned
+
+Bifrost provisions users from **Enterprise applications → Bifrost Enterprise → Users and groups**. If you assign groups there, Bifrost
+expands those assigned groups to their enabled direct user members.
+
+Causes and fixes:
+
+- **No Enterprise Application assignments exist.** Add at least one user or group under **Users and groups**.
+- **Assigned groups have no enabled direct user members.** Add enabled users directly to the assigned group, or assign the users directly to the Enterprise Application.
+- **Missing Graph permissions.** Confirm `Application.Read.All`, `User.Read.All`, and `GroupMember.Read.All` are granted as **Application** permissions with admin consent.
+- **Mappings use group display names.** Entra emits group Object IDs in the `groups` claim; update Bifrost `groups` mappings to use Object IDs.
 
 ---
 
