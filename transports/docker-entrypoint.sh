@@ -5,6 +5,9 @@ APP_DIR=${APP_DIR:-/app/data}
 
 # Function to fix permissions on mounted volumes
 fix_permissions() {
+    # Ensure runtime APP_DIR overrides exist before ownership checks
+    mkdir -p "$APP_DIR" 2>/dev/null || true
+
     # Check if APP_DIR exists and fix ownership if needed
     if [ -d "$APP_DIR" ]; then
         # Get current user info
