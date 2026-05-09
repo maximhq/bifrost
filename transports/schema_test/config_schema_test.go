@@ -165,6 +165,71 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
+func TestSchemaSCIMConfigValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name:   "disabled okta with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"okta","config":{}}}`,
+		},
+		{
+			name:   "disabled entra with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"entra","config":{}}}`,
+		},
+		{
+			name:   "disabled keycloak with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"keycloak","config":{}}}`,
+		},
+		{
+			name:      "enabled okta with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"okta","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled entra with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"entra","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled keycloak with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"keycloak","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled keycloak with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "keycloak",
+					"config": {
+						"serverUrl": "https://keycloak.company.com",
+						"realm": "bifrost-prod",
+						"clientId": "bifrost",
+						"clientSecret": "env.KEYCLOAK_CLIENT_SECRET"
+					}
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaKeyAliases(t *testing.T) {
 	schema := loadSchema(t)
 

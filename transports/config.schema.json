@@ -3424,7 +3424,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["okta", "entra"],
+          "enum": ["okta", "entra", "keycloak"],
           "description": "SCIM provider type"
         },
         "config": {
@@ -3438,10 +3438,14 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "okta"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
@@ -3454,15 +3458,39 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "entra"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
               "config": {
                 "$ref": "#/$defs/entra_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "keycloak"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/keycloak_config"
               }
             }
           }
@@ -3561,6 +3589,71 @@
         }
       },
       "required": ["tenantId", "clientId"],
+      "additionalProperties": false
+    },
+    "keycloak_config": {
+      "type": "object",
+      "description": "Keycloak OIDC/SCIM authentication configuration",
+      "properties": {
+        "serverUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL of the Keycloak server (e.g., https://keycloak.company.com). Must NOT include the /realms/{realm} suffix."
+        },
+        "realm": {
+          "type": "string",
+          "description": "Keycloak realm name (e.g., 'bifrost-prod')"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Keycloak client ID for the confidential client used by Bifrost"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Keycloak client secret. Supports env. prefix for environment variable references (e.g., 'env.KEYCLOAK_CLIENT_SECRET')"
+        },
+        "audience": {
+          "type": "string",
+          "description": "Expected JWT audience (default: clientId)"
+        },
+        "userIdField": {
+          "type": "string",
+          "description": "JWT claim field for user ID (default: 'sub')",
+          "default": "sub"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for roles (default: 'roles')",
+          "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": ["serverUrl", "realm", "clientId", "clientSecret"],
       "additionalProperties": false
     },
     "load_balancer_config": {
