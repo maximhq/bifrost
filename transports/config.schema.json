@@ -1549,7 +1549,7 @@
                     "collector_url": {
                       "type": "string",
                       "description": "URL of the OpenTelemetry collector",
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "format": "uri"
                         },
@@ -1576,7 +1576,7 @@
                     "metrics_endpoint": {
                       "type": "string",
                       "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)",
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "format": "uri"
                         },

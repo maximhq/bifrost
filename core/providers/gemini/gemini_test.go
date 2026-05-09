@@ -2986,3 +2986,87 @@ func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T
 	require.Len(t, out.Candidates, 1)
 	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
 }
+
+// TestFunctionCallingConfigModeAny_RoundTrip verifies that FunctionCallingConfigMode.ANY and
+// AllowedFunctionNames survive the Gemini→Bifrost→Gemini round-trip on the GenAI passthrough path.
+// Regression: ANY was silently downgraded to AUTO (missing case in convertGeminiToolConfigToToolChoice)
+// and AllowedFunctionNames were dropped (ext.Tools not read in convertResponsesToolChoiceToGemini).
+func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
+	tests := []struct {
+		name                 string
+		mode                 gemini.FunctionCallingConfigMode
+		allowedFunctionNames []string
+		wantMode             gemini.FunctionCallingConfigMode
+		wantAllowedNames     []string
+	}{
+		{
+			name:                 "ANY_with_single_allowed_function",
+			mode:                 gemini.FunctionCallingConfigModeAny,
+			allowedFunctionNames: []string{"create_component"},
+			wantMode:             gemini.FunctionCallingConfigModeAny,
+			wantAllowedNames:     []string{"create_component"},
+		},
+		{
+			name:                 "ANY_with_multiple_allowed_functions",
+			mode:                 gemini.FunctionCallingConfigModeAny,
+			allowedFunctionNames: []string{"create_component", "delete_component"},
+			wantMode:             gemini.FunctionCallingConfigModeAny,
+			wantAllowedNames:     []string{"create_component", "delete_component"},
+		},
+		{
+			name:                 "ANY_without_allowed_functions",
+			mode:                 gemini.FunctionCallingConfigModeAny,
+			allowedFunctionNames: nil,
+			wantMode:             gemini.FunctionCallingConfigModeAny,
+			wantAllowedNames:     nil,
+		},
+		{
+			name:             "AUTO_unaffected",
+			mode:             gemini.FunctionCallingConfigModeAuto,
+			wantMode:         gemini.FunctionCallingConfigModeAuto,
+			wantAllowedNames: nil,
+		},
+		{
+			name:             "NONE_unaffected",
+			mode:             gemini.FunctionCallingConfigModeNone,
+			wantMode:         gemini.FunctionCallingConfigModeNone,
+			wantAllowedNames: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			geminiReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-2.5-flash",
+				Contents: []gemini.Content{
+					{Role: "user", Parts: []*gemini.Part{{Text: "call the function"}}},
+				},
+				Tools: []gemini.Tool{
+					{FunctionDeclarations: []*gemini.FunctionDeclaration{{Name: "create_component"}}},
+				},
+				ToolConfig: &gemini.ToolConfig{
+					FunctionCallingConfig: &gemini.FunctionCallingConfig{
+						Mode:                 tt.mode,
+						AllowedFunctionNames: tt.allowedFunctionNames,
+					},
+				},
+			}
+
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params)
+			require.NotNil(t, bifrostReq.Params.ToolChoice, "ToolChoice must be set")
+
+			roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, roundTrip)
+			require.NotNil(t, roundTrip.ToolConfig)
+			require.NotNil(t, roundTrip.ToolConfig.FunctionCallingConfig)
+
+			got := roundTrip.ToolConfig.FunctionCallingConfig
+			assert.Equal(t, tt.wantMode, got.Mode, "FunctionCallingConfig.Mode must survive round-trip")
+			assert.Equal(t, tt.wantAllowedNames, got.AllowedFunctionNames, "AllowedFunctionNames must survive round-trip")
+		})
+	}
+}
