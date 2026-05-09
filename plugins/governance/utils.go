@@ -3,11 +3,20 @@ package governance
 
 import (
 	"context"
+	"regexp"
+	"sort"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
+)
+
+var (
+	modelEqualsLiteralRegexp = regexp.MustCompile(`\bmodel\s*==\s*["']([^"']+)["']`)
+	modelInLiteralRegexp     = regexp.MustCompile(`\bmodel\s+in\s*\[([^\]]*)\]`)
+	stringLiteralRegexp      = regexp.MustCompile(`["']([^"']+)["']`)
 )
 
 // ParseVirtualKeyFromFastHTTPRequest parses the virtual key from FastHTTP request headers.
@@ -93,6 +102,7 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 	ctx context.Context,
 	models []schemas.Model,
 	virtualKeyValue string,
+	currentProvider schemas.ModelProvider,
 ) []schemas.Model {
 	// Get virtual key configuration
 	vk, exists := p.store.GetVirtualKey(ctx, virtualKeyValue)
@@ -139,5 +149,151 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		}
 	}
 
+	filteredModels = p.appendRoutingRuleModelsForVirtualKey(ctx, filteredModels, vk, currentProvider)
+	sort.Slice(filteredModels, func(i, j int) bool {
+		return strings.ToLower(filteredModels[i].ID) < strings.ToLower(filteredModels[j].ID)
+	})
+
 	return filteredModels
+}
+
+func (p *GovernancePlugin) appendRoutingRuleModelsForVirtualKey(ctx context.Context, models []schemas.Model, vk *configstoreTables.TableVirtualKey, currentProvider schemas.ModelProvider) []schemas.Model {
+	if p.store == nil || vk == nil || currentProvider == "" || !p.store.HasRoutingRules(ctx) {
+		return models
+	}
+
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		seen[strings.ToLower(model.ID)] = struct{}{}
+	}
+
+	for _, scope := range buildScopeChain(vk) {
+		for _, rule := range p.store.GetScopedRoutingRules(ctx, scope.ScopeName, scope.ScopeID) {
+			if rule == nil || !rule.EnabledValue() || !p.routingRuleListsOnProvider(vk, rule, currentProvider) {
+				continue
+			}
+			for _, modelID := range routingRuleModelLiterals(rule.CelExpression) {
+				if strings.TrimSpace(modelID) == "" {
+					continue
+				}
+				key := strings.ToLower(modelID)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				models = append(models, schemas.Model{
+					ID:   modelID,
+					Name: schemas.Ptr(modelID),
+				})
+				seen[key] = struct{}{}
+			}
+		}
+	}
+
+	return models
+}
+
+func routingRuleModelLiterals(expression string) []string {
+	seen := map[string]struct{}{}
+	var models []string
+	add := func(model string) {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return
+		}
+		key := strings.ToLower(model)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		models = append(models, model)
+	}
+
+	for _, match := range modelEqualsLiteralRegexp.FindAllStringSubmatch(expression, -1) {
+		add(match[1])
+	}
+	for _, match := range modelInLiteralRegexp.FindAllStringSubmatch(expression, -1) {
+		for _, literal := range stringLiteralRegexp.FindAllStringSubmatch(match[1], -1) {
+			add(literal[1])
+		}
+	}
+
+	sort.Slice(models, func(i, j int) bool {
+		return strings.ToLower(models[i]) < strings.ToLower(models[j])
+	})
+	return models
+}
+
+func (p *GovernancePlugin) routingRuleListsOnProvider(vk *configstoreTables.TableVirtualKey, rule *configstoreTables.TableRoutingRule, currentProvider schemas.ModelProvider) bool {
+	if provider := p.firstAllowedRoutingRulePrimaryProvider(vk, rule, currentProvider); provider != "" {
+		return strings.EqualFold(provider, string(currentProvider))
+	}
+	if provider := p.firstAllowedRoutingRuleFallbackProvider(vk, rule); provider != "" {
+		return strings.EqualFold(provider, string(currentProvider))
+	}
+	return false
+}
+
+func (p *GovernancePlugin) firstAllowedRoutingRulePrimaryProvider(vk *configstoreTables.TableVirtualKey, rule *configstoreTables.TableRoutingRule, currentProvider schemas.ModelProvider) string {
+	for _, target := range rule.Targets {
+		if target.Provider != nil {
+			if p.routingTargetAllowedForVirtualKey(vk, target.Provider, target.Model) {
+				return *target.Provider
+			}
+			continue
+		}
+
+		currentProviderString := string(currentProvider)
+		if currentProviderString == "" {
+			continue
+		}
+		if p.routingTargetAllowedForVirtualKey(vk, &currentProviderString, target.Model) {
+			return currentProviderString
+		}
+	}
+	return ""
+}
+
+func (p *GovernancePlugin) firstAllowedRoutingRuleFallbackProvider(vk *configstoreTables.TableVirtualKey, rule *configstoreTables.TableRoutingRule) string {
+	for _, fallback := range rule.ParsedFallbacks {
+		provider, model := schemas.ParseModelString(fallback, "")
+		providerString := string(provider)
+		if providerString == "" || model == "" {
+			continue
+		}
+		if p.routingTargetAllowedForVirtualKey(vk, &providerString, &model) {
+			return providerString
+		}
+	}
+	return ""
+}
+
+func (p *GovernancePlugin) routingTargetAllowedForVirtualKey(vk *configstoreTables.TableVirtualKey, provider *string, model *string) bool {
+	if vk == nil || len(vk.ProviderConfigs) == 0 {
+		return false
+	}
+
+	for _, pc := range vk.ProviderConfigs {
+		if provider != nil && !strings.EqualFold(pc.Provider, *provider) {
+			continue
+		}
+		if model == nil || strings.TrimSpace(*model) == "" {
+			return true
+		}
+		if p.modelCatalog != nil && p.inMemoryStore != nil {
+			providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[schemas.ModelProvider(pc.Provider)]
+			providerConfigPtr := &providerConfig
+			if !ok {
+				providerConfigPtr = nil
+			}
+			if p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(pc.Provider), *model, providerConfigPtr, pc.AllowedModels) {
+				return true
+			}
+			continue
+		}
+		if pc.AllowedModels.IsAllowed(*model) {
+			return true
+		}
+	}
+
+	return false
 }
