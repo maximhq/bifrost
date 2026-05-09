@@ -628,6 +628,7 @@ bifrost:
       # clientId: "bifrost"
       # clientSecret: "env.KEYCLOAK_CLIENT_SECRET"  # supports env. prefix
       # audience: ""
+      # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
 
