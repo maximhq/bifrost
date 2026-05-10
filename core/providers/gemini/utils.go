@@ -1210,6 +1210,14 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 	// Note: Gemini doesn't have native allOf support, but we can still attempt to pass it through AnyOf
 	// This is a best-effort conversion as allOf semantics differ from anyOf
 
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return &Schema{
+			AnyOf: schema.AnyOf,
+		}
+	}
+
 	// String validation fields
 	if params.Format != nil {
 		schema.Format = *params.Format
@@ -1420,6 +1428,14 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 			if nullableBool, ok := nullable.(bool); ok {
 				schema.Nullable = &nullableBool
 			}
+		}
+	}
+
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return &Schema{
+			AnyOf: schema.AnyOf,
 		}
 	}
 

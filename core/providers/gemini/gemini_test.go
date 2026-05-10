@@ -834,6 +834,9 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, idProp.AnyOf, 2, "anyOf should have 2 options")
 				assert.Equal(t, gemini.Type("string"), idProp.AnyOf[0].Type)
 				assert.Equal(t, gemini.Type("integer"), idProp.AnyOf[1].Type)
+
+				// Validate that sibling fields are stripped because Gemini rejects them
+				assert.Empty(t, idProp.Description, "description should be stripped from anyOf per Gemini validation rules")
 			},
 		},
 		{
