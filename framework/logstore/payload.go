@@ -9,6 +9,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const maxMCPToolInputPreviewRunes = 200
+
 // payloadFields lists the DB column names of large TEXT fields that are
 // offloaded to object storage in hybrid mode. These fields are never needed
 // for analytics queries (histograms, search, rankings) — only for individual
@@ -311,6 +313,64 @@ func MarshalPayload(payload map[string]string) ([]byte, error) {
 	return sonic.Marshal(payload)
 }
 
+// MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.
+// The object-store copy is intentionally complete; the DB row is only a
+// lightweight index plus a short input preview.
+func MarshalMCPToolLogPayload(l *MCPToolLog) ([]byte, error) {
+	payload := *l
+	if err := payload.SerializeFields(); err != nil {
+		return nil, err
+	}
+	_ = payload.DeserializeFields()
+	return sonic.Marshal(&payload)
+}
+
+// MergeMCPToolLogPayloadFromJSON replaces an MCP tool log with the full object
+// storage copy while preserving DB-local hydration state.
+func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
+	hasObject := l.HasObject
+	virtualKey := l.VirtualKey
+
+	var payload MCPToolLog
+	if err := sonic.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("logstore: unmarshal MCP tool log payload: %w", err)
+	}
+	if err := payload.SerializeFields(); err != nil {
+		return err
+	}
+	*l = payload
+	l.HasObject = hasObject
+	l.VirtualKey = virtualKey
+	return nil
+}
+
+// PrepareMCPToolDBEntry converts an MCP tool log to the lightweight DB form
+// used by hybrid storage. It preserves indexed/display fields and metadata,
+// keeps only a 200-character JSON-string argument preview, and clears result
+// and error payloads.
+func PrepareMCPToolDBEntry(l *MCPToolLog) {
+	preview := buildMCPToolInputPreview(l)
+	l.ArgumentsParsed = preview
+	l.Arguments = ""
+	l.Result = ""
+	l.ErrorDetails = ""
+	l.ResultParsed = nil
+	l.ErrorDetailsParsed = nil
+	_ = l.SerializeFields()
+}
+
+func buildMCPToolInputPreview(l *MCPToolLog) string {
+	if l.ArgumentsParsed != nil {
+		if data, err := sonic.Marshal(l.ArgumentsParsed); err == nil {
+			return truncateRunes(string(data), maxMCPToolInputPreviewRunes)
+		}
+	}
+	if l.Arguments != "" {
+		return truncateRunes(l.Arguments, maxMCPToolInputPreviewRunes)
+	}
+	return ""
+}
+
 // BuildInputContentSummary extracts the last user message text from input fields.
 // This is used in hybrid mode for the content_summary column, which powers
 // full-text search and serves as a display fallback in the log list table.
@@ -453,6 +513,16 @@ func BuildTags(l *Log) map[string]string {
 func ObjectKey(prefix string, timestamp time.Time, logID string) string {
 	ts := timestamp.UTC()
 	return fmt.Sprintf("%s/logs/%04d/%02d/%02d/%02d/%s.json.gz",
+		prefix,
+		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
+		logID,
+	)
+}
+
+// MCPToolObjectKey constructs the S3 object key for an MCP tool log entry.
+func MCPToolObjectKey(prefix string, timestamp time.Time, logID string) string {
+	ts := timestamp.UTC()
+	return fmt.Sprintf("%s/mcp-logs/%04d/%02d/%02d/%02d/%s.json.gz",
 		prefix,
 		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
 		logID,
@@ -643,4 +713,17 @@ func truncateTag(s string, maxLen int) string {
 		byteLen += rl
 	}
 	return s[:byteLen]
+}
+
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	for i := range s {
+		if maxRunes == 0 {
+			return s[:i]
+		}
+		maxRunes--
+	}
+	return s
 }
