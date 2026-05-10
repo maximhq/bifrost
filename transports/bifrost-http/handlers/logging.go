@@ -96,6 +96,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/mcp-logs/histogram", lib.ChainMiddlewares(h.getMCPHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/cost", lib.ChainMiddlewares(h.getMCPCostHistogram, middlewares...))
 	r.GET("/api/mcp-logs/histogram/top-tools", lib.ChainMiddlewares(h.getMCPTopTools, middlewares...))
+	r.GET("/api/mcp-logs/{id}", lib.ChainMiddlewares(h.getMCPLogByID, middlewares...))
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
 }
 
@@ -1554,6 +1555,32 @@ func (h *LoggingHandler) getMCPLogs(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, result)
+}
+
+// getMCPLogByID handles GET /api/mcp-logs/{id} - Get a single MCP tool log entry by ID.
+func (h *LoggingHandler) getMCPLogByID(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || strings.TrimSpace(id) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP log id is required")
+		return
+	}
+
+	log, err := h.logManager.GetMCPToolLog(ctx, id)
+	if err != nil {
+		if errors.Is(err, logstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "MCP log not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get MCP log: %v", err))
+		return
+	}
+
+	if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
+		redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, []string{*log.VirtualKeyID})
+		log.VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
+	}
+
+	SendJSON(ctx, log)
 }
 
 // getMCPLogsStats handles GET /api/mcp-logs/stats - Get statistics for MCP tool logs with filtering
