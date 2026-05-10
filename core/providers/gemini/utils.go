@@ -1210,6 +1210,12 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 	// Note: Gemini doesn't have native allOf support, but we can still attempt to pass it through AnyOf
 	// This is a best-effort conversion as allOf semantics differ from anyOf
 
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return schemaWithAnyOfOnly(schema.AnyOf, params.Nullable)
+	}
+
 	// String validation fields
 	if params.Format != nil {
 		schema.Format = *params.Format
@@ -1270,7 +1276,7 @@ func extractUnionTypes(v interface{}) (nonNullTypes []string, hasNull bool) {
 // Gemini/Vertex normalisation rules:
 //
 //	["T", "null"]      → Type=T,  Nullable=true
-//	["T1", "T2", ...]  → anyOf:[{type:T1},{type:T2},...], optionally Nullable
+//	["T1", "T2", ...]  → anyOf:[{type:T1},{type:T2},...], optionally with a null branch
 //	["null"]           → Type=TypeNULL
 //	[1, 2]             → no type set (all elements were non-string; invalid input)
 func applyUnionType(schema *Schema, nonNullTypes []string, hasNull bool) {
@@ -1293,10 +1299,28 @@ func applyUnionType(schema *Schema, nonNullTypes []string, hasNull bool) {
 			anyOfSchemas = append(anyOfSchemas, &Schema{Type: Type(t)})
 		}
 		if hasNull {
-			schema.Nullable = schemas.Ptr(true)
+			schema.AnyOf = append(anyOfSchemas, &Schema{Type: Type("null")})
+			return
 		}
 		schema.AnyOf = anyOfSchemas
 	}
+}
+
+func schemaWithAnyOfOnly(anyOf []*Schema, nullable *bool) *Schema {
+	if nullable != nil && *nullable {
+		hasNull := false
+		for _, item := range anyOf {
+			if item != nil && strings.EqualFold(string(item.Type), "null") {
+				hasNull = true
+				break
+			}
+		}
+		if !hasNull {
+			anyOf = append(anyOf, &Schema{Type: Type("null")})
+		}
+	}
+
+	return &Schema{AnyOf: anyOf}
 }
 
 // convertPropertyToSchema recursively converts a property to Gemini Schema
@@ -1483,6 +1507,12 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 				schema.Nullable = &nullableBool
 			}
 		}
+	}
+
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return schemaWithAnyOfOnly(schema.AnyOf, schema.Nullable)
 	}
 
 	return schema

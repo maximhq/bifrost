@@ -59,13 +59,19 @@ func TestConvertPropertyToSchema_UnionType(t *testing.T) {
 			wantAnyOfTypes: []Type{Type("integer"), Type("string")},
 		},
 		{
-			// Case D — ["integer","string","null"]: multiple non-null + null → anyOf + Nullable
-			name:           "multiple non-null types with null become anyOf and Nullable",
+			// Case D — ["integer","string","null"]: multiple non-null + null → anyOf with null branch
+			name:           "multiple non-null types with null become anyOf with null branch",
 			propJSON:       `{"type": ["integer", "string", "null"]}`,
 			wantType:       Type(""),
-			wantNullable:   boolPtr(true),
-			wantAnyOfLen:   2,
-			wantAnyOfTypes: []Type{Type("integer"), Type("string")},
+			wantAnyOfLen:   3,
+			wantAnyOfTypes: []Type{Type("integer"), Type("string"), Type("null")},
+		},
+		{
+			name:           "explicit nullable with anyOf is folded into null branch",
+			propJSON:       `{"anyOf": [{"type": "integer"}, {"type": "string"}], "nullable": true}`,
+			wantType:       Type(""),
+			wantAnyOfLen:   3,
+			wantAnyOfTypes: []Type{Type("integer"), Type("string"), Type("null")},
 		},
 		{
 			// Case E — ["null"] only: edge case, must produce TypeNULL not empty
@@ -75,11 +81,11 @@ func TestConvertPropertyToSchema_UnionType(t *testing.T) {
 		},
 		{
 			// Dedup — duplicate non-null types must not produce duplicate anyOf entries
-			name:           "duplicate types are deduplicated",
-			propJSON:       `{"type": ["integer", "integer", "null"]}`,
-			wantType:       Type("integer"),
-			wantNullable:   boolPtr(true),
-			wantAnyOfLen:   0, // single non-null after dedup → Type+Nullable, not anyOf
+			name:         "duplicate types are deduplicated",
+			propJSON:     `{"type": ["integer", "integer", "null"]}`,
+			wantType:     Type("integer"),
+			wantNullable: boolPtr(true),
+			wantAnyOfLen: 0, // single non-null after dedup → Type+Nullable, not anyOf
 		},
 		{
 			// All-invalid elements ([1,2] after JSON decode becomes []interface{}{float64,float64}).
@@ -169,14 +175,37 @@ func TestConvertBifrostToolsToGemini_UnionTypeProperty(t *testing.T) {
 
 func boolPtr(b bool) *bool { return &b }
 
+func TestConvertFunctionParametersToSchema_AnyOfNullable(t *testing.T) {
+	params := schemas.ToolFunctionParameters{
+		AnyOf: []schemas.OrderedMap{
+			*schemas.NewOrderedMapFromPairs(schemas.KV("type", "integer")),
+			*schemas.NewOrderedMapFromPairs(schemas.KV("type", "string")),
+		},
+		Nullable: boolPtr(true),
+	}
+
+	schema := convertFunctionParametersToSchema(params)
+	require.NotNil(t, schema)
+	require.Len(t, schema.AnyOf, 3)
+	assert.Equal(t, Type("integer"), schema.AnyOf[0].Type)
+	assert.Equal(t, Type("string"), schema.AnyOf[1].Type)
+	assert.Equal(t, Type("null"), schema.AnyOf[2].Type)
+	assert.Nil(t, schema.Nullable)
+
+	wire, err := providerUtils.MarshalSorted(schema)
+	require.NoError(t, err)
+	assert.Contains(t, string(wire), `"anyOf":[{"type":"integer"},{"type":"string"},{"type":"null"}]`)
+	assert.NotContains(t, string(wire), `"nullable":true`)
+}
+
 // TestExtractUnionTypes directly tests the extractUnionTypes helper for both
 // []interface{} and []string inputs.
 func TestExtractUnionTypes(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         interface{}
-		wantNonNull   []string
-		wantHasNull   bool
+		name        string
+		input       interface{}
+		wantNonNull []string
+		wantHasNull bool
 	}{
 		{
 			name:        "[]interface{} integer+null",
@@ -247,11 +276,11 @@ func TestConvertPropertyToSchema_StringSlice(t *testing.T) {
 // are not sufficient.
 func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 	tests := []struct {
-		name          string
-		propertyJSON  string
-		propertyName  string
-		wantContains  []string // substrings that must appear in the wire JSON
-		wantAbsent    []string // substrings that must NOT appear in the wire JSON
+		name         string
+		propertyJSON string
+		propertyName string
+		wantContains []string // substrings that must appear in the wire JSON
+		wantAbsent   []string // substrings that must NOT appear in the wire JSON
 	}{
 		{
 			name:         "nullable type produces type+nullable fields not array",
@@ -274,6 +303,13 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 			propertyName: "value",
 			wantContains: []string{`"anyOf":[{"type":"integer"},{"type":"string"}]`},
 			wantAbsent:   []string{`"type":["integer"`, `"type":["string"`},
+		},
+		{
+			name:         "multi-type nullable union folds null into anyOf",
+			propertyJSON: `"value":{"type":["integer","string","null"]}`,
+			propertyName: "value",
+			wantContains: []string{`"anyOf":[{"type":"integer"},{"type":"string"},{"type":"null"}]`},
+			wantAbsent:   []string{`"type":["integer"`, `"nullable":true`},
 		},
 	}
 

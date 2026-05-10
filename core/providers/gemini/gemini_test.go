@@ -834,6 +834,9 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, idProp.AnyOf, 2, "anyOf should have 2 options")
 				assert.Equal(t, gemini.Type("string"), idProp.AnyOf[0].Type)
 				assert.Equal(t, gemini.Type("integer"), idProp.AnyOf[1].Type)
+
+				// Validate that sibling fields are stripped because Gemini rejects them
+				assert.Empty(t, idProp.Description, "description should be stripped from anyOf per Gemini validation rules")
 			},
 		},
 		{
@@ -2081,6 +2084,86 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 				// Enum validation
 				sortProp := fd.Parameters.Properties["sort_order"]
 				assert.Equal(t, []string{"asc", "desc"}, sortProp.Enum)
+			},
+		},
+		{
+			name: "ResponsesAPI_ToolAnyOfWithSiblingFields",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Call the tool with a nullable parameter"),
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						{
+							Type:        schemas.ResponsesToolTypeFunction,
+							Name:        schemas.Ptr("get_process"),
+							Description: schemas.Ptr("Get process info"),
+							ResponsesToolFunction: &schemas.ResponsesToolFunction{
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("pid", map[string]interface{}{
+											"type": "integer",
+										}),
+										schemas.KV("timeout_secs", map[string]interface{}{
+											"anyOf": []interface{}{
+												map[string]interface{}{"type": "integer"},
+												map[string]interface{}{"type": "null"},
+											},
+											"description": "Optional timeout",
+										}),
+									),
+									Required: []string{"pid"},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Tools, 1)
+				fd := result.Tools[0].FunctionDeclarations[0]
+				require.NotNil(t, fd.Parameters)
+
+				timeoutProp := fd.Parameters.Properties["timeout_secs"]
+				require.NotNil(t, timeoutProp, "timeout_secs should be converted")
+				require.Len(t, timeoutProp.AnyOf, 2, "anyOf should be preserved")
+				assert.Equal(t, gemini.Type("integer"), timeoutProp.AnyOf[0].Type)
+				assert.Equal(t, gemini.Type("null"), timeoutProp.AnyOf[1].Type)
+				assert.Empty(t, timeoutProp.Description, "Gemini rejects sibling fields alongside anyOf")
+				assert.Empty(t, timeoutProp.Type, "Gemini rejects type alongside anyOf")
+
+				payload, err := json.Marshal(result)
+				require.NoError(t, err)
+
+				var raw map[string]interface{}
+				require.NoError(t, json.Unmarshal(payload, &raw))
+				tools, ok := raw["tools"].([]interface{})
+				require.True(t, ok)
+				tool, ok := tools[0].(map[string]interface{})
+				require.True(t, ok)
+				functionDeclarations, ok := tool["functionDeclarations"].([]interface{})
+				require.True(t, ok)
+				functionDeclaration, ok := functionDeclarations[0].(map[string]interface{})
+				require.True(t, ok)
+				parameters, ok := functionDeclaration["parameters"].(map[string]interface{})
+				require.True(t, ok)
+				properties, ok := parameters["properties"].(map[string]interface{})
+				require.True(t, ok)
+				timeoutSchema, ok := properties["timeout_secs"].(map[string]interface{})
+				require.True(t, ok)
+
+				assert.Contains(t, timeoutSchema, "anyOf")
+				assert.NotContains(t, timeoutSchema, "description")
+				assert.NotContains(t, timeoutSchema, "type")
 			},
 		},
 		{
