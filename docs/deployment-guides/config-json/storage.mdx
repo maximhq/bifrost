@@ -210,7 +210,7 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 
 ### Object Storage for Logs
 
-Offload large request/response payloads from the database to S3 or GCS. The database retains only lightweight index records; payloads are fetched on demand.
+Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
 <Tabs>
 <Tab title="AWS S3">

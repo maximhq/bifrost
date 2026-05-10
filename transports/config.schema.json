@@ -1053,7 +1053,7 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading log payloads. When configured, large request/response payloads are stored in S3/GCS while the DB keeps only lightweight index data.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
@@ -1151,7 +1151,7 @@
         },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "Payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }
