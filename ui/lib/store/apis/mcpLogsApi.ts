@@ -97,6 +97,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: ["MCPLogs"],
 		}),
 
+		// Get a single MCP tool log entry by ID
+		getMCPLogById: builder.query<MCPToolLogEntry, string>({
+			query: (id) => `/mcp-logs/${encodeURIComponent(id)}`,
+			providesTags: (result, error, id) => [{ type: "MCPLogs", id }],
+		}),
+
 		// Get MCP tool logs statistics with filters
 		getMCPLogsStats: builder.query<
 			MCPToolLogStats,
@@ -188,10 +194,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 
 export const {
 	useGetMCPLogsQuery,
+	useGetMCPLogByIdQuery,
 	useGetMCPLogsStatsQuery,
 	useGetMCPAvailableFilterDataQuery,
 	useGetMCPAvailableFilterDataQuery: useGetMCPLogsFilterDataQuery,
 	useLazyGetMCPLogsQuery,
+	useLazyGetMCPLogByIdQuery,
 	useLazyGetMCPLogsStatsQuery,
 	useLazyGetMCPAvailableFilterDataQuery,
 	useLazyGetMCPHistogramQuery,
