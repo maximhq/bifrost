@@ -2993,11 +2993,12 @@ func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T
 	bifrostResp := &schemas.BifrostResponsesResponse{
 		Model: "google/gemini-2.5-flash",
 		Usage: &schemas.ResponsesResponseUsage{
-			InputTokens:  2,
+			InputTokens:  0,
 			OutputTokens: 0,
-			TotalTokens:  2,
+			TotalTokens:  0,
 			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
-				TextTokens: 2,
+				TextTokens:  0,
+				AudioTokens: 0,
 			},
 			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
 				TextTokens: 0,
@@ -3028,6 +3029,19 @@ func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T
 	tokenCount, exists := firstDetail["tokenCount"]
 	require.True(t, exists, "tokenCount should be present even when zero")
 	assert.Equal(t, float64(0), tokenCount)
+
+	promptTokensDetails, ok := usageMetadata["promptTokensDetails"].([]any)
+	require.True(t, ok, "promptTokensDetails should be present")
+	require.NotEmpty(t, promptTokensDetails, "promptTokensDetails should not be empty")
+
+	for i, detail := range promptTokensDetails {
+		detailObj, ok := detail.(map[string]any)
+		require.True(t, ok, "promptTokensDetails entry %d should be an object", i)
+
+		promptTokenCount, exists := detailObj["tokenCount"]
+		require.True(t, exists, "promptTokensDetails entry %d should include tokenCount", i)
+		assert.Equal(t, float64(0), promptTokenCount)
+	}
 }
 
 // TestFunctionCallingConfigModeAny_RoundTrip verifies that FunctionCallingConfigMode.ANY and
