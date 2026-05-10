@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,13 +14,13 @@ import (
 
 type hybridTestLogger struct{}
 
-func (hybridTestLogger) Debug(string, ...any)                                  {}
-func (hybridTestLogger) Info(string, ...any)                                   {}
-func (hybridTestLogger) Warn(string, ...any)                                   {}
-func (hybridTestLogger) Error(string, ...any)                                  {}
-func (hybridTestLogger) Fatal(string, ...any)                                  {}
-func (hybridTestLogger) SetLevel(schemas.LogLevel)                             {}
-func (hybridTestLogger) SetOutputType(schemas.LoggerOutputType)                {}
+func (hybridTestLogger) Debug(string, ...any)                   {}
+func (hybridTestLogger) Info(string, ...any)                    {}
+func (hybridTestLogger) Warn(string, ...any)                    {}
+func (hybridTestLogger) Error(string, ...any)                   {}
+func (hybridTestLogger) Fatal(string, ...any)                   {}
+func (hybridTestLogger) SetLevel(schemas.LogLevel)              {}
+func (hybridTestLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (hybridTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
 }
@@ -28,8 +29,9 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	t.Helper()
 	ctx := context.Background()
 
-	// Create SQLite inner store.
-	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: ":memory:"}, hybridTestLogger{})
+	// Use a temp file instead of :memory: so async upload workers that use a
+	// separate DB connection see the same schema.
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 
 	objStore := objectstore.NewInMemoryObjectStore()
@@ -204,6 +206,226 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	assert.Empty(t, found.OutputMessage, "output should be empty when S3 fails")
 }
 
+func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	longInput := ""
+	for i := 0; i < 260; i++ {
+		longInput += "a"
+	}
+	entry := &MCPToolLog{
+		ID:          "mcp-1",
+		RequestID:   "req-1",
+		Timestamp:   time.Now().UTC(),
+		ToolName:    "echo",
+		ServerLabel: "local",
+		Status:      "success",
+		ArgumentsParsed: map[string]any{
+			"input": longInput,
+		},
+		ResultParsed: map[string]any{
+			"ok": true,
+		},
+	}
+
+	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbOnly, err := inner.FindMCPToolLog(ctx, "mcp-1")
+	require.NoError(t, err)
+	assert.True(t, dbOnly.HasObject)
+	assert.Empty(t, dbOnly.Result)
+	assert.Nil(t, dbOnly.ResultParsed)
+	preview, ok := dbOnly.ArgumentsParsed.(string)
+	require.True(t, ok)
+	assert.Len(t, []rune(preview), 200)
+
+	found, err := hybrid.FindMCPToolLog(ctx, "mcp-1")
+	require.NoError(t, err)
+	assert.True(t, found.HasObject)
+	assert.Equal(t, longInput, found.ArgumentsParsed.(map[string]interface{})["input"])
+	assert.Equal(t, true, found.ResultParsed.(map[string]interface{})["ok"])
+}
+
+func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &MCPToolLog{
+		ID:          "mcp-update",
+		RequestID:   "req-update",
+		Timestamp:   time.Now().UTC(),
+		ToolName:    "search",
+		ServerLabel: "docs",
+		Status:      "processing",
+		ArgumentsParsed: map[string]any{
+			"query": "find this",
+		},
+	}
+	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
+		Status: "success",
+		ResultParsed: map[string]any{
+			"answer": "done",
+		},
+	}))
+
+	waitForUploads(t, func() bool {
+		found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+		if err != nil || found.ResultParsed == nil {
+			return false
+		}
+		result, ok := found.ResultParsed.(map[string]interface{})
+		return ok && result["answer"] == "done"
+	})
+
+	dbOnly, err := inner.FindMCPToolLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, dbOnly.HasObject)
+	assert.Equal(t, "success", dbOnly.Status)
+	assert.Empty(t, dbOnly.Result)
+	assert.Nil(t, dbOnly.ResultParsed)
+
+	found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "find this", found.ArgumentsParsed.(map[string]interface{})["query"])
+	assert.Equal(t, "done", found.ResultParsed.(map[string]interface{})["answer"])
+}
+
+func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &MCPToolLog{
+		ID:          "mcp-hydration-fail",
+		RequestID:   "req-hydration-fail",
+		Timestamp:   time.Now().UTC(),
+		ToolName:    "search",
+		ServerLabel: "docs",
+		Status:      "success",
+		ArgumentsParsed: map[string]any{
+			"query": "full input",
+		},
+		ResultParsed: map[string]any{
+			"answer": "original",
+		},
+	}
+	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	objStore.GetErr = assert.AnError
+	err := hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
+		Status: "success",
+		ResultParsed: map[string]any{
+			"answer": "updated",
+		},
+	})
+	require.Error(t, err)
+	objStore.GetErr = nil
+
+	found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "full input", found.ArgumentsParsed.(map[string]interface{})["query"])
+	assert.Equal(t, "original", found.ResultParsed.(map[string]interface{})["answer"])
+
+	dbOnly, err := inner.FindMCPToolLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "success", dbOnly.Status)
+}
+
+func TestHybrid_UpdateMCPToolLogHydratesObjectBeforeHasObjectMarker(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	longInput := ""
+	for i := 0; i < 260; i++ {
+		longInput += "q"
+	}
+	entry := &MCPToolLog{
+		ID:          "mcp-has-object-false",
+		RequestID:   "req-has-object-false",
+		Timestamp:   time.Now().UTC(),
+		ToolName:    "search",
+		ServerLabel: "docs",
+		Status:      "processing",
+		ArgumentsParsed: map[string]any{
+			"query": longInput,
+		},
+	}
+	payload, err := MarshalMCPToolLogPayload(entry)
+	require.NoError(t, err)
+	dbEntry := *entry
+	PrepareMCPToolDBEntry(&dbEntry)
+	require.NoError(t, inner.CreateMCPToolLog(ctx, &dbEntry))
+	require.NoError(t, objStore.Put(ctx, MCPToolObjectKey(hybrid.prefix, entry.Timestamp, entry.ID), payload, BuildMCPToolTags(entry)))
+
+	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
+		Status: "success",
+		ResultParsed: map[string]any{
+			"answer": "done",
+		},
+	}))
+	waitForUploads(t, func() bool {
+		found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+		if err != nil || found.ResultParsed == nil {
+			return false
+		}
+		result, ok := found.ResultParsed.(map[string]interface{})
+		return ok && result["answer"] == "done"
+	})
+
+	found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, longInput, found.ArgumentsParsed.(map[string]interface{})["query"])
+	assert.Equal(t, "done", found.ResultParsed.(map[string]interface{})["answer"])
+}
+
+func TestHybrid_ProcessMCPUploadSkipsMissingRowsWithEmptyStatus(t *testing.T) {
+	hybrid, _, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+
+	hybrid.processUpload(&uploadWork{
+		logID:     "mcp-missing-row",
+		timestamp: time.Now().UTC(),
+		key:       MCPToolObjectKey(hybrid.prefix, time.Now().UTC(), "mcp-missing-row"),
+		mcp:       true,
+		payload:   []byte(`{"id":"mcp-missing-row"}`),
+	})
+
+	assert.Equal(t, 0, objStore.Len())
+	assert.Equal(t, int64(1), hybrid.DroppedUploads())
+}
+
+func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
+	hybrid, _, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &MCPToolLog{
+		ID:          "mcp-delete",
+		RequestID:   "req-delete",
+		Timestamp:   time.Now().UTC(),
+		ToolName:    "echo",
+		ServerLabel: "local",
+		Status:      "success",
+		ArgumentsParsed: map[string]any{
+			"input": "delete me",
+		},
+	}
+	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	require.NoError(t, hybrid.DeleteMCPToolLogs(ctx, []string{entry.ID}))
+	assert.Equal(t, 0, objStore.Len())
+}
+
 func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 	hybrid, _, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -335,7 +557,7 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 func newTestHybridWithExclude(t *testing.T, excludeFields []string) (*HybridLogStore, LogStore, *objectstore.InMemoryObjectStore) {
 	t.Helper()
 	ctx := context.Background()
-	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: ":memory:"}, hybridTestLogger{})
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
 	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields)

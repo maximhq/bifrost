@@ -509,6 +509,30 @@ func BuildTags(l *Log) map[string]string {
 	return tags
 }
 
+// BuildMCPToolTags creates the object tag map from an MCP tool log's index
+// fields. S3 allows max 10 tags per object.
+func BuildMCPToolTags(l *MCPToolLog) map[string]string {
+	tags := make(map[string]string, 6)
+	if l.ToolName != "" {
+		tags["tool_name"] = truncateTag(l.ToolName, 256)
+	}
+	if l.ServerLabel != "" {
+		tags["server_label"] = truncateTag(l.ServerLabel, 256)
+	}
+	if l.Status != "" {
+		tags["status"] = l.Status
+	}
+	if l.VirtualKeyID != nil && *l.VirtualKeyID != "" {
+		tags["virtual_key_id"] = truncateTag(*l.VirtualKeyID, 256)
+	}
+	tags["has_error"] = "false"
+	if l.Status == "error" {
+		tags["has_error"] = "true"
+	}
+	tags["date"] = l.Timestamp.UTC().Format("2006-01-02")
+	return tags
+}
+
 // ObjectKey constructs the S3 object key for a log entry.
 func ObjectKey(prefix string, timestamp time.Time, logID string) string {
 	ts := timestamp.UTC()
