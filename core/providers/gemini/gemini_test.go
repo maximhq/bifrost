@@ -3001,7 +3001,7 @@ func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T
 			},
 			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
 				TextTokens: 0,
-			},``
+			},
 		},
 	}
 
