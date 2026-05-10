@@ -334,6 +334,116 @@ curl --location 'http://localhost:8080/v1/audio/transcriptions' \
 --form 'timestamp_granularities[]=segment'
 ```
 
+## Multimodal Embeddings
+
+Bifrost supports multimodal embeddings — generating vector representations that capture text, images, audio, video, and documents together. The HTTP `input` field accepts a string, an array of strings, or a full `EmbeddingContent` array for multimodal content.
+
+### Text Embedding (all providers)
+
+The simplest form — pass a string or array of strings directly in `input`:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/embed-v4.0",
+    "input": ["a golden retriever playing fetch"],
+    "input_type": "search_document"
+  }'
+```
+
+### Image + Text Embedding
+
+For multimodal content, pass `input` as a `[]EmbeddingContent` array. Each item is an array of typed parts:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/embed-v4.0",
+    "input": [
+      [
+        { "type": "text",  "text": "a golden retriever in a park" },
+        { "type": "image", "image": { "url": "data:image/jpeg;base64,<base64-encoded-jpeg>" } }
+      ]
+    ],
+    "input_type": "image"
+  }'
+```
+
+### Multimodal Embedding
+
+Gemini supports text, image, audio, video, and PDF in the same content entry:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-embedding-exp-03-07",
+    "input": [
+      [
+        { "type": "text",  "text": "transcript of the audio" },
+        { "type": "audio", "audio": { "url": "https://example.com/speech.mp3" } }
+      ]
+    ]
+  }'
+```
+
+For PDFs, use the `file` part type:
+
+```bash
+"input": [
+  [
+    { "type": "file", "file": { "url": "https://example.com/doc.pdf", "mime_type": "application/pdf" } }
+  ]
+]
+```
+
+### Image + Text + Video Embedding
+
+`multimodalembedding@001` accepts text, image, and video parts. Images and videos must be GCS URIs (`gs://`) or base64 data URIs. The response contains a separate embedding per modality.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/multimodalembedding@001",
+    "input": [
+      [
+        { "type": "text",  "text": "product photo" },
+        { "type": "image", "image": { "url": "gs://my-bucket/photo.jpg" } }
+      ]
+    ],
+    "project_id": "my-gcp-project",
+    "region": "us-central1"
+  }'
+```
+
+**Response** contains separate vectors per modality:
+
+```json
+{
+  "data": [
+    { "index": 0, "modality": "text",  "embedding": [0.12, -0.34, ...] },
+    { "index": 1, "modality": "image", "embedding": [0.56, -0.78, ...] }
+  ]
+}
+```
+
+For video, provide a `video` part with an optional segment config:
+
+```bash
+"input": [
+  [
+    {
+      "type": "video",
+      "video": { "url": "gs://my-bucket/clip.mp4" },
+      "video_config": { "start_offset_sec": 0, "end_offset_sec": 30 }
+    }
+  ]
+]
+```
+
 <Info>
 Check the [Supported Providers](/providers/supported-providers/overview) page for more information on multimodal capabilities supported by each provider.
 </Info>
