@@ -38665,6 +38665,146 @@
         }
       }
     },
+    "/api/mcp-logs/{id}": {
+      "get": {
+        "operationId": "getMCPLogById",
+        "summary": "Get MCP tool log by ID",
+        "description": "Retrieves a single MCP tool execution log by ID, including hydrated object-storage payloads when configured.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP tool log ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP tool log found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "MCP tool execution log entry",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Unique identifier for the log entry"
+                    },
+                    "llm_request_id": {
+                      "type": "string",
+                      "description": "Links to the LLM request that triggered this tool call"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "When the tool execution started"
+                    },
+                    "tool_name": {
+                      "type": "string",
+                      "description": "Name of the MCP tool that was executed"
+                    },
+                    "server_label": {
+                      "type": "string",
+                      "description": "Label of the MCP server that provided the tool"
+                    },
+                    "virtual_key_id": {
+                      "type": "string",
+                      "description": "ID of the virtual key used for this tool execution"
+                    },
+                    "virtual_key_name": {
+                      "type": "string",
+                      "description": "Name of the virtual key used for this tool execution"
+                    },
+                    "arguments": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Tool execution arguments"
+                    },
+                    "result": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Tool execution result"
+                    },
+                    "error_details": {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    "latency": {
+                      "type": "number",
+                      "description": "Execution time in milliseconds"
+                    },
+                    "cost": {
+                      "type": "number",
+                      "description": "Cost in dollars for this tool execution"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "processing",
+                        "success",
+                        "error"
+                      ],
+                      "description": "Execution status"
+                    },
+                    "metadata": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "When the log entry was created"
+                    },
+                    "virtual_key": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Full virtual key object (populated when virtual_key_id is set)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp-logs/stats": {
       "get": {
         "operationId": "getMCPLogsStats",
