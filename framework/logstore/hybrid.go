@@ -285,6 +285,9 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 }
 
 func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
+	if len(entries) == 0 {
+		return nil
+	}
 	type pendingUpload struct {
 		logID     string
 		timestamp time.Time
@@ -293,8 +296,12 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 	}
 	var uploads []pendingUpload
 
-	dbEntries := make([]*Log, len(entries))
-	for i, entry := range entries {
+	dbEntries := make([]*Log, 0, len(entries))
+	origEntries := make([]*Log, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
 		if err := entry.SerializeFields(); err != nil {
 			return fmt.Errorf("logstore: serialize before extract: %w", err)
 		}
@@ -303,7 +310,8 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
 		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
-		dbEntries[i] = &dbEntry
+		dbEntries = append(dbEntries, &dbEntry)
+		origEntries = append(origEntries, entry)
 		uploads = append(uploads, pendingUpload{
 			logID:     entry.ID,
 			timestamp: entry.Timestamp,
@@ -312,11 +320,14 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		})
 	}
 
+	if len(dbEntries) == 0 {
+		return nil
+	}
 	if err := h.inner.BatchCreateIfNotExists(ctx, dbEntries); err != nil {
 		return err
 	}
 
-	for i, entry := range entries {
+	for i, entry := range origEntries {
 		entry.ContentSummary = dbEntries[i].ContentSummary
 	}
 
@@ -880,6 +891,53 @@ func (h *HybridLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog
 		return err
 	}
 	h.enqueueRawUpload(entry.ID, entry.Timestamp, MCPToolObjectKey(h.prefix, entry.Timestamp, entry.ID), true, entry.Status, payload, tags)
+	return nil
+}
+
+func (h *HybridLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	type pendingUpload struct {
+		logID     string
+		timestamp time.Time
+		status    string
+		payload   []byte
+		tags      map[string]string
+	}
+	var uploads []pendingUpload
+
+	dbEntries := make([]*MCPToolLog, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		payload, err := MarshalMCPToolLogPayload(entry)
+		if err != nil {
+			return fmt.Errorf("logstore: serialize MCP tool log before offload: %w", err)
+		}
+		dbEntry := *entry
+		PrepareMCPToolDBEntry(&dbEntry)
+		dbEntries = append(dbEntries, &dbEntry)
+		uploads = append(uploads, pendingUpload{
+			logID:     entry.ID,
+			timestamp: entry.Timestamp,
+			status:    entry.Status,
+			payload:   payload,
+			tags:      BuildMCPToolTags(entry),
+		})
+	}
+
+	if len(dbEntries) == 0 {
+		return nil
+	}
+	if err := h.inner.BatchCreateMCPToolLogsIfNotExists(ctx, dbEntries); err != nil {
+		return err
+	}
+
+	for _, u := range uploads {
+		h.enqueueRawUpload(u.logID, u.timestamp, MCPToolObjectKey(h.prefix, u.timestamp, u.logID), true, u.status, u.payload, u.tags)
+	}
 	return nil
 }
 

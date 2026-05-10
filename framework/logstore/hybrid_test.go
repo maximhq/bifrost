@@ -249,6 +249,77 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 	assert.Equal(t, true, found.ResultParsed.(map[string]interface{})["ok"])
 }
 
+func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	longInput := ""
+	for i := 0; i < 260; i++ {
+		longInput += "b"
+	}
+	entries := []*MCPToolLog{
+		{
+			ID:          "mcp-batch-1",
+			RequestID:   "req-batch-1",
+			Timestamp:   time.Now().UTC(),
+			ToolName:    "search",
+			ServerLabel: "docs",
+			Status:      "success",
+			ArgumentsParsed: map[string]any{
+				"query": longInput,
+			},
+			ResultParsed: map[string]any{
+				"answer": "done",
+			},
+		},
+		{
+			ID:          "mcp-batch-2",
+			RequestID:   "req-batch-2",
+			Timestamp:   time.Now().UTC(),
+			ToolName:    "echo",
+			ServerLabel: "local",
+			Status:      "error",
+			ArgumentsParsed: map[string]any{
+				"input": "short",
+			},
+			ErrorDetailsParsed: &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: "failed",
+				},
+			},
+		},
+	}
+
+	require.NoError(t, hybrid.BatchCreateMCPToolLogsIfNotExists(ctx, entries))
+	waitForUploads(t, func() bool { return objStore.Len() == 2 })
+
+	dbOnly, err := inner.FindMCPToolLog(ctx, "mcp-batch-1")
+	require.NoError(t, err)
+	assert.True(t, dbOnly.HasObject)
+	assert.Empty(t, dbOnly.Result)
+	assert.Empty(t, dbOnly.ErrorDetails)
+	preview, ok := dbOnly.ArgumentsParsed.(string)
+	require.True(t, ok)
+	assert.Len(t, []rune(preview), 200)
+
+	found, err := hybrid.FindMCPToolLog(ctx, "mcp-batch-1")
+	require.NoError(t, err)
+	assert.Equal(t, longInput, found.ArgumentsParsed.(map[string]interface{})["query"])
+	assert.Equal(t, "done", found.ResultParsed.(map[string]interface{})["answer"])
+
+	foundError, err := hybrid.FindMCPToolLog(ctx, "mcp-batch-2")
+	require.NoError(t, err)
+	require.NotNil(t, foundError.ErrorDetailsParsed)
+	assert.Equal(t, "failed", foundError.ErrorDetailsParsed.Error.Message)
+
+	require.NoError(t, hybrid.BatchCreateMCPToolLogsIfNotExists(ctx, entries))
+	var count int64
+	require.NoError(t, inner.(*RDBLogStore).db.WithContext(ctx).Model(&MCPToolLog{}).Where("id IN ?", []string{"mcp-batch-1", "mcp-batch-2"}).Count(&count).Error)
+	assert.Equal(t, int64(2), count)
+}
+
 func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
