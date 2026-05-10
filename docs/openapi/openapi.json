@@ -99834,19 +99834,22 @@
           "input": {
             "oneOf": [
               {
-                "type": "string"
+                "type": "string",
+                "description": "A single text to embed"
               },
               {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "Several texts, one embedding each"
               },
               {
                 "type": "array",
                 "items": {
                   "type": "integer"
-                }
+                },
+                "description": "A single pre-tokenized input (OpenAI-compatible providers only)"
               },
               {
                 "type": "array",
@@ -99855,10 +99858,312 @@
                   "items": {
                     "type": "integer"
                   }
-                }
+                },
+                "description": "Several pre-tokenized inputs (OpenAI-compatible providers only)"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "description": "One entry of an embedding request's input - one item in, one embedding out.\nAccepts either shape:\n\n  [{\"type\": \"text\", \"text\": \"hi\"}]\n  {\"content\": [{\"type\": \"text\", \"text\": \"hi\"}], \"params\": {\"task_type\": \"RETRIEVAL_QUERY\"}}\n\n`params` overrides the request-level parameters for this item alone. Only providers with\na per-item wire format honour it (currently Gemini's `:batchEmbedContents`); others reject\nthe request rather than silently ignoring the override.\n",
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "description": "Exactly one modality field must be set, and it must match `type`.\nProvider support varies - see the provider pages for which part types each model accepts.\n",
+                        "required": [
+                          "type"
+                        ],
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "image",
+                              "audio",
+                              "file",
+                              "video",
+                              "tokens"
+                            ]
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "image": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "audio": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "file": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "video": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "video_config": {
+                            "type": "object",
+                            "description": "Optional video segment selection, honoured by providers that return per-segment embeddings.",
+                            "properties": {
+                              "start_offset_sec": {
+                                "type": "integer"
+                              },
+                              "end_offset_sec": {
+                                "type": "integer"
+                              },
+                              "interval_sec": {
+                                "type": "integer",
+                                "description": "Gap between embeddings in seconds (minimum 4)"
+                              }
+                            }
+                          },
+                          "tokens": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      },
+                      "description": "One content entry - a list of typed parts aggregated into a single embedding"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "content"
+                      ],
+                      "properties": {
+                        "content": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "description": "Exactly one modality field must be set, and it must match `type`.\nProvider support varies - see the provider pages for which part types each model accepts.\n",
+                            "required": [
+                              "type"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text",
+                                  "image",
+                                  "audio",
+                                  "file",
+                                  "video",
+                                  "tokens"
+                                ]
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "image": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "audio": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "file": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "video": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "video_config": {
+                                "type": "object",
+                                "description": "Optional video segment selection, honoured by providers that return per-segment embeddings.",
+                                "properties": {
+                                  "start_offset_sec": {
+                                    "type": "integer"
+                                  },
+                                  "end_offset_sec": {
+                                    "type": "integer"
+                                  },
+                                  "interval_sec": {
+                                    "type": "integer",
+                                    "description": "Gap between embeddings in seconds (minimum 4)"
+                                  }
+                                }
+                              },
+                              "tokens": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer"
+                                }
+                              }
+                            }
+                          },
+                          "description": "One content entry - a list of typed parts aggregated into a single embedding"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "encoding_format": {
+                              "type": "string",
+                              "enum": [
+                                "float",
+                                "base64"
+                              ]
+                            },
+                            "dimensions": {
+                              "type": "integer"
+                            },
+                            "task_type": {
+                              "type": "string"
+                            },
+                            "title": {
+                              "type": "string"
+                            },
+                            "auto_truncate": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                "description": "Multimodal form. Each element is one input item and produces one embedding; the\nparts inside an item are aggregated into that single vector. An element may be a\nbare array of parts, or an object carrying that item's own `params`.\n"
               }
             ],
-            "description": "Input for embedding - text or token arrays"
+            "description": "Text, pre-tokenized input, or multimodal content"
           },
           "fallbacks": {
             "type": "array",
@@ -99875,6 +100180,18 @@
           },
           "dimensions": {
             "type": "integer"
+          },
+          "task_type": {
+            "type": "string",
+            "description": "Intended downstream task (Gemini/Vertex text embeddings, e.g. RETRIEVAL_QUERY)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Optional document title used alongside task_type=RETRIEVAL_DOCUMENT"
+          },
+          "auto_truncate": {
+            "type": "boolean",
+            "description": "Truncate inputs longer than the model's limit instead of erroring (Vertex text embeddings)"
           }
         }
       },
@@ -99887,10 +100204,45 @@
               "type": "object",
               "properties": {
                 "index": {
-                  "type": "integer"
+                  "type": "integer",
+                  "description": "Index of the input this vector belongs to"
                 },
                 "object": {
                   "type": "string"
+                },
+                "modality": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "image",
+                    "video",
+                    "audio"
+                  ],
+                  "description": "Set only when the provider returns one vector per modality for a single input\n(Vertex `multimodalembedding@001`). Absent when a single unified vector is returned.\n"
+                },
+                "video_segment": {
+                  "type": "object",
+                  "description": "Time range this video embedding covers. Present only when `modality` is `video`.",
+                  "properties": {
+                    "start_offset_sec": {
+                      "type": "integer"
+                    },
+                    "end_offset_sec": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "encoding_format": {
+                  "type": "string",
+                  "enum": [
+                    "float",
+                    "int8",
+                    "uint8",
+                    "binary",
+                    "ubinary",
+                    "base64"
+                  ],
+                  "description": "Set when the provider returns several representations of the same input\n(Cohere `embedding_types`), since int8/binary and uint8/ubinary are otherwise\nindistinguishable once decoded.\n"
                 },
                 "embedding": {
                   "oneOf": [
@@ -99910,6 +100262,12 @@
                         "items": {
                           "type": "number"
                         }
+                      }
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
                       }
                     }
                   ]
