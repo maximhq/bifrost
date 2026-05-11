@@ -1482,29 +1482,41 @@ test-cli: install-gotestsum ## Run CLI tests
 		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
 		-- ./...
 
-run-cli-harness-test: ## Run the Claude Code + Codex E2E harness (non-interactive, multi-turn JSON streams). Live mirror on by default. Usage: make run-cli-harness-test [CLI=claude|codex] [PROVIDER=openai|anthropic|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [QUIET=1]
+run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Live mirror on by default. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \
 	BASE_URL_VAL="$${BASE_URL:-$(BASE_URL)}"; BASE_URL_VAL="$${BASE_URL_VAL:-http://localhost:8080}"; \
+	PARALLEL_VAL="$${PARALLEL:-$(PARALLEL)}"; PARALLEL_VAL="$${PARALLEL_VAL:-4}"; \
 	$(ECHO) "$(CYAN)  Bifrost:  $$BASE_URL_VAL$(NC)"; \
+	$(ECHO) "$(CYAN)  Parallel: $$PARALLEL_VAL$(NC)"; \
+	if [ -n "$(PROVIDER)" ]; then \
+		case "$(PROVIDER)" in openai|anthropic|azure|gemini|bedrock|vertex) ;; \
+			*) $(ECHO) "$(RED)Error: invalid PROVIDER=$(PROVIDER). Use one of: openai, anthropic, azure, gemini, bedrock, vertex$(NC)"; exit 1 ;; \
+		esac; \
+		$(ECHO) "$(CYAN)  Provider: $(PROVIDER)$(NC)"; \
+	fi; \
 	if ! curl -s -o /dev/null -w "%{http_code}" "$$BASE_URL_VAL/api/providers" | grep -qE '^[2-4]'; then \
 		$(ECHO) "$(RED)Error: Bifrost not reachable at $$BASE_URL_VAL$(NC)"; \
 		$(ECHO) "$(YELLOW)Start Bifrost first (e.g. make dev) or pass BASE_URL=...$(NC)"; \
 		exit 1; \
 	fi; \
-	for bin in claude codex; do \
+	for bin in claude codex opencode; do \
 		if [ "$(CLI)" = "" ] || [ "$(CLI)" = "$$bin" ]; then \
 			if ! command -v $$bin >/dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Warning: $$bin not on PATH; matrix cells for $$bin will fail.$(NC)"; \
-				$(ECHO) "$(YELLOW)  Install: npm i -g $$( [ $$bin = claude ] && echo @anthropic-ai/claude-code || echo @openai/codex )$(NC)"; \
+				$(ECHO) "$(YELLOW)  Install: npm i -g $$( [ $$bin = claude ] && echo @anthropic-ai/claude-code || { [ $$bin = codex ] && echo @openai/codex || echo opencode-ai; } )$(NC)"; \
 			fi; \
 		fi; \
 	done; \
-	RUN_PARTS="TestCLIs"; \
-	if [ -n "$(CLI)" ]; then RUN_PARTS="$$RUN_PARTS/$(CLI)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
-	if [ -n "$(PROVIDER)" ]; then RUN_PARTS="$$RUN_PARTS/$(PROVIDER)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
-	RUN_PARTS="$$RUN_PARTS/[^/]+"; \
-	if [ -n "$(SCENARIO)" ]; then RUN_PARTS="$$RUN_PARTS/$(SCENARIO)"; fi; \
+	if [ -n "$(TESTCASE)" ]; then \
+		RUN_PARTS="$(TESTCASE)"; \
+	else \
+		RUN_PARTS="TestCLIs"; \
+		if [ -n "$(CLI)" ]; then RUN_PARTS="$$RUN_PARTS/$(CLI)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
+		if [ -n "$(PROVIDER)" ]; then RUN_PARTS="$$RUN_PARTS/$(PROVIDER)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
+		if [ -n "$(MODEL)" ]; then RUN_PARTS="$$RUN_PARTS/[^/]*$(MODEL)[^/]*"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
+		if [ -n "$(SCENARIO)" ]; then RUN_PARTS="$$RUN_PARTS/$(SCENARIO)"; fi; \
+	fi; \
 	$(ECHO) "$(CYAN)  Filter:   $$RUN_PARTS$(NC)"; \
 	if [ -n "$(MODEL)" ]; then $(ECHO) "$(CYAN)  Model:    $(MODEL) (substring filter)$(NC)"; fi; \
 	cd tests/e2e/clis && \
@@ -1515,6 +1527,7 @@ run-cli-harness-test: ## Run the Claude Code + Codex E2E harness (non-interactiv
 		GOWORK=off go test \
 			-count=1 \
 			-timeout=$${TIMEOUT:-$(if $(TIMEOUT),$(TIMEOUT),60m)} \
+			-parallel="$$PARALLEL_VAL" \
 			-run "^$$RUN_PARTS$$" \
 			$(if $(QUIET),,-v) \
 			./...
