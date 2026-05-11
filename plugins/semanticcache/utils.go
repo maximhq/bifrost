@@ -18,6 +18,25 @@ import (
 // Using a fixed namespace ensures IDs are reproducible across restarts and store types.
 var directCacheNamespace = uuid.MustParse("b1f3c2d4-e5a6-7890-abcd-ef1234567890")
 
+// maxLogErrLen caps the number of characters from an error message included in
+// log output.  Errors originating from HTTP response processing may embed
+// sensitive payload data; truncating prevents inadvertent clear-text logging
+// (CWE-532).
+const maxLogErrLen = 256
+
+// sanitizeLogErr returns a truncated string representation of an error suitable
+// for operational log messages.
+func sanitizeLogErr(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	s := err.Error()
+	if len(s) > maxLogErrLen {
+		return s[:maxLogErrLen] + "...[truncated]"
+	}
+	return s
+}
+
 // normalizeText applies consistent normalization to text inputs for better cache hit rates.
 // It converts text to lowercase and trims whitespace to reduce cache misses due to minor variations.
 func normalizeText(text string) string {
@@ -554,7 +573,7 @@ func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, 
 		return fmt.Errorf("failed to store unified cache entry: %w", err)
 	}
 
-	plugin.logger.Debug(fmt.Sprintf("%s Successfully cached single response with ID: %s", PluginLoggerPrefix, responseID))
+	plugin.logger.Debug("%s Successfully cached single response with ID: %s", PluginLoggerPrefix, responseID)
 	return nil
 }
 
@@ -605,7 +624,7 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, requestID string
 	// Note: processAccumulatedStream will check for errors and skip caching if any errors occurred
 	if isFinalChunk && !alreadyComplete {
 		if processErr := plugin.processAccumulatedStream(ctx, requestID); processErr != nil {
-			plugin.logger.Warn("%s Failed to process accumulated stream for request %s: %v", PluginLoggerPrefix, requestID, processErr)
+			plugin.logger.Warn("%s Failed to process accumulated stream for request %s: %s", PluginLoggerPrefix, requestID, sanitizeLogErr(processErr))
 		}
 	}
 

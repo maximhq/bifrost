@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/valyala/fasthttp"
 )
 
@@ -21,6 +22,11 @@ var pluginDownloadClient = &fasthttp.Client{
 
 // DownloadPlugin downloads a plugin from a URL and returns the local file path
 func DownloadPlugin(pluginURL string, extension string) (string, error) {
+	// Validate the plugin URL to prevent SSRF attacks
+	if err := bifrost.ValidateExternalURL(pluginURL); err != nil {
+		return "", fmt.Errorf("invalid plugin URL: %w", err)
+	}
+
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 	response := fasthttp.AcquireResponse()
@@ -64,6 +70,10 @@ func DownloadPlugin(pluginURL string, extension string) (string, error) {
 				return "", fmt.Errorf("invalid request URL %q: %w", currentURL, err)
 			}
 			currentURL = base.ResolveReference(loc).String()
+			// Validate redirect URL to prevent SSRF via open redirect
+			if err := bifrost.ValidateExternalURL(currentURL); err != nil {
+				return "", fmt.Errorf("redirect URL blocked: %w", err)
+			}
 			continue
 		}
 		return "", fmt.Errorf("failed to download plugin: HTTP %d", statusCode)

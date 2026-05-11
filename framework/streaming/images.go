@@ -302,7 +302,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		if shouldProcess {
 			data, processErr := a.processAccumulatedImageStreamingChunks(requestID, bifrostErr, isFinalChunk)
 			if processErr != nil {
-				a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %v", requestID, processErr))
+				a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %s", requestID, sanitizeLogErr(processErr)))
 				return nil, processErr
 			}
 			var rawRequest interface{}

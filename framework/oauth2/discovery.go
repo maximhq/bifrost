@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	bifrost "github.com/maximhq/bifrost/core"
 )
 
 // OAuthMetadata contains discovered OAuth configuration from authorization server
@@ -58,6 +60,11 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
 	client := &http.Client{
 		Timeout: 10 * time.Second,
+	}
+
+	// Validate the server URL to prevent SSRF attacks
+	if err := bifrost.ValidateExternalURL(serverURL); err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
@@ -165,6 +172,11 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
 func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, error) {
+	// Validate the metadata URL to prevent SSRF attacks
+	if err := bifrost.ValidateExternalURL(metadataURL); err != nil {
+		return nil, nil, fmt.Errorf("invalid metadata URL: %w", err)
+	}
+
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -272,6 +284,10 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
+		// Validate the candidate URL to prevent SSRF attacks
+		if err := bifrost.ValidateExternalURL(candidateURL); err != nil {
+			continue
+		}
 		req, err := http.NewRequestWithContext(ctx, "GET", candidateURL, nil)
 		if err != nil {
 			continue
@@ -395,6 +411,11 @@ type DynamicClientRegistrationResponse struct {
 //
 // Returns client_id and optional client_secret that can be used for OAuth flows.
 func RegisterDynamicClient(ctx context.Context, registrationURL string, req *DynamicClientRegistrationRequest) (*DynamicClientRegistrationResponse, error) {
+	// Validate the registration URL to prevent SSRF attacks
+	if err := bifrost.ValidateExternalURL(registrationURL); err != nil {
+		return nil, fmt.Errorf("invalid registration URL: %w", err)
+	}
+
 	logger.Debug(fmt.Sprintf("[Dynamic Registration] Registering client at: %s", registrationURL))
 	logger.Debug(fmt.Sprintf("[Dynamic Registration] Client name: %s, Redirect URIs: %v", req.ClientName, req.RedirectURIs))
 

@@ -2345,6 +2345,19 @@ func (s *RDBLogStore) buildProviderLatencyHistogramResult(computedBuckets map[in
 // Generic dimension histogram methods
 // ---------------------------------------------------------------------------
 
+// sanitizeDimColumn returns col unchanged if it is a known safe histogram
+// dimension column name, or returns an error for unrecognised values.
+// This acts as a defence-in-depth measure so that static analysis tools can
+// verify the value is safe before it is interpolated into SQL.
+func sanitizeDimColumn(col string) (string, error) {
+	switch col {
+	case "provider", "team_id", "customer_id", "user_id", "business_unit_id":
+		return col, nil
+	default:
+		return "", fmt.Errorf("invalid dimension column: %s", col)
+	}
+}
+
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
 func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
@@ -2357,7 +2370,10 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
 		return s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
@@ -2452,7 +2468,10 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
 		return s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
@@ -2568,7 +2587,10 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
 		return s.getDimensionLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	dialect := s.db.Dialector.Name()
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)

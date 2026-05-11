@@ -665,7 +665,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 
 		if bifrost.IsStreamRequestType(requestType) {
 			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
-				plugin.logger.Warn("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err)
+				plugin.logger.Warn("%s Failed to cache streaming response: %s", PluginLoggerPrefix, sanitizeLogErr(err))
 			}
 		} else {
 			if err := plugin.addSingleResponse(cacheCtx, storageID, singleResponseData, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {

@@ -577,8 +577,10 @@ func IsCodemodeTool(toolName string) bool {
 }
 
 // hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
+// SHA-256 is used for non-reversible fingerprinting (not password storage); this
+// is NOT a weak hash — the function intentionally uses SHA-256 (256-bit output).
 func hashSHA256(value string) string {
-	h := sha256.Sum256([]byte(value))
+	h := sha256.Sum256([]byte(value)) // #nosec G401 — SHA-256 is not a weak hash
 	return hex.EncodeToString(h[:])
 }
 

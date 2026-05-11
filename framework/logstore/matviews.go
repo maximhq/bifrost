@@ -778,7 +778,10 @@ func (s *RDBLogStore) getProviderLatencyHistogramFromMatView(ctx context.Context
 // getDimensionCostHistogramFromMatView returns time-bucketed cost data grouped by
 // the specified dimension column from mv_logs_hourly.
 func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
 		DimValue        string  `gorm:"column:dim_value"`
@@ -832,7 +835,10 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 // getDimensionTokenHistogramFromMatView returns time-bucketed token usage grouped by
 // the specified dimension column from mv_logs_hourly.
 func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	var results []struct {
 		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
 		DimValue         string `gorm:"column:dim_value"`
@@ -903,7 +909,10 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 // getDimensionLatencyHistogramFromMatView returns time-bucketed latency percentiles
 // grouped by the specified dimension column from mv_logs_hourly.
 func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
-	dimCol := string(dimension)
+	dimCol, err := sanitizeDimColumn(string(dimension))
+	if err != nil {
+		return nil, err
+	}
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
 		DimValue        string  `gorm:"column:dim_value"`

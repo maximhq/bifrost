@@ -36,7 +36,7 @@ func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert str
 		if err := validateCACertPath(tlsCACert); err != nil {
 			return nil, err
 		}
-		caCert, err := os.ReadFile(tlsCACert)
+		caCert, err := os.ReadFile(tlsCACert) // #nosec G304 — path validated by validateCACertPath above
 		if err != nil {
 			return nil, fmt.Errorf("fail to load provided CA cert: %w", err)
 		}

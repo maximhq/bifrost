@@ -57,7 +57,7 @@ func (plugin *Plugin) addStreamChunk(requestID string, chunk *StreamChunk, isFin
 		accumulator.FinalTimestamp = chunk.Timestamp
 	}
 
-	plugin.logger.Debug(fmt.Sprintf("%s Added chunk to stream accumulator for request %s", PluginLoggerPrefix, requestID))
+	plugin.logger.Debug("%s Added chunk to stream accumulator for request %s", PluginLoggerPrefix, requestID)
 
 	return nil
 }
@@ -80,12 +80,12 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 
 	// STEP 1: Check if any chunk in the entire stream had an error
 	if accumulator.HasError {
-		plugin.logger.Debug(fmt.Sprintf("%s Stream for request %s had errors, dropping entire operation (not caching)", PluginLoggerPrefix, requestID))
+		plugin.logger.Debug("%s Stream for request %s had errors, dropping entire operation (not caching)", PluginLoggerPrefix, requestID)
 		return nil
 	}
 
 	// STEP 2: All chunks are clean, now sort and build ordered stream for caching
-	plugin.logger.Debug(fmt.Sprintf("%s Stream for request %s completed successfully, processing %d chunks for caching", PluginLoggerPrefix, requestID, len(accumulator.Chunks)))
+	plugin.logger.Debug("%s Stream for request %s completed successfully, processing %d chunks for caching", PluginLoggerPrefix, requestID, len(accumulator.Chunks))
 
 	// Sort chunks by their ChunkIndex to ensure proper order (stable + nil-safe)
 	sort.SliceStable(accumulator.Chunks, func(i, j int) bool {
