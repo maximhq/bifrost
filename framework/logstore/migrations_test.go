@@ -47,8 +47,7 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Drop existing tables and migration tracking in the correct order.
 	// Preserve the shared migrations table — only clear its rows.
-	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE")
-	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE")
+	dropAllManagedMatViews(db)
 	db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 	db.Exec("DROP TABLE IF EXISTS logs")
 	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
@@ -73,12 +72,20 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Clean up tables after the test
 	t.Cleanup(func() {
-		db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE")
-		db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE")
+		dropAllManagedMatViews(db)
 		db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 		db.Exec("DROP TABLE IF EXISTS logs")
 		db.Exec("DELETE FROM migrations")
 	})
+}
+
+func dropAllManagedMatViews(db *gorm.DB) {
+	for _, view := range allMatViewNames() {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
+	for _, view := range legacyMatViewNames {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
 }
 
 // insertTestLog inserts a test log entry with the given metadata value.
