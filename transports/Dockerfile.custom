@@ -1,0 +1,112 @@
+# Dockerfile.custom — Custom production image for Bifrost.
+# Uses go.work to resolve local module dependencies (core, framework, plugins,
+# transports) and targets the custom wrapper with embedded admin UI.
+
+  # --- UI Build Stage: Build the React + Vite frontend ---
+  FROM node:25-alpine3.23@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS ui-builder
+  WORKDIR /app
+
+  RUN apk upgrade --no-cache
+
+  COPY ui/package*.json ./
+  RUN npm ci
+
+  COPY ui/ ./
+
+  RUN npm run build-enterprise
+
+  # --- Go Build Stage: Compile the custom wrapper binary using local modules ---
+  FROM golang:1.26.2-alpine3.23@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS builder
+  WORKDIR /build
+
+  # Install dependencies including gcc for CGO and sqlite (with latest security patches)
+  RUN apk upgrade --no-cache && \
+    apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold
+
+  # Set environment for CGO-enabled build (required for go-sqlite3)
+  ENV CGO_ENABLED=1 GOOS=linux
+
+  # Copy all local modules
+  COPY core/ ./core/
+  COPY framework/ ./framework/
+  COPY plugins/ ./plugins/
+  COPY transports/ ./transports/
+
+  # Copy the built UI into the custom cmd dir for //go:embed all:ui
+  COPY --from=ui-builder /app/out ./transports/bifrost-http/cmd/custom/ui
+
+  # Set up go workspace to resolve local module dependencies.
+  RUN go work init && \
+    go work use ./core && \
+    go work use ./framework && \
+    go work use ./plugins/compat && \
+    go work use ./plugins/governance && \
+    go work use ./plugins/jsonparser && \
+    go work use ./plugins/logging && \
+    go work use ./plugins/maxim && \
+    go work use ./plugins/mocker && \
+    go work use ./plugins/otel && \
+    go work use ./plugins/prompts && \
+    go work use ./plugins/semanticcache && \
+    go work use ./plugins/telemetry && \
+    go work use ./transports
+
+  # Build the custom wrapper binary
+  ARG VERSION=unknown
+  RUN cd /build/transports && \
+    go build \
+      -ldflags="-w -s -X main.Version=v${VERSION} -extldflags '-static'" \
+      -a -trimpath \
+      -tags "sqlite_static" \
+      -o /app/main \
+      ./bifrost-http/cmd/custom
+
+  # Verify build succeeded
+  RUN test -f /app/main || (echo "Build failed" && exit 1)
+
+  # --- Runtime Stage: Minimal runtime image ---
+  FROM alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
+  WORKDIR /app
+
+  # Install runtime dependencies for CGO-enabled binary
+  RUN apk upgrade --no-cache && \
+    apk add --no-cache musl libgcc ca-certificates wget zlib
+
+  # Create data directory and set up user
+  COPY --from=builder /app/main .
+  COPY --from=builder /build/transports/docker-entrypoint.sh .
+
+  # Getting arguments
+  ARG ARG_APP_PORT=8080
+  ARG ARG_APP_HOST=0.0.0.0
+  ARG ARG_LOG_LEVEL=info
+  ARG ARG_LOG_STYLE=json
+  ARG ARG_APP_DIR=/app/data
+
+  # Environment variables with defaults (can be overridden at runtime)
+  ENV APP_PORT=$ARG_APP_PORT \
+    APP_HOST=$ARG_APP_HOST \
+    LOG_LEVEL=$ARG_LOG_LEVEL \
+    LOG_STYLE=$ARG_LOG_STYLE \
+    APP_DIR=$ARG_APP_DIR
+
+  ENV GOGC="" \
+    GOMEMLIMIT=""
+
+  RUN mkdir -p $APP_DIR/logs && \
+    adduser -D -s /bin/sh appuser && \
+    chown -R appuser:appuser /app && \
+    chmod +x /app/docker-entrypoint.sh
+  USER appuser
+
+  # Declare volume for data persistence
+  VOLUME ["/app/data"]
+  EXPOSE $APP_PORT
+
+  # Health check for container status monitoring
+  HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
+
+  # Use entrypoint script that handles volume permissions and argument processing
+  ENTRYPOINT ["/app/docker-entrypoint.sh"]
+  CMD ["/app/main"]

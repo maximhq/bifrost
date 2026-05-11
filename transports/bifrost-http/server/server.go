@@ -121,8 +121,9 @@ type BifrostHTTPServer struct {
 	LogsCleaner     *logstore.LogsCleaner
 	AsyncJobCleaner *logstore.AsyncJobCleaner
 
-	Client *bifrost.Bifrost
-	Config *lib.Config
+	Client      *bifrost.Bifrost
+	Config      *lib.Config
+	KeySelector schemas.KeySelector
 
 	Server *fasthttp.Server
 	Router *router.Router
@@ -1354,6 +1355,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		OAuth2Provider:     s.Config.OAuthProvider,
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
+		KeySelector:        s.KeySelector,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
@@ -20,7 +22,30 @@ import (
 const (
 	urlFetchMaxRetries = 3                // retries after the first attempt (4 attempts total)
 	urlFetchMaxBackoff = 10 * time.Second // cap for exponential backoff (steps start at 1s)
+
+	// syncLockTTL is the TTL for distributed locks that cover the full URL→DB sync
+	// of pricing and model parameters. The sync UPSERTs ~9000 rows; over a slow
+	// pooled Postgres connection this can take 60-120s. The heartbeat (see
+	// withDistributedSyncLock) extends the lock periodically while the sync runs,
+	// so this TTL only acts as the fallback if the holder process dies. Keep it
+	// long enough that a brief pooler stall does not cause a second replica to
+	// steal the lock and start a concurrent UPSERT batch (the original deadlock
+	// trigger).
+	syncLockTTL = 5 * time.Minute
+
+	// syncLockHeartbeatInterval is how often the heartbeat goroutine extends the
+	// lock's TTL. Set to TTL/3 so two consecutive missed heartbeats still leave
+	// time before TTL expiry — gives operators a margin against transient DB
+	// blips without making the lock a no-op.
+	syncLockHeartbeatInterval = syncLockTTL / 3
 )
+
+// errLockHeldByPeer is a sentinel used by withDistributedLockSkipIfHeld to
+// signal that the operation was skipped because another node already holds the
+// lock. Callers should treat this as non-fatal: the leader is performing the
+// sync, so this replica can rely on its in-memory cache (loaded earlier from
+// the DB) and pick up fresh data on the next interval.
+var errLockHeldByPeer = errors.New("distributed lock held by peer; skipping")
 
 // syncPricing syncs pricing data from URL to database and updates cache
 func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
@@ -244,33 +269,171 @@ func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 	go mc.syncWorker(ctx)
 }
 
-// withDistributedLock acquires a named distributed lock and executes fn under it.
-// Pass retries=0 to block until acquired (Lock); pass retries>0 to use LockWithRetry.
-func (mc *ModelCatalog) withDistributedLock(ctx context.Context, key string, retries int, fn func() error) error {
-	lock, err := mc.distributedLockManager.NewLock(key)
+// Background context for the locking model:
+//
+// A previous version used a 30-second TTL with no heartbeat, plus a blocking
+// LockWithRetry that backed off exponentially up to ~3 minutes. The
+// pricing/model-parameters startup sync UPSERTs ~9000 rows over a pooled
+// Postgres connection and routinely takes 60–120s. With a 30s TTL the lock
+// would expire mid-sync, a second replica would clean up the (now-expired)
+// lock row, acquire its own lock, and start a concurrent UPSERT batch. Two
+// transactions then took row-level locks on the same set of
+// governance_model_parameters rows in different orders → Postgres deadlock
+// (40P01) → fatal at startup → ACA restart loop.
+//
+// The new design uses (a) skip-if-held semantics so non-leader replicas never
+// run a redundant sync, and (b) a heartbeat goroutine that extends the lock's
+// TTL while fn runs, so even if a peer is doing the sync, its lock survives
+// long pooler stalls.
+
+// withDistributedLockSkipIfHeld attempts to acquire the lock once. If the lock
+// is currently held by another node, fn is NOT executed and errLockHeldByPeer
+// is returned. This is the preferred mode for startup syncs: a single leader
+// replica performs the URL→DB sync while the others rely on the data already
+// loaded into their in-memory cache from the DB. The next periodic sync (every
+// syncInterval, default 24h) will eventually run on whichever node holds the
+// lock at that moment.
+func (mc *ModelCatalog) withDistributedLockSkipIfHeld(ctx context.Context, key string, fn func() error) error {
+	if mc.distributedLockManager == nil {
+		return fn()
+	}
+	lock, err := mc.distributedLockManager.NewLockWithTTL(key, syncLockTTL)
 	if err != nil {
 		return fmt.Errorf("failed to create lock %q: %w", key, err)
 	}
-	if retries > 0 {
-		if err := lock.LockWithRetry(ctx, retries); err != nil {
-			return fmt.Errorf("failed to acquire lock %q: %w", key, err)
-		}
-	} else {
-		if err := lock.Lock(ctx); err != nil {
-			return fmt.Errorf("failed to acquire lock %q: %w", key, err)
-		}
+	acquired, err := lock.TryLock(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to try-acquire lock %q: %w", key, err)
 	}
-	// Use a fresh context for unlock so that a cancelled or timed-out work context
-	// does not prevent the lock row from being deleted. If we reused ctx and it was
-	// already cancelled when the defer fires, ReleaseLock's DB call would fail
-	// silently and the lock would stay in the database until TTL expiry (30s),
-	// blocking every other node from acquiring it during that window.
+	if !acquired {
+		mc.logger.Info("distributed lock %q held by another node; skipping sync on this replica", key)
+		return errLockHeldByPeer
+	}
+
+	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
+	defer stopHeartbeat()
+	mc.startLockHeartbeat(heartbeatCtx, lock, key)
+
 	defer func() {
+		// Use a fresh context for unlock so that a cancelled or timed-out work
+		// context does not prevent the lock row from being deleted.
 		if err := lock.Unlock(context.Background()); err != nil {
-			mc.logger.Warn("failed to release distributed lock %q: %v", key, err)
+			// Downgrade from Warn to Debug for the common race where TTL
+			// expired and the lock was already cleaned up by another node;
+			// the heartbeat should normally prevent this.
+			if errors.Is(err, configstore.ErrLockNotHeld) {
+				mc.logger.Debug("distributed lock %q already released (TTL expired or cleaned up): %v", key, err)
+			} else {
+				mc.logger.Warn("failed to release distributed lock %q: %v", key, err)
+			}
 		}
 	}()
 	return fn()
+}
+
+// peerSyncWaitTimeout caps how long a non-leader replica will wait for the
+// leader's startup sync to populate the DB before giving up. It must be
+// generously larger than syncLockTTL because the actual sync is what blocks
+// us, not the lock TTL itself.
+const peerSyncWaitTimeout = syncLockTTL + 2*time.Minute
+
+// peerSyncPollInterval is how often we re-check the DB for data while waiting
+// for the peer to finish its sync.
+const peerSyncPollInterval = 3 * time.Second
+
+// waitForPeerSyncAndReloadPricing polls the DB until pricing rows appear (the
+// peer finished its sync) or the timeout elapses. On success it loads pricing
+// into the in-memory cache and returns nil. Used only on the cold-start path
+// where this replica has no DB data and lost the leader-election race.
+func (mc *ModelCatalog) waitForPeerSyncAndReloadPricing(ctx context.Context) error {
+	if mc.configStore == nil {
+		return errors.New("no configStore available")
+	}
+	deadline := time.Now().Add(peerSyncWaitTimeout)
+	for {
+		// Reload from DB; if it now has rows, we're done.
+		if err := mc.loadPricingFromDatabase(ctx); err != nil {
+			return fmt.Errorf("failed to reload pricing from DB while waiting for peer: %w", err)
+		}
+		mc.mu.RLock()
+		n := len(mc.pricingData)
+		mc.mu.RUnlock()
+		if n > 0 {
+			mc.logger.Info("peer-driven startup pricing sync visible in DB (%d records); continuing", n)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("timed out waiting for peer to populate pricing data")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(peerSyncPollInterval):
+		}
+	}
+}
+
+// waitForPeerSyncAndReloadParams is the model-parameters analogue of
+// waitForPeerSyncAndReloadPricing.
+func (mc *ModelCatalog) waitForPeerSyncAndReloadParams(ctx context.Context) error {
+	if mc.configStore == nil {
+		return errors.New("no configStore available")
+	}
+	deadline := time.Now().Add(peerSyncWaitTimeout)
+	for {
+		n, err := mc.loadModelParametersFromDatabase(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to reload model parameters from DB while waiting for peer: %w", err)
+		}
+		if n > 0 {
+			mc.logger.Info("peer-driven startup model parameters sync visible in DB (%d records); continuing", n)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("timed out waiting for peer to populate model parameters")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(peerSyncPollInterval):
+		}
+	}
+}
+
+// startLockHeartbeat launches a goroutine that periodically calls Extend on the
+// lock to push its expires_at forward. The goroutine exits when ctx is cancelled
+// (which happens when the calling helper returns). If Extend reports
+// ErrLockNotHeld, the lock has been lost (e.g., TTL expired earlier and another
+// node grabbed it) — we log loudly because this is the failure mode that
+// previously caused the deadlock.
+func (mc *ModelCatalog) startLockHeartbeat(ctx context.Context, lock *configstore.DistributedLock, key string) {
+	mc.wg.Add(1)
+	go func() {
+		defer mc.wg.Done()
+		ticker := time.NewTicker(syncLockHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Extend uses the lock's own holderID, so the holder identity
+				// stays stable across the entire sync — no more "lock not held
+				// by this holder" warnings caused by holder mismatch.
+				extendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				err := lock.Extend(extendCtx)
+				cancel()
+				if err == nil {
+					continue
+				}
+				if errors.Is(err, configstore.ErrLockNotHeld) {
+					mc.logger.Error("distributed lock %q lost mid-sync (heartbeat Extend reported not-held); another node may now be running the same sync — investigate sync duration vs syncLockTTL=%v", key, syncLockTTL)
+					return
+				}
+				mc.logger.Warn("distributed lock %q heartbeat extend failed (transient, will retry): %v", key, err)
+			}
+		}
+	}()
 }
 
 // syncTick performs a single sync tick with proper lock management
@@ -283,7 +446,14 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 
 	if time.Since(lastSync) >= interval {
 		mc.logger.Debug("starting model catalog background sync")
-		if err := mc.withDistributedLock(ctx, "model_catalog_pricing_sync", 10, func() error {
+		// Periodic sync uses skip-if-held: if another replica is already
+		// running this sync, the work is redundant — every node would write
+		// the same UPSERT batch. Skipping prevents two replicas from racing
+		// concurrent UPSERTs (the same race that produced the original
+		// startup deadlock). Whichever node acquires the lock first does the
+		// work; others reload from the DB on the next tick (via
+		// loadPricingFromDatabase / loadModelParametersFromDatabase elsewhere).
+		if err := mc.withDistributedLockSkipIfHeld(ctx, "model_catalog_pricing_sync", func() error {
 			// Sync pricing and model parameters in parallel
 			var wg sync.WaitGroup
 			var pricingErr, paramsErr error
@@ -317,7 +487,11 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 			}
 			return paramsErr
 		}); err != nil {
-			mc.logger.Error("failed to run model catalog sync: %v", err)
+			if errors.Is(err, errLockHeldByPeer) {
+				mc.logger.Debug("background sync skipped: peer is currently running it")
+			} else {
+				mc.logger.Error("failed to run model catalog sync: %v", err)
+			}
 		}
 		mc.logger.Debug("model catalog background sync completed")
 	}

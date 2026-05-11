@@ -4,6 +4,7 @@ package modelcatalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -91,7 +92,12 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		supportedResponseTypes: make(map[string][]string),
 		supportedParams:        make(map[string][]string),
 		done:                   make(chan struct{}),
-		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
+		// withDistributedLockSkipIfHeld overrides the per-lock TTL via
+		// NewLockWithTTL(syncLockTTL=5min) and runs a heartbeat to extend the lock
+		// while the sync is in progress. The default TTL on the manager only
+		// applies if a caller uses NewLock() directly without a TTL — keep the
+		// package default (30s) so non-sync usages remain unaffected.
+		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger),
 	}
 
 	// Initialize syncCtx early so background startup goroutines can use it and
@@ -153,19 +159,39 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				mc.wg.Add(1)
 				go func() {
 					defer mc.wg.Done()
-					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_pricing_startup_sync", 10, func() error {
+					// Skip-if-held: only the leader replica runs the URL→DB sync.
+					// Other replicas already loaded pricing data from the DB above
+					// and will pick up fresh data on the next periodic interval.
+					if err := mc.withDistributedLockSkipIfHeld(mc.syncCtx, "model_catalog_pricing_startup_sync", func() error {
 						return mc.syncPricing(mc.syncCtx)
 					}); err != nil {
-						mc.logger.Warn("background startup pricing sync failed: %v", err)
+						if errors.Is(err, errLockHeldByPeer) {
+							mc.logger.Info("background startup pricing sync skipped (peer holds lock)")
+						} else {
+							mc.logger.Warn("background startup pricing sync failed: %v", err)
+						}
 					} else {
 						mc.logger.Info("background startup pricing sync completed successfully")
 					}
 				}()
 			} else {
-				if err := mc.withDistributedLock(ctx, "model_catalog_pricing_startup_sync", 10, func() error {
+				// Cold start: no pricing data in the DB at all. We need to
+				// populate it before the gateway can serve traffic for unknown
+				// models. Use skip-if-held — if a peer is already running the
+				// initial sync, wait briefly for them to finish, then load
+				// from the DB. This avoids two replicas racing UPSERTs and
+				// triggering a Postgres deadlock (the original bug).
+				if err := mc.withDistributedLockSkipIfHeld(ctx, "model_catalog_pricing_startup_sync", func() error {
 					return mc.syncPricing(ctx)
 				}); err != nil {
-					pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
+					if errors.Is(err, errLockHeldByPeer) {
+						// Wait for the leader to finish, then reload from DB.
+						if waitErr := mc.waitForPeerSyncAndReloadPricing(ctx); waitErr != nil {
+							pricingErr = fmt.Errorf("peer holds startup pricing lock and DB still empty after wait: %w", waitErr)
+						}
+					} else {
+						pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
+					}
 				}
 			}
 		}()
@@ -181,19 +207,39 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				mc.wg.Add(1)
 				go func() {
 					defer mc.wg.Done()
-					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_params_startup_sync", 10, func() error {
+					if err := mc.withDistributedLockSkipIfHeld(mc.syncCtx, "model_catalog_params_startup_sync", func() error {
 						return mc.syncModelParameters(mc.syncCtx)
 					}); err != nil {
-						mc.logger.Warn("background startup model parameters sync failed: %v", err)
+						if errors.Is(err, errLockHeldByPeer) {
+							mc.logger.Info("background startup model parameters sync skipped (peer holds lock)")
+						} else {
+							mc.logger.Warn("background startup model parameters sync failed: %v", err)
+						}
 					} else {
 						mc.logger.Info("background startup model parameters sync completed successfully")
 					}
 				}()
 			} else {
-				if err := mc.withDistributedLock(ctx, "model_catalog_params_startup_sync", 10, func() error {
+				// Cold start path — see pricing equivalent above for rationale.
+				if err := mc.withDistributedLockSkipIfHeld(ctx, "model_catalog_params_startup_sync", func() error {
 					return mc.syncModelParameters(ctx)
 				}); err != nil {
-					paramsErr = fmt.Errorf("failed to sync model parameters data: %w", err)
+					if errors.Is(err, errLockHeldByPeer) {
+						if waitErr := mc.waitForPeerSyncAndReloadParams(ctx); waitErr != nil {
+							// Model parameters are not strictly required to
+							// serve traffic — providers fall back to defaults.
+							// Log loudly but do not fail Init: a fatal error
+							// here would crash the pod and trigger an ACA
+							// restart loop, which is exactly the symptom we
+							// are fixing.
+							mc.logger.Error("peer holds startup params lock and DB still empty after wait; continuing without fresh params (will retry next interval): %v", waitErr)
+						}
+					} else {
+						// Same rationale: even an unexpected sync failure at
+						// startup is not worth crashing for. The background
+						// sync worker will retry on its periodic interval.
+						mc.logger.Error("startup model parameters sync failed; continuing without fresh params (will retry next interval): %v", err)
+					}
 				}
 			}
 		}()
