@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -208,43 +209,115 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 		return nil, nil, fmt.Errorf("connection URL is required for per-user OAuth verification")
 	}
 
-	// Create HTTP transport with the admin's temporary Bearer token
-	headers := map[string]string{
-		"Authorization": "Bearer " + accessToken,
+	// Build prepared inputs for the typed connect plugin gate. PreHooks may mutate
+	// Headers / ConnectionString — the mutated values are passed to the transport below.
+	// Copy non-Authorization headers from config.Headers so verification sees the same
+	// tenant/custom headers as the normal connect path. Authorization is re-injected
+	// after PreHooks run (the OAuth bearer comes from the access token, not config).
+	url := config.ConnectionString.GetValue()
+	preparedHeaders := make(map[string]string, len(config.Headers))
+	for k, v := range config.Headers {
+		if strings.EqualFold(k, "Authorization") {
+			continue
+		}
+		preparedHeaders[k] = v.GetValue()
 	}
-	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(headers))
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create HTTP transport for verification: %w", err)
+	connectReq := &schemas.BifrostMCPConnectRequest{
+		ClientName:       config.Name,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		AuthType:         config.AuthType,
+		ConnectionString: &url,
+		Headers:          preparedHeaders,
 	}
 
-	// Create temporary MCP client
-	tempClient := client.NewClient(httpTransport)
-	ctx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
+	verifyCtx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 	defer cancel()
+	gateCtx := schemas.NewBifrostContext(verifyCtx, schemas.NoDeadline)
 
-	// Start transport
-	if err := tempClient.Start(ctx); err != nil {
-		return nil, nil, fmt.Errorf("failed to start MCP connection for verification: %w", err)
-	}
-	defer tempClient.Close()
+	var tempClient *client.Client
+	defer func() {
+		if tempClient != nil {
+			tempClient.Close()
+		}
+	}()
+	start := time.Now()
 
-	// Initialize MCP handshake
-	initRequest := mcp.InitializeRequest{
-		Params: mcp.InitializeParams{
-			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-			Capabilities:    mcp.ClientCapabilities{},
-			ClientInfo: mcp.Implementation{
-				Name:    fmt.Sprintf("Bifrost-%s-verify", config.Name),
-				Version: "1.0.0",
+	_, gateErr := m.runConnectWithPluginPipeline(gateCtx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
+		// Use mutated URL/headers
+		finalURL := url
+		if preReq.ConnectionString != nil {
+			finalURL = *preReq.ConnectionString
+		}
+
+		// Copy mutated headers and add Authorization AFTER all PreHooks ran. Copying
+		// (rather than mutating preReq.Headers in place) avoids leaking the bearer token
+		// back into the request that PreHook plugins may still reference.
+		finalHeaders := make(map[string]string, len(preReq.Headers)+1)
+		maps.Copy(finalHeaders, preReq.Headers)
+		finalHeaders["Authorization"] = fmt.Sprintf("Bearer %s", accessToken)
+
+		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, transport.WithHTTPHeaders(finalHeaders))
+		if hErr != nil {
+			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
+		}
+		tempClient = client.NewClient(httpTransport)
+		if startErr := tempClient.Start(verifyCtx); startErr != nil {
+			return nil, fmt.Errorf("failed to start MCP connection for verification: %w", startErr)
+		}
+
+		initRequest := mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+				Capabilities:    mcp.ClientCapabilities{},
+				ClientInfo: mcp.Implementation{
+					Name:    fmt.Sprintf("Bifrost-%s-verify", config.Name),
+					Version: "1.0.0",
+				},
 			},
-		},
+		}
+		initResult, initErr := tempClient.Initialize(verifyCtx, initRequest)
+		if initErr != nil {
+			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
+		}
+
+		resp := &schemas.BifrostMCPConnectResponse{
+			ConnectionInfo: &schemas.MCPClientConnectionInfo{
+				Type:          schemas.MCPConnectionTypeHTTP,
+				ConnectionURL: &finalURL,
+			},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{
+				Latency: time.Since(start).Milliseconds(),
+			},
+		}
+		if initResult != nil {
+			resp.ProtocolVersion = initResult.ProtocolVersion
+			resp.ServerInfo = &schemas.MCPServerInfo{
+				Name:    initResult.ServerInfo.Name,
+				Version: initResult.ServerInfo.Version,
+			}
+			resp.ServerCapabilities = &schemas.MCPServerCapabilities{
+				Tools:     initResult.Capabilities.Tools != nil,
+				Resources: initResult.Capabilities.Resources != nil,
+				Prompts:   initResult.Capabilities.Prompts != nil,
+				Logging:   initResult.Capabilities.Logging != nil,
+			}
+		}
+		return resp, nil
+	})
+
+	if gateErr != nil {
+		return nil, nil, fmt.Errorf("failed to verify MCP connection: %s", gateErr.GetErrorString())
 	}
-	if _, err := tempClient.Initialize(ctx, initRequest); err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", err)
+	if tempClient == nil {
+		// Plugin short-circuited connect with a synthetic success response. We have no live
+		// socket to query for tools — surface this as an error since tool discovery is the
+		// whole point of OAuth verification.
+		return nil, nil, fmt.Errorf("OAuth verification was short-circuited by plugin; cannot discover tools without a live connection")
 	}
 
-	// Discover tools
-	tools, toolNameMapping, err := retrieveExternalTools(ctx, tempClient, config.Name, m.logger)
+	// Discover tools through the list_tools plugin gate. PostHook may filter or augment
+	// the discovered set.
+	tools, toolNameMapping, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover tools during verification: %w", err)
 	}
@@ -834,7 +907,6 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	// Heavy operations performed outside lock
 	var externalClient *client.Client
 	var connectionInfo *schemas.MCPClientConnectionInfo
-	var err error
 
 	// Initialize the external client with timeout
 	// For SSE and STDIO connections, we need a long-lived context for the connection
@@ -860,134 +932,210 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		defer cancel()
 	}
 
-	// Start the transport first (required for STDIO and SSE clients) with retry logic
-	// Each retry attempt uses a fresh client instance to avoid resource leaks
-	m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
-	transportRetryConfig := DefaultRetryConfig
-	err = ExecuteWithRetry(
-		m.ctx,
-		func() error {
-			// Close previous client if this is a retry attempt
-			if externalClient != nil {
-				if closeErr := externalClient.Close(); closeErr != nil {
-					m.logger.Warn("%s Failed to close external client during retry: %v", MCPLogPrefix, closeErr)
+	// Build the plugin gate request with prepared inputs. PreHooks may mutate
+	// ConnectionString, Headers, StdioCommand, StdioArgs — those mutations flow into
+	// the create<X>Connection calls below via the `overrides` parameter.
+	//
+	// SECURITY: Authorization is stripped from the headers exposed to PreHooks and
+	// re-injected after all PreHooks have run. Plugins never see the bearer token.
+	connectReq := &schemas.BifrostMCPConnectRequest{
+		ClientName:     config.Name,
+		ConnectionType: config.ConnectionType,
+		AuthType:       config.AuthType,
+	}
+	if config.ConnectionString != nil {
+		u := config.ConnectionString.GetValue()
+		connectReq.ConnectionString = &u
+	}
+	var authHeader string // captured for re-injection after PreHooks
+	if config.ConnectionType == schemas.MCPConnectionTypeHTTP || config.ConnectionType == schemas.MCPConnectionTypeSSE {
+		if h, hErr := config.HttpHeaders(m.ctx, m.oauth2Provider); hErr == nil {
+			if auth, ok := h["Authorization"]; ok {
+				authHeader = auth
+				delete(h, "Authorization")
+			}
+			connectReq.Headers = h
+		}
+	}
+	if config.StdioConfig != nil {
+		cmd := config.StdioConfig.Command
+		connectReq.StdioCommand = &cmd
+		connectReq.StdioArgs = append([]string(nil), config.StdioConfig.Args...)
+	}
+
+	// Fresh BifrostContext for the gate so it doesn't inherit any SkipPluginPipeline flag
+	// from the caller's request context. Connect runs as infrastructure, not as part of an
+	// in-flight LLM request.
+	gateCtx := schemas.NewBifrostContext(m.ctx, schemas.NoDeadline)
+
+	// To capture InitializeResult for the response, the op closure populates these.
+	var initResult *mcp.InitializeResult
+	start := time.Now()
+
+	_, gateErr := m.runConnectWithPluginPipeline(gateCtx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
+		// Re-inject Authorization after PreHooks. Use a shallow-cloned overrides
+		// struct so the merged headers don't leak back into the request object that
+		// plugins captured in PreHook (which they may still reference in PostHook).
+		mutForWire := preReq
+		if authHeader != "" {
+			merged := make(map[string]string, len(preReq.Headers)+1)
+			maps.Copy(merged, preReq.Headers)
+			merged["Authorization"] = authHeader
+			clone := *preReq
+			clone.Headers = merged
+			mutForWire = &clone
+		}
+
+		// Start the transport (with internal retries). Each retry uses a fresh client.
+		m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
+		transportRetryConfig := DefaultRetryConfig
+		if startErr := ExecuteWithRetry(
+			m.ctx,
+			func() error {
+				// Close previous client if this is a retry attempt
+				if externalClient != nil {
+					if closeErr := externalClient.Close(); closeErr != nil {
+						m.logger.Warn("%s Failed to close external client during retry: %v", MCPLogPrefix, closeErr)
+					}
 				}
-			}
-			// Create a fresh client for this attempt
-			var createErr error
-			switch config.ConnectionType {
-			case schemas.MCPConnectionTypeHTTP:
-				externalClient, connectionInfo, createErr = m.createHTTPConnection(m.ctx, config)
-			case schemas.MCPConnectionTypeSTDIO:
-				externalClient, connectionInfo, createErr = m.createSTDIOConnection(m.ctx, config)
-			case schemas.MCPConnectionTypeSSE:
-				externalClient, connectionInfo, createErr = m.createSSEConnection(m.ctx, config)
-			case schemas.MCPConnectionTypeInProcess:
-				externalClient, connectionInfo, createErr = m.createInProcessConnection(m.ctx, config)
-			default:
-				return fmt.Errorf("unknown connection type: %s", config.ConnectionType)
-			}
-			if createErr != nil {
-				return createErr
-			}
-			// Create per-attempt timeout context for Start operation
-			// Each attempt has a deadline to prevent indefinite hangs
-			var perAttemptCtx context.Context
-			if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-				// For STDIO/SSE: use longLivedCtx directly without additional timeout
-				// The subprocess needs the context to stay valid for the entire connection lifetime
-				// Do NOT defer cancel - the context manages the subprocess lifetime
-				perAttemptCtx = longLivedCtx
-				m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
-			} else {
-				// HTTP already has timeout
-				perAttemptCtx = ctx
-			}
-			// Start the fresh client with the per-attempt timeout
-			return externalClient.Start(perAttemptCtx)
-		},
-		transportRetryConfig,
-		m.logger,
-	)
-	if err != nil {
-		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-			cancel() // Cancel long-lived context on error
-		}
-		// Close external client connection to prevent transport/goroutine leaks
-		if externalClient != nil {
-			if closeErr := externalClient.Close(); closeErr != nil {
-				m.logger.Warn("%s Failed to close external client during cleanup: %v", MCPLogPrefix, closeErr)
-			}
-		}
-		return fmt.Errorf("failed to start MCP client transport %s after %d retries: %v", config.Name, transportRetryConfig.MaxRetries, err)
-	}
-	m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
-
-	// Create proper initialize request for external client
-	extInitRequest := mcp.InitializeRequest{
-		Params: mcp.InitializeParams{
-			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-			Capabilities:    mcp.ClientCapabilities{},
-			ClientInfo: mcp.Implementation{
-				Name:    fmt.Sprintf("Bifrost-%s", config.Name),
-				Version: "1.0.0",
+				// Create a fresh client for this attempt
+				var createErr error
+				switch config.ConnectionType {
+				case schemas.MCPConnectionTypeHTTP:
+					externalClient, connectionInfo, createErr = m.createHTTPConnection(m.ctx, config, mutForWire)
+				case schemas.MCPConnectionTypeSTDIO:
+					externalClient, connectionInfo, createErr = m.createSTDIOConnection(m.ctx, config, mutForWire)
+				case schemas.MCPConnectionTypeSSE:
+					externalClient, connectionInfo, createErr = m.createSSEConnection(m.ctx, config, mutForWire)
+				case schemas.MCPConnectionTypeInProcess:
+					externalClient, connectionInfo, createErr = m.createInProcessConnection(m.ctx, config)
+				default:
+					return fmt.Errorf("unknown connection type: %s", config.ConnectionType)
+				}
+				if createErr != nil {
+					return createErr
+				}
+				// Create per-attempt timeout context for Start operation
+				// Each attempt has a deadline to prevent indefinite hangs
+				var perAttemptCtx context.Context
+				if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+					// For STDIO/SSE: use longLivedCtx directly without additional timeout
+					// The subprocess needs the context to stay valid for the entire connection lifetime
+					// Do NOT defer cancel - the context manages the subprocess lifetime.
+					perAttemptCtx = longLivedCtx
+					m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
+				} else {
+					// HTTP already has timeout
+					perAttemptCtx = ctx
+				}
+				return externalClient.Start(perAttemptCtx)
 			},
-		},
-	}
-
-	// Initialize client with retry logic
-	initRetryConfig := DefaultRetryConfig
-	err = ExecuteWithRetry(
-		m.ctx,
-		func() error {
-			// For STDIO/SSE: Use a timeout context for initialization to prevent indefinite hangs
-			// The subprocess will continue running with the long-lived context
-			var initCtx context.Context
-			var initCancel context.CancelFunc
-
-			if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-				// Create timeout context for initialization phase only
-				initCtx, initCancel = context.WithTimeout(longLivedCtx, MCPClientConnectionEstablishTimeout)
-				defer initCancel()
-				m.logger.Debug("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout)
-			} else {
-				// HTTP already has timeout
-				initCtx = ctx
-			}
-			_, initErr := externalClient.Initialize(initCtx, extInitRequest)
-			return initErr
-		},
-		initRetryConfig,
-		m.logger,
-	)
-	if err != nil {
-		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-			cancel() // Cancel long-lived context on error
+			transportRetryConfig,
+			m.logger,
+		); startErr != nil {
+			return nil, fmt.Errorf("failed to start MCP client transport after %d retries: %v", transportRetryConfig.MaxRetries, startErr)
 		}
-		// Close external client connection to prevent transport/goroutine leaks
+		m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
+
+		// Initialize with retry. Capture InitializeResult so the gate response can expose
+		// ServerInfo / ProtocolVersion / Capabilities.
+		extInitRequest := mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+				Capabilities:    mcp.ClientCapabilities{},
+				ClientInfo: mcp.Implementation{
+					Name:    fmt.Sprintf("Bifrost-%s", config.Name),
+					Version: "1.0.0",
+				},
+			},
+		}
+		initRetryConfig := DefaultRetryConfig
+		if initErr := ExecuteWithRetry(
+			m.ctx,
+			func() error {
+				var initCtx context.Context
+				if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+					var initCancel context.CancelFunc
+					initCtx, initCancel = context.WithTimeout(longLivedCtx, MCPClientConnectionEstablishTimeout)
+					defer initCancel()
+					m.logger.Debug("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout)
+				} else {
+					initCtx = ctx
+				}
+				var initErr error
+				initResult, initErr = externalClient.Initialize(initCtx, extInitRequest)
+				return initErr
+			},
+			initRetryConfig,
+			m.logger,
+		); initErr != nil {
+			return nil, fmt.Errorf("failed to initialize MCP client after %d retries: %v", initRetryConfig.MaxRetries, initErr)
+		}
+		m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
+
+		// Build the gate response from captured initialize result.
+		resp := &schemas.BifrostMCPConnectResponse{
+			ConnectionInfo: connectionInfo,
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{
+				Latency: time.Since(start).Milliseconds(),
+			},
+		}
+		if initResult != nil {
+			resp.ProtocolVersion = initResult.ProtocolVersion
+			resp.ServerInfo = &schemas.MCPServerInfo{
+				Name:    initResult.ServerInfo.Name,
+				Version: initResult.ServerInfo.Version,
+			}
+			resp.ServerCapabilities = &schemas.MCPServerCapabilities{
+				Tools:     initResult.Capabilities.Tools != nil,
+				Resources: initResult.Capabilities.Resources != nil,
+				Prompts:   initResult.Capabilities.Prompts != nil,
+				Logging:   initResult.Capabilities.Logging != nil,
+			}
+		}
+		return resp, nil
+	})
+
+	if gateErr != nil {
+		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+			cancel()
+		}
 		if externalClient != nil {
 			if closeErr := externalClient.Close(); closeErr != nil {
 				m.logger.Warn("%s Failed to close external client during cleanup: %v", MCPLogPrefix, closeErr)
 			}
 		}
-		return fmt.Errorf("failed to initialize MCP client %s after %d retries: %v", config.Name, initRetryConfig.MaxRetries, err)
+		return fmt.Errorf("failed to connect MCP client %s: %s", config.Name, gateErr.GetErrorString())
 	}
-	m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
 
-	// Retrieve tools from the external server (this also requires network I/O)
-	// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
-	// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.
-	m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
-	toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
-	defer toolRetrievalCancel()
-	tools, toolNameMapping, err := retrieveExternalTools(toolRetrievalCtx, externalClient, config.Name, m.logger)
-	if err != nil {
-		m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
-		// Continue with connection even if tool retrieval fails
-		tools = make(map[string]schemas.ChatTool)
-		toolNameMapping = make(map[string]string)
+	tools := make(map[string]schemas.ChatTool)
+	toolNameMapping := make(map[string]string)
+	if externalClient == nil {
+		// Plugin short-circuited the connect with a success response; no live transport
+		// to query. Register the client as "connected" with an empty tool set — this is
+		// the documented Connect-success-shortcircuit gotcha. Subsequent tool calls will
+		// fail until a real connect happens.
+		m.logger.Warn("%s [%s] Connect plugin short-circuited with success; no live transport — registering with empty tool set", MCPLogPrefix, config.Name)
+		if connectionInfo == nil {
+			connectionInfo = &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}
+		}
+	} else {
+		// Retrieve tools from the external server through the list_tools plugin gate.
+		// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
+		// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.
+		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
+		toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
+		defer toolRetrievalCancel()
+		t, mapping, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
+		if err != nil {
+			m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
+			// Continue with connection even if tool retrieval fails
+		} else {
+			tools = t
+			toolNameMapping = mapping
+		}
+		m.logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools))
 	}
-	m.logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools))
 
 	// Second lock: Update client with final connection details and tools
 	m.mu.Lock()
@@ -1089,38 +1237,66 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 }
 
 // createHTTPConnection creates an HTTP-based MCP client connection without holding locks.
-func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
+// If overrides is non-nil and carries a populated ConnectionString or Headers, those values
+// are used instead of resolving them from config. This is how plugin PreHook mutations flow
+// into the transport.
+func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.MCPClientConfig, overrides *schemas.BifrostMCPConnectRequest) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.ConnectionString == nil {
 		return nil, nil, fmt.Errorf("HTTP connection string is required")
 	}
-	// Prepare connection info
-	connectionInfo := &schemas.MCPClientConnectionInfo{
-		Type:          config.ConnectionType,
-		ConnectionURL: config.ConnectionString.GetValuePtr(),
+
+	// Resolve URL (override wins)
+	url := config.ConnectionString.GetValue()
+	if overrides != nil && overrides.ConnectionString != nil {
+		url = *overrides.ConnectionString
 	}
-	headers, err := config.HttpHeaders(ctx, m.oauth2Provider)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
+
+	// Resolve headers (override wins)
+	var headers map[string]string
+	if overrides != nil && overrides.Headers != nil {
+		headers = overrides.Headers
+	} else {
+		h, err := config.HttpHeaders(ctx, m.oauth2Provider)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
+		}
+		headers = h
 	}
+
 	// Create StreamableHTTP transport
-	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(headers))
+	httpTransport, err := transport.NewStreamableHTTP(url, transport.WithHTTPHeaders(headers))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create HTTP transport: %w", err)
 	}
-	client := client.NewClient(httpTransport)
-	return client, connectionInfo, nil
+	connectionInfo := &schemas.MCPClientConnectionInfo{
+		Type:          config.ConnectionType,
+		ConnectionURL: &url,
+	}
+	return client.NewClient(httpTransport), connectionInfo, nil
 }
 
 // createSTDIOConnection creates a STDIO-based MCP client connection without holding locks.
-func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
+// If overrides is non-nil with a populated StdioCommand/StdioArgs, those replace the config values.
+func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MCPClientConfig, overrides *schemas.BifrostMCPConnectRequest) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.StdioConfig == nil {
 		return nil, nil, fmt.Errorf("stdio config is required")
 	}
 
-	// Prepare STDIO command info for display
-	cmdString := fmt.Sprintf("%s %s", config.StdioConfig.Command, strings.Join(config.StdioConfig.Args, " "))
+	// Resolve command and args (override wins)
+	cmd := config.StdioConfig.Command
+	args := config.StdioConfig.Args
+	if overrides != nil {
+		if overrides.StdioCommand != nil {
+			cmd = *overrides.StdioCommand
+		}
+		if overrides.StdioArgs != nil {
+			args = overrides.StdioArgs
+		}
+	}
 
-	// Check if environment variables are set
+	cmdString := fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
+
+	// Check if environment variables are set (envs are not plugin-mutable)
 	for _, env := range config.StdioConfig.Envs {
 		if os.Getenv(env) == "" {
 			return nil, nil, fmt.Errorf("environment variable %s is not set for MCP client %s", env, config.Name)
@@ -1128,11 +1304,7 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 	}
 
 	// Create STDIO transport
-	stdioTransport := transport.NewStdio(
-		config.StdioConfig.Command,
-		config.StdioConfig.Envs,
-		config.StdioConfig.Args...,
-	)
+	stdioTransport := transport.NewStdio(cmd, config.StdioConfig.Envs, args...)
 
 	// Prepare connection info
 	connectionInfo := &schemas.MCPClientConnectionInfo{
@@ -1140,38 +1312,43 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 		StdioCommandString: &cmdString,
 	}
 
-	client := client.NewClient(stdioTransport)
-
 	// Return nil for cmd since mark3labs/mcp-go manages the process internally
-	return client, connectionInfo, nil
+	return client.NewClient(stdioTransport), connectionInfo, nil
 }
 
 // createSSEConnection creates a SSE-based MCP client connection without holding locks.
-func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
+// Same override semantics as createHTTPConnection.
+func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MCPClientConfig, overrides *schemas.BifrostMCPConnectRequest) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.ConnectionString == nil {
 		return nil, nil, fmt.Errorf("SSE connection string is required")
 	}
 
-	// Prepare connection info
-	connectionInfo := &schemas.MCPClientConnectionInfo{
-		Type:          config.ConnectionType,
-		ConnectionURL: config.ConnectionString.GetValuePtr(), // Reuse HTTPConnectionURL field for SSE URL display
+	url := config.ConnectionString.GetValue()
+	if overrides != nil && overrides.ConnectionString != nil {
+		url = *overrides.ConnectionString
 	}
 
-	headers, err := config.HttpHeaders(ctx, m.oauth2Provider)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
+	var headers map[string]string
+	if overrides != nil && overrides.Headers != nil {
+		headers = overrides.Headers
+	} else {
+		h, err := config.HttpHeaders(ctx, m.oauth2Provider)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
+		}
+		headers = h
 	}
 
-	// Create SSE transport
-	sseTransport, err := transport.NewSSE(config.ConnectionString.GetValue(), transport.WithHeaders(headers))
+	sseTransport, err := transport.NewSSE(url, transport.WithHeaders(headers))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create SSE transport: %w", err)
 	}
 
-	client := client.NewClient(sseTransport)
-
-	return client, connectionInfo, nil
+	connectionInfo := &schemas.MCPClientConnectionInfo{
+		Type:          config.ConnectionType,
+		ConnectionURL: &url,
+	}
+	return client.NewClient(sseTransport), connectionInfo, nil
 }
 
 // createInProcessConnection creates an in-process MCP client connection without holding locks.

@@ -61,12 +61,6 @@ type CodeModeDependencies struct {
 	// ClientManager provides access to MCP clients and their tools
 	ClientManager ClientManager
 
-	// PluginPipelineProvider returns a plugin pipeline for running MCP hooks
-	PluginPipelineProvider func() PluginPipeline
-
-	// ReleasePluginPipeline releases a plugin pipeline back to the pool
-	ReleasePluginPipeline func(pipeline PluginPipeline)
-
 	// FetchNewRequestIDFunc generates unique request IDs for nested tool calls
 	FetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
 

@@ -132,6 +132,23 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: PreMCPConnectionHook (MCPConnectionPlugin — typed Connect hook).
+	// New .so plugins built against MCPConnectionPlugin can export this symbol to
+	// observe Connect events. Legacy plugins that don't export it keep working;
+	// DynamicPlugin's default PreMCPConnectionHook is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreMCPConnectionHook"); err == nil {
+		if dp.preMCPConnectionHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreMCPConnectionHook to expected signature")
+		}
+	}
+
+	// Optional: PostMCPConnectionHook (MCPConnectionPlugin — typed Connect hook).
+	if sym, err := pluginObj.Lookup("PostMCPConnectionHook"); err == nil {
+		if dp.postMCPConnectionHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostMCPConnectionHook to expected signature")
+		}
+	}
+
 	// Optional: Inject (ObservabilityPlugin)
 	if sym, err := pluginObj.Lookup("Inject"); err == nil {
 		if dp.inject, ok = sym.(func(ctx context.Context, trace *schemas.Trace) error); !ok {

@@ -350,7 +350,7 @@ export default function MCPView() {
             <h3 className="text-sm font-medium">External Base URLs</h3>
             <p className="text-muted-foreground text-sm">
               Override Bifrost's public base URL when it runs behind a reverse proxy. In most setups
-              both URLs are the same — leave them blank to derive the URL from the incoming{" "}
+              both URLs are the same — <b>leave them blank to derive the URL</b> from the incoming{" "}
               <code className="text-xs">Host</code> header. Both fields support env var syntax (e.g.{" "}
               <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
             </p>

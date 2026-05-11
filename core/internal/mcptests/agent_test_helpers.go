@@ -624,9 +624,6 @@ func RunAgentScenario(t *testing.T, scenario AgentScenario) {
 			req,
 			initialResponse,
 			mocker.MakeChatRequest,
-			func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-				return manager.ExecuteToolCall(ctx, request)
-			},
 		)
 
 		// Run assertions
@@ -678,9 +675,6 @@ func SimpleAgentTest(t *testing.T, name string, config AgentTestConfig, response
 			req,
 			initialResponse,
 			mocker.MakeChatRequest,
-			func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-				return manager.ExecuteToolCall(ctx, request)
-			},
 		)
 
 		assertions(t, response, bifrostErr, mocker)
