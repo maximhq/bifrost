@@ -2418,6 +2418,11 @@
               "type": "integer",
               "minimum": 2
             },
+            "matviewRefreshInterval": {
+              "type": "string",
+              "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
+              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+            },
             "objectStorageExcludeFields": {
               "type": "array",
               "items": {

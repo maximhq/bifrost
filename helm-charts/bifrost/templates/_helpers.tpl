@@ -699,6 +699,9 @@ false
 {{- if .Values.storage.logsStore.maxOpenConns }}
 {{- $_ := set $pgConfig "max_open_conns" (.Values.storage.logsStore.maxOpenConns | int) }}
 {{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshInterval }}
+{{- $_ := set $pgConfig "matview_refresh_interval" .Values.storage.logsStore.matviewRefreshInterval }}
+{{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "logs_store" $logsStore }}
 {{- else }}
