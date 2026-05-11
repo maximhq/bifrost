@@ -63,6 +63,8 @@ func TestScalePostgresLogstoreMigrations(t *testing.T) {
 		defer monitorWG.Done()
 		monitorScaleMigrationLocks(monitorCtx, t, sqlDB, &sampleMu, &samples)
 	}()
+	defer monitorWG.Wait()
+	defer stopMonitor()
 
 	start := time.Now()
 	require.NoError(t, triggerMigrations(ctx, db), "logstore migrations should complete at scale")
