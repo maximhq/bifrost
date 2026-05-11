@@ -664,20 +664,17 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	return nil
 }
 
-func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForRemovedProviderKeys(ctx context.Context, txDB *gorm.DB, provider string, removedKeyIDs []uint) error {
-	if len(removedKeyIDs) == 0 {
+// deleteJoinRowsForRemovedProviderKeys removes join-table entries that reference keys
+// that are being deleted by UpdateProvider. The caller MUST have already locked the
+// supplied VKPC rows (FOR UPDATE) before calling, so this helper performs no locking
+// of its own. This keeps the resource order config_providers -> VKPC -> config_keys
+// consistent with DeleteProvider and UpdateVirtualKeyProviderConfig.
+func (s *RDBConfigStore) deleteJoinRowsForRemovedProviderKeys(ctx context.Context, txDB *gorm.DB, lockedVKPCs []tables.TableVirtualKeyProviderConfig, removedKeyIDs []uint) error {
+	if len(removedKeyIDs) == 0 || len(lockedVKPCs) == 0 {
 		return nil
 	}
 
-	var providerConfigs []tables.TableVirtualKeyProviderConfig
-	if err := dbForUpdate(txDB.WithContext(ctx)).
-		Where("provider = ?", provider).
-		Order("id ASC").
-		Find(&providerConfigs).Error; err != nil {
-		return err
-	}
-
-	for _, providerConfig := range providerConfigs {
+	for _, providerConfig := range lockedVKPCs {
 		if err := txDB.WithContext(ctx).
 			Table("governance_virtual_key_provider_config_keys").
 			Where("table_virtual_key_provider_config_id = ? AND table_key_id IN ?", providerConfig.ID, removedKeyIDs).
@@ -748,6 +745,18 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	// Save the updated provider
 	if err := txDB.WithContext(ctx).Save(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)
+	}
+
+	// Lock VKPC rows for this provider BEFORE locking config_keys so that the
+	// resource order matches DeleteProvider and concurrent UpdateVirtualKeyProviderConfig
+	// (which holds a VKPC row and then needs FK locks on config_keys via the join table).
+	// Without this pre-lock the two paths invert on config_keys vs. VKPC and deadlock (40P01).
+	var providerVKPCs []tables.TableVirtualKeyProviderConfig
+	if err := dbForUpdate(txDB.WithContext(ctx)).
+		Where("provider = ?", dbProvider.Name).
+		Order("id ASC").
+		Find(&providerVKPCs).Error; err != nil {
+		return err
 	}
 
 	// Get existing keys for this provider
@@ -853,7 +862,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		removedProviderKeyIDs = append(removedProviderKeyIDs, keyToDelete.ID)
 	}
 	removedProviderKeyIDs = sortedUintCopy(removedProviderKeyIDs)
-	if err := s.cleanupVirtualKeyProviderConfigsForRemovedProviderKeys(ctx, txDB, dbProvider.Name, removedProviderKeyIDs); err != nil {
+	if err := s.deleteJoinRowsForRemovedProviderKeys(ctx, txDB, providerVKPCs, removedProviderKeyIDs); err != nil {
 		return err
 	}
 

@@ -132,10 +132,18 @@ if { [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-0}" = "1" ]; } && [[ "$REPOR
     REPORTERS="${REPORTERS},htmlextra"
 fi
 
+# Make globally-installed npm packages (e.g. newman-reporter-htmlextra from
+# `npm install -g`) visible to Node's module resolver. Node 20+ no longer falls
+# back to the global npm prefix automatically, so without this NODE_PATH addition
+# the require.resolve check below fails even when the package is installed.
+if NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null)" && [ -n "$NPM_GLOBAL_ROOT" ]; then
+    export NODE_PATH="$NPM_GLOBAL_ROOT${NODE_PATH:+:$NODE_PATH}"
+fi
+
 # Validate optional reporters are resolvable before invoking newman so we fail
 # fast with a clear message instead of a cryptic mid-run newman error. node's
 # require.resolve uses the same module-resolution path newman uses (including
-# the NODE_PATH set below for newman-reporter-dbverify).
+# the NODE_PATH set above for the global npm root and below for newman-reporter-dbverify).
 if [[ "$REPORTERS" == *"htmlextra"* ]]; then
     if ! node -e 'require.resolve("newman-reporter-htmlextra")' >/dev/null 2>&1; then
         echo -e "${RED}Error: newman-reporter-htmlextra is not installed${NC}"
