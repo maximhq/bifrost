@@ -85,7 +85,7 @@ In addition to private networking, custom security controls, and governance, ent
 
 ### Advanced Features
 
-- **[Model Context Protocol (MCP)](https://docs.getbifrost.ai/features/mcp)** - Enable AI models to use external tools (filesystem, web search, databases)
+- **[Model Context Protocol (MCP)](https://docs.getbifrost.ai/mcp/overview)** - Enable AI models to use external tools (filesystem, web search, databases)
 - **[Semantic Caching](https://docs.getbifrost.ai/features/semantic-caching)** - Intelligent response caching based on semantic similarity to reduce costs and latency
 - **[Multimodal Support](https://docs.getbifrost.ai/quickstart/gateway/streaming)** - Support for text,images, audio, and streaming, all behind a common interface.
 - **[Custom Plugins](https://docs.getbifrost.ai/enterprise/custom-plugins)** - Extensible middleware architecture for analytics, monitoring, and custom logic
@@ -96,7 +96,6 @@ In addition to private networking, custom security controls, and governance, ent
 - **[Budget Management](https://docs.getbifrost.ai/features/governance)** - Hierarchical cost control with virtual keys, teams, and customer budgets
 - **[SSO Integration](https://docs.getbifrost.ai/features/sso-with-google-github)** - Google and GitHub authentication support
 - **[Observability](https://docs.getbifrost.ai/features/observability)** - Native Prometheus metrics, distributed tracing, and comprehensive logging
-- **[Vault Support](https://docs.getbifrost.ai/enterprise/vault-support)** - Secure API key management with HashiCorp Vault integration
 
 ### Developer Experience
 
@@ -228,7 +227,7 @@ Bifrost adds virtually zero overhead to your AI requests. In sustained 5,000 RPS
 ### Features
 
 - [Multi-Provider Support](https://docs.getbifrost.ai/features/unified-interface) - Single API for all providers
-- [MCP Integration](https://docs.getbifrost.ai/features/mcp) - External tool calling
+- [MCP Integration](https://docs.getbifrost.ai/mcp/overview) - External tool calling
 - [Semantic Caching](https://docs.getbifrost.ai/features/semantic-caching) - Intelligent response caching
 - [Fallbacks & Load Balancing](https://docs.getbifrost.ai/features/fallbacks) - Reliability features
 - [Budget Management](https://docs.getbifrost.ai/features/governance) - Cost control and governance
@@ -246,7 +245,6 @@ Bifrost adds virtually zero overhead to your AI requests. In sustained 5,000 RPS
 
 - [Custom Plugins](https://docs.getbifrost.ai/enterprise/custom-plugins) - Extend functionality
 - [Clustering](https://docs.getbifrost.ai/enterprise/clustering) - Multi-node deployment
-- [Vault Support](https://docs.getbifrost.ai/enterprise/vault-support) - Secure key management
 - [Production Deployment](https://docs.getbifrost.ai/deployment/docker-setup) - Scaling and monitoring
 
 ---
