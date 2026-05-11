@@ -58,9 +58,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	}
 
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := bifrost.NewSSRFSafeClient(10 * time.Second)
 
 	// Validate the server URL to prevent SSRF attacks
 	if err := bifrost.ValidateExternalURL(serverURL); err != nil {
@@ -177,9 +175,7 @@ func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, [
 		return nil, nil, fmt.Errorf("invalid metadata URL: %w", err)
 	}
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := bifrost.NewSSRFSafeClient(10 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
@@ -278,9 +274,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		strings.TrimSuffix(issuer, "/"), // Try the issuer URL itself
 	)
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := bifrost.NewSSRFSafeClient(10 * time.Second)
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
@@ -434,7 +428,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	httpReq.Header.Set("Accept", "application/json")
 
 	// Send request
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := bifrost.NewSSRFSafeClient(15 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("registration request failed: %w", err)

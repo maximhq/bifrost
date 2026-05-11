@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -525,6 +526,23 @@ func ValidateExternalURL(urlStr string) error {
 		}
 	}
 	return nil
+}
+
+// NewSSRFSafeClient returns an http.Client that re-validates each redirect
+// target against ValidateExternalURL, preventing SSRF via open redirects.
+func NewSSRFSafeClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if err := ValidateExternalURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect blocked by SSRF protection: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // isLocalhost checks if a hostname is localhost or a loopback address
