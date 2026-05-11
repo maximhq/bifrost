@@ -48,8 +48,10 @@ type pendingInjectEntries struct {
 
 // writeQueueEntry is an entry pushed to the batch write queue.
 type writeQueueEntry struct {
-	log      *logstore.Log             // Complete log entry ready for INSERT
-	callback func(entry *logstore.Log) // Post-commit callback receives the inserted entry (no DB re-read needed)
+	log         *logstore.Log
+	mcpLog      *logstore.MCPToolLog
+	callback    func(entry *logstore.Log)
+	mcpCallback func(entry *logstore.MCPToolLog)
 }
 
 // batchWriter is the single writer goroutine that drains the write queue
@@ -88,7 +90,7 @@ func (p *LoggerPlugin) batchWriter() {
 				return
 			}
 			batch = append(batch, entry)
-			batchBytes += estimateLogEntrySize(entry.log)
+			batchBytes += estimateWriteQueueEntrySize(entry)
 			if len(batch) >= maxBatchSize || batchBytes >= maxBatchBytes {
 				flush()
 			} else if !timerRunning {
@@ -125,9 +127,13 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 
 	// Collect all log entries for batch insert
 	logs := make([]*logstore.Log, 0, len(batch))
+	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
 			logs = append(logs, entry.log)
+		}
+		if entry.mcpLog != nil {
+			mcpLogs = append(mcpLogs, entry.mcpLog)
 		}
 	}
 
@@ -143,6 +149,17 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 			}
 		}
 	}
+	if len(mcpLogs) > 0 {
+		if err := p.store.BatchCreateMCPToolLogsIfNotExists(p.ctx, mcpLogs); err != nil {
+			p.logger.Warn("batch insert failed for %d MCP tool logs, falling back to individual inserts: %v", len(mcpLogs), err)
+			for _, log := range mcpLogs {
+				if err := p.store.BatchCreateMCPToolLogsIfNotExists(p.ctx, []*logstore.MCPToolLog{log}); err != nil {
+					p.logger.Warn("individual insert failed for MCP tool log %s: %v", log.ID, err)
+					p.droppedRequests.Add(1)
+				}
+			}
+		}
+	}
 
 	// Collect callbacks that need to fire, then run them in a single goroutine.
 	// This avoids blocking the batch writer (synchronous was causing 1+ second stalls
@@ -152,14 +169,22 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 		cb  func(*logstore.Log)
 		log *logstore.Log
 	}
+	type mcpCbPair struct {
+		cb  func(*logstore.MCPToolLog)
+		log *logstore.MCPToolLog
+	}
 	var callbacks []cbPair
+	var mcpCallbacks []mcpCbPair
 	for _, entry := range batch {
 		if entry.callback != nil {
 			callbacks = append(callbacks, cbPair{cb: entry.callback, log: entry.log})
 		}
+		if entry.mcpCallback != nil {
+			mcpCallbacks = append(mcpCallbacks, mcpCbPair{cb: entry.mcpCallback, log: entry.mcpLog})
+		}
 	}
-	if len(callbacks) > 0 {
-		go func(callbacks []cbPair) {
+	if len(callbacks) > 0 || len(mcpCallbacks) > 0 {
+		go func(callbacks []cbPair, mcpCallbacks []mcpCbPair) {
 			defer func() {
 				if r := recover(); r != nil {
 					p.logger.Warn("log callback panicked: %v", r)
@@ -168,13 +193,17 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 			for _, pair := range callbacks {
 				pair.cb(pair.log)
 			}
-		}(callbacks)
+			for _, pair := range mcpCallbacks {
+				pair.cb(pair.log)
+			}
+		}(callbacks, mcpCallbacks)
 	}
 }
 
-// cleanupStalePendingLogs removes entries from pendingLogs that have been
-// waiting longer than pendingLogTTL. This handles cases where PostLLMHook
-// never fires for a request (e.g., request was cancelled before reaching the provider).
+// cleanupStalePendingLogs removes stale in-memory pending log state.
+// Pending LLM entries are dropped to prevent unbounded memory growth. Pending
+// MCP entries are converted into terminal error rows and queued for persistence,
+// because PreMCPHook does not write a processing row to the database.
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
 	p.pendingLogsEntries.Range(func(key, value any) bool {
@@ -189,6 +218,26 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		if pending, ok := value.(*pendingInjectEntries); ok {
 			if pending.createdAt.Before(cutoff) {
 				p.pendingLogsToInject.Delete(key)
+			}
+		}
+		return true
+	})
+	p.pendingMCPLogsToInject.Range(func(key, value any) bool {
+		if pending, ok := value.(*logstore.MCPToolLog); ok {
+			if pending.CreatedAt.Before(cutoff) {
+				actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
+				if !loaded {
+					return true
+				}
+				stalePending, ok := actual.(*logstore.MCPToolLog)
+				if !ok || stalePending == nil {
+					return true
+				}
+
+				p.mu.Lock()
+				callback := p.mcpToolLogCallback
+				p.mu.Unlock()
+				p.enqueueMCPToolLogEntry(buildStaleMCPToolLogEntry(stalePending), callback)
 			}
 		}
 		return true
@@ -215,6 +264,38 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 		p.droppedRequests.Add(1)
 		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
 	}
+}
+
+// enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.
+// If the queue is full, the entry is dropped to prevent store slowness from
+// cascading into request handling goroutines.
+func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callback func(entry *logstore.MCPToolLog)) {
+	if p.closed.Load() {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{mcpLog: entry, mcpCallback: callback}:
+	default:
+		p.droppedRequests.Add(1)
+		p.logger.Warn("log write queue full, dropping MCP tool log entry %s", entry.ID)
+	}
+}
+
+// estimateWriteQueueEntrySize returns the estimated serialized payload size for
+// the log entry carried by a write queue item.
+func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
+	if entry == nil {
+		return 0
+	}
+	if entry.mcpLog != nil {
+		return estimateMCPToolLogEntrySize(entry.mcpLog)
+	}
+	return estimateLogEntrySize(entry.log)
 }
 
 // estimateLogEntrySize returns a rough byte-size estimate for a log entry
@@ -267,6 +348,32 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512
+}
+
+// estimateMCPToolLogEntrySize returns a rough byte-size estimate for an MCP
+// tool log entry based on its serialized text fields.
+func estimateMCPToolLogEntrySize(log *logstore.MCPToolLog) int {
+	if log == nil {
+		return 0
+	}
+	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + 512
+}
+
+// buildStaleMCPToolLogEntry converts a pending MCP processing row into a
+// terminal error entry suitable for the batch writer.
+func buildStaleMCPToolLogEntry(pending *logstore.MCPToolLog) *logstore.MCPToolLog {
+	entry := *pending
+	entry.Status = "error"
+	entry.Result = ""
+	entry.ResultParsed = nil
+	entry.ErrorDetails = ""
+	entry.ErrorDetailsParsed = &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: &schemas.ErrorField{
+			Message: "MCP tool execution did not complete before pending log TTL",
+		},
+	}
+	return &entry
 }
 
 // buildInitialLogEntry constructs a logstore.Log from PendingLogData (input)
