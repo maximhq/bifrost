@@ -55,10 +55,55 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 `
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
+// CONCURRENTLY avoids the AccessExclusiveLock that the plain form would take
+// during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
-CREATE UNIQUE INDEX IF NOT EXISTS mv_logs_hourly_uniq
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
 ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id)
 `
+
+// mvLogsHourlyRequiredColumns is the canonical column set used by
+// repairMatViewShapes to detect old-shape mv_logs_hourly views from prior
+// schema versions and drop them so they get rebuilt on startup.
+var mvLogsHourlyRequiredColumns = []string{
+	"hour",
+	"provider",
+	"model",
+	"status",
+	"object_type",
+	"selected_key_id",
+	"virtual_key_id",
+	"routing_rule_id",
+	"user_id",
+	"team_id",
+	"customer_id",
+	"business_unit_id",
+	"count",
+	"success_count",
+	"error_count",
+	"avg_latency",
+	"p90_latency",
+	"p95_latency",
+	"p99_latency",
+	"total_prompt_tokens",
+	"total_completion_tokens",
+	"total_tokens",
+	"total_cached_read_tokens",
+	"total_cost",
+}
+
+// legacyMatViewNames are matviews from previous schema versions that no longer
+// exist in this branch. Dropped on startup so a deploy from an older release
+// doesn't leave orphaned objects (and so REFRESH never picks them up).
+//
+// Two-phase retirement: a matview is only added here AFTER a release has shipped
+// that stops reading from it. Adding it in the same PR that switches readers is
+// unsafe — during a rolling deploy the still-old replicas would query a view
+// that the new replicas have already dropped, returning "relation does not
+// exist". See migrationSplitFilterDataMatView for the canonical example: the
+// new per-dimension matviews ship in one release while mv_logs_filterdata stays
+// in place; a follow-up release adds it here.
+var legacyMatViewNames = []string{}
 
 // Per-dimension filter matviews. The previous single 16-column DISTINCT view
 // (mv_logs_filterdata) had a row count proportional to the Cartesian-ish product
@@ -162,13 +207,13 @@ var filterMatViews = []filterMatViewDef{
 // filterMatViewKeyPairColumns maps the (idCol, nameCol) pair callers pass into
 // GetDistinctKeyPairs to the per-dimension matview that pre-aggregates it.
 var filterMatViewKeyPairColumns = map[[2]string]string{
-	{"selected_key_id", "selected_key_name"}:     "mv_filter_selected_keys",
-	{"virtual_key_id", "virtual_key_name"}:       "mv_filter_virtual_keys",
-	{"routing_rule_id", "routing_rule_name"}:     "mv_filter_routing_rules",
-	{"team_id", "team_name"}:                     "mv_filter_teams",
-	{"customer_id", "customer_name"}:             "mv_filter_customers",
-	{"user_id", "user_id"}:                       "mv_filter_users",
-	{"business_unit_id", "business_unit_name"}:   "mv_filter_business_units",
+	{"selected_key_id", "selected_key_name"}:   "mv_filter_selected_keys",
+	{"virtual_key_id", "virtual_key_name"}:     "mv_filter_virtual_keys",
+	{"routing_rule_id", "routing_rule_name"}:   "mv_filter_routing_rules",
+	{"team_id", "team_name"}:                   "mv_filter_teams",
+	{"customer_id", "customer_name"}:           "mv_filter_customers",
+	{"user_id", "user_id"}:                     "mv_filter_users",
+	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
 }
 
 func filterMatViewDDL(v filterMatViewDef) string {
@@ -178,9 +223,108 @@ func filterMatViewDDL(v filterMatViewDef) string {
 	)
 }
 
+// filterMatViewUniqueIdx returns a CONCURRENTLY-built unique index DDL for the
+// view. CONCURRENTLY is required so the index can be created outside any
+// transaction (matches the dedicated-conn ensureMatViews path) and avoids
+// AccessExclusiveLock during repair.
 func filterMatViewUniqueIdx(v filterMatViewDef) string {
-	return fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s_uniq ON %s (%s)", v.name, v.name, v.uniqueIdx)
+	return fmt.Sprintf("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS %s_uniq ON %s (%s)", v.name, v.name, v.uniqueIdx)
 }
+
+// filterMatViewUniqueIdxName is the canonical index name for v's unique index.
+func filterMatViewUniqueIdxName(v filterMatViewDef) string {
+	return v.name + "_uniq"
+}
+
+// filterMatViewRequiredColumns derives the column-set used by
+// repairMatViewShapes to detect drifted matviews. Parses the selectExpr so we
+// don't have to maintain a parallel slice.
+func filterMatViewRequiredColumns(v filterMatViewDef) []string {
+	parts := splitSelectExpr(v.selectExpr)
+	cols := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		// Strip any "<expr> AS alias" → keep the alias.
+		if idx := strings.LastIndex(strings.ToLower(p), " as "); idx >= 0 {
+			p = strings.TrimSpace(p[idx+len(" as "):])
+		}
+		if p != "" {
+			cols = append(cols, p)
+		}
+	}
+	return cols
+}
+
+func splitSelectExpr(selectExpr string) []string {
+	var parts []string
+	start := 0
+	depth := 0
+	inString := false
+	for i := 0; i < len(selectExpr); i++ {
+		switch selectExpr[i] {
+		case '\'':
+			if inString && i+1 < len(selectExpr) && selectExpr[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+		case '(':
+			if !inString {
+				depth++
+			}
+		case ')':
+			if !inString && depth > 0 {
+				depth--
+			}
+		case ',':
+			if !inString && depth == 0 {
+				parts = append(parts, selectExpr[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, selectExpr[start:])
+	return parts
+}
+
+type matviewUniqueIndexDef struct {
+	view string
+	name string
+	sql  string
+}
+
+// matviewUniqueIndexes enumerates every (matview, unique-index) pair this
+// package manages. Built lazily so it always reflects the current
+// filterMatViews list without a parallel hand-maintained slice.
+var matviewUniqueIndexes = func() []matviewUniqueIndexDef {
+	defs := []matviewUniqueIndexDef{{
+		view: "mv_logs_hourly",
+		name: "mv_logs_hourly_uniq",
+		sql:  mvLogsHourlyUniqueIdx,
+	}}
+	for _, v := range filterMatViews {
+		defs = append(defs, matviewUniqueIndexDef{
+			view: v.name,
+			name: filterMatViewUniqueIdxName(v),
+			sql:  filterMatViewUniqueIdx(v),
+		})
+	}
+	return defs
+}()
+
+// matviewRequiredColumns drives repairMatViewShapes — any matview present in
+// pg_catalog whose column set is missing one of these is treated as
+// drifted-from-old-schema and dropped so it gets recreated below. Built
+// lazily for the same reason as matviewUniqueIndexes.
+var matviewRequiredColumns = func() map[string][]string {
+	out := map[string][]string{
+		"mv_logs_hourly": mvLogsHourlyRequiredColumns,
+	}
+	for _, v := range filterMatViews {
+		out[v.name] = filterMatViewRequiredColumns(v)
+	}
+	return out
+}()
 
 // ---------------------------------------------------------------------------
 // View lifecycle
@@ -188,16 +332,171 @@ func filterMatViewUniqueIdx(v filterMatViewDef) string {
 
 // ensureMatViews creates materialized views and their unique indexes if they
 // don't already exist. Called once on startup.
+//
+// Postgres-only — runs on a dedicated connection so the advisory lock + the
+// CONCURRENTLY DDL all share one session and live outside any migration
+// transaction. Multi-replica deployments serialize on the advisory lock so
+// only one instance does the work.
 func ensureMatViews(ctx context.Context, db *gorm.DB) error {
-	stmts := []string{mvLogsHourlyDDL, mvLogsHourlyUniqueIdx}
-	for _, v := range filterMatViews {
-		stmts = append(stmts, filterMatViewDDL(v), filterMatViewUniqueIdx(v))
+	if db.Dialector.Name() != "postgres" {
+		return nil
 	}
-	for _, ddl := range stmts {
-		if err := db.WithContext(ctx).Exec(ddl).Error; err != nil {
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
+	}
+
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
+	}
+	defer conn.Close()
+
+	var acquired bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewEnsureAdvisoryLockKey).Scan(&acquired); err != nil {
+		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
+	}
+	if !acquired {
+		// Another replica is doing the work — nothing to do here.
+		return nil
+	}
+	defer func() {
+		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewEnsureAdvisoryLockKey)
+	}()
+
+	if err := dropLegacyMatViews(ctx, conn); err != nil {
+		return err
+	}
+	if err := repairMatViewShapes(ctx, conn); err != nil {
+		return err
+	}
+
+	ddls := []string{mvLogsHourlyDDL}
+	for _, v := range filterMatViews {
+		ddls = append(ddls, filterMatViewDDL(v))
+	}
+	for _, ddl := range ddls {
+		if _, err := conn.ExecContext(ctx, ddl); err != nil {
 			return fmt.Errorf("failed to create materialized view: %w", err)
 		}
 	}
+
+	if err := ensureMatViewUniqueIndexes(ctx, conn); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// dropLegacyMatViews removes matviews from prior schema versions that no
+// longer exist in this branch. CASCADE catches any lingering indexes.
+func dropLegacyMatViews(ctx context.Context, conn *sql.Conn) error {
+	for _, view := range legacyMatViewNames {
+		if _, err := conn.ExecContext(ctx, "DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE"); err != nil {
+			return fmt.Errorf("failed to drop legacy matview %s: %w", view, err)
+		}
+	}
+	return nil
+}
+
+func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
+	for view, columns := range matviewRequiredColumns {
+		needsRebuild, err := matViewNeedsRebuild(ctx, conn, view, columns)
+		if err != nil {
+			return err
+		}
+		if !needsRebuild {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, "DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE"); err != nil {
+			return fmt.Errorf("failed to drop old-shape matview %s: %w", view, err)
+		}
+	}
+	return nil
+}
+
+func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requiredColumns []string) (bool, error) {
+	var exists bool
+	if err := conn.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_class
+				WHERE relkind = 'm'
+				  AND relname = $1
+				  AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())
+			)
+		`, view).Scan(&exists); err != nil {
+		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
+	}
+	if !exists {
+		return false, nil
+	}
+
+	rows, err := conn.QueryContext(ctx, `
+		SELECT a.attname
+			FROM pg_class c
+			JOIN pg_attribute a ON a.attrelid = c.oid
+			WHERE c.relkind = 'm'
+			  AND c.relname = $1
+			  AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())
+			  AND a.attnum > 0
+			  AND NOT a.attisdropped
+		`, view)
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect matview %s columns: %w", view, err)
+	}
+	defer rows.Close()
+
+	actual := make(map[string]struct{}, len(requiredColumns))
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return false, fmt.Errorf("failed to scan matview %s column: %w", view, err)
+		}
+		actual[column] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("failed to inspect matview %s columns: %w", view, err)
+	}
+
+	for _, column := range requiredColumns {
+		if _, ok := actual[column]; !ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func ensureMatViewUniqueIndexes(ctx context.Context, conn *sql.Conn) error {
+	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
+	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
+
+	for _, idx := range matviewUniqueIndexes {
+		var indexReady bool
+		if err := conn.QueryRowContext(ctx, `
+			SELECT COALESCE(bool_and(pi.indisvalid AND pi.indisunique), false)
+			FROM pg_class pc
+				JOIN pg_index pi ON pi.indrelid = pc.oid
+				JOIN pg_class ic ON ic.oid = pi.indexrelid
+				WHERE pc.relname = $1
+				  AND pc.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())
+				  AND ic.relname = $2
+			`, idx.view, idx.name).Scan(&indexReady); err != nil {
+			return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
+		}
+		if indexReady {
+			continue
+		}
+
+		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+idx.name); err != nil {
+			return fmt.Errorf("failed to drop invalid matview index %s: %w", idx.name, err)
+		}
+		if _, err := conn.ExecContext(ctx, idx.sql); err != nil {
+			return fmt.Errorf("failed to create matview index %s: %w", idx.name, err)
+		}
+	}
+
 	return nil
 }
 
@@ -229,10 +528,10 @@ const matViewRefreshSafetyInterval = 10 * time.Minute
 // changed. Per-process state — multi-replica deployments still serialize via
 // the advisory lock.
 type matViewRefreshGate struct {
-	mu               sync.Mutex
-	lastActivity     int64
-	lastForcedAt     time.Time
-	initialized      bool
+	mu           sync.Mutex
+	lastActivity int64
+	lastForcedAt time.Time
+	initialized  bool
 }
 
 var refreshGate matViewRefreshGate
