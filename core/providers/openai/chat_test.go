@@ -894,3 +894,128 @@ func TestApplyXAICompatibility(t *testing.T) {
 		})
 	}
 }
+
+func TestToOpenAIChatRequest_VertexMistralDropsUnsupportedReasoningEffort(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	t.Run("drops unsupported reasoning effort for Vertex Mistral models", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    "mistral-large-latest",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{
+					Effort: schemas.Ptr("medium"),
+				},
+			},
+		}
+
+		got := ToOpenAIChatRequest(ctx, req)
+		if got == nil {
+			t.Fatal("expected non-nil OpenAI chat request")
+		}
+		if got.Reasoning == nil {
+			t.Fatal("expected Reasoning to remain non-nil")
+		}
+		if got.Reasoning.Effort != nil {
+			t.Fatalf("expected unsupported Reasoning.Effort to be dropped, got %q", *got.Reasoning.Effort)
+		}
+	})
+
+	t.Run("preserves nil reasoning for Vertex Mistral models", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    "mistral-large-latest",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+			Params: &schemas.ChatParameters{
+				Reasoning: nil,
+			},
+		}
+
+		got := ToOpenAIChatRequest(ctx, req)
+		if got == nil {
+			t.Fatal("expected non-nil OpenAI chat request")
+		}
+		if got.Reasoning != nil {
+			t.Fatalf("expected Reasoning to remain nil, got %#v", got.Reasoning)
+		}
+	})
+}
+
+func TestApplyMistralCompatibility_ReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name           string
+		effort         *string
+		expectedEffort *string
+	}{
+		{
+			name:           "none is preserved",
+			effort:         schemas.Ptr("none"),
+			expectedEffort: schemas.Ptr("none"),
+		},
+		{
+			name:           "high is preserved",
+			effort:         schemas.Ptr("high"),
+			expectedEffort: schemas.Ptr("high"),
+		},
+		{
+			name:           "medium is dropped (unsupported)",
+			effort:         schemas.Ptr("medium"),
+			expectedEffort: nil,
+		},
+		{
+			name:           "low is dropped (unsupported)",
+			effort:         schemas.Ptr("low"),
+			expectedEffort: nil,
+		},
+		{
+			name:           "nil effort is preserved",
+			effort:         nil,
+			expectedEffort: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &OpenAIChatRequest{
+				Model:    "mistral-large-latest",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: tt.effort,
+					},
+				},
+			}
+			req.applyMistralCompatibility()
+
+			if tt.expectedEffort == nil {
+				if req.Reasoning.Effort != nil {
+					t.Errorf("Expected Reasoning.Effort to be nil, got %v", *req.Reasoning.Effort)
+				}
+			} else {
+				if req.Reasoning.Effort == nil {
+					t.Fatalf("Expected Reasoning.Effort to be %q, got nil", *tt.expectedEffort)
+				}
+				if *req.Reasoning.Effort != *tt.expectedEffort {
+					t.Errorf("Expected Reasoning.Effort to be %q, got %q", *tt.expectedEffort, *req.Reasoning.Effort)
+				}
+			}
+		})
+	}
+
+	// Test nil reasoning is handled gracefully
+	t.Run("nil reasoning is handled gracefully", func(t *testing.T) {
+		req := &OpenAIChatRequest{
+			Model:    "mistral-large-latest",
+			Messages: []OpenAIMessage{},
+			ChatParameters: schemas.ChatParameters{
+				Reasoning: nil,
+			},
+		}
+		req.applyMistralCompatibility()
+		if req.Reasoning != nil {
+			t.Errorf("Expected Reasoning to remain nil, got %v", req.Reasoning)
+		}
+	})
+}
