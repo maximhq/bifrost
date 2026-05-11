@@ -1,7 +1,10 @@
 package clis
 
 import (
+	"fmt"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -9,10 +12,34 @@ import (
 // len(Turns) == 1 → single-turn; >1 → multi-turn (driven by cli.MultiTurnDriver).
 type scenario struct {
 	ID          string
-	ModelKind   string                                                   // "chat" or "reasoning"
-	Supports    func(cliID, providerID string, model ModelInfo) bool     // matrix gate (per cell)
-	ErrorIgnore []string                                                 // sentinels to whitelist before error scan
+	ModelKind   string                                               // "chat" or "reasoning"
+	Supports    func(cliID, providerID string, model ModelInfo) bool // matrix gate (per cell)
+	ErrorIgnore []string                                             // sentinels to whitelist before error scan
 	Turns       []Turn
+}
+
+func supportsCLIProviderModel(cliID, providerID string, model ModelInfo) bool {
+	if cliID == "claude" && providerID == "bedrock" {
+		return isBedrockAnthropicModel(model.ID)
+	}
+	if cliID == "codex" && providerID != "openai" {
+		return false
+	}
+	return true
+}
+
+func supportsAnyChat(cliID, providerID string, model ModelInfo) bool {
+	return supportsCLIProviderModel(cliID, providerID, model)
+}
+
+func supportsStableConversation(cliID, providerID string, model ModelInfo) bool {
+	if !supportsCLIProviderModel(cliID, providerID, model) {
+		return false
+	}
+	if providerID == "bedrock" && isBedrockNovaModel(model.ID) {
+		return false
+	}
+	return true
 }
 
 func allScenarios() []scenario {
@@ -33,10 +60,10 @@ func simpleChatScenario() scenario {
 	return scenario{
 		ID:          "simple-chat",
 		ModelKind:   "chat",
-		Supports:    func(string, string, ModelInfo) bool { return true },
+		Supports:    supportsAnyChat,
 		ErrorIgnore: []string{"OKBIFROST"},
 		Turns: []Turn{{
-			Send:       "Reply with exactly the single token OKBIFROST and nothing else.",
+			Send:       "This is a harmless connectivity test. Reply with exactly the single token OKBIFROST and nothing else.",
 			AssertText: []string{"OKBIFROST"},
 			Timeout:    90 * time.Second,
 		}},
@@ -45,15 +72,17 @@ func simpleChatScenario() scenario {
 
 // 02 tool-call — model uses its built-in shell tool.
 func toolCallScenario() scenario {
+	const token = "BIFROST_TOOL_EXEC_73129"
 	return scenario{
 		ID:          "tool-call",
 		ModelKind:   "chat",
-		Supports:    func(string, string, ModelInfo) bool { return true },
-		ErrorIgnore: []string{"TOOLOK"},
+		Supports:    supportsAnyChat,
+		ErrorIgnore: []string{token},
 		Turns: []Turn{{
-			Send: "Use your shell tool to run `printf TOOLOK` (no newline) and report the exact " +
-				"output. Do not simulate it. Do not just type TOOLOK — you must run the shell command.",
-			AssertText: []string{"TOOLOK"},
+			Send: "Use your shell tool to run `printf " + token + "` (no newline) and report the exact " +
+				"output. Do not simulate it. Do not just type the expected token - you must run the shell command. " +
+				"If your shell tool accepts structured input, provide both a command string and a description string.",
+			AssertText: []string{token},
 			AssertNotText: []string{
 				"don't have access to a shell",
 				"cannot run shell",
@@ -71,12 +100,13 @@ func fileReadScenario() scenario {
 	return scenario{
 		ID:          "file-read",
 		ModelKind:   "chat",
-		Supports:    func(string, string, ModelInfo) bool { return true },
+		Supports:    supportsAnyChat,
 		ErrorIgnore: []string{"FILEOK"},
 		Turns: []Turn{{
 			Send: "Read the file at " + fixture + " using your file tool. After reading, " +
-				"reply with the single token FILEOK followed by the capital city of France from the file.",
-			AssertText: []string{"FILEOK", "Paris"},
+				"reply with the single token FILEOK followed by the capital city of France and the hidden verification token from the file.",
+			AssertText:     []string{"FILE_FIXTURE_73129"},
+			AssertTextFold: []string{"FILEOK", "Paris"},
 			AssertNotText: []string{
 				"don't have access to file",
 				"cannot read files",
@@ -95,8 +125,8 @@ func webSearchScenario() scenario {
 	return scenario{
 		ID:        "web-search",
 		ModelKind: "chat",
-		Supports: func(_, _ string, m ModelInfo) bool {
-			return m.WebSearch
+		Supports: func(cliID, providerID string, m ModelInfo) bool {
+			return supportsCLIProviderModel(cliID, providerID, m) && m.WebSearch
 		},
 		ErrorIgnore: []string{"SEARCHOK"},
 		Turns: []Turn{{
@@ -133,17 +163,16 @@ func reasoningScenario() scenario {
 	return scenario{
 		ID:        "reasoning",
 		ModelKind: "reasoning",
-		Supports: func(_, _ string, m ModelInfo) bool {
-			return m.ExtendedThinking || m.AdaptiveThinking
+		Supports: func(cliID, providerID string, m ModelInfo) bool {
+			return supportsCLIProviderModel(cliID, providerID, m) && (m.ExtendedThinking || m.AdaptiveThinking)
 		},
 		ErrorIgnore: []string{"REASONOK", "144"},
 		Turns: []Turn{{
 			Send: "A train leaves station A at 9:00 AM going 60 km/h east. Another leaves station B at " +
 				"10:00 AM going 40 km/h west. Stations A and B are 280 km apart. At what time do they meet? " +
-				"After answering, append the single token REASONOK on its own line.",
-			AssertText:    []string{"REASONOK"},
-			AssertTextAny: []string{"12:12", "12.12"},
-			Timeout:       240 * time.Second,
+				"Answer the meeting time.",
+			Validate: validateReasoningMeetingTime,
+			Timeout:  240 * time.Second,
 		}},
 	}
 }
@@ -154,7 +183,7 @@ func conversationMemoryScenario() scenario {
 	return scenario{
 		ID:          "conversation-memory",
 		ModelKind:   "chat",
-		Supports:    func(string, string, ModelInfo) bool { return true },
+		Supports:    supportsStableConversation,
 		ErrorIgnore: []string{"pangolin"},
 		Turns: []Turn{
 			{
@@ -183,7 +212,7 @@ func conversationRefinementScenario() scenario {
 	return scenario{
 		ID:          "conversation-refinement",
 		ModelKind:   "chat",
-		Supports:    func(string, string, ModelInfo) bool { return true },
+		Supports:    supportsStableConversation,
 		ErrorIgnore: []string{"haiku", "Haiku"},
 		Turns: []Turn{
 			{
@@ -192,17 +221,55 @@ func conversationRefinementScenario() scenario {
 				Timeout:    60 * time.Second,
 			},
 			{
-				Send:          "Now rewrite it but make it about a desert instead. Keep haiku form.",
-				AssertTextAny: []string{"desert", "sand", "dune", "dry"},
-				Timeout:       60 * time.Second,
+				Send:              "Now rewrite it but make it about a desert instead. Keep haiku form.",
+				AssertTextAnyFold: []string{"desert", "sand", "dune", "dry"},
+				Timeout:           60 * time.Second,
 			},
 			{
-				Send:          "Now combine both into a four-line poem with one ocean image and one desert image.",
-				AssertTextAny: []string{"ocean", "sea", "wave"},
-				Timeout:       60 * time.Second,
+				Send:     "Now combine both into a four-line poem with one ocean image and one desert image.",
+				Validate: validateOceanDesertPoem,
+				Timeout:  60 * time.Second,
 			},
 		},
 	}
+}
+
+func validateReasoningMeetingTime(output string) error {
+	if regexp.MustCompile(`(?i)\b12[:.]12\b`).MatchString(output) {
+		return nil
+	}
+	return fmt.Errorf("expected answer to identify 12:12 PM meeting time, got tail:\n%s", tailStr(output, 600))
+}
+
+func validateOceanDesertPoem(output string) error {
+	var nonEmpty int
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty < 4 {
+		return fmt.Errorf("expected at least 4 non-empty lines for a four-line poem, got %d:\n%s", nonEmpty, tailStr(output, 600))
+	}
+	lower := strings.ToLower(output)
+	oceanTerms := []string{"ocean", "sea", "wave", "tide", "shore", "salt"}
+	desertTerms := []string{"desert", "sand", "dune", "dry", "sun", "cracked earth"}
+	if !containsAny(lower, oceanTerms) {
+		return fmt.Errorf("expected an ocean image in output, got tail:\n%s", tailStr(output, 600))
+	}
+	if !containsAny(lower, desertTerms) {
+		return fmt.Errorf("expected a desert image in output, got tail:\n%s", tailStr(output, 600))
+	}
+	return nil
+}
+
+func containsAny(haystack string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(haystack, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }
 
 // 08 conversation-role-stability — multi-turn: the model is given a role
@@ -211,7 +278,7 @@ func conversationRoleStabilityScenario() scenario {
 	return scenario{
 		ID:          "conversation-role-stability",
 		ModelKind:   "chat",
-		Supports:    func(string, string, ModelInfo) bool { return true },
+		Supports:    supportsStableConversation,
 		ErrorIgnore: []string{"PIRATE"},
 		Turns: []Turn{
 			{

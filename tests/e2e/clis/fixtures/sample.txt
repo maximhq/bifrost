@@ -1,3 +1,4 @@
 Bifrost CLI harness sample fixture.
 The capital of France is Paris.
 The square root of 144 is 12.
+Hidden verification token: FILE_FIXTURE_73129.
