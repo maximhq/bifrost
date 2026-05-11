@@ -369,7 +369,6 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 		getStringAttr(attrs, schemas.AttrVirtualKeyName),
 		getStringAttr(attrs, schemas.AttrSelectedKeyID),
 		getStringAttr(attrs, schemas.AttrSelectedKeyName),
-		getIntAttr(attrs, schemas.AttrNumberOfRetries),
 		getIntAttr(attrs, schemas.AttrFallbackIndex),
 		getStringAttr(attrs, schemas.AttrTeamID),
 		getStringAttr(attrs, schemas.AttrTeamName),
@@ -425,6 +424,11 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 
 	attrs := finalSpan.Attributes
 	otelAttrs := buildSpanAttrs(finalSpan)
+
+	// Record retries used for this request. Read off the final span (the last attempt's
+	// attempt index) so the value is "total retries used", matching the Prometheus side.
+	retries := getIntAttr(attrs, schemas.AttrNumberOfRetries)
+	p.metricsExporter.RecordRequestRetries(ctx, float64(retries), otelAttrs...)
 
 	// Record token usage - try both naming conventions
 	inputTokens := getIntAttr(attrs, schemas.AttrPromptTokens)

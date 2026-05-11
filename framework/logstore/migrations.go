@@ -35,6 +35,10 @@ const (
 	// refreshes across cluster nodes so only one replica refreshes at a time.
 	matviewRefreshAdvisoryLockKey = 1000005
 
+	// matviewEnsureAdvisoryLockKey serializes startup materialized view
+	// creation/repair without contending with the periodic refresh lock.
+	matviewEnsureAdvisoryLockKey = 1000006
+
 	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
 	advisoryLockRetryInterval = 5 * time.Second
 
@@ -368,6 +372,34 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 		ID: "logs_init_update_object_column_values",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+
+			if tx.Dialector.Name() != "postgres" {
+				result := tx.Exec(`
+						UPDATE logs
+						SET object_type = CASE object_type
+							WHEN 'chat.completion' THEN 'chat_completion'
+							WHEN 'text.completion' THEN 'text_completion'
+							WHEN 'list' THEN 'embedding'
+							WHEN 'audio.speech' THEN 'speech'
+							WHEN 'audio.transcription' THEN 'transcription'
+							WHEN 'chat.completion.chunk' THEN 'chat_completion_stream'
+							WHEN 'audio.speech.chunk' THEN 'speech_stream'
+							WHEN 'audio.transcription.chunk' THEN 'transcription_stream'
+							WHEN 'response' THEN 'responses'
+							WHEN 'response.completion.chunk' THEN 'responses_stream'
+							ELSE object_type
+						END
+						WHERE object_type IN (
+							'chat.completion', 'text.completion', 'list',
+							'audio.speech', 'audio.transcription', 'chat.completion.chunk',
+							'audio.speech.chunk', 'audio.transcription.chunk',
+							'response', 'response.completion.chunk'
+						)`)
+				if result.Error != nil {
+					return fmt.Errorf("failed to update object_type values: %w", result.Error)
+				}
+				return nil
+			}
 
 			updateSQL := `
 				WITH batch AS (
@@ -1641,20 +1673,27 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) 
 					return err
 				}
 			}
-			if err := execBatchedGormMaintenanceUpdate(tx, "mcp request_id backfill", `
-				WITH batch AS (
-					SELECT ctid
-					FROM mcp_tool_logs
-					WHERE request_id IS NULL OR request_id = ''
-					LIMIT ?
-					FOR UPDATE SKIP LOCKED
-				)
-				UPDATE mcp_tool_logs
-				SET request_id = id
-				FROM batch
-				WHERE mcp_tool_logs.ctid = batch.ctid
-			`); err != nil {
-				return err
+			if tx.Dialector.Name() == "postgres" {
+				if err := execBatchedGormMaintenanceUpdate(tx, "mcp request_id backfill", `
+						WITH batch AS (
+							SELECT ctid
+							FROM mcp_tool_logs
+							WHERE request_id IS NULL OR request_id = ''
+							LIMIT ?
+							FOR UPDATE SKIP LOCKED
+						)
+						UPDATE mcp_tool_logs
+						SET request_id = id
+						FROM batch
+						WHERE mcp_tool_logs.ctid = batch.ctid
+					`); err != nil {
+					return err
+				}
+			} else {
+				result := tx.Exec("UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''")
+				if result.Error != nil {
+					return fmt.Errorf("failed to backfill mcp request_id values: %w", result.Error)
+				}
 			}
 			if tx.Dialector.Name() != "postgres" && !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_request_id") {
 				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_request_id"); err != nil {
