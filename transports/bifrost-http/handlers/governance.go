@@ -25,7 +25,16 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+// dbForUpdate adds a PostgreSQL row-level update lock to the query.
+func dbForUpdate(db *gorm.DB) *gorm.DB {
+	if db.Dialector.Name() != "postgres" {
+		return db
+	}
+	return db.Clauses(clause.Locking{Strength: "UPDATE"})
+}
 
 // GovernanceManager is the interface for the governance manager
 type GovernanceManager interface {
@@ -750,6 +759,24 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		var rateLimitIDToDelete string
 		var providerBudgetIDsToDelete []string
 		var providerRateLimitIDsToDelete []string
+		var lockedVK configstoreTables.TableVirtualKey
+		if err := dbForUpdate(tx.WithContext(ctx)).
+			Preload("Budgets").
+			Preload("RateLimit").
+			Preload("ProviderConfigs").
+			First(&lockedVK, "id = ?", vkID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return configstore.ErrNotFound
+			}
+			return err
+		}
+		vk = &lockedVK
+		sort.Slice(vk.Budgets, func(i, j int) bool {
+			if vk.Budgets[i].ResetDuration == vk.Budgets[j].ResetDuration {
+				return vk.Budgets[i].ID < vk.Budgets[j].ID
+			}
+			return vk.Budgets[i].ResetDuration < vk.Budgets[j].ResetDuration
+		})
 
 		// Update fields if provided
 		if req.Name != nil {
@@ -781,7 +808,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.Budgets != nil {
 			// Validate multi-budgets
 			seenDurations := make(map[string]bool)
-			for _, b := range req.Budgets {
+			requestBudgets := append([]CreateBudgetRequest(nil), req.Budgets...)
+			sort.Slice(requestBudgets, func(i, j int) bool {
+				return requestBudgets[i].ResetDuration < requestBudgets[j].ResetDuration
+			})
+			for _, b := range requestBudgets {
 				if b.MaxLimit < 0 {
 					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 				}
@@ -803,7 +834,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			// Reconcile: preserve existing budgets where possible, create new ones where needed
 			var reconciledBudgets []configstoreTables.TableBudget
 			matchedIDs := make(map[string]bool)
-			for _, b := range req.Budgets {
+			for _, b := range requestBudgets {
 				if existing, found := existingByDuration[b.ResetDuration]; found {
 					// Budget with same duration exists — update max_limit, preserve usage
 					existing.MaxLimit = b.MaxLimit
@@ -908,6 +939,19 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				Find(&existingConfigs).Error; err != nil {
 				return err
 			}
+			sort.Slice(existingConfigs, func(i, j int) bool { return existingConfigs[i].ID < existingConfigs[j].ID })
+			sort.Slice(req.ProviderConfigs, func(i, j int) bool {
+				if req.ProviderConfigs[i].ID == nil && req.ProviderConfigs[j].ID != nil {
+					return false
+				}
+				if req.ProviderConfigs[i].ID != nil && req.ProviderConfigs[j].ID == nil {
+					return true
+				}
+				if req.ProviderConfigs[i].ID != nil && req.ProviderConfigs[j].ID != nil && *req.ProviderConfigs[i].ID != *req.ProviderConfigs[j].ID {
+					return *req.ProviderConfigs[i].ID < *req.ProviderConfigs[j].ID
+				}
+				return req.ProviderConfigs[i].Provider < req.ProviderConfigs[j].Provider
+			})
 			// Create maps for easier lookup
 			existingConfigsMap := make(map[uint]configstoreTables.TableVirtualKeyProviderConfig)
 			for _, config := range existingConfigs {
@@ -981,7 +1025,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					// Create multi-budgets for new provider config in update
 					if len(pc.Budgets) > 0 {
 						seenDurations := make(map[string]bool)
-						for _, b := range pc.Budgets {
+						pcBudgets := append([]CreateBudgetRequest(nil), pc.Budgets...)
+						sort.Slice(pcBudgets, func(i, j int) bool {
+							return pcBudgets[i].ResetDuration < pcBudgets[j].ResetDuration
+						})
+						for _, b := range pcBudgets {
 							if seenDurations[b.ResetDuration] {
 								return &badRequestError{err: fmt.Errorf("duplicate reset_duration in provider config budgets: %s", b.ResetDuration)}
 							}
@@ -1041,7 +1089,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if pc.Budgets != nil {
 						// Validate
 						seenDurations := make(map[string]bool)
-						for _, b := range pc.Budgets {
+						pcBudgets := append([]CreateBudgetRequest(nil), pc.Budgets...)
+						sort.Slice(pcBudgets, func(i, j int) bool {
+							return pcBudgets[i].ResetDuration < pcBudgets[j].ResetDuration
+						})
+						for _, b := range pcBudgets {
 							if b.MaxLimit < 0 {
 								return &badRequestError{err: fmt.Errorf("provider config budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 							}
@@ -1056,6 +1108,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 						// Build map of existing budgets by reset_duration for matching
 						pcExistingByDuration := make(map[string]configstoreTables.TableBudget)
+						sort.Slice(existing.Budgets, func(i, j int) bool {
+							if existing.Budgets[i].ResetDuration == existing.Budgets[j].ResetDuration {
+								return existing.Budgets[i].ID < existing.Budgets[j].ID
+							}
+							return existing.Budgets[i].ResetDuration < existing.Budgets[j].ResetDuration
+						})
 						for _, eb := range existing.Budgets {
 							pcExistingByDuration[eb.ResetDuration] = eb
 						}
@@ -1063,7 +1121,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						// Reconcile: preserve existing budgets where possible
 						var pcReconciledBudgets []configstoreTables.TableBudget
 						pcMatchedIDs := make(map[string]bool)
-						for _, b := range pc.Budgets {
+						for _, b := range pcBudgets {
 							if eb, found := pcExistingByDuration[b.ResetDuration]; found {
 								// Budget with same duration exists — update max_limit, preserve usage
 								eb.MaxLimit = b.MaxLimit
@@ -1159,7 +1217,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 			}
 			// Delete provider configs that are not in the request
+			configIDs := make([]uint, 0, len(existingConfigsMap))
 			for id := range existingConfigsMap {
+				configIDs = append(configIDs, id)
+			}
+			sort.Slice(configIDs, func(i, j int) bool { return configIDs[i] < configIDs[j] })
+			for _, id := range configIDs {
 				if !requestConfigsMap[id] {
 					providerBudgetIDsToDelete, providerRateLimitIDsToDelete = collectProviderConfigDeleteIDs(
 						existingConfigsMap[id],
@@ -1186,6 +1249,19 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			if err := tx.Where("virtual_key_id = ?", vk.ID).Find(&existingMCPConfigs).Error; err != nil {
 				return err
 			}
+			sort.Slice(existingMCPConfigs, func(i, j int) bool { return existingMCPConfigs[i].ID < existingMCPConfigs[j].ID })
+			sort.Slice(req.MCPConfigs, func(i, j int) bool {
+				if req.MCPConfigs[i].ID == nil && req.MCPConfigs[j].ID != nil {
+					return false
+				}
+				if req.MCPConfigs[i].ID != nil && req.MCPConfigs[j].ID == nil {
+					return true
+				}
+				if req.MCPConfigs[i].ID != nil && req.MCPConfigs[j].ID != nil && *req.MCPConfigs[i].ID != *req.MCPConfigs[j].ID {
+					return *req.MCPConfigs[i].ID < *req.MCPConfigs[j].ID
+				}
+				return req.MCPConfigs[i].MCPClientName < req.MCPConfigs[j].MCPClientName
+			})
 			// Create maps for easier lookup
 			existingMCPConfigsMap := make(map[uint]configstoreTables.TableVirtualKeyMCPConfig)
 			for _, config := range existingMCPConfigs {
@@ -1224,7 +1300,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 			}
 			// Delete MCP configs that are not in the request
+			mcpConfigIDs := make([]uint, 0, len(existingMCPConfigsMap))
 			for id := range existingMCPConfigsMap {
+				mcpConfigIDs = append(mcpConfigIDs, id)
+			}
+			sort.Slice(mcpConfigIDs, func(i, j int) bool { return mcpConfigIDs[i] < mcpConfigIDs[j] })
+			for _, id := range mcpConfigIDs {
 				if !requestMCPConfigsMap[id] {
 					if err := h.configStore.DeleteVirtualKeyMCPConfig(ctx, id, tx); err != nil {
 						return err
@@ -1234,17 +1315,19 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 
 		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+			if err := h.configStore.DeleteRateLimit(ctx, rateLimitIDToDelete, tx); err != nil {
 				return err
 			}
 		}
+		sort.Strings(providerBudgetIDsToDelete)
 		for _, id := range providerBudgetIDsToDelete {
-			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", id).Error; err != nil {
+			if err := h.configStore.DeleteBudget(ctx, id, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 				return err
 			}
 		}
+		sort.Strings(providerRateLimitIDsToDelete)
 		for _, id := range providerRateLimitIDsToDelete {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", id).Error; err != nil {
+			if err := h.configStore.DeleteRateLimit(ctx, id, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 				return err
 			}
 		}
