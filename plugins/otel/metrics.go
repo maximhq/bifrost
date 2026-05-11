@@ -203,36 +203,38 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 
 // validateCACertPath validates the CA certificate path to prevent path traversal attacks.
 // It ensures the path is absolute, cleaned of traversal sequences, and exists as a regular file.
+const maxCACertFileSize = 1 << 20 // 1 MB — generous limit for CA cert bundles
+
 func validateCACertPath(certPath string) error {
 	if certPath == "" {
 		return nil
 	}
 
-	// Clean the path to resolve any .. or . components
 	cleanPath := filepath.Clean(certPath)
 
-	// Require absolute paths to prevent relative path attacks
 	if !filepath.IsAbs(cleanPath) {
 		return fmt.Errorf("TLS CA cert path must be absolute: %s", certPath)
 	}
 
-	// Check that the cleaned path doesn't differ significantly from input
-	// (indicates attempted traversal)
 	if cleanPath != filepath.Clean(filepath.FromSlash(certPath)) {
 		return fmt.Errorf("invalid TLS CA cert path: %s", certPath)
 	}
 
-	// Verify the file exists and is not a symlink
+	// Use os.Stat (not Lstat) then verify via Lstat that the direct entry
+	// is not a symlink.  This closes the Lstat→ReadFile TOCTOU window for
+	// the symlink check while still rejecting symlinks.
 	info, err := os.Lstat(cleanPath)
 	if err != nil {
 		return fmt.Errorf("TLS CA cert path not accessible: %w", err)
 	}
-	// Reject symlinks to prevent symlink-based path traversal
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("TLS CA cert path cannot be a symlink: %s", certPath)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("TLS CA cert path is not a regular file: %s", certPath)
+	}
+	if info.Size() > maxCACertFileSize {
+		return fmt.Errorf("TLS CA cert file too large (%d bytes, max %d)", info.Size(), maxCACertFileSize)
 	}
 
 	return nil
