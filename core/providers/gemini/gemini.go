@@ -46,6 +46,13 @@ func setGeminiRequestBody(req *fasthttp.Request, bodyReader io.Reader, bodySize 
 	req.SetBody(jsonData)
 }
 
+func normalizeRawGenerateContentBody(ctx *schemas.BifrostContext, body []byte) []byte {
+	if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
+		return NormalizeRawGenerateContentRequestForCompatibility(body)
+	}
+	return body
+}
+
 // NewGeminiProvider creates a new Gemini provider instance.
 // It initializes the HTTP client with the provided configuration.
 // The client is configured with timeouts, concurrency limits, and optional proxy settings.
@@ -121,6 +128,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	// Normal mode: use converted JSON body.
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
 		req.SetBody(jsonBody)
 	}
 
@@ -410,6 +418,7 @@ func HandleGeminiChatCompletionStream(
 
 	// Large payload mode: stream original request bytes directly from ingress.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
 		req.SetBody(jsonBody)
 	}
 
@@ -736,6 +745,9 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 	}
 
 	// Large payload mode streams request bytes directly to upstream; normal mode sends marshaled bytes.
+	if bodyReader == nil {
+		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+	}
 	setGeminiRequestBody(req, bodyReader, bodySize, jsonData)
 
 	// Make request
@@ -906,6 +918,7 @@ func HandleGeminiResponsesStream(
 
 	// Large payload mode: stream original request body to upstream.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody)
 		req.SetBody(jsonBody)
 	}
 
@@ -2441,11 +2454,16 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, err
 	}
 
+	var jsonData []byte
+	if rawBody, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request); ok && len(rawBody) > 0 {
+		jsonData = rawBody
+	}
+
 	// Validate that either InputFileID or Requests is provided, but not both
 	hasFileInput := request.InputFileID != ""
 	hasInlineRequests := len(request.Requests) > 0
 
-	if !hasFileInput && !hasInlineRequests {
+	if len(jsonData) == 0 && !hasFileInput && !hasInlineRequests {
 		return nil, providerUtils.NewBifrostOperationError("either input_file_id or requests must be provided", nil)
 	}
 
@@ -2453,80 +2471,91 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
 	}
 
-	// Build the batch request with proper nested structure
-	batchReq := &GeminiBatchCreateRequest{
-		Batch: GeminiBatchConfig{
-			DisplayName: fmt.Sprintf("bifrost-batch-%d", time.Now().UnixNano()),
-		},
-	}
-
-	if hasFileInput {
-		// File-based input: use file_name in input_config
-		fileID := request.InputFileID
-		// Ensure file ID has the "files/" prefix
-		if !strings.HasPrefix(fileID, "files/") {
-			fileID = "files/" + fileID
-		}
-		batchReq.Batch.InputConfig = GeminiBatchInputConfig{
-			FileName: fileID,
-		}
-	} else {
-		// Inline requests: convert Bifrost requests to Gemini format
-		geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
-		for i, bifrostItem := range request.Requests {
-			body := bifrostItem.Body
-
-			var geminiReq GeminiBatchGenerateContentRequest
-
-			// The body is in OpenAI format (with "messages"), so we need to convert
-			// messages to Gemini's "contents" format using the standard conversion.
-			if rawMessages, ok := body["messages"]; ok {
-				messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError("failed to marshal messages", err)
-				}
-				var chatMessages []schemas.ChatMessage
-				err = sonic.Unmarshal(messagesBytes, &chatMessages)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError("failed to unmarshal messages", err)
-				}
-
-				contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
-				geminiReq.Contents = contents
-				geminiReq.SystemInstruction = systemInstruction
-			} else {
-				// If no "messages" key, try direct unmarshal (already in Gemini format)
-				requestBytes, err := providerUtils.MarshalSorted(body)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err)
-				}
-				err = sonic.Unmarshal(requestBytes, &geminiReq)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError("failed to unmarshal gemini request", err)
-				}
-			}
-
-			geminiRequests[i] = GeminiBatchRequestItem{
-				Request: geminiReq,
-			}
-			// Set metadata with custom_id
-			if bifrostItem.CustomID != "" {
-				geminiRequests[i].Metadata = &GeminiBatchMetadata{
-					Key: bifrostItem.CustomID,
-				}
-			}
-		}
-
-		batchReq.Batch.InputConfig = GeminiBatchInputConfig{
-			Requests: &GeminiBatchRequestsWrapper{
-				Requests: geminiRequests,
+	if len(jsonData) == 0 {
+		// Build the batch request with proper nested structure
+		batchReq := &GeminiBatchCreateRequest{
+			Batch: GeminiBatchConfig{
+				DisplayName: fmt.Sprintf("bifrost-batch-%d", time.Now().UnixNano()),
 			},
 		}
-	}
 
-	jsonData, err := providerUtils.MarshalSorted(batchReq)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		if hasFileInput {
+			// File-based input: use file_name in input_config
+			fileID := request.InputFileID
+			// Ensure file ID has the "files/" prefix
+			if !strings.HasPrefix(fileID, "files/") {
+				fileID = "files/" + fileID
+			}
+			batchReq.Batch.InputConfig = GeminiBatchInputConfig{
+				FileName: fileID,
+			}
+		} else {
+			// Inline requests: convert Bifrost requests to Gemini format
+			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
+			for i, bifrostItem := range request.Requests {
+				body := bifrostItem.Body
+
+				var geminiReq GeminiBatchGenerateContentRequest
+
+				// The body is in OpenAI format (with "messages"), so we need to convert
+				// messages to Gemini's "contents" format using the standard conversion.
+				if rawMessages, ok := body["messages"]; ok {
+					requestBytes, err := providerUtils.MarshalSorted(body)
+					if err != nil {
+						return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err)
+					}
+					if err := sonic.Unmarshal(requestBytes, &geminiReq); err != nil {
+						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal gemini request", err)
+					}
+
+					messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
+					if err != nil {
+						return nil, providerUtils.NewBifrostOperationError("failed to marshal messages", err)
+					}
+					var chatMessages []schemas.ChatMessage
+					err = sonic.Unmarshal(messagesBytes, &chatMessages)
+					if err != nil {
+						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal messages", err)
+					}
+
+					contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
+					geminiReq.Contents = contents
+					geminiReq.SystemInstruction = systemInstruction
+				} else {
+					// If no "messages" key, try direct unmarshal (already in Gemini format)
+					requestBytes, err := providerUtils.MarshalSorted(body)
+					if err != nil {
+						return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err)
+					}
+					err = sonic.Unmarshal(requestBytes, &geminiReq)
+					if err != nil {
+						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal gemini request", err)
+					}
+				}
+
+				geminiRequests[i] = GeminiBatchRequestItem{
+					Request: geminiReq,
+				}
+				// Set metadata with custom_id
+				if bifrostItem.CustomID != "" {
+					geminiRequests[i].Metadata = &GeminiBatchMetadata{
+						Key: bifrostItem.CustomID,
+					}
+				}
+			}
+
+			batchReq.Batch.InputConfig = GeminiBatchInputConfig{
+				Requests: &GeminiBatchRequestsWrapper{
+					Requests: geminiRequests,
+				},
+			}
+		}
+
+		var err error
+		jsonData, err = providerUtils.MarshalSorted(batchReq)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		}
 	}
 
 	// Create HTTP request
@@ -3915,6 +3944,8 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
+
+		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
 
 		// Use sjson to delete fields directly from JSON bytes, preserving key ordering
 		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "toolConfig")

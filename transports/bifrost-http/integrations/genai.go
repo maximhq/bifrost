@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -29,6 +30,8 @@ const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifr
 const isGeminiBatchCreateRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-create-request"
 
 const requestedGeminiModelMetadataContextKey schemas.BifrostContextKey = "bifrost-requested-gemini-model-metadata"
+
+const genAIRawRequestBodyContextKey schemas.BifrostContextKey = "bifrost-genai-raw-request-body"
 
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
@@ -210,9 +213,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				}
 
 				bifrostBatchReq := &schemas.BifrostBatchCreateRequest{
-					Provider: provider,
-					Model:    &geminiReq.Model,
-					Requests: requests,
+					Provider:       provider,
+					Model:          &geminiReq.Model,
+					Requests:       requests,
+					RawRequestBody: getGenAIRawRequestBody(ctx),
 				}
 
 				// Handle file-based input
@@ -942,18 +946,30 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 				return errors.New("invalid cached content create request type")
 			}
 			if body := ctx.Request.Body(); len(body) > 0 {
-				var wire GeminiCachedContentCreateBody
-				if err := sonic.Unmarshal(body, &wire); err != nil {
+				if !gjson.ValidBytes(body) {
+					return errors.New("invalid JSON")
+				}
+				createReq.RawRequestBody = copyBytes(body)
+				model, err := requiredGJSONString(body, "model")
+				if err != nil {
 					return err
 				}
-				createReq.Model = strings.TrimPrefix(wire.Model, "models/")
-				createReq.DisplayName = wire.DisplayName
-				createReq.SystemInstruction = wire.SystemInstruction
-				createReq.Contents = wire.Contents
-				createReq.Tools = wire.Tools
-				createReq.ToolConfig = wire.ToolConfig
-				createReq.TTL = wire.TTL
-				createReq.ExpireTime = wire.ExpireTime
+				displayName, err := optionalGJSONString(body, "displayName")
+				if err != nil {
+					return err
+				}
+				ttl, err := optionalGJSONString(body, "ttl")
+				if err != nil {
+					return err
+				}
+				expireTime, err := optionalGJSONString(body, "expireTime")
+				if err != nil {
+					return err
+				}
+				createReq.Model = strings.TrimPrefix(model, "models/")
+				createReq.DisplayName = displayName
+				createReq.TTL = ttl
+				createReq.ExpireTime = expireTime
 			}
 			return nil
 		},
@@ -965,6 +981,9 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 			// Provider is set via PreCallback (setGeminiCachedContentCreateProvider).
 			if createReq.Provider == "" {
 				createReq.Provider = schemas.Gemini
+			}
+			if len(createReq.RawRequestBody) > 0 {
+				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 			}
 			return &CachedContentRequest{Type: schemas.CachedContentCreateRequest, CreateRequest: createReq}, nil
 		},
@@ -1048,12 +1067,20 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 				return errors.New("invalid cached content update request type")
 			}
 			if body := ctx.Request.Body(); len(body) > 0 {
-				var wire GeminiCachedContentUpdateBody
-				if err := sonic.Unmarshal(body, &wire); err != nil {
+				if !gjson.ValidBytes(body) {
+					return errors.New("invalid JSON")
+				}
+				updateReq.RawRequestBody = copyBytes(body)
+				ttl, err := optionalGJSONString(body, "ttl")
+				if err != nil {
 					return err
 				}
-				updateReq.TTL = wire.TTL
-				updateReq.ExpireTime = wire.ExpireTime
+				expireTime, err := optionalGJSONString(body, "expireTime")
+				if err != nil {
+					return err
+				}
+				updateReq.TTL = ttl
+				updateReq.ExpireTime = expireTime
 			}
 			return nil
 		},
@@ -1065,6 +1092,9 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 			// Name is set via PreCallback (extractGeminiCachedContentNameFromPath).
 			if updateReq.Provider == "" {
 				updateReq.Provider = schemas.Gemini
+			}
+			if len(updateReq.RawRequestBody) > 0 {
+				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 			}
 			return &CachedContentRequest{Type: schemas.CachedContentUpdateRequest, UpdateRequest: updateReq}, nil
 		},
@@ -1224,6 +1254,10 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
 			r.IsImageEdit = isImageEditRequest(r)
 		}
+		if !r.IsEmbedding {
+			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
 
 		return nil
 	case *gemini.GeminiEmbeddingRequest:
@@ -1235,15 +1269,67 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		if modelStr != "" {
 			r.Model = modelStr
 		}
+		setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		return nil
 	case *gemini.GeminiBatchCreateRequest:
 		if modelStr != "" {
 			r.Model = modelStr
 		}
+		setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		return nil
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
+}
+
+func setGenAIRawRequestBodyFromRequest(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
+	if body := ctx.Request.Body(); len(body) > 0 {
+		bifrostCtx.SetValue(genAIRawRequestBodyContextKey, copyBytes(body))
+	}
+}
+
+func copyBytes(in []byte) []byte {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]byte, len(in))
+	copy(out, in)
+	return out
+}
+
+func getGenAIRawRequestBody(ctx *schemas.BifrostContext) []byte {
+	if ctx == nil {
+		return nil
+	}
+	if body, ok := ctx.Value(genAIRawRequestBodyContextKey).([]byte); ok && len(body) > 0 {
+		return copyBytes(body)
+	}
+	return nil
+}
+
+func requiredGJSONString(body []byte, path string) (string, error) {
+	v := gjson.GetBytes(body, path)
+	if !v.Exists() || v.Type == gjson.Null {
+		return "", fmt.Errorf("%s is required", path)
+	}
+	if v.Type != gjson.String {
+		return "", fmt.Errorf("%s must be a string", path)
+	}
+	return v.String(), nil
+}
+
+func optionalGJSONString(body []byte, path string) (*string, error) {
+	v := gjson.GetBytes(body, path)
+	if !v.Exists() || v.Type == gjson.Null {
+		return nil, nil
+	}
+	if v.Type != gjson.String {
+		return nil, fmt.Errorf("%s must be a string", path)
+	}
+	s := v.String()
+	return &s, nil
 }
 
 // extractAndSetModelFromURL extracts model from URL and sets it in the request
