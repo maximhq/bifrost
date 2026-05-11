@@ -380,6 +380,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationTeamsTableUpdates(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddTeamSourceIDColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddKeyNameColumn(ctx, db); err != nil {
 		return err
 	}
@@ -7468,6 +7471,45 @@ func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error
 		return fmt.Errorf("error running add_mcp_client_disabled_column migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddTeamSourceIDColumn adds optional source_id to governance_teams and
+// a unique index so non-null values do not collide (multiple NULLs remain allowed).
+func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB) error {
+	const idxName = "idx_governance_teams_source_id"
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "add_team_source_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				if err := mg.AddColumn(&tables.TableTeam{}, "source_id"); err != nil {
+					return fmt.Errorf("add source_id column to governance_teams: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableTeam{}, idxName) {
+				if err := mg.CreateIndex(&tables.TableTeam{}, "SourceID"); err != nil {
+					return fmt.Errorf("create unique index on governance_teams.source_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableTeam{}, idxName) {
+				if err := mg.DropIndex(&tables.TableTeam{}, idxName); err != nil {
+					return fmt.Errorf("drop unique index on governance_teams.source_id: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				if err := mg.DropColumn(&tables.TableTeam{}, "source_id"); err != nil {
+					return fmt.Errorf("drop source_id column from governance_teams: %w", err)
+				}
+			}
+			return nil
+		},
+	})
 }
 
 // migrationUniqueTeamNames deduplicates governance_teams.name and adds a unique

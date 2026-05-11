@@ -13,6 +13,7 @@ type TableTeam struct {
 	Name        string  `gorm:"type:varchar(255);not null;uniqueIndex" json:"name"`
 	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"` // A team can belong to a customer
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	SourceID    *string `gorm:"type:varchar(255);uniqueIndex" json:"source_id,omitempty"`
 
 	// Relationships
 	Customer    *TableCustomer    `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
