@@ -2345,14 +2345,21 @@ func (s *RDBLogStore) buildProviderLatencyHistogramResult(computedBuckets map[in
 // Generic dimension histogram methods
 // ---------------------------------------------------------------------------
 
-// sanitizeDimColumn returns col unchanged if it is a known safe histogram
-// dimension column name, or returns an error for unrecognised values.
-// This acts as a defence-in-depth measure so that static analysis tools can
-// verify the value is safe before it is interpolated into SQL.
+// sanitizeDimColumn maps the caller-supplied dimension name to a known-safe
+// string literal.  Returning a literal (not the input) breaks static-analysis
+// taint tracking while still validating at runtime.
 func sanitizeDimColumn(col string) (string, error) {
 	switch col {
-	case "provider", "team_id", "customer_id", "user_id", "business_unit_id":
-		return col, nil
+	case "provider":
+		return "provider", nil
+	case "team_id":
+		return "team_id", nil
+	case "customer_id":
+		return "customer_id", nil
+	case "user_id":
+		return "user_id", nil
+	case "business_unit_id":
+		return "business_unit_id", nil
 	default:
 		return "", fmt.Errorf("invalid dimension column: %s", col)
 	}
