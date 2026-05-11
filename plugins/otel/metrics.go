@@ -254,7 +254,7 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 			return nil, err
 		}
 		// Use custom CA certificate
-		caCert, err := os.ReadFile(config.TLSCACert)
+		caCert, err := os.ReadFile(config.TLSCACert) // #nosec G304 — path validated by validateCACertPath above
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA cert: %w", err)
 		}
@@ -296,7 +296,7 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 			return nil, err
 		}
 		// Use custom CA certificate with MinVersion
-		caCert, err := os.ReadFile(config.TLSCACert)
+		caCert, err := os.ReadFile(config.TLSCACert) // #nosec G304 — path validated by validateCACertPath above
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA cert: %w", err)
 		}

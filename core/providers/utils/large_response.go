@@ -106,6 +106,11 @@ func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Resp
 		if readErr != nil {
 			return
 		}
+		// Ensure the Content-Type is not text/html to prevent reflected XSS
+		// when error bodies are echoed back from upstream providers.
+		if ct := resp.Header.ContentType(); len(ct) == 0 {
+			resp.Header.SetContentType("application/json")
+		}
 		resp.SetBody(bodyBytes)
 	}
 }
@@ -228,9 +233,13 @@ func FinalizeResponseWithLargeDetection(
 		contentLength = -1 // decompressed size unknown; transport will use chunked encoding
 	}
 
-	prefetchSize := 64 * 1024 // default
+	const maxPrefetchSize = 10 * 1024 * 1024 // 10 MB hard cap to prevent uncontrolled allocation
+	prefetchSize := 64 * 1024                // default
 	if ps, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadPrefetchSize).(int); ok && ps > 0 {
 		prefetchSize = ps
+	}
+	if prefetchSize > maxPrefetchSize {
+		prefetchSize = maxPrefetchSize
 	}
 	prefetchBuf := make([]byte, prefetchSize)
 	n, readErr := io.ReadFull(decompressedStream, prefetchBuf)

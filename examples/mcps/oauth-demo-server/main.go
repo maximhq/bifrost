@@ -395,6 +395,17 @@ func handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
 		return
 	}
+	// Validate the redirect URL scheme to prevent open redirect attacks.
+	// Only http and https schemes are permitted (redirectURI was already
+	// validated against the client's registered redirect_uris above).
+	if scheme := redirect.Scheme; scheme != "http" && scheme != "https" {
+		http.Error(w, "redirect_uri must use http or https scheme", http.StatusBadRequest)
+		return
+	}
+	if redirect.Host == "" {
+		http.Error(w, "redirect_uri must include a host", http.StatusBadRequest)
+		return
+	}
 	rq := redirect.Query()
 	rq.Set("code", code)
 	if state != "" {
@@ -622,13 +633,13 @@ func bearerMiddleware(next http.Handler) http.Handler {
 			issuer,
 		)
 		unauthorized := func(reason string) {
-			log.Printf("[mcp] %s %s -> 401 (%s)", r.Method, r.URL.Path, reason)
+			log.Printf("[mcp] %s %s -> 401 (%s)", r.Method, r.URL.EscapedPath(), reason) // log path only, not query params (CWE-532)
 			w.Header().Set("WWW-Authenticate", challenge+fmt.Sprintf(`, error="invalid_token", error_description=%q`, reason))
 			http.Error(w, "unauthorized: "+reason, http.StatusUnauthorized)
 		}
 		h := r.Header.Get("Authorization")
 		if h == "" {
-			log.Printf("[mcp] %s %s -> 401 (no Authorization header — Bifrost should now follow WWW-Authenticate to discovery)", r.Method, r.URL.Path)
+			log.Printf("[mcp] %s %s -> 401 (no Authorization header — Bifrost should now follow WWW-Authenticate to discovery)", r.Method, r.URL.EscapedPath())
 			w.Header().Set("WWW-Authenticate", challenge)
 			http.Error(w, "missing Authorization header", http.StatusUnauthorized)
 			return
@@ -650,7 +661,7 @@ func bearerMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		log.Printf("[mcp] %s %s authed user=%q token=%s (expires in %s)",
-			r.Method, r.URL.Path, rec.UserID, tokenPrefix(tok), time.Until(rec.ExpiresAt).Round(time.Second))
+			r.Method, r.URL.EscapedPath(), rec.UserID, tokenPrefix(tok), time.Until(rec.ExpiresAt).Round(time.Second))
 		ctx := context.WithValue(r.Context(), userCtxKey, rec.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

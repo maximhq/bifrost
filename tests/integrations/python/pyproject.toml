@@ -3,19 +3,19 @@ name = "bifrost-integration-tests"
 version = "0.1.0"
 description = "Production-ready end-to-end test suite for testing AI integrations through Bifrost proxy"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 
 dependencies = [
     # Core testing framework
     "pytest>=9.0.3",
     "pytest-asyncio>=0.21.0",
     # Environment and configuration
-    "python-dotenv>=1.2.2",
+    "python-dotenv>=1.0.1",
     "PyYAML>=6.0",
     # Image processing
     "Pillow>=12.2.0",
     # HTTP requests for debugging
-    "requests>=2.28.0",
+    "requests>=2.33.0",
     # Type hints
     "typing-extensions>=4.0.0",
     # Test reporting
@@ -27,13 +27,13 @@ dependencies = [
     "litellm>=1.83.7",
     "langchain-openai>=1.1.14",
     "langchain-core>=0.3.85",
-    "langchain-anthropic==0.1.0",
-    "langchain-google-genai==4.1.1",
-    "langchain-mistralai==0.1.0",
-    "langgraph>=0.1.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-google-genai>=4.1.1",
+    "langchain-mistralai>=0.2.0",
+    "langgraph>=1.0.10",
     "mistralai>=0.4.0",
     "google-genai>=1.50.0",
-    "pydantic-ai>=0.1.0",
+    "pydantic-ai>=1.56.0",
     "boto3>=1.34.0",
     # Testing utilities
     "websocket-client>=1.6.0",
@@ -47,12 +47,12 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-aws>=1.1.0",
     "pytest-xdist>=3.8.0",
-    "pyasn1>=0.6.2",
+    "pyasn1>=0.6.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "black>=23.0.0",   # Code formatting
+    "black>=26.3.1",   # Code formatting
     "flake8>=6.0.0",   # Linting
     "mypy>=1.5.0",     # Type checking
 ]
@@ -124,3 +124,9 @@ exclude_lines = [
 
 [tool.uv]
 exclude-newer = "2026-05-11"
+
+# Override litellm's strict pins that conflict with other dependencies
+override-dependencies = [
+    "python-dotenv>=1.1.0",
+    "openai>=2.26.0",
+]

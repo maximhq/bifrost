@@ -968,9 +968,9 @@ func decodeCSIu(seq []byte) []byte {
 	case cp == 0x1b:
 		ch = []byte{0x1b}
 	case cp == '\r' || cp == '\n' || cp == '\t' || cp == 0x7f:
-		ch = []byte{byte(cp)}
+		ch = []byte{byte(cp & 0xff)} // #nosec G115 — values are bounded by the case guard
 	case cp < 128:
-		ch = []byte{byte(cp)}
+		ch = []byte{byte(cp & 0x7f)} // #nosec G115 — cp < 128 guaranteed by case guard
 	default:
 		// Unicode codepoint — encode as UTF-8
 		ch = []byte(string(rune(cp)))
@@ -986,9 +986,9 @@ func decodeCSIu(seq []byte) []byte {
 func decodeASCIICommandCodepoint(cp int) (byte, bool) {
 	switch {
 	case cp == 0x1b || cp == '\r' || cp == '\n' || cp == '\t':
-		return byte(cp), true
+		return byte(cp & 0xff), true // #nosec G115 — values are bounded by the case guard
 	case cp >= 0x20 && cp <= 0x7e:
-		return byte(cp), true
+		return byte(cp & 0x7f), true // #nosec G115 — cp <= 0x7e guaranteed by case guard
 	default:
 		return 0, false
 	}

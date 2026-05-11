@@ -122,6 +122,27 @@ func sanitizeErrorForLogging(err *schemas.BifrostError, contentLoggingEnabled, s
 	return &cloned
 }
 
+// maxLogErrLen is the maximum number of characters from an error message
+// included in log output. Errors originating from HTTP request/response
+// processing may embed sensitive payload data; truncating prevents
+// inadvertent clear-text logging of that data (CWE-532).
+const maxLogErrLen = 256
+
+// sanitizeLogErr returns a truncated, single-line string representation of
+// an error suitable for operational log messages. It caps the output at
+// maxLogErrLen characters to avoid leaking sensitive HTTP request/response
+// content that may be wrapped inside the error chain.
+func sanitizeLogErr(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	s := err.Error()
+	if len(s) > maxLogErrLen {
+		return s[:maxLogErrLen] + "...[truncated]"
+	}
+	return s
+}
+
 // contentLoggingEnabled returns true if content (messages, params, tool results) should be
 // recorded for this request. The BifrostContextKeyDisableContentLogging per-request override is
 // only honored when BifrostContextKeyAllowPerRequestStorageOverride is true in context (set by
@@ -184,7 +205,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		for i := 0; i < 3; i++ {
 			found, findErr = p.store.IsLogEntryPresent(p.ctx, requestID)
 			if findErr != nil {
-				p.logger.Warn("failed to check if log entry is present for request %s: %v", requestID, findErr)
+				p.logger.Warn("failed to check if log entry is present for request %s: %s", requestID, sanitizeLogErr(findErr))
 				continue
 			}
 			if found {
@@ -197,7 +218,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			return
 		}
 		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
-			p.logger.Warn("failed to update deferred usage for request %s: %v", requestID, updErr)
+			p.logger.Warn("failed to update deferred usage for request %s: %s", requestID, sanitizeLogErr(updErr))
 		}
 	}()
 }

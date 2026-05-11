@@ -229,6 +229,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
+		// Validate the pricing URL to prevent SSRF attacks
+		if err := bifrost.ValidateExternalURL(*payload.FrameworkConfig.PricingURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing URL: %v", err))
+			return
+		}
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {
@@ -508,6 +513,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
+		// Validate the pricing URL to prevent SSRF attacks
+		if err := bifrost.ValidateExternalURL(*payload.FrameworkConfig.PricingURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing URL: %v", err))
+			return
+		}
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {

@@ -8,6 +8,25 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// maxLogErrLen caps the number of characters from an error message included in
+// log output.  Errors originating from HTTP response processing may embed
+// sensitive payload data; truncating prevents inadvertent clear-text logging
+// (CWE-532).
+const maxLogErrLen = 256
+
+// sanitizeLogErr returns a truncated string representation of an error suitable
+// for operational log messages.
+func sanitizeLogErr(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	s := err.Error()
+	if len(s) > maxLogErrLen {
+		return s[:maxLogErrLen] + "...[truncated]"
+	}
+	return s
+}
+
 type StreamType string
 
 const (
