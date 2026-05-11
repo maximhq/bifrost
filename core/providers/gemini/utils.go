@@ -138,8 +138,9 @@ func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte 
 }
 
 func isValidAudioBase64Payload(data string) bool {
-	_, err := decodeBase64StringToBytes(data)
-	return err == nil
+	decoded, err := decodeBase64StringToBytes(data)
+	return err == nil && len(decoded) > 0
+}
 }
 
 // supportsThinkingConfig returns true if the model supports ThinkingConfig.

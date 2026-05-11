@@ -509,10 +509,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-		jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+	if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+		}
+		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 	}
-	jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 
 	projectID := key.VertexKeyConfig.ProjectID.GetValue()
 	if projectID == "" {
@@ -995,10 +997,6 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
-		}
-		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 
 		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
@@ -1128,6 +1126,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
+		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+		}
+		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 
 		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
