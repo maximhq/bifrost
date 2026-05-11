@@ -22,6 +22,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -852,24 +853,29 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 				// Retry with alias
 				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 			}
-			if pricingEntry != nil && modelEntry.Pricing == nil {
-				pricing := &schemas.Pricing{}
-				if pricingEntry.InputCostPerToken != nil {
-					pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
+			if pricingEntry != nil {
+				if pricingEntry.BaseModel != "" && resp.Data[i].NormalizedName == nil {
+					resp.Data[i].NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
 				}
-				if pricingEntry.OutputCostPerToken != nil {
-					pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
+				if modelEntry.Pricing == nil {
+					pricing := &schemas.Pricing{}
+					if pricingEntry.InputCostPerToken != nil {
+						pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
+					}
+					if pricingEntry.OutputCostPerToken != nil {
+						pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
+					}
+					if pricingEntry.InputCostPerImage != nil {
+						pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
+					}
+					if pricingEntry.CacheReadInputTokenCost != nil {
+						pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
+					}
+					if pricingEntry.CacheCreationInputTokenCost != nil {
+						pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
+					}
+					resp.Data[i].Pricing = pricing
 				}
-				if pricingEntry.InputCostPerImage != nil {
-					pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
-				}
-				if pricingEntry.CacheReadInputTokenCost != nil {
-					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
-				}
-				if pricingEntry.CacheCreationInputTokenCost != nil {
-					pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
-				}
-				resp.Data[i].Pricing = pricing
 			}
 		}
 	}
