@@ -2618,61 +2618,131 @@ func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig
 	}
 }
 
-// reconstructSchemaFromJSONSchema rebuilds a schema map from ResponsesTextConfigFormatJSONSchema
+// reconstructSchemaFromJSONSchema rebuilds an order-preserving schema document from
+// ResponsesTextConfigFormatJSONSchema. Returns *schemas.OrderedMap (typed as interface{}
+// because the consumer is GenerationConfig.ResponseJSONSchema, declared as `any`).
+//
+// Walks struct fields in declaration order — Defs/Type/Properties/Required/... — so the
+// emitted document has a deterministic, builder-defined order. Properties / Defs /
+// Definitions / Items are *OrderedMap, AnyOf/OneOf/AllOf are []OrderedMap; all of these
+// preserve their internal order via their own MarshalJSON.
 func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) interface{} {
-	var schema map[string]interface{}
+	if jsonSchema == nil {
+		return nil
+	}
 
+	// Pre-set Schema field wins — pass it straight through after best-effort coercion.
 	if jsonSchema.Schema != nil {
-		// If Schema field is set, use it directly
-		schemaMap, ok := (*jsonSchema.Schema).(map[string]interface{})
-		if !ok {
-			return *jsonSchema.Schema
+		if om := asOrderedMap(*jsonSchema.Schema); om != nil {
+			return normalizeSchemaForGemini(om)
 		}
-		schema = schemaMap
-	} else {
-		// New format: Schema is spread across individual fields
-		schema = make(map[string]interface{})
+		return *jsonSchema.Schema
+	}
 
-		if jsonSchema.Defs != nil {
-			schema["$defs"] = *jsonSchema.Defs
-		}
+	schema := schemas.NewOrderedMap()
 
-		if jsonSchema.Type != nil {
-			schema["type"] = *jsonSchema.Type
-		}
+	if jsonSchema.Defs != nil {
+		schema.Set("$defs", jsonSchema.Defs)
+	}
+	if jsonSchema.Definitions != nil {
+		schema.Set("definitions", jsonSchema.Definitions)
+	}
+	if jsonSchema.Type != nil {
+		schema.Set("type", *jsonSchema.Type)
+	}
+	if jsonSchema.Properties != nil {
+		schema.Set("properties", jsonSchema.Properties)
+	}
+	if len(jsonSchema.Required) > 0 {
+		schema.Set("required", jsonSchema.Required)
+	}
+	if jsonSchema.Description != nil {
+		schema.Set("description", *jsonSchema.Description)
+	}
+	if jsonSchema.AdditionalProperties != nil {
+		schema.Set("additionalProperties", *jsonSchema.AdditionalProperties)
+	}
+	if jsonSchema.Items != nil {
+		schema.Set("items", jsonSchema.Items)
+	}
+	if len(jsonSchema.AnyOf) > 0 {
+		schema.Set("anyOf", orderedMapSliceToInterface(jsonSchema.AnyOf))
+	}
+	if len(jsonSchema.OneOf) > 0 {
+		schema.Set("oneOf", orderedMapSliceToInterface(jsonSchema.OneOf))
+	}
+	if len(jsonSchema.AllOf) > 0 {
+		schema.Set("allOf", orderedMapSliceToInterface(jsonSchema.AllOf))
+	}
+	if jsonSchema.Name != nil {
+		schema.Set("title", *jsonSchema.Name)
+	}
+	if jsonSchema.Title != nil && jsonSchema.Name == nil {
+		schema.Set("title", *jsonSchema.Title)
+	}
+	if len(jsonSchema.PropertyOrdering) > 0 {
+		schema.Set("propertyOrdering", jsonSchema.PropertyOrdering)
+	}
+	if jsonSchema.Ref != nil {
+		schema.Set("$ref", *jsonSchema.Ref)
+	}
+	if jsonSchema.MinItems != nil {
+		schema.Set("minItems", *jsonSchema.MinItems)
+	}
+	if jsonSchema.MaxItems != nil {
+		schema.Set("maxItems", *jsonSchema.MaxItems)
+	}
+	if jsonSchema.Format != nil {
+		schema.Set("format", *jsonSchema.Format)
+	}
+	if jsonSchema.Pattern != nil {
+		schema.Set("pattern", *jsonSchema.Pattern)
+	}
+	if jsonSchema.MinLength != nil {
+		schema.Set("minLength", *jsonSchema.MinLength)
+	}
+	if jsonSchema.MaxLength != nil {
+		schema.Set("maxLength", *jsonSchema.MaxLength)
+	}
+	if jsonSchema.Minimum != nil {
+		schema.Set("minimum", *jsonSchema.Minimum)
+	}
+	if jsonSchema.Maximum != nil {
+		schema.Set("maximum", *jsonSchema.Maximum)
+	}
+	if jsonSchema.Default != nil {
+		schema.Set("default", jsonSchema.Default)
+	}
+	if jsonSchema.Nullable != nil {
+		schema.Set("nullable", *jsonSchema.Nullable)
+	}
+	if len(jsonSchema.Enum) > 0 {
+		schema.Set("enum", jsonSchema.Enum)
+	}
 
-		if jsonSchema.Properties != nil {
-			schema["properties"] = *jsonSchema.Properties
-		}
-
-		if len(jsonSchema.Required) > 0 {
-			schema["required"] = jsonSchema.Required
-		}
-
-		if jsonSchema.Description != nil {
-			schema["description"] = *jsonSchema.Description
-		}
-
-		if jsonSchema.AdditionalProperties != nil {
-			schema["additionalProperties"] = *jsonSchema.AdditionalProperties
-		}
-
-		if jsonSchema.Name != nil {
-			schema["title"] = *jsonSchema.Name
-		}
-
-		if len(jsonSchema.PropertyOrdering) > 0 {
-			schema["propertyOrdering"] = jsonSchema.PropertyOrdering
-		}
-
-		// Return nil if no fields were populated
-		if len(schema) == 0 {
-			return nil
-		}
+	if schema.Len() == 0 {
+		return nil
 	}
 
 	// Normalize the schema for Gemini compatibility (handle union types, etc.)
 	return normalizeSchemaForGemini(schema)
+}
+
+// orderedMapSliceToInterface widens []OrderedMap to []interface{} so it can be stored
+// inside an *OrderedMap as a generic slice value. Each element is taken by address so
+// the value-receiver MarshalJSON dispatches correctly.
+func orderedMapSliceToInterface(in []schemas.OrderedMap) []interface{} {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]interface{}, len(in))
+	for i := range in {
+		// Take address of the slice element so we have a stable pointer; OrderedMap's
+		// MarshalJSON is a value receiver, but holding via *OrderedMap also dispatches
+		// correctly and matches the rest of the pipeline's convention.
+		out[i] = &in[i]
+	}
+	return out
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses

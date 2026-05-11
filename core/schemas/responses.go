@@ -295,24 +295,24 @@ type ResponsesTextConfigFormatJSONSchema struct {
 	Description          *string                     `json:"description,omitempty"`
 	Strict               *bool                       `json:"strict,omitempty"`
 	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"`
-	Properties           *map[string]any             `json:"properties,omitempty"`
+	Properties           *OrderedMap                 `json:"properties,omitempty"`
 	Required             []string                    `json:"required,omitempty"`
 	Type                 *string                     `json:"type,omitempty"`
 
 	// JSON Schema definition fields
-	Defs        *map[string]any `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
-	Definitions *map[string]any `json:"definitions,omitempty"` // Legacy JSON Schema draft-07 definitions
-	Ref         *string         `json:"$ref,omitempty"`        // Reference to definition
+	Defs        *OrderedMap `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
+	Definitions *OrderedMap `json:"definitions,omitempty"` // Legacy JSON Schema draft-07 definitions
+	Ref         *string     `json:"$ref,omitempty"`        // Reference to definition
 
 	// Array schema fields
-	Items    *map[string]any `json:"items,omitempty"`    // Array element schema
-	MinItems *int64          `json:"minItems,omitempty"` // Minimum array length
-	MaxItems *int64          `json:"maxItems,omitempty"` // Maximum array length
+	Items    *OrderedMap `json:"items,omitempty"`    // Array element schema
+	MinItems *int64      `json:"minItems,omitempty"` // Minimum array length
+	MaxItems *int64      `json:"maxItems,omitempty"` // Maximum array length
 
 	// Composition fields (union types)
-	AnyOf []map[string]any `json:"anyOf,omitempty"` // Union types (any of these schemas)
-	OneOf []map[string]any `json:"oneOf,omitempty"` // Exclusive union types (exactly one of these)
-	AllOf []map[string]any `json:"allOf,omitempty"` // Schema intersection (all of these)
+	AnyOf []OrderedMap `json:"anyOf,omitempty"` // Union types (any of these schemas)
+	OneOf []OrderedMap `json:"oneOf,omitempty"` // Exclusive union types (exactly one of these)
+	AllOf []OrderedMap `json:"allOf,omitempty"` // Schema intersection (all of these)
 
 	// String validation fields
 	Format    *string `json:"format,omitempty"`    // String format (email, date, uri, etc.)

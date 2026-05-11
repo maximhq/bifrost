@@ -441,7 +441,7 @@ func RunStructuredOutputResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx
 
 		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 			typeStr := "object"
-			props := structuredOutputSchema["properties"].(map[string]interface{})
+			props := schemas.OrderedMapFromMap(structuredOutputSchema["properties"].(map[string]interface{}))
 			additionalProps := structuredOutputSchema["additionalProperties"].(bool)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,

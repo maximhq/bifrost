@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -267,7 +268,7 @@ func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParam
 	}
 
 	if len(schema.Properties) > 0 {
-		params.Properties = convertSchemaToMap(schema)
+		params.Properties = buildPropertiesOrderedMap(schema)
 	}
 
 	if len(schema.Enum) > 0 {
@@ -351,9 +352,25 @@ func convertSchemaToOrderedMap(schema *Schema) *schemas.OrderedMap {
 		result.Set("required", schema.Required)
 	}
 	if len(schema.Properties) > 0 {
-		props := make(map[string]interface{})
-		for k, v := range schema.Properties {
-			props[k] = convertSchemaToOrderedMap(v)
+		props := schemas.NewOrderedMapWithCapacity(len(schema.Properties))
+		// Honor schema.PropertyOrdering first (Gemini's native ordering hint),
+		// then any keys not listed there in alphabetical order for determinism.
+		seen := make(map[string]struct{}, len(schema.Properties))
+		for _, k := range schema.PropertyOrdering {
+			if v, ok := schema.Properties[k]; ok {
+				props.Set(k, convertSchemaToOrderedMap(v))
+				seen[k] = struct{}{}
+			}
+		}
+		remaining := make([]string, 0, len(schema.Properties)-len(seen))
+		for k := range schema.Properties {
+			if _, done := seen[k]; !done {
+				remaining = append(remaining, k)
+			}
+		}
+		sort.Strings(remaining)
+		for _, k := range remaining {
+			props.Set(k, convertSchemaToOrderedMap(schema.Properties[k]))
 		}
 		result.Set("properties", props)
 	}
@@ -404,56 +421,79 @@ func convertSchemaToOrderedMap(schema *Schema) *schemas.OrderedMap {
 	return result
 }
 
-func convertSchemaToMap(schema *Schema) *schemas.OrderedMap {
-	// Convert map[string]*Schema to map[string]interface{} using JSON marshaling
-	data, err := providerUtils.MarshalSorted(schema.Properties)
-	if err != nil {
+// buildPropertiesOrderedMap converts schema.Properties (a Go map, unordered by nature)
+// into an *OrderedMap. Honors schema.PropertyOrdering (Gemini's native ordering hint)
+// for the deterministic part, and appends remaining keys alphabetically. Each property
+// value is recursively converted via convertSchemaToOrderedMap so the entire tree is
+// order-preserving. No JSON round-trip — replaces the old convertSchemaToMap which
+// went *Schema → bytes → map[string]any → OrderedMapFromMap (lying about order).
+func buildPropertiesOrderedMap(schema *Schema) *schemas.OrderedMap {
+	if schema == nil || len(schema.Properties) == 0 {
 		return schemas.NewOrderedMap()
 	}
-
-	var properties map[string]interface{}
-	if err := sonic.Unmarshal(data, &properties); err != nil {
-		return schemas.NewOrderedMap()
+	out := schemas.NewOrderedMapWithCapacity(len(schema.Properties))
+	seen := make(map[string]struct{}, len(schema.Properties))
+	for _, k := range schema.PropertyOrdering {
+		if v, ok := schema.Properties[k]; ok {
+			out.Set(k, convertSchemaToOrderedMap(v))
+			seen[k] = struct{}{}
+		}
+	}
+	remaining := make([]string, 0, len(schema.Properties)-len(seen))
+	for k := range schema.Properties {
+		if _, done := seen[k]; !done {
+			remaining = append(remaining, k)
+		}
+	}
+	sort.Strings(remaining)
+	for _, k := range remaining {
+		out.Set(k, convertSchemaToOrderedMap(schema.Properties[k]))
 	}
 
-	result := convertTypeToLowerCase(properties)
-
-	// Type assert back to map[string]interface{}
-	if resultMap, ok := result.(map[string]interface{}); ok {
-		return schemas.OrderedMapFromMap(resultMap)
+	// convertTypeToLowerCase walks each property to lowercase any type fields.
+	if normalized, ok := convertTypeToLowerCase(out).(*schemas.OrderedMap); ok {
+		return normalized
 	}
-	return schemas.NewOrderedMap()
+	return out
 }
 
-// convertTypeToLowerCase recursively converts all 'type' fields to lowercase in a schema
+// convertTypeToLowerCase recursively converts all 'type' fields to lowercase in a schema.
+//
+// Operates on *schemas.OrderedMap to preserve insertion order end-to-end. Slices and
+// primitive values are walked as-is. A legacy map[string]interface{} arm is kept as a
+// safety net for any caller still passing unordered maps; it is converted to OrderedMap
+// (alphabetical, since order was already lost) so downstream code only sees OrderedMap.
 func convertTypeToLowerCase(schema interface{}) interface{} {
 	switch v := schema.(type) {
-	case map[string]interface{}:
-		// Process map
-		newMap := make(map[string]interface{})
-		for key, value := range v {
-			if key == "type" {
-				// Convert type field to lowercase if it's a string
-				if strValue, ok := value.(string); ok {
-					newMap[key] = strings.ToLower(strValue)
-				} else {
-					newMap[key] = value
-				}
-			} else {
-				// Recursively process other fields
-				newMap[key] = convertTypeToLowerCase(value)
-			}
+	case *schemas.OrderedMap:
+		if v == nil {
+			return v
 		}
-		return newMap
+		out := schemas.NewOrderedMapWithCapacity(v.Len())
+		v.Range(func(key string, value interface{}) bool {
+			if key == "type" {
+				if strValue, ok := value.(string); ok {
+					out.Set(key, strings.ToLower(strValue))
+					return true
+				}
+			}
+			out.Set(key, convertTypeToLowerCase(value))
+			return true
+		})
+		return out
+	case schemas.OrderedMap:
+		return convertTypeToLowerCase(&v)
+	case map[string]interface{}:
+		// Legacy path: order was already lost upstream. Wrap into OrderedMap so the
+		// rest of the pipeline doesn't have to handle bare maps.
+		return convertTypeToLowerCase(schemas.OrderedMapFromMap(v))
 	case []interface{}:
-		// Process array
 		newSlice := make([]interface{}, len(v))
 		for i, item := range v {
 			newSlice[i] = convertTypeToLowerCase(item)
 		}
 		return newSlice
 	default:
-		// Return primitive values as-is (strings, numbers, booleans, etc.)
 		return v
 	}
 }
@@ -1075,24 +1115,22 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			}
 		}
 	}
-	// Handle response_format to response_schema conversion
+	// Handle response_format to response_schema conversion. The outer guard accepts
+	// *OrderedMap, plain map, or raw JSON bytes — extractSchemaMapFromResponseFormat
+	// dispatches on the same set internally, but we read "type" here cheaply to gate
+	// the switch without a full parse.
 	if params.ResponseFormat != nil {
-		formatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-		if ok {
-			formatType, typeOk := formatMap["type"].(string)
-			if typeOk {
-				switch formatType {
-				case "json_schema":
-					// OpenAI Structured Outputs: {"type": "json_schema", "json_schema": {...}}
-					if schemaMap := extractSchemaMapFromResponseFormat(params.ResponseFormat); schemaMap != nil {
-						config.ResponseMIMEType = "application/json"
-						config.ResponseJSONSchema = schemaMap
-					}
-				case "json_object":
-					// Maps to Gemini's responseMimeType without schema
-					config.ResponseMIMEType = "application/json"
-				}
+		formatType := readResponseFormatType(*params.ResponseFormat)
+		switch formatType {
+		case "json_schema":
+			// OpenAI Structured Outputs: {"type": "json_schema", "json_schema": {...}}
+			if schemaOM := extractSchemaMapFromResponseFormat(params.ResponseFormat); schemaOM != nil {
+				config.ResponseMIMEType = "application/json"
+				config.ResponseJSONSchema = schemaOM
 			}
+		case "json_object":
+			// Maps to Gemini's responseMimeType without schema
+			config.ResponseMIMEType = "application/json"
 		}
 	}
 	if params.ExtraParams != nil {
@@ -1250,175 +1288,165 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 func convertPropertyToSchema(prop interface{}) *Schema {
 	schema := &Schema{}
 
-	// Handle property as map[string]interface{} or schemas.OrderedMap
-	var propMap map[string]interface{}
-	switch v := prop.(type) {
-	case map[string]interface{}:
-		propMap = v
-	case *schemas.OrderedMap:
-		propMap = v.ToMap()
-	case schemas.OrderedMap:
-		propMap = v.ToMap()
+	// Coerce all input forms (*OrderedMap, value OrderedMap, legacy plain map) into a
+	// single *OrderedMap. Plain-map inputs are wrapped via OrderedMapFromMap as a
+	// best-effort fallback — order was already lost upstream in that case.
+	propOM := asOrderedMap(prop)
+	if propOM == nil {
+		return schema
 	}
-	if propMap != nil {
-		if propType, exists := propMap["type"]; exists {
-			if typeStr, ok := propType.(string); ok {
-				schema.Type = Type(typeStr)
-			}
-		}
 
-		if desc, exists := propMap["description"]; exists {
-			if descStr, ok := desc.(string); ok {
-				schema.Description = descStr
-			}
-		}
+	get := func(key string) (interface{}, bool) { return propOM.Get(key) }
 
-		if enum, exists := propMap["enum"]; exists {
-			if enumSlice, ok := enum.([]interface{}); ok {
-				var enumStrs []string
-				for _, item := range enumSlice {
-					if str, ok := item.(string); ok {
-						enumStrs = append(enumStrs, str)
-					}
-				}
-				schema.Enum = enumStrs
-			} else if enumStrs, ok := enum.([]string); ok {
-				schema.Enum = enumStrs
-			}
+	if v, ok := get("type"); ok {
+		if s, ok := v.(string); ok {
+			schema.Type = Type(s)
 		}
-
-		// Handle nested properties for object types
-		// Note: properties may be *OrderedMap when deserialized from JSON (e.g. via
-		// ToolFunctionParameters), not just map[string]interface{}.
-		if props, exists := propMap["properties"]; exists {
-			switch p := props.(type) {
-			case map[string]interface{}:
-				schema.Properties = make(map[string]*Schema)
-				for key, nestedProp := range p {
-					schema.Properties[key] = convertPropertyToSchema(nestedProp)
-				}
-			case *schemas.OrderedMap:
-				schema.Properties = make(map[string]*Schema)
-				schema.PropertyOrdering = p.Keys()
-				p.Range(func(key string, nestedProp interface{}) bool {
-					schema.Properties[key] = convertPropertyToSchema(nestedProp)
-					return true
-				})
-			case schemas.OrderedMap:
-				schema.Properties = make(map[string]*Schema)
-				schema.PropertyOrdering = p.Keys()
-				p.Range(func(key string, nestedProp interface{}) bool {
-					schema.Properties[key] = convertPropertyToSchema(nestedProp)
-					return true
-				})
-			}
+	}
+	if v, ok := get("description"); ok {
+		if s, ok := v.(string); ok {
+			schema.Description = s
 		}
+	}
 
-		// Handle array items
-		if items, exists := propMap["items"]; exists {
-			schema.Items = convertPropertyToSchema(items)
-		}
-
-		// Handle required fields
-		if required, exists := propMap["required"]; exists {
-			if reqSlice, ok := required.([]interface{}); ok {
-				var reqStrs []string
-				for _, item := range reqSlice {
-					if str, ok := item.(string); ok {
-						reqStrs = append(reqStrs, str)
-					}
-				}
-				schema.Required = reqStrs
-			} else if reqStrs, ok := required.([]string); ok {
-				schema.Required = reqStrs
-			}
-		}
-
-		// Handle anyOf composition
-		if anyOf, exists := propMap["anyOf"]; exists {
-			if anyOfSlice, ok := anyOf.([]interface{}); ok {
-				schema.AnyOf = make([]*Schema, len(anyOfSlice))
-				for i, item := range anyOfSlice {
-					schema.AnyOf[i] = convertPropertyToSchema(item)
+	if v, ok := get("enum"); ok {
+		switch en := v.(type) {
+		case []interface{}:
+			out := make([]string, 0, len(en))
+			for _, item := range en {
+				if s, ok := item.(string); ok {
+					out = append(out, s)
 				}
 			}
+			schema.Enum = out
+		case []string:
+			schema.Enum = en
 		}
+	}
 
-		// Handle oneOf composition (Gemini treats it as anyOf)
-		if oneOf, exists := propMap["oneOf"]; exists {
-			if oneOfSlice, ok := oneOf.([]interface{}); ok && len(schema.AnyOf) == 0 {
-				schema.AnyOf = make([]*Schema, len(oneOfSlice))
-				for i, item := range oneOfSlice {
-					schema.AnyOf[i] = convertPropertyToSchema(item)
+	// Handle nested properties for object types — populates PropertyOrdering from the
+	// OrderedMap's key sequence so order survives the next outbound MarshalJSON.
+	if v, ok := get("properties"); ok {
+		if propsOM := asOrderedMap(v); propsOM != nil {
+			schema.Properties = make(map[string]*Schema, propsOM.Len())
+			schema.PropertyOrdering = propsOM.Keys()
+			propsOM.Range(func(key string, nestedProp interface{}) bool {
+				schema.Properties[key] = convertPropertyToSchema(nestedProp)
+				return true
+			})
+		}
+	}
+
+	if v, ok := get("items"); ok {
+		schema.Items = convertPropertyToSchema(v)
+	}
+
+	if v, ok := get("required"); ok {
+		switch req := v.(type) {
+		case []interface{}:
+			out := make([]string, 0, len(req))
+			for _, item := range req {
+				if s, ok := item.(string); ok {
+					out = append(out, s)
 				}
 			}
+			schema.Required = out
+		case []string:
+			schema.Required = req
 		}
+	}
 
-		// Handle string validation fields
-		if format, exists := propMap["format"]; exists {
-			if formatStr, ok := format.(string); ok {
-				schema.Format = formatStr
+	if v, ok := get("anyOf"); ok {
+		if slice, ok := v.([]interface{}); ok {
+			schema.AnyOf = make([]*Schema, len(slice))
+			for i, item := range slice {
+				schema.AnyOf[i] = convertPropertyToSchema(item)
 			}
 		}
+	}
 
-		if pattern, exists := propMap["pattern"]; exists {
-			if patternStr, ok := pattern.(string); ok {
-				schema.Pattern = patternStr
+	// Gemini treats oneOf the same as anyOf, so map it to AnyOf when AnyOf is unset.
+	if v, ok := get("oneOf"); ok && len(schema.AnyOf) == 0 {
+		if slice, ok := v.([]interface{}); ok {
+			schema.AnyOf = make([]*Schema, len(slice))
+			for i, item := range slice {
+				schema.AnyOf[i] = convertPropertyToSchema(item)
 			}
 		}
+	}
 
-		if minLength, exists := propMap["minLength"]; exists {
-			if minLengthVal, ok := toInt64(minLength); ok {
-				schema.MinLength = &minLengthVal
+	if v, ok := get("format"); ok {
+		if s, ok := v.(string); ok {
+			schema.Format = s
+		}
+	}
+	if v, ok := get("pattern"); ok {
+		if s, ok := v.(string); ok {
+			schema.Pattern = s
+		}
+	}
+	if v, ok := get("minLength"); ok {
+		if n, ok := toInt64(v); ok {
+			schema.MinLength = &n
+		}
+	}
+	if v, ok := get("maxLength"); ok {
+		if n, ok := toInt64(v); ok {
+			schema.MaxLength = &n
+		}
+	}
+	if v, ok := get("minimum"); ok {
+		if f, ok := toFloat64(v); ok {
+			schema.Minimum = &f
+		}
+	}
+	if v, ok := get("maximum"); ok {
+		if f, ok := toFloat64(v); ok {
+			schema.Maximum = &f
+		}
+	}
+	if v, ok := get("minItems"); ok {
+		if n, ok := toInt64(v); ok {
+			schema.MinItems = &n
+		}
+	}
+	if v, ok := get("maxItems"); ok {
+		if n, ok := toInt64(v); ok {
+			schema.MaxItems = &n
+		}
+	}
+	if v, ok := get("title"); ok {
+		if s, ok := v.(string); ok {
+			schema.Title = s
+		}
+	}
+	if v, ok := get("default"); ok {
+		schema.Default = v
+	}
+	if v, ok := get("nullable"); ok {
+		if b, ok := v.(bool); ok {
+			schema.Nullable = &b
+		}
+	}
+
+	// Honor Gemini's native ordering hint when present in the input — useful when
+	// the caller already had a propertyOrdering they'd like to override our derived
+	// order with.
+	if v, ok := get("propertyOrdering"); ok {
+		switch po := v.(type) {
+		case []string:
+			if len(po) > 0 {
+				schema.PropertyOrdering = po
 			}
-		}
-
-		if maxLength, exists := propMap["maxLength"]; exists {
-			if maxLengthVal, ok := toInt64(maxLength); ok {
-				schema.MaxLength = &maxLengthVal
+		case []interface{}:
+			out := make([]string, 0, len(po))
+			for _, p := range po {
+				if s, ok := p.(string); ok {
+					out = append(out, s)
+				}
 			}
-		}
-
-		// Handle number validation fields
-		if minimum, exists := propMap["minimum"]; exists {
-			if minVal, ok := toFloat64(minimum); ok {
-				schema.Minimum = &minVal
-			}
-		}
-
-		if maximum, exists := propMap["maximum"]; exists {
-			if maxVal, ok := toFloat64(maximum); ok {
-				schema.Maximum = &maxVal
-			}
-		}
-
-		// Handle array validation fields
-		if minItems, exists := propMap["minItems"]; exists {
-			if minItemsVal, ok := toInt64(minItems); ok {
-				schema.MinItems = &minItemsVal
-			}
-		}
-
-		if maxItems, exists := propMap["maxItems"]; exists {
-			if maxItemsVal, ok := toInt64(maxItems); ok {
-				schema.MaxItems = &maxItemsVal
-			}
-		}
-
-		// Handle misc fields
-		if title, exists := propMap["title"]; exists {
-			if titleStr, ok := title.(string); ok {
-				schema.Title = titleStr
-			}
-		}
-
-		if defaultVal, exists := propMap["default"]; exists {
-			schema.Default = defaultVal
-		}
-
-		if nullable, exists := propMap["nullable"]; exists {
-			if nullableBool, ok := nullable.(bool); ok {
-				schema.Nullable = &nullableBool
+			if len(out) > 0 {
+				schema.PropertyOrdering = out
 			}
 		}
 	}
@@ -1886,257 +1914,313 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 	return contents, systemInstruction
 }
 
-// normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase
-func normalizeSchemaTypes(schema map[string]interface{}) map[string]interface{} {
+// normalizeSchemaTypes recursively lowercases type values (OBJECT → object, STRING → string, ...).
+//
+// Operates on *schemas.OrderedMap end-to-end so insertion order is preserved through the
+// rewrite. Walks Keys() in order, recurses into properties / items / anyOf / oneOf / allOf,
+// and writes results back via Set() — which is in-place for existing keys, so the surrounding
+// document order is never disturbed.
+func normalizeSchemaTypes(schema *schemas.OrderedMap) *schemas.OrderedMap {
 	if schema == nil {
 		return nil
 	}
 
-	normalized := make(map[string]interface{}, len(schema))
-	for k, v := range schema {
-		normalized[k] = v
-	}
+	normalized := schemas.NewOrderedMapWithCapacity(schema.Len())
+	schema.Range(func(k string, v interface{}) bool {
+		normalized.Set(k, v)
+		return true
+	})
 
-	// Normalize type field if it exists
-	if typeVal, ok := normalized["type"].(string); ok {
-		normalized["type"] = strings.ToLower(typeVal)
-	}
-
-	// Recursively normalize properties (create new map only if present)
-	if properties, ok := schema["properties"].(map[string]interface{}); ok {
-		newProps := make(map[string]interface{}, len(properties))
-		for key, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				newProps[key] = normalizeSchemaTypes(propMap)
-			} else {
-				newProps[key] = prop
-			}
+	if typeVal, ok := normalized.Get("type"); ok {
+		if typeStr, ok := typeVal.(string); ok {
+			normalized.Set("type", strings.ToLower(typeStr))
 		}
-		normalized["properties"] = newProps
 	}
 
-	// Recursively normalize items (for arrays)
-	if items, ok := schema["items"].(map[string]interface{}); ok {
-		normalized["items"] = normalizeSchemaTypes(items)
-	}
-
-	// Recursively normalize anyOf
-	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
-		newAnyOf := make([]interface{}, len(anyOf))
-		for i, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newAnyOf[i] = normalizeSchemaTypes(itemMap)
-			} else {
-				newAnyOf[i] = item
-			}
+	if propsVal, ok := normalized.Get("properties"); ok {
+		if propsOM := asOrderedMap(propsVal); propsOM != nil {
+			newProps := schemas.NewOrderedMapWithCapacity(propsOM.Len())
+			propsOM.Range(func(key string, prop interface{}) bool {
+				if propOM := asOrderedMap(prop); propOM != nil {
+					newProps.Set(key, normalizeSchemaTypes(propOM))
+				} else {
+					newProps.Set(key, prop)
+				}
+				return true
+			})
+			normalized.Set("properties", newProps)
 		}
-		normalized["anyOf"] = newAnyOf
 	}
 
-	// Recursively normalize oneOf
-	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
-		newOneOf := make([]interface{}, len(oneOf))
-		for i, item := range oneOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newOneOf[i] = normalizeSchemaTypes(itemMap)
-			} else {
-				newOneOf[i] = item
-			}
+	if itemsVal, ok := normalized.Get("items"); ok {
+		if itemsOM := asOrderedMap(itemsVal); itemsOM != nil {
+			normalized.Set("items", normalizeSchemaTypes(itemsOM))
 		}
-		normalized["oneOf"] = newOneOf
+	}
+
+	for _, branch := range []string{"anyOf", "oneOf", "allOf"} {
+		branchVal, ok := normalized.Get(branch)
+		if !ok {
+			continue
+		}
+		if slice, ok := branchVal.([]interface{}); ok {
+			newSlice := make([]interface{}, len(slice))
+			for i, item := range slice {
+				if itemOM := asOrderedMap(item); itemOM != nil {
+					newSlice[i] = normalizeSchemaTypes(itemOM)
+				} else {
+					newSlice[i] = item
+				}
+			}
+			normalized.Set(branch, newSlice)
+		}
 	}
 
 	return normalized
 }
 
-// buildJSONSchemaFromMap converts a schema map to ResponsesTextConfigFormatJSONSchema
-// with individual fields properly populated (not nested under Schema field)
-func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.ResponsesTextConfigFormatJSONSchema {
-	// Normalize types (OBJECT → object, STRING → string, etc.)
-	normalizedSchemaMap := normalizeSchemaTypes(schemaMap)
+// asOrderedMap coerces value/pointer/legacy-map forms into *OrderedMap. Returns nil if
+// the value isn't map-shaped. The legacy map[string]interface{} arm wraps via
+// OrderedMapFromMap (alphabetical, since order was already lost at that boundary) so
+// downstream walkers only ever see *OrderedMap.
+func asOrderedMap(v interface{}) *schemas.OrderedMap {
+	switch m := v.(type) {
+	case *schemas.OrderedMap:
+		return m
+	case schemas.OrderedMap:
+		return &m
+	case map[string]interface{}:
+		return schemas.OrderedMapFromMap(m)
+	default:
+		return nil
+	}
+}
+
+// buildJSONSchemaFromOrderedMap converts an order-preserving schema document into
+// ResponsesTextConfigFormatJSONSchema. Properties / Defs / Definitions / Items are
+// assigned as *OrderedMap (no map detour); AnyOf / OneOf / AllOf are []OrderedMap.
+// This is the only path that produces a JSONSchema for downstream Gemini marshaling,
+// so order survives all the way to the wire.
+func buildJSONSchemaFromOrderedMap(schemaMap *schemas.OrderedMap) *schemas.ResponsesTextConfigFormatJSONSchema {
+	if schemaMap == nil {
+		return &schemas.ResponsesTextConfigFormatJSONSchema{}
+	}
+	// Normalize types (OBJECT → object, STRING → string, etc.) — preserves key order.
+	normalized := normalizeSchemaTypes(schemaMap)
 
 	jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
 
+	get := func(key string) (interface{}, bool) { return normalized.Get(key) }
+
 	// Extract type
-	if typeVal, ok := normalizedSchemaMap["type"].(string); ok {
-		jsonSchema.Type = schemas.Ptr(typeVal)
+	if v, ok := get("type"); ok {
+		if typeVal, ok := v.(string); ok {
+			jsonSchema.Type = schemas.Ptr(typeVal)
+		}
 	}
 
-	// Extract properties
-	if properties, ok := normalizedSchemaMap["properties"].(map[string]interface{}); ok {
-		jsonSchema.Properties = &properties
+	// Properties — order-preserving *OrderedMap
+	if v, ok := get("properties"); ok {
+		if om := asOrderedMap(v); om != nil {
+			jsonSchema.Properties = om
+		}
 	}
 
-	// Extract required fields
-	if required, ok := normalizedSchemaMap["required"].([]interface{}); ok {
-		requiredStrs := make([]string, 0, len(required))
-		for _, r := range required {
-			if str, ok := r.(string); ok {
-				requiredStrs = append(requiredStrs, str)
+	// Required: []interface{} → []string OR []string passthrough
+	if v, ok := get("required"); ok {
+		switch req := v.(type) {
+		case []interface{}:
+			out := make([]string, 0, len(req))
+			for _, r := range req {
+				if s, ok := r.(string); ok {
+					out = append(out, s)
+				}
+			}
+			if len(out) > 0 {
+				jsonSchema.Required = out
+			}
+		case []string:
+			if len(req) > 0 {
+				jsonSchema.Required = req
 			}
 		}
-		if len(requiredStrs) > 0 {
-			jsonSchema.Required = requiredStrs
-		}
-	} else if requiredStrs, ok := normalizedSchemaMap["required"].([]string); ok && len(requiredStrs) > 0 {
-		jsonSchema.Required = requiredStrs
 	}
 
-	// Extract description
-	if description, ok := normalizedSchemaMap["description"].(string); ok {
-		jsonSchema.Description = schemas.Ptr(description)
-	}
-
-	// Extract additionalProperties
-	if additionalProps, ok := normalizedSchemaMap["additionalProperties"].(bool); ok {
-		jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
-			AdditionalPropertiesBool: &additionalProps,
+	if v, ok := get("description"); ok {
+		if s, ok := v.(string); ok {
+			jsonSchema.Description = schemas.Ptr(s)
 		}
 	}
 
-	if additionalProps, ok := schemas.SafeExtractOrderedMap(normalizedSchemaMap["additionalProperties"]); ok {
-		jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
-			AdditionalPropertiesMap: additionalProps,
-		}
-	}
-
-	// Extract name/title
-	if name, ok := normalizedSchemaMap["name"].(string); ok {
-		jsonSchema.Name = schemas.Ptr(name)
-	} else if title, ok := normalizedSchemaMap["title"].(string); ok {
-		jsonSchema.Name = schemas.Ptr(title)
-	}
-
-	// Extract $defs (JSON Schema draft 2019-09+)
-	if defs, ok := normalizedSchemaMap["$defs"].(map[string]interface{}); ok {
-		jsonSchema.Defs = &defs
-	}
-
-	// Extract definitions (legacy JSON Schema draft-07)
-	if definitions, ok := normalizedSchemaMap["definitions"].(map[string]interface{}); ok {
-		jsonSchema.Definitions = &definitions
-	}
-
-	// Extract $ref
-	if ref, ok := normalizedSchemaMap["$ref"].(string); ok {
-		jsonSchema.Ref = schemas.Ptr(ref)
-	}
-
-	// Extract items (array element schema)
-	if items, ok := normalizedSchemaMap["items"].(map[string]interface{}); ok {
-		jsonSchema.Items = &items
-	}
-
-	// Extract minItems
-	if minItems, ok := toInt64(normalizedSchemaMap["minItems"]); ok {
-		jsonSchema.MinItems = &minItems
-	}
-
-	// Extract maxItems
-	if maxItems, ok := toInt64(normalizedSchemaMap["maxItems"]); ok {
-		jsonSchema.MaxItems = &maxItems
-	}
-
-	// Extract anyOf
-	if anyOf, ok := normalizedSchemaMap["anyOf"].([]interface{}); ok {
-		anyOfMaps := make([]map[string]any, 0, len(anyOf))
-		for _, item := range anyOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				anyOfMaps = append(anyOfMaps, m)
+	// additionalProperties: bool OR map/OrderedMap
+	if v, ok := get("additionalProperties"); ok {
+		if b, ok := v.(bool); ok {
+			jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
+				AdditionalPropertiesBool: &b,
+			}
+		} else if om, ok := schemas.SafeExtractOrderedMap(v); ok {
+			jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
+				AdditionalPropertiesMap: om,
 			}
 		}
-		if len(anyOfMaps) > 0 {
-			jsonSchema.AnyOf = anyOfMaps
+	}
+
+	// Name preference: name → title
+	if v, ok := get("name"); ok {
+		if s, ok := v.(string); ok {
+			jsonSchema.Name = schemas.Ptr(s)
+		}
+	} else if v, ok := get("title"); ok {
+		if s, ok := v.(string); ok {
+			jsonSchema.Name = schemas.Ptr(s)
 		}
 	}
 
-	// Extract oneOf
-	if oneOf, ok := normalizedSchemaMap["oneOf"].([]interface{}); ok {
-		oneOfMaps := make([]map[string]any, 0, len(oneOf))
-		for _, item := range oneOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				oneOfMaps = append(oneOfMaps, m)
+	if v, ok := get("$defs"); ok {
+		if om := asOrderedMap(v); om != nil {
+			jsonSchema.Defs = om
+		}
+	}
+	if v, ok := get("definitions"); ok {
+		if om := asOrderedMap(v); om != nil {
+			jsonSchema.Definitions = om
+		}
+	}
+	if v, ok := get("$ref"); ok {
+		if s, ok := v.(string); ok {
+			jsonSchema.Ref = schemas.Ptr(s)
+		}
+	}
+
+	if v, ok := get("items"); ok {
+		if om := asOrderedMap(v); om != nil {
+			jsonSchema.Items = om
+		}
+	}
+
+	if v, ok := get("minItems"); ok {
+		if n, ok := toInt64(v); ok {
+			jsonSchema.MinItems = &n
+		}
+	}
+	if v, ok := get("maxItems"); ok {
+		if n, ok := toInt64(v); ok {
+			jsonSchema.MaxItems = &n
+		}
+	}
+
+	jsonSchema.AnyOf = collectOrderedMapSlice(normalized, "anyOf")
+	jsonSchema.OneOf = collectOrderedMapSlice(normalized, "oneOf")
+	jsonSchema.AllOf = collectOrderedMapSlice(normalized, "allOf")
+
+	if v, ok := get("format"); ok {
+		if s, ok := v.(string); ok {
+			jsonSchema.Format = schemas.Ptr(s)
+		}
+	}
+	if v, ok := get("pattern"); ok {
+		if s, ok := v.(string); ok {
+			jsonSchema.Pattern = schemas.Ptr(s)
+		}
+	}
+	if v, ok := get("minLength"); ok {
+		if n, ok := toInt64(v); ok {
+			jsonSchema.MinLength = &n
+		}
+	}
+	if v, ok := get("maxLength"); ok {
+		if n, ok := toInt64(v); ok {
+			jsonSchema.MaxLength = &n
+		}
+	}
+	if v, ok := get("minimum"); ok {
+		if f, ok := toFloat64(v); ok {
+			jsonSchema.Minimum = &f
+		}
+	}
+	if v, ok := get("maximum"); ok {
+		if f, ok := toFloat64(v); ok {
+			jsonSchema.Maximum = &f
+		}
+	}
+	if v, ok := get("title"); ok {
+		if s, ok := v.(string); ok {
+			jsonSchema.Title = schemas.Ptr(s)
+		}
+	}
+	if v, ok := get("default"); ok {
+		jsonSchema.Default = v
+	}
+	if v, ok := get("nullable"); ok {
+		if b, ok := v.(bool); ok {
+			jsonSchema.Nullable = &b
+		}
+	}
+
+	if v, ok := get("enum"); ok {
+		switch en := v.(type) {
+		case []interface{}:
+			out := make([]string, 0, len(en))
+			for _, e := range en {
+				if s, ok := e.(string); ok {
+					out = append(out, s)
+				}
+			}
+			if len(out) > 0 {
+				jsonSchema.Enum = out
+			}
+		case []string:
+			if len(en) > 0 {
+				jsonSchema.Enum = en
 			}
 		}
-		if len(oneOfMaps) > 0 {
-			jsonSchema.OneOf = oneOfMaps
-		}
 	}
 
-	// Extract allOf
-	if allOf, ok := normalizedSchemaMap["allOf"].([]interface{}); ok {
-		allOfMaps := make([]map[string]any, 0, len(allOf))
-		for _, item := range allOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				allOfMaps = append(allOfMaps, m)
+	// Gemini's native ordering hint — round-trip it if present.
+	if v, ok := get("propertyOrdering"); ok {
+		switch po := v.(type) {
+		case []string:
+			if len(po) > 0 {
+				jsonSchema.PropertyOrdering = po
+			}
+		case []interface{}:
+			out := make([]string, 0, len(po))
+			for _, p := range po {
+				if s, ok := p.(string); ok {
+					out = append(out, s)
+				}
+			}
+			if len(out) > 0 {
+				jsonSchema.PropertyOrdering = out
 			}
 		}
-		if len(allOfMaps) > 0 {
-			jsonSchema.AllOf = allOfMaps
-		}
-	}
-
-	// Extract format
-	if format, ok := normalizedSchemaMap["format"].(string); ok {
-		jsonSchema.Format = schemas.Ptr(format)
-	}
-
-	// Extract pattern
-	if pattern, ok := normalizedSchemaMap["pattern"].(string); ok {
-		jsonSchema.Pattern = schemas.Ptr(pattern)
-	}
-
-	// Extract minLength
-	if minLength, ok := toInt64(normalizedSchemaMap["minLength"]); ok {
-		jsonSchema.MinLength = &minLength
-	}
-
-	// Extract maxLength
-	if maxLength, ok := toInt64(normalizedSchemaMap["maxLength"]); ok {
-		jsonSchema.MaxLength = &maxLength
-	}
-
-	// Extract minimum
-	if minimum, ok := toFloat64(normalizedSchemaMap["minimum"]); ok {
-		jsonSchema.Minimum = &minimum
-	}
-
-	// Extract maximum
-	if maximum, ok := toFloat64(normalizedSchemaMap["maximum"]); ok {
-		jsonSchema.Maximum = &maximum
-	}
-
-	// Extract title (separate from name)
-	if title, ok := normalizedSchemaMap["title"].(string); ok {
-		jsonSchema.Title = schemas.Ptr(title)
-	}
-
-	// Extract default
-	if defaultVal, exists := normalizedSchemaMap["default"]; exists {
-		jsonSchema.Default = defaultVal
-	}
-
-	// Extract nullable
-	if nullable, ok := normalizedSchemaMap["nullable"].(bool); ok {
-		jsonSchema.Nullable = &nullable
-	}
-
-	// Extract enum
-	if enum, ok := normalizedSchemaMap["enum"].([]interface{}); ok {
-		enumStrs := make([]string, 0, len(enum))
-		for _, e := range enum {
-			if str, ok := e.(string); ok {
-				enumStrs = append(enumStrs, str)
-			}
-		}
-		if len(enumStrs) > 0 {
-			jsonSchema.Enum = enumStrs
-		}
-	} else if enumStrs, ok := normalizedSchemaMap["enum"].([]string); ok && len(enumStrs) > 0 {
-		jsonSchema.Enum = enumStrs
 	}
 
 	return jsonSchema
+}
+
+// collectOrderedMapSlice extracts a composition branch (anyOf/oneOf/allOf) and
+// converts each element to a value-form OrderedMap so the parent struct can hold
+// it as []OrderedMap (matching the Phase 1 schema field type).
+func collectOrderedMapSlice(om *schemas.OrderedMap, key string) []schemas.OrderedMap {
+	v, ok := om.Get(key)
+	if !ok {
+		return nil
+	}
+	slice, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]schemas.OrderedMap, 0, len(slice))
+	for _, item := range slice {
+		if branch := asOrderedMap(item); branch != nil {
+			out = append(out, *branch)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func NormalizeModelName(model string) string {
@@ -2150,75 +2234,66 @@ func NormalizeModelName(model string) string {
 	return model
 }
 
-// buildOpenAIResponseFormat builds OpenAI response_format for JSON types
+// buildOpenAIResponseFormat builds OpenAI response_format for JSON types.
+//
+// Two input arms:
+//  1. responseJsonSchema (already-decoded user input): may arrive as *OrderedMap,
+//     value-form OrderedMap, legacy map, or json.RawMessage / []byte. We coerce to
+//     *OrderedMap without ever dropping into a plain map round-trip.
+//  2. responseSchema (Gemini-side *Schema struct): walked field-by-field via
+//     convertSchemaToOrderedMap — no Marshal/Unmarshal — and lowercased via
+//     convertTypeToLowerCase. Preserves PropertyOrdering through the pipeline.
+//
+// Falls back to json_object mode whenever the input doesn't shape up to a usable
+// schema document.
 func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *Schema) *schemas.ResponsesTextConfig {
-	name := "json_response"
-
-	var schemaMap map[string]interface{}
-
-	// Try to use responseJsonSchema first
-	if responseJsonSchema != nil {
-		// Use responseJsonSchema directly if it's a map
-		var ok bool
-		schemaMap, ok = responseJsonSchema.(map[string]interface{})
-		if !ok {
-			// If not a map, fall back to json_object mode
-			return &schemas.ResponsesTextConfig{
-				Format: &schemas.ResponsesTextConfigFormat{
-					Type: "json_object",
-				},
-			}
-		}
-	} else if responseSchema != nil {
-		// Convert responseSchema to map using JSON marshaling and type normalization
-		data, err := providerUtils.MarshalSorted(responseSchema)
-		if err != nil {
-			// If marshaling fails, fall back to json_object mode
-			return &schemas.ResponsesTextConfig{
-				Format: &schemas.ResponsesTextConfigFormat{
-					Type: "json_object",
-				},
-			}
-		}
-
-		var rawMap map[string]interface{}
-		if err := sonic.Unmarshal(data, &rawMap); err != nil {
-			// If unmarshaling fails, fall back to json_object mode
-			return &schemas.ResponsesTextConfig{
-				Format: &schemas.ResponsesTextConfigFormat{
-					Type: "json_object",
-				},
-			}
-		}
-
-		// Apply type normalization (convert types to lowercase)
-		normalized := convertTypeToLowerCase(rawMap)
-		var ok bool
-		schemaMap, ok = normalized.(map[string]interface{})
-		if !ok {
-			// If type assertion fails, fall back to json_object mode
-			return &schemas.ResponsesTextConfig{
-				Format: &schemas.ResponsesTextConfigFormat{
-					Type: "json_object",
-				},
-			}
-		}
-	} else {
-		// No schema provided - use json_object mode
+	jsonObject := func() *schemas.ResponsesTextConfig {
 		return &schemas.ResponsesTextConfig{
-			Format: &schemas.ResponsesTextConfigFormat{
-				Type: "json_object",
-			},
+			Format: &schemas.ResponsesTextConfigFormat{Type: "json_object"},
 		}
 	}
 
-	// Extract name/title if present
-	if title, ok := schemaMap["title"].(string); ok && title != "" {
-		name = title
+	name := "json_response"
+	var schemaOM *schemas.OrderedMap
+
+	switch {
+	case responseJsonSchema != nil:
+		// Try direct OrderedMap / map forms first.
+		if om := asOrderedMap(responseJsonSchema); om != nil {
+			schemaOM = om
+		} else if data, ok := bytesFromAny(responseJsonSchema); ok {
+			// Raw JSON bytes — decode straight into OrderedMap, preserving order.
+			parsed, err := providerUtils.UnmarshalOrdered(data)
+			if err != nil {
+				return jsonObject()
+			}
+			schemaOM = parsed
+		} else {
+			return jsonObject()
+		}
+	case responseSchema != nil:
+		// *Schema → *OrderedMap via struct-field walk; no JSON round-trip.
+		om := convertSchemaToOrderedMap(responseSchema)
+		if normalized, ok := convertTypeToLowerCase(om).(*schemas.OrderedMap); ok {
+			schemaOM = normalized
+		} else {
+			schemaOM = om
+		}
+	default:
+		return jsonObject()
 	}
 
-	// Build JSONSchema with individual fields spread out
-	jsonSchema := buildJSONSchemaFromMap(schemaMap)
+	if schemaOM == nil {
+		return jsonObject()
+	}
+
+	if v, ok := schemaOM.Get("title"); ok {
+		if s, ok := v.(string); ok && s != "" {
+			name = s
+		}
+	}
+
+	jsonSchema := buildJSONSchemaFromOrderedMap(schemaOM)
 
 	return &schemas.ResponsesTextConfig{
 		Format: &schemas.ResponsesTextConfigFormat{
@@ -2228,6 +2303,43 @@ func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *S
 			JSONSchema: jsonSchema,
 		},
 	}
+}
+
+// bytesFromAny extracts raw JSON bytes from common envelope types so callers can
+// decode straight into OrderedMap (preserving order) instead of going through a
+// plain-map intermediate.
+func bytesFromAny(v interface{}) ([]byte, bool) {
+	switch b := v.(type) {
+	case []byte:
+		return b, true
+	case json.RawMessage:
+		return b, true
+	case string:
+		return []byte(b), true
+	default:
+		return nil, false
+	}
+}
+
+// readResponseFormatType returns the top-level "type" field of an OpenAI-style
+// response_format envelope without decoding the whole document. Accepts the same
+// input forms as extractSchemaMapFromResponseFormat (*OrderedMap, plain map,
+// raw bytes/RawMessage/string). Returns "" when the field is absent or non-string.
+func readResponseFormatType(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if data, ok := bytesFromAny(v); ok {
+		return providerUtils.GetJSONField(data, "type").String()
+	}
+	if om := asOrderedMap(v); om != nil {
+		if t, ok := om.Get("type"); ok {
+			if s, ok := t.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // extractTypesFromValue extracts type strings from various formats (string, []string, []interface{})
@@ -2255,21 +2367,25 @@ func extractTypesFromValue(typeVal interface{}) []string {
 // 1. type is an array like ["string", "null"] - kept as-is (Gemini supports this)
 // 2. type is an array with multiple non-null types like ["string", "integer"] - converted to anyOf
 // 3. Enums with nullable types need special handling
-func normalizeSchemaForGemini(schema map[string]interface{}) map[string]interface{} {
+//
+// Operates on *schemas.OrderedMap end-to-end so insertion order survives the rewrite.
+// When the type-array → anyOf conversion fires, the new anyOf branches are themselves
+// *OrderedMap so MarshalJSON emits a deterministic, byte-stable result.
+func normalizeSchemaForGemini(schema *schemas.OrderedMap) *schemas.OrderedMap {
 	if schema == nil {
 		return nil
 	}
 
-	normalized := make(map[string]interface{})
-	for k, v := range schema {
-		normalized[k] = v
-	}
+	normalized := schemas.NewOrderedMapWithCapacity(schema.Len())
+	schema.Range(func(k string, v interface{}) bool {
+		normalized.Set(k, v)
+		return true
+	})
 
 	// Handle type field if it's an array (e.g., ["string", "null"] or ["string", "integer"])
-	if typeVal, exists := normalized["type"]; exists {
+	if typeVal, exists := normalized.Get("type"); exists {
 		types := extractTypesFromValue(typeVal)
 		if len(types) > 1 {
-			// Count non-null types
 			nonNullTypes := make([]string, 0, len(types))
 			hasNull := false
 			for _, t := range types {
@@ -2280,118 +2396,141 @@ func normalizeSchemaForGemini(schema map[string]interface{}) map[string]interfac
 				}
 			}
 
-			// If we have multiple non-null types, we need to convert to anyOf
-			// because Gemini only supports ["type", "null"] but not ["type1", "type2"]
+			// Multiple non-null types: Gemini only supports ["type", "null"] but not
+			// ["type1", "type2"], so convert to anyOf with one schema per branch.
 			if len(nonNullTypes) > 1 {
-				// Multiple non-null types - must use anyOf
-				delete(normalized, "type")
+				normalized.Delete("type")
 
-				// Build anyOf with each non-null type
 				anyOfSchemas := make([]interface{}, 0, len(types))
 				for _, t := range nonNullTypes {
-					typeSchema := map[string]interface{}{"type": t}
-					anyOfSchemas = append(anyOfSchemas, typeSchema)
+					branch := schemas.NewOrderedMap()
+					branch.Set("type", t)
+					anyOfSchemas = append(anyOfSchemas, branch)
 				}
-
-				// If original had null, add it to anyOf
 				if hasNull {
-					anyOfSchemas = append(anyOfSchemas, map[string]interface{}{"type": "null"})
+					branch := schemas.NewOrderedMap()
+					branch.Set("type", "null")
+					anyOfSchemas = append(anyOfSchemas, branch)
 				}
 
-				normalized["anyOf"] = anyOfSchemas
-
-				// Remove enum from top level if present, as it may not be compatible with anyOf
-				delete(normalized, "enum")
+				normalized.Set("anyOf", anyOfSchemas)
+				// enum at top level is incompatible with the anyOf rewrite.
+				normalized.Delete("enum")
 			} else if len(nonNullTypes) == 1 && hasNull {
-				// Single non-null type with null - keep as array (Gemini supports this)
-				normalized["type"] = []interface{}{nonNullTypes[0], "null"}
+				normalized.Set("type", []interface{}{nonNullTypes[0], "null"})
 			} else if len(nonNullTypes) == 1 && !hasNull {
-				// Single type only - simplify to string
-				normalized["type"] = nonNullTypes[0]
+				normalized.Set("type", nonNullTypes[0])
 			} else if len(nonNullTypes) == 0 && hasNull {
-				// Only null type
-				normalized["type"] = "null"
+				normalized.Set("type", "null")
 			}
 		}
 	}
 
-	// Recursively normalize properties
-	if properties, ok := schema["properties"].(map[string]interface{}); ok {
-		newProps := make(map[string]interface{})
-		for key, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				newProps[key] = normalizeSchemaForGemini(propMap)
-			} else {
-				newProps[key] = prop
-			}
+	if propsVal, ok := normalized.Get("properties"); ok {
+		if propsOM := asOrderedMap(propsVal); propsOM != nil {
+			newProps := schemas.NewOrderedMapWithCapacity(propsOM.Len())
+			propsOM.Range(func(key string, prop interface{}) bool {
+				if propOM := asOrderedMap(prop); propOM != nil {
+					newProps.Set(key, normalizeSchemaForGemini(propOM))
+				} else {
+					newProps.Set(key, prop)
+				}
+				return true
+			})
+			normalized.Set("properties", newProps)
 		}
-		normalized["properties"] = newProps
 	}
 
-	// Recursively normalize items (for arrays)
-	if items, ok := schema["items"].(map[string]interface{}); ok {
-		normalized["items"] = normalizeSchemaForGemini(items)
+	if itemsVal, ok := normalized.Get("items"); ok {
+		if itemsOM := asOrderedMap(itemsVal); itemsOM != nil {
+			normalized.Set("items", normalizeSchemaForGemini(itemsOM))
+		}
 	}
 
-	// Recursively normalize anyOf
-	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
-		newAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newAnyOf = append(newAnyOf, normalizeSchemaForGemini(itemMap))
-			} else {
-				newAnyOf = append(newAnyOf, item)
-			}
+	for _, branch := range []string{"anyOf", "oneOf", "allOf"} {
+		branchVal, ok := normalized.Get(branch)
+		if !ok {
+			continue
 		}
-		normalized["anyOf"] = newAnyOf
-	}
-
-	// Recursively normalize oneOf
-	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
-		newOneOf := make([]interface{}, 0, len(oneOf))
-		for _, item := range oneOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newOneOf = append(newOneOf, normalizeSchemaForGemini(itemMap))
-			} else {
-				newOneOf = append(newOneOf, item)
+		if slice, ok := branchVal.([]interface{}); ok {
+			newSlice := make([]interface{}, 0, len(slice))
+			for _, item := range slice {
+				if itemOM := asOrderedMap(item); itemOM != nil {
+					newSlice = append(newSlice, normalizeSchemaForGemini(itemOM))
+				} else {
+					newSlice = append(newSlice, item)
+				}
 			}
+			normalized.Set(branch, newSlice)
 		}
-		normalized["oneOf"] = newOneOf
 	}
 
 	return normalized
 }
 
-// extractSchemaMapFromResponseFormat extracts the JSON schema map from OpenAI's response_format structure
-// This returns the raw schema map to be used with ResponseJSONSchema
-func extractSchemaMapFromResponseFormat(responseFormat *interface{}) map[string]interface{} {
-	formatMap, ok := (*responseFormat).(map[string]interface{})
+// extractSchemaMapFromResponseFormat extracts the JSON schema document from OpenAI's
+// response_format structure ({type, json_schema:{schema}}) and returns it as an
+// order-preserving *OrderedMap suitable for direct assignment to
+// GenerationConfig.ResponseJSONSchema.
+//
+// Three input arms (in priority order):
+//  1. *OrderedMap / OrderedMap (preferred — already order-preserving end-to-end)
+//  2. []byte / json.RawMessage / string — sliced via gjson.GetBytes for the
+//     "json_schema.schema" subtree, then UnmarshalOrdered into *OrderedMap. This
+//     lets us avoid a full document parse and preserve order from the wire.
+//  3. map[string]interface{} (legacy) — order is already lost upstream; we wrap
+//     via OrderedMapFromMap as a best-effort fallback.
+func extractSchemaMapFromResponseFormat(responseFormat *interface{}) *schemas.OrderedMap {
+	if responseFormat == nil || *responseFormat == nil {
+		return nil
+	}
+
+	// Bytes arm — gjson sub-tree extraction, no full parse.
+	if data, ok := bytesFromAny(*responseFormat); ok {
+		if providerUtils.GetJSONField(data, "type").String() != "json_schema" {
+			return nil
+		}
+		subtree := providerUtils.GetJSONSubtree(data, "json_schema.schema")
+		if len(subtree) == 0 {
+			return nil
+		}
+		schemaOM, err := providerUtils.UnmarshalOrdered(subtree)
+		if err != nil || schemaOM == nil {
+			return nil
+		}
+		return normalizeSchemaForGemini(schemaOM)
+	}
+
+	formatOM := asOrderedMap(*responseFormat)
+	if formatOM == nil {
+		return nil
+	}
+
+	if v, ok := formatOM.Get("type"); !ok {
+		return nil
+	} else if formatType, ok := v.(string); !ok || formatType != "json_schema" {
+		return nil
+	}
+
+	jsonSchemaVal, ok := formatOM.Get("json_schema")
 	if !ok {
 		return nil
 	}
-
-	formatType, ok := formatMap["type"].(string)
-	if !ok || formatType != "json_schema" {
+	jsonSchemaOM := asOrderedMap(jsonSchemaVal)
+	if jsonSchemaOM == nil {
 		return nil
 	}
 
-	jsonSchemaObj, ok := formatMap["json_schema"].(map[string]interface{})
+	schemaVal, ok := jsonSchemaOM.Get("schema")
 	if !ok {
 		return nil
 	}
-
-	schemaObj, ok := jsonSchemaObj["schema"]
-	if !ok {
+	schemaOM := asOrderedMap(schemaVal)
+	if schemaOM == nil {
 		return nil
 	}
 
-	schemaMap, ok := schemaObj.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	// Normalize the schema for Gemini compatibility
-	return normalizeSchemaForGemini(schemaMap)
+	return normalizeSchemaForGemini(schemaOM)
 }
 
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.

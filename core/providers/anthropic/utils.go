@@ -2720,7 +2720,10 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		}
 
 		if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-			jsonSchema.Properties = &properties
+			// Source is a plain decoded map — order was already lost upstream. Wrap so
+			// the typed field is satisfied; deeper order-fidelity work for anthropic is
+			// a follow-up (mirror of gemini's *Schema → *OrderedMap pipeline).
+			jsonSchema.Properties = schemas.OrderedMapFromMap(properties)
 		}
 
 		if required, ok := schemaMap["required"].([]interface{}); ok {
@@ -2754,12 +2757,12 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 
 		// Extract $defs (JSON Schema draft 2019-09+)
 		if defs, ok := schemaMap["$defs"].(map[string]interface{}); ok {
-			jsonSchema.Defs = &defs
+			jsonSchema.Defs = schemas.OrderedMapFromMap(defs)
 		}
 
 		// Extract definitions (legacy JSON Schema draft-07)
 		if definitions, ok := schemaMap["definitions"].(map[string]interface{}); ok {
-			jsonSchema.Definitions = &definitions
+			jsonSchema.Definitions = schemas.OrderedMapFromMap(definitions)
 		}
 
 		// Extract $ref
@@ -2769,7 +2772,7 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 
 		// Extract items (array element schema)
 		if items, ok := schemaMap["items"].(map[string]interface{}); ok {
-			jsonSchema.Items = &items
+			jsonSchema.Items = schemas.OrderedMapFromMap(items)
 		}
 
 		// Extract minItems
@@ -2782,44 +2785,11 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 			jsonSchema.MaxItems = &maxItems
 		}
 
-		// Extract anyOf
-		if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-			anyOfMaps := make([]map[string]any, 0, len(anyOf))
-			for _, item := range anyOf {
-				if m, ok := item.(map[string]interface{}); ok {
-					anyOfMaps = append(anyOfMaps, m)
-				}
-			}
-			if len(anyOfMaps) > 0 {
-				jsonSchema.AnyOf = anyOfMaps
-			}
-		}
-
-		// Extract oneOf
-		if oneOf, ok := schemaMap["oneOf"].([]interface{}); ok {
-			oneOfMaps := make([]map[string]any, 0, len(oneOf))
-			for _, item := range oneOf {
-				if m, ok := item.(map[string]interface{}); ok {
-					oneOfMaps = append(oneOfMaps, m)
-				}
-			}
-			if len(oneOfMaps) > 0 {
-				jsonSchema.OneOf = oneOfMaps
-			}
-		}
-
-		// Extract allOf
-		if allOf, ok := schemaMap["allOf"].([]interface{}); ok {
-			allOfMaps := make([]map[string]any, 0, len(allOf))
-			for _, item := range allOf {
-				if m, ok := item.(map[string]interface{}); ok {
-					allOfMaps = append(allOfMaps, m)
-				}
-			}
-			if len(allOfMaps) > 0 {
-				jsonSchema.AllOf = allOfMaps
-			}
-		}
+		// Extract anyOf / oneOf / allOf — each branch becomes a value-form OrderedMap so
+		// the slice fits the []OrderedMap field type.
+		jsonSchema.AnyOf = anthropicCollectOrderedMapSlice(schemaMap, "anyOf")
+		jsonSchema.OneOf = anthropicCollectOrderedMapSlice(schemaMap, "oneOf")
+		jsonSchema.AllOf = anthropicCollectOrderedMapSlice(schemaMap, "allOf")
 
 		// Extract format
 		if formatVal, ok := schemaMap["format"].(string); ok {
@@ -3002,6 +2972,37 @@ func extractWebSearchSources(contentBlocks []AnthropicContentBlock, includeExten
 	}
 
 	return sources
+}
+
+// anthropicCollectOrderedMapSlice extracts a composition branch (anyOf/oneOf/allOf) from a
+// decoded schema map and converts each entry into a value-form OrderedMap so the result
+// fits the []OrderedMap field type on ResponsesTextConfigFormatJSONSchema. Plain-map
+// elements are wrapped via OrderedMapFromMap as best-effort — order was already lost
+// upstream when sonic decoded into map[string]any.
+func anthropicCollectOrderedMapSlice(schemaMap map[string]interface{}, key string) []schemas.OrderedMap {
+	raw, ok := schemaMap[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]schemas.OrderedMap, 0, len(raw))
+	for _, item := range raw {
+		switch m := item.(type) {
+		case *schemas.OrderedMap:
+			if m != nil {
+				out = append(out, *m)
+			}
+		case schemas.OrderedMap:
+			out = append(out, m)
+		case map[string]interface{}:
+			if om := schemas.OrderedMapFromMap(m); om != nil {
+				out = append(out, *om)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // anthropicExtractInt64 extracts an int64 from various numeric types
