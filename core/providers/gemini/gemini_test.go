@@ -3127,3 +3127,122 @@ func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestImageSizeRoundtrip verifies that imageSize and aspectRatio survive the
+// GeminiGenerationRequest → BifrostImageGenerationRequest → GeminiGenerationRequest round-trip
+// and that the outbound imageSize is always uppercase ("2K" not "2k").
+func TestImageSizeRoundtrip(t *testing.T) {
+	tests := []struct {
+		name            string
+		inImageSize     string
+		inAspectRatio   string
+		wantSize        string // expected Bifrost WxH
+		wantImageSize   string // expected outbound Gemini imageSize
+		wantAspectRatio string
+	}{
+		{"1K_square", "1K", "1:1", "1024x1024", "1K", "1:1"},
+		{"2K_square", "2K", "1:1", "2048x2048", "2K", "1:1"},
+		{"4K_square", "4K", "1:1", "4096x4096", "4K", "1:1"},
+		{"2K_portrait", "2K", "3:4", "1536x2048", "2K", "3:4"},
+		{"2K_landscape", "2K", "4:3", "2048x1536", "2K", "4:3"},
+		{"lowercase_normalised", "2k", "1:1", "2048x2048", "2K", "1:1"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-3.1-flash-image-preview",
+				GenerationConfig: gemini.GenerationConfig{
+					ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+					ImageConfig: &gemini.GeminiImageConfig{
+						ImageSize:   tt.inImageSize,
+						AspectRatio: tt.inAspectRatio,
+					},
+				},
+				Contents: []gemini.Content{{
+					Role:  "user",
+					Parts: []*gemini.Part{{Text: "hello kitty"}},
+				}},
+			}
+
+			bifrostReq := inReq.ToBifrostImageGenerationRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params.Size, "Size must be extracted from ImageConfig")
+			assert.Equal(t, tt.wantSize, *bifrostReq.Params.Size)
+
+			outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+			require.NotNil(t, outReq)
+			require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set on outbound request")
+			assert.Equal(t, tt.wantImageSize, outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be uppercase")
+			assert.Equal(t, tt.wantAspectRatio, outReq.GenerationConfig.ImageConfig.AspectRatio)
+		})
+	}
+}
+
+// TestImageEditSizeRoundtrip mirrors TestImageSizeRoundtrip for the image-edit path.
+func TestImageEditSizeRoundtrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// minimal 1x1 PNG for inline image data
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+
+	inReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3.1-flash-image-preview",
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+			ImageConfig: &gemini.GeminiImageConfig{
+				ImageSize:   "2K",
+				AspectRatio: "1:1",
+			},
+		},
+		Contents: []gemini.Content{{
+			Role: "user",
+			Parts: []*gemini.Part{
+				{Text: "make it pop"},
+				{InlineData: &gemini.Blob{MIMEType: "image/png", Data: base64.StdEncoding.EncodeToString(pngPixel)}},
+			},
+		}},
+	}
+
+	bifrostReq := inReq.ToBifrostImageEditRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.NotNil(t, bifrostReq.Params.Size, "Size must be extracted from ImageConfig in edit path")
+	assert.Equal(t, "2048x2048", *bifrostReq.Params.Size)
+
+	outReq := gemini.ToGeminiImageEditRequest(bifrostReq)
+	require.NotNil(t, outReq)
+	require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set on outbound edit request")
+	assert.Equal(t, "2K", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be uppercase on edit path")
+	assert.Equal(t, "1:1", outReq.GenerationConfig.ImageConfig.AspectRatio)
+}
+
+// TestImagenImageSizeCasing verifies that the Imagen :predict path sends uppercase imageSize.
+func TestImagenImageSizeCasing(t *testing.T) {
+	tests := []struct {
+		wxh           string
+		wantImageSize string
+	}{
+		{"1024x1024", "1K"},
+		{"2048x2048", "2K"},
+		{"4096x4096", "4K"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantImageSize, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Gemini,
+				Model:    "imagen-4.0-generate-preview-05-20",
+				Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+				Params:   &schemas.ImageGenerationParameters{Size: &tt.wxh},
+			}
+			imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+			require.NotNil(t, imagenReq)
+			require.NotNil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be set")
+			assert.Equal(t, tt.wantImageSize, *imagenReq.Parameters.SampleImageSize, "Imagen imageSize must be uppercase")
+		})
+	}
+}
