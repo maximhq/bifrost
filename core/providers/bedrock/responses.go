@@ -1780,9 +1780,20 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
 							// Opus 4.6+: adaptive thinking + output_config.effort
 							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+							thinkingConfig := map[string]any{
 								"type": "adaptive",
-							})
+							}
+							// default to "summarized" for Opus 4.7+ where omitting is the provider default.
+							if bifrostReq.Params.Reasoning.Summary != nil {
+								if *bifrostReq.Params.Reasoning.Summary == "none" {
+									thinkingConfig["display"] = "omitted"
+								} else {
+									thinkingConfig["display"] = "summarized"
+								}
+							} else if anthropic.IsOpus47(bifrostReq.Model) {
+								thinkingConfig["display"] = "summarized"
+							}
+							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 							setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 						} else {
 							// Opus 4.5 and older Anthropic models: budget_tokens thinking

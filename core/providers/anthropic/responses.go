@@ -2446,10 +2446,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
 				if bifrostReq.Params.Reasoning != nil &&
-					bifrostReq.Params.Reasoning.Summary != nil && *bifrostReq.Params.Reasoning.Summary == "none" {
-					anthropicReq.Thinking.Display = schemas.Ptr("omitted")
-				} else {
-					// Default to "summarized" to preserve visible thinking output
+					bifrostReq.Params.Reasoning.Summary != nil {
+					if *bifrostReq.Params.Reasoning.Summary == "none" {
+						anthropicReq.Thinking.Display = schemas.Ptr("omitted")
+					} else {
+						anthropicReq.Thinking.Display = schemas.Ptr("summarized")
+					}
+				} else if IsOpus47(bifrostReq.Model) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}

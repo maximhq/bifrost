@@ -1347,9 +1347,6 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	if err := s.DB().WithContext(ctx).Find(&dbMCPClients).Error; err != nil {
 		return nil, err
 	}
-	if len(dbMCPClients) == 0 {
-		return nil, nil
-	}
 	var clientConfig tables.TableClientConfig
 	if err := s.DB().WithContext(ctx).First(&clientConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

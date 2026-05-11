@@ -241,11 +241,12 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 	// Alias to avoid recursion
 	type Alias ChatParameters
 
-	// Aux struct adds reasoning_effort for decoding
+	// Aux struct adds flat reasoning_* shorthands for decoding
 	var aux struct {
 		*Alias
 		ReasoningEffort    *string `json:"reasoning_effort"` // only for input
 		ReasoningMaxTokens *int    `json:"reasoning_max_tokens"`
+		ReasoningDisplay   *string `json:"reasoning_display"`
 	}
 
 	aux.Alias = (*Alias)(cp)
@@ -264,8 +265,11 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 	if aux.ReasoningMaxTokens != nil && aux.Reasoning != nil && aux.Reasoning.MaxTokens != nil {
 		return fmt.Errorf("both reasoning_max_tokens and reasoning.max_tokens cannot be present at the same time")
 	}
+	if aux.ReasoningDisplay != nil && aux.Reasoning != nil && aux.Reasoning.Display != nil {
+		return fmt.Errorf("both reasoning_display and reasoning.display cannot be present at the same time")
+	}
 
-	if aux.ReasoningEffort != nil || aux.ReasoningMaxTokens != nil {
+	if aux.ReasoningEffort != nil || aux.ReasoningMaxTokens != nil || aux.ReasoningDisplay != nil {
 		if cp.Reasoning == nil {
 			cp.Reasoning = &ChatReasoning{}
 		}
@@ -275,6 +279,9 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 		}
 		if aux.ReasoningMaxTokens != nil {
 			cp.Reasoning.MaxTokens = aux.ReasoningMaxTokens
+		}
+		if aux.ReasoningDisplay != nil {
+			cp.Reasoning.Display = aux.ReasoningDisplay
 		}
 	}
 	// ExtraParams etc. are already handled by the alias
@@ -1673,13 +1680,13 @@ type ChatCompletionTokensDetails struct {
 }
 
 type BifrostCost struct {
-	InputTokensCost             float64 `json:"input_tokens_cost,omitempty"`
-	OutputTokensCost            float64 `json:"output_tokens_cost,omitempty"`
-	ReasoningTokensCost         float64 `json:"reasoning_tokens_cost,omitempty"`
-	CitationTokensCost          float64 `json:"citation_tokens_cost,omitempty"`
-	SearchQueriesCost           float64 `json:"search_queries_cost,omitempty"`
-	RequestCost                 float64 `json:"request_cost,omitempty"`
-	TotalCost                   float64 `json:"total_cost,omitempty"`
+	InputTokensCost     float64 `json:"input_tokens_cost,omitempty"`
+	OutputTokensCost    float64 `json:"output_tokens_cost,omitempty"`
+	ReasoningTokensCost float64 `json:"reasoning_tokens_cost,omitempty"`
+	CitationTokensCost  float64 `json:"citation_tokens_cost,omitempty"`
+	SearchQueriesCost   float64 `json:"search_queries_cost,omitempty"`
+	RequestCost         float64 `json:"request_cost,omitempty"`
+	TotalCost           float64 `json:"total_cost,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.
