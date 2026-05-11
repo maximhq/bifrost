@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -56,6 +57,35 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 	}
 }
 
+// resolveModelCatalogProvider resolves a bare model name through the configured
+// provider catalog. It normalizes provider order so ambiguity handling and
+// diagnostics remain deterministic across HTTP and WebSocket entrypoints.
+func resolveModelCatalogProvider(modelName string, getProviders func(string) []schemas.ModelProvider) (schemas.ModelProvider, []schemas.ModelProvider, error) {
+	if getProviders == nil {
+		return "", nil, fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog to auto-resolve", modelName)
+	}
+
+	providers := append([]schemas.ModelProvider(nil), getProviders(modelName)...)
+	if len(providers) == 0 {
+		return "", nil, fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog to auto-resolve", modelName)
+	}
+
+	slices.SortFunc(providers, func(a, b schemas.ModelProvider) int {
+		return strings.Compare(string(a), string(b))
+	})
+	providers = slices.Compact(providers)
+
+	if len(providers) > 1 {
+		providerNames := make([]string, len(providers))
+		for i, provider := range providers {
+			providerNames[i] = string(provider)
+		}
+		return "", providers, fmt.Errorf("provider is required in model field (format: provider/model) — model %q is ambiguous across multiple providers: %s", modelName, strings.Join(providerNames, ", "))
+	}
+
+	return providers[0], providers, nil
+}
+
 // resolveModelAndProvider parses the model string, validates it, and resolves
 // the provider via model catalog when no provider prefix is present. Stores
 // resolution metadata on the fasthttp context for ConvertToBifrostContext to
@@ -66,16 +96,16 @@ func resolveModelAndProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model
 		return "", "", fmt.Errorf("model is required")
 	}
 	if provider == "" {
-		providers := config.GetProvidersForModel(modelName)
-		if len(providers) == 0 {
-			return "", "", fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog to auto-resolve", modelName)
+		resolvedProvider, providers, err := resolveModelCatalogProvider(modelName, config.GetProvidersForModel)
+		if err != nil {
+			return "", "", err
 		}
 		ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
 			Model:            modelName,
-			ResolvedProvider: providers[0],
+			ResolvedProvider: resolvedProvider,
 			AllProviders:     providers,
 		})
-		provider = providers[0]
+		provider = resolvedProvider
 	}
 	return provider, modelName, nil
 }

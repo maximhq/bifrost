@@ -91,10 +91,19 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 	defer mc.mu.RUnlock()
 
 	providers := make([]schemas.ModelProvider, 0)
+	normalizedModel := extractModelName(model)
+	baseModel := mc.getBaseModelNameUnsafe(normalizedModel)
 	for provider, models := range mc.modelPool {
 		isModelMatch := false
 		for _, m := range models {
-			if m == model || mc.getBaseModelNameUnsafe(m) == mc.getBaseModelNameUnsafe(model) {
+			normalizedCatalogModel := extractModelName(m)
+			bareCatalogModel := extractModelName(normalizedCatalogModel)
+			if m == model ||
+				normalizedCatalogModel == normalizedModel ||
+				bareCatalogModel == normalizedModel ||
+				mc.getBaseModelNameUnsafe(m) == mc.getBaseModelNameUnsafe(model) ||
+				mc.getBaseModelNameUnsafe(normalizedCatalogModel) == baseModel ||
+				mc.getBaseModelNameUnsafe(bareCatalogModel) == baseModel {
 				isModelMatch = true
 				break
 			}

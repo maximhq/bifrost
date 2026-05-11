@@ -17,7 +17,14 @@ import (
 )
 
 type testWSHandlerStore struct {
-	matcher *lib.HeaderMatcher
+	allowDirectKeys  bool
+	matcher          *lib.HeaderMatcher
+	providersByModel map[string][]schemas.ModelProvider
+	lookupCount      *int
+}
+
+func (s testWSHandlerStore) ShouldAllowDirectKeys() bool {
+	return s.allowDirectKeys
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -25,7 +32,13 @@ func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 }
 
 func (s testWSHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
-	return nil
+	if s.lookupCount != nil {
+		(*s.lookupCount)++
+	}
+	if s.providersByModel == nil {
+		return nil
+	}
+	return s.providersByModel[model]
 }
 
 func (s testWSHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
@@ -254,4 +267,113 @@ func TestHasWebSocketForwardedHeaders(t *testing.T) {
 		"x-trace-id": {"abc-123"},
 	})
 	assert.True(t, hasWebSocketForwardedHeaders(ctx))
+}
+
+func TestConvertEventToRequest_AutoResolvesBareModelToOpenRouter(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gemini-2.5-flash": {schemas.OpenRouter},
+			},
+		},
+	}
+
+	req, err := handler.convertEventToRequest(&schemas.WebSocketResponsesEvent{
+		Model: "gemini-2.5-flash",
+		Input: []byte(`"test"`),
+	})
+	assert.NoError(t, err)
+	if assert.NotNil(t, req) {
+		assert.Equal(t, schemas.OpenRouter, req.Provider)
+		assert.Equal(t, "gemini-2.5-flash", req.Model)
+	}
+}
+
+func TestConvertEventToRequest_AutoResolvesBareModelToCustomProvider(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gemini-2.5-flash": {"custom-provider"},
+			},
+		},
+	}
+
+	req, err := handler.convertEventToRequest(&schemas.WebSocketResponsesEvent{
+		Model: "gemini-2.5-flash",
+		Input: []byte(`"test"`),
+	})
+	assert.NoError(t, err)
+	if assert.NotNil(t, req) {
+		assert.Equal(t, schemas.ModelProvider("custom-provider"), req.Provider)
+		assert.Equal(t, "gemini-2.5-flash", req.Model)
+	}
+}
+
+func TestConvertEventToRequest_RejectsAmbiguousBareModel(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gemini-2.5-flash": {schemas.OpenRouter, "custom-provider"},
+			},
+		},
+	}
+
+	_, err := handler.convertEventToRequest(&schemas.WebSocketResponsesEvent{
+		Model: "gemini-2.5-flash",
+		Input: []byte(`"test"`),
+	})
+	assert.ErrorContains(t, err, `model "gemini-2.5-flash" is ambiguous across multiple providers: custom-provider, openrouter`)
+}
+
+func TestResolveEventModel_ReturnsMissingProviderError(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{},
+		},
+	}
+
+	_, _, err := handler.resolveEventModel("not-a-real-model")
+	assert.ErrorContains(t, err, `no providers found`)
+	assert.NotContains(t, err.Error(), "failed to parse model string")
+}
+
+func TestResolveEventModel_ReturnsAmbiguousProviderError(t *testing.T) {
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gpt-4o": {schemas.OpenAI, schemas.OpenRouter},
+			},
+		},
+	}
+
+	_, _, err := handler.resolveEventModel("gpt-4o")
+	assert.ErrorContains(t, err, "ambiguous")
+	assert.NotContains(t, err.Error(), "failed to parse model string")
+}
+
+func TestConvertResolvedEventToRequest_DoesNotResolveModelAgain(t *testing.T) {
+	lookupCount := 0
+	handler := &WSResponsesHandler{
+		handlerStore: testWSHandlerStore{
+			providersByModel: map[string][]schemas.ModelProvider{
+				"gpt-4o": {schemas.OpenAI},
+			},
+			lookupCount: &lookupCount,
+		},
+	}
+
+	provider, modelName, err := handler.resolveEventModel("gpt-4o")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, lookupCount)
+
+	req, err := handler.convertResolvedEventToRequest(&schemas.WebSocketResponsesEvent{
+		Model: "gpt-4o",
+		Input: []byte(`"test"`),
+	}, provider, modelName)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, lookupCount)
+	if assert.NotNil(t, req) {
+		assert.Equal(t, schemas.OpenAI, req.Provider)
+		assert.Equal(t, "gpt-4o", req.Model)
+	}
 }

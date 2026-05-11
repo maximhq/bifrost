@@ -207,3 +207,36 @@ func TestIsModelAllowedForProvider_NilProviderConfig(t *testing.T) {
 	assert.True(t, mc.IsModelAllowedForProvider("some-provider", "model-x", nil, []string{"*"}))
 	assert.False(t, mc.IsModelAllowedForProvider("some-provider", "model-y", nil, []string{"*"}))
 }
+
+func TestGetProvidersForModel_OpenRouterNestedProviderModel(t *testing.T) {
+	mc := newTestCatalog(
+		map[schemas.ModelProvider][]string{
+			schemas.OpenRouter: {"google/gemini-2.5-flash"},
+		},
+		nil,
+	)
+
+	assert.ElementsMatch(t, []schemas.ModelProvider{schemas.OpenRouter}, mc.GetProvidersForModel("gemini-2.5-flash"))
+}
+
+func TestGetProvidersForModel_OpenRouterTripleNestedProviderModel(t *testing.T) {
+	mc := newTestCatalog(
+		map[schemas.ModelProvider][]string{
+			schemas.OpenRouter: {"openrouter/google/gemini-2.5-flash"},
+		},
+		nil,
+	)
+
+	assert.ElementsMatch(t, []schemas.ModelProvider{schemas.OpenRouter}, mc.GetProvidersForModel("gemini-2.5-flash"))
+}
+
+func TestGetProvidersForModel_CustomProviderNestedProviderModel(t *testing.T) {
+	mc := newTestCatalog(
+		map[schemas.ModelProvider][]string{
+			"custom-provider": {"google/gemini-2.5-flash"},
+		},
+		nil,
+	)
+
+	assert.ElementsMatch(t, []schemas.ModelProvider{"custom-provider"}, mc.GetProvidersForModel("gemini-2.5-flash"))
+}
