@@ -539,9 +539,9 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
-	// Hash ProxyConfig
+	// Hash ProxyConfig (canonical storage form matches proxy_config_json)
 	if p.ProxyConfig != nil {
-		data, err := sonic.Marshal(p.ProxyConfig)
+		data, err := p.ProxyConfig.MarshalForStorage()
 		if err != nil {
 			return "", err
 		}

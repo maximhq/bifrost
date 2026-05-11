@@ -18,6 +18,17 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
+// EnvVarAsString returns the wire form used when serializing *EnvVar as a string.
+func EnvVarAsString(e *EnvVar) string {
+	if e == nil {
+		return ""
+	}
+	if e.IsFromEnv() {
+		return e.EnvVar
+	}
+	return e.GetValue()
+}
+
 // GetRandomString generates a random alphanumeric string of the given length.
 func GetRandomString(length int) string {
 	if length <= 0 {
