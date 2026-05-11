@@ -430,6 +430,8 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 
 	fallbacksField := reqValue.FieldByName("Fallbacks")
 	if !fallbacksField.IsValid() {
+		// Some integrations may expose the field under a different Go name, so
+		// fall back to the JSON wire name used in request payloads.
 		reqType := reqValue.Type()
 		for i := 0; i < reqValue.NumField(); i++ {
 			field := reqType.Field(i)
