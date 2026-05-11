@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -54,7 +55,7 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
 const mvLogsHourlyUniqueIdx = `
-CREATE UNIQUE INDEX IF NOT EXISTS mv_logs_hourly_uniq
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
 ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id)
 `
 
@@ -88,9 +89,63 @@ WHERE timestamp >= NOW() - INTERVAL '60 days'
 // mvLogsFilterdataUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
 // Includes both ID and name columns so renamed keys don't cause duplicate violations.
 const mvLogsFilterdataUniqueIdx = `
-CREATE UNIQUE INDEX IF NOT EXISTS mv_logs_filterdata_uniq
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_filterdata_uniq
 ON mv_logs_filterdata (model, provider, selected_key_id, selected_key_name, virtual_key_id, virtual_key_name, routing_rule_id, routing_rule_name, routing_engines_used, user_id, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name)
 `
+
+type matviewUniqueIndexDef struct {
+	view string
+	name string
+	sql  string
+}
+
+var matviewUniqueIndexes = []matviewUniqueIndexDef{
+	{
+		view: "mv_logs_hourly",
+		name: "mv_logs_hourly_uniq",
+		sql:  mvLogsHourlyUniqueIdx,
+	},
+	{
+		view: "mv_logs_filterdata",
+		name: "mv_logs_filterdata_uniq",
+		sql:  mvLogsFilterdataUniqueIdx,
+	},
+}
+
+var matviewRequiredColumns = map[string][]string{
+	"mv_logs_hourly": {
+		"hour",
+		"provider",
+		"model",
+		"status",
+		"object_type",
+		"selected_key_id",
+		"virtual_key_id",
+		"routing_rule_id",
+		"user_id",
+		"team_id",
+		"customer_id",
+		"business_unit_id",
+	},
+	"mv_logs_filterdata": {
+		"model",
+		"provider",
+		"selected_key_id",
+		"selected_key_name",
+		"virtual_key_id",
+		"virtual_key_name",
+		"routing_rule_id",
+		"routing_rule_name",
+		"routing_engines_used",
+		"user_id",
+		"team_id",
+		"team_name",
+		"customer_id",
+		"customer_name",
+		"business_unit_id",
+		"business_unit_name",
+	},
+}
 
 // ---------------------------------------------------------------------------
 // View lifecycle
@@ -99,16 +154,145 @@ ON mv_logs_filterdata (model, provider, selected_key_id, selected_key_name, virt
 // ensureMatViews creates materialized views and their unique indexes if they
 // don't already exist. Called once on startup.
 func ensureMatViews(ctx context.Context, db *gorm.DB) error {
-	for _, ddl := range []string{
-		mvLogsHourlyDDL,
-		mvLogsHourlyUniqueIdx,
-		mvLogsFilterdataDDL,
-		mvLogsFilterdataUniqueIdx,
-	} {
-		if err := db.WithContext(ctx).Exec(ddl).Error; err != nil {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
+	}
+
+	// Use a dedicated connection so the advisory lock and CONCURRENTLY DDL run
+	// on the same session, outside any migration transaction.
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
+	}
+	defer conn.Close()
+
+	var acquired bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
+		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
+	}
+	if !acquired {
+		return nil
+	}
+	defer func() {
+		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
+	}()
+
+	if err := repairMatViewShapes(ctx, conn); err != nil {
+		return err
+	}
+
+	for _, ddl := range []string{mvLogsHourlyDDL, mvLogsFilterdataDDL} {
+		if _, err := conn.ExecContext(ctx, ddl); err != nil {
 			return fmt.Errorf("failed to create materialized view: %w", err)
 		}
 	}
+
+	if err := ensureMatViewUniqueIndexes(ctx, conn); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
+	for view, columns := range matviewRequiredColumns {
+		needsRebuild, err := matViewNeedsRebuild(ctx, conn, view, columns)
+		if err != nil {
+			return err
+		}
+		if !needsRebuild {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, "DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE"); err != nil {
+			return fmt.Errorf("failed to drop old-shape matview %s: %w", view, err)
+		}
+	}
+	return nil
+}
+
+func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requiredColumns []string) (bool, error) {
+	var exists bool
+	if err := conn.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_class
+			WHERE relkind = 'm'
+			  AND relname = $1
+		)
+	`, view).Scan(&exists); err != nil {
+		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
+	}
+	if !exists {
+		return false, nil
+	}
+
+	rows, err := conn.QueryContext(ctx, `
+		SELECT a.attname
+		FROM pg_class c
+		JOIN pg_attribute a ON a.attrelid = c.oid
+		WHERE c.relkind = 'm'
+		  AND c.relname = $1
+		  AND a.attnum > 0
+		  AND NOT a.attisdropped
+	`, view)
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect matview %s columns: %w", view, err)
+	}
+	defer rows.Close()
+
+	actual := make(map[string]struct{}, len(requiredColumns))
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return false, fmt.Errorf("failed to scan matview %s column: %w", view, err)
+		}
+		actual[column] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("failed to inspect matview %s columns: %w", view, err)
+	}
+
+	for _, column := range requiredColumns {
+		if _, ok := actual[column]; !ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func ensureMatViewUniqueIndexes(ctx context.Context, conn *sql.Conn) error {
+	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
+	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
+
+	for _, idx := range matviewUniqueIndexes {
+		var indexReady bool
+		if err := conn.QueryRowContext(ctx, `
+			SELECT COALESCE(bool_and(pi.indisvalid AND pi.indisunique), false)
+			FROM pg_class pc
+			JOIN pg_index pi ON pi.indrelid = pc.oid
+			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			WHERE pc.relname = $1
+			  AND ic.relname = $2
+		`, idx.view, idx.name).Scan(&indexReady); err != nil {
+			return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
+		}
+		if indexReady {
+			continue
+		}
+
+		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+idx.name); err != nil {
+			return fmt.Errorf("failed to drop invalid matview index %s: %w", idx.name, err)
+		}
+		if _, err := conn.ExecContext(ctx, idx.sql); err != nil {
+			return fmt.Errorf("failed to create matview index %s: %w", idx.name, err)
+		}
+	}
+
 	return nil
 }
 

@@ -47,6 +47,8 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Drop existing tables and migration tracking in the correct order.
 	// Preserve the shared migrations table — only clear its rows.
+	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE")
+	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE")
 	db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 	db.Exec("DROP TABLE IF EXISTS logs")
 	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
@@ -71,6 +73,8 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Clean up tables after the test
 	t.Cleanup(func() {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE")
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE")
 		db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 		db.Exec("DROP TABLE IF EXISTS logs")
 		db.Exec("DELETE FROM migrations")
@@ -307,7 +311,6 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "First migration should succeed")
-
 
 	sqlDB, err := db.DB()
 	if err != nil {

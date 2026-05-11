@@ -66,6 +66,42 @@ func acquirePerfTestSQLConn(t *testing.T, ctx context.Context, db *gorm.DB) *sql
 	return conn
 }
 
+func matviewIndexReady(t *testing.T, db *gorm.DB, viewName, indexName string) bool {
+	t.Helper()
+	var ready bool
+	err := db.Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid AND pi.indisunique), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = ?
+		  AND ic.relname = ?
+	`, viewName, indexName).Scan(&ready).Error
+	require.NoError(t, err, "Failed to check matview index readiness")
+	return ready
+}
+
+func TestEnsureMatViewsCreatesUniqueIndexes(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+
+	assert.True(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "hourly matview unique index should be valid")
+	assert.True(t, matviewIndexReady(t, db, "mv_logs_filterdata", "mv_logs_filterdata_uniq"), "filterdata matview unique index should be valid")
+}
+
+func TestEnsureMatViewsRebuildsBadSameNameIndex(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec("DROP INDEX IF EXISTS mv_logs_hourly_uniq").Error)
+	require.NoError(t, db.Exec("CREATE INDEX mv_logs_hourly_uniq ON mv_logs_hourly(hour)").Error)
+	require.False(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "same-name non-unique index should not be considered ready")
+
+	require.NoError(t, ensureMatViews(ctx, db))
+
+	assert.True(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "ensureMatViews should rebuild the required unique index")
+	assert.True(t, matviewIndexReady(t, db, "mv_logs_filterdata", "mv_logs_filterdata_uniq"), "filterdata matview unique index should remain valid")
+}
+
 type logOpts struct {
 	Model              string
 	Provider           string
