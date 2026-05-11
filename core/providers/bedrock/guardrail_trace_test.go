@@ -73,7 +73,7 @@ func TestBedrockGuardrailTrace_DecodesAWSConverseShape(t *testing.T) {
 }
 
 // TestBedrockGuardrailTrace_DecodesEmptyTrace covers the non-blocked path
-// described in #2772 — a request with `trace = "enabled"` that does not
+// described in #2772, a request with `trace = "enabled"` that does not
 // trip any policy used to fail to decode because the previous schema
 // required slice fields. The empty payload here is what the runtime emits
 // in that scenario.
