@@ -1,7 +1,16 @@
 import type { ModelHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp, getModelColor } from "../../utils/chartUtils";
+import {
+	CHART_COLORS,
+	formatFullTimestamp,
+	formatTimestamp,
+	getModelColor,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	pickTopSeries,
+} from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -18,7 +27,7 @@ interface ModelUsageChartProps {
 	selectedModel: string;
 }
 
-function CustomTooltip({ active, payload, selectedModel, models }: any) {
+function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -30,16 +39,22 @@ function CustomTooltip({ active, payload, selectedModel, models }: any) {
 			<div className="space-y-1 text-sm">
 				{selectedModel === "all" ? (
 					<>
-						{models.map((model: string, idx: number) => {
-							const stats = data.by_model?.[model];
-							if (!stats || stats.total === 0) return null;
+						{displayModels.map((model: string, idx: number) => {
+							const isOther = model === OTHER_SERIES_KEY;
+							const total = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : (data.by_model?.[model]?.total ?? 0);
+							if (total === 0) return null;
 							return (
 								<div key={model} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
-										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{model}</span>
+										<span
+											className="h-2 w-2 rounded-full"
+											style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
+										/>
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
+											{isOther ? OTHER_SERIES_LABEL : model}
+										</span>
 									</span>
-									<span className="font-medium">{stats.total.toLocaleString()}</span>
+									<span className="font-medium">{total.toLocaleString()}</span>
 								</div>
 							);
 						})}
@@ -71,13 +86,22 @@ function CustomTooltip({ active, payload, selectedModel, models }: any) {
 	);
 }
 
-export function ModelUsageChart({ data, chartType, startTime, endTime, selectedModel }: ModelUsageChartProps) {
+function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedModel }: ModelUsageChartProps) {
 	const { chartData, displayModels } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], displayModels: [] };
 		}
 
-		const models = data.models;
+		let displayList: string[];
+		let topSet: Set<string> | null = null;
+		if (selectedModel === "all") {
+			const top = pickTopSeries(data.buckets, data.models, (b, m) => b.by_model?.[m]?.total ?? 0);
+			const hasOther = top.length < data.models.length;
+			displayList = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+			topSet = hasOther ? new Set(top) : null;
+		} else {
+			displayList = data.models;
+		}
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {
@@ -87,10 +111,19 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 			};
 
 			if (selectedModel === "all") {
-				// For "all", show total per model
-				models.forEach((model) => {
-					const safeKey = sanitizeModelKey(model);
-					item[`model_${safeKey}`] = bucket.by_model?.[model]?.total || 0;
+				let otherTotal = 0;
+				if (topSet && bucket.by_model) {
+					for (const model of data.models) {
+						if (!topSet.has(model)) otherTotal += bucket.by_model[model]?.total ?? 0;
+					}
+					item[OTHER_SERIES_KEY] = otherTotal;
+				}
+				displayList.forEach((model) => {
+					if (model === OTHER_SERIES_KEY) {
+						item[`model_${sanitizeModelKey(model)}`] = otherTotal;
+					} else {
+						item[`model_${sanitizeModelKey(model)}`] = bucket.by_model?.[model]?.total || 0;
+					}
 				});
 			} else {
 				// For specific model, show success/error breakdown
@@ -101,7 +134,7 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 			return item;
 		});
 
-		return { chartData: processed, displayModels: models };
+		return { chartData: processed, displayModels: displayList };
 	}, [data, selectedModel]);
 
 	if (!data?.buckets || chartData.length === 0) {
@@ -138,10 +171,7 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip
-							content={<CustomTooltip selectedModel={selectedModel} models={displayModels} />}
-							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
-						/>
+						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} />
 						{selectedModel === "all" ? (
 							displayModels.map((model, idx) => (
 								<Bar
@@ -149,7 +179,7 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 									key={model}
 									dataKey={`model_${sanitizeModelKey(model)}`}
 									stackId="models"
-									fill={getModelColor(idx)}
+									fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
 									fillOpacity={0.9}
 									barSize={30}
 									radius={idx === displayModels.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
@@ -200,20 +230,23 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedModel={selectedModel} models={displayModels} />} />
+						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} />
 						{selectedModel === "all" ? (
-							displayModels.map((model, idx) => (
-								<Area
-									isAnimationActive={false}
-									key={model}
-									type="monotone"
-									dataKey={`model_${sanitizeModelKey(model)}`}
-									stackId="1"
-									stroke={getModelColor(idx)}
-									fill={getModelColor(idx)}
-									fillOpacity={0.7}
-								/>
-							))
+							displayModels.map((model, idx) => {
+								const color = model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
+								return (
+									<Area
+										isAnimationActive={false}
+										key={model}
+										type="monotone"
+										dataKey={`model_${sanitizeModelKey(model)}`}
+										stackId="1"
+										stroke={color}
+										fill={color}
+										fillOpacity={0.7}
+									/>
+								);
+							})
 						) : (
 							<>
 								<Area
@@ -242,3 +275,5 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 		</ChartErrorBoundary>
 	);
 }
+
+export const ModelUsageChart = memo(ModelUsageChartImpl);

@@ -1,5 +1,5 @@
 import type { LogsHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Area,
   AreaChart,
@@ -75,7 +75,7 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
   );
 }
 
-export function LogVolumeChart({
+function LogVolumeChartImpl({
   data,
   chartType,
   startTime,
@@ -217,3 +217,5 @@ export function LogVolumeChart({
     </ChartErrorBoundary>
   );
 }
+
+export const LogVolumeChart = memo(LogVolumeChartImpl);

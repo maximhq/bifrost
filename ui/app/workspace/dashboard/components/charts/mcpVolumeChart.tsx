@@ -1,5 +1,5 @@
 import type { MCPHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
@@ -45,7 +45,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
+function MCPVolumeChartImpl({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -159,3 +159,4 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 		</ChartErrorBoundary>
 	);
 }
+export const MCPVolumeChart = memo(MCPVolumeChartImpl);

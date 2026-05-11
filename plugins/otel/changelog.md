@@ -1,0 +1,2 @@
+- feat: add number of retries as a metric (#3392)
+- feat: adds cached token details in Responses API in OTEL exports (#3293)

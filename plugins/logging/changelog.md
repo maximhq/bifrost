@@ -1,0 +1,2 @@
+- feat: add batch logging to mcp logs similar to llm logs (#3354)
+- feat: add MCP log detail endpoint (#3350)

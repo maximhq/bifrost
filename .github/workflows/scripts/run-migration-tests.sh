@@ -1250,6 +1250,26 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
   fi
 
+  # config_client.mcp_external_server_url (added in v1.5.0 - varchar(512) public OAuth server base URL)
+  if column_exists_postgres "config_client" "mcp_external_server_url"; then
+    echo "UPDATE config_client SET mcp_external_server_url = 'https://mcp.migration-test.example.com' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.mcp_external_client_url (added in v1.5.0 - varchar(512) public OAuth client redirect base URL)
+  if column_exists_postgres "config_client" "mcp_external_client_url"; then
+    echo "UPDATE config_client SET mcp_external_client_url = 'https://mcp-client.migration-test.example.com' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.allow_per_request_content_storage_override (added in v1.5.0)
+  if column_exists_postgres "config_client" "allow_per_request_content_storage_override"; then
+    echo "UPDATE config_client SET allow_per_request_content_storage_override = false WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.allow_per_request_raw_override (added in v1.5.0)
+  if column_exists_postgres "config_client" "allow_per_request_raw_override"; then
+    echo "UPDATE config_client SET allow_per_request_raw_override = false WHERE id = 1;" >> "$output_file"
+  fi
+
   # governance_virtual_key_provider_configs.allow_all_keys (added in v1.5.0)
   # vk-migration-test-1 has a key in the join table, so old behavior was restricted to that key -> allow_all_keys=false
   # vk-migration-test-2 has no key rows, so old "empty=allow-all" semantics -> allow_all_keys=true
@@ -1267,6 +1287,13 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # logs.stop_reason (added in v1.5.0 via migrationAddStopReasonColumn - nullable varchar(50))
+  if column_exists_postgres "logs" "stop_reason"; then
+    echo "UPDATE logs SET stop_reason = 'stop' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET stop_reason = 'length' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET stop_reason = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
   # -------------------------------------------------------------------------
@@ -2115,6 +2142,26 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE governance_virtual_key_provider_configs SET allow_all_keys = 0 WHERE virtual_key_id = 'vk-migration-test-1';" >> "$output_file"
       echo "UPDATE governance_virtual_key_provider_configs SET allow_all_keys = 1 WHERE virtual_key_id = 'vk-migration-test-2';" >> "$output_file"
     fi
+
+    # config_client.mcp_external_server_url (added in v1.5.0)
+    if column_exists_sqlite "$config_db" "config_client" "mcp_external_server_url"; then
+      echo "UPDATE config_client SET mcp_external_server_url = 'https://mcp.migration-test.example.com' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.mcp_external_client_url (added in v1.5.0)
+    if column_exists_sqlite "$config_db" "config_client" "mcp_external_client_url"; then
+      echo "UPDATE config_client SET mcp_external_client_url = 'https://mcp-client.migration-test.example.com' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.allow_per_request_content_storage_override (added in v1.5.0)
+    if column_exists_sqlite "$config_db" "config_client" "allow_per_request_content_storage_override"; then
+      echo "UPDATE config_client SET allow_per_request_content_storage_override = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.allow_per_request_raw_override (added in v1.5.0)
+    if column_exists_sqlite "$config_db" "config_client" "allow_per_request_raw_override"; then
+      echo "UPDATE config_client SET allow_per_request_raw_override = 0 WHERE id = 1;" >> "$output_file"
+    fi
   fi
 
   # -------------------------------------------------------------------------
@@ -2125,6 +2172,11 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # logs.stop_reason (added in v1.5.0 via migrationAddStopReasonColumn - nullable varchar(50))
+  echo "UPDATE logs SET stop_reason = 'stop' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET stop_reason = 'length' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET stop_reason = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
 
   # -------------------------------------------------------------------------
   # v1.4.19 columns
@@ -2589,6 +2641,12 @@ generate_mcp_clients_insert_postgres() {
     vals="$vals, '{}'"
   fi
 
+  # config_mcp_clients.disabled (added in v1.5.0 via migrationAddMCPClientDisabledColumn)
+  if column_exists_postgres "config_mcp_clients" "disabled"; then
+    cols="$cols, disabled"
+    vals="$vals, false"
+  fi
+
   # Append the dynamic INSERT to the output file
   echo "" >> "$output_file"
   echo "-- config_mcp_clients (MCP server configurations - dynamically generated based on schema)" >> "$output_file"
@@ -2832,6 +2890,12 @@ generate_mcp_clients_insert_sqlite() {
   if column_exists_sqlite "$config_db" "config_mcp_clients" "tool_name_mapping_json"; then
     cols="$cols, tool_name_mapping_json"
     vals="$vals, '{}'"
+  fi
+
+  # config_mcp_clients.disabled (added in v1.5.0 via migrationAddMCPClientDisabledColumn)
+  if column_exists_sqlite "$config_db" "config_mcp_clients" "disabled"; then
+    cols="$cols, disabled"
+    vals="$vals, 0"
   fi
 
   # Append the dynamic INSERT to the output file

@@ -1,7 +1,16 @@
 import type { CostHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatCost, formatFullTimestamp, formatTimestamp, getModelColor } from "../../utils/chartUtils";
+import {
+	formatCost,
+	formatFullTimestamp,
+	formatTimestamp,
+	getModelColor,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	pickTopSeries,
+} from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -13,7 +22,7 @@ interface CostChartProps {
 	selectedModel: string;
 }
 
-function CustomTooltip({ active, payload, selectedModel, models }: any) {
+function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -25,14 +34,20 @@ function CustomTooltip({ active, payload, selectedModel, models }: any) {
 			<div className="space-y-1 text-sm">
 				{selectedModel === "all" ? (
 					<>
-						{models.map((model: string, idx: number) => {
-							const cost = data.by_model?.[model] || 0;
+						{displayModels.map((model: string, idx: number) => {
+							const isOther = model === OTHER_SERIES_KEY;
+							const cost = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : (data.by_model?.[model] || 0);
 							if (cost === 0) return null;
 							return (
 								<div key={model} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
-										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{model}</span>
+										<span
+											className="h-2 w-2 rounded-full"
+											style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
+										/>
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
+											{isOther ? OTHER_SERIES_LABEL : model}
+										</span>
 									</span>
 									<span className="font-medium">{formatCost(cost)}</span>
 								</div>
@@ -57,13 +72,22 @@ function CustomTooltip({ active, payload, selectedModel, models }: any) {
 	);
 }
 
-export function CostChart({ data, chartType, startTime, endTime, selectedModel }: CostChartProps) {
+function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: CostChartProps) {
 	const { chartData, displayModels } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], displayModels: [] };
 		}
 
-		const models = selectedModel === "all" ? data.models : [selectedModel];
+		let models: string[];
+		let hasOther = false;
+		if (selectedModel === "all") {
+			const top = pickTopSeries(data.buckets, data.models, (b, m) => b.by_model?.[m] ?? 0);
+			hasOther = top.length < data.models.length;
+			models = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+		} else {
+			models = [selectedModel];
+		}
+		const topSet = new Set(models);
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {
@@ -71,9 +95,15 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 				index,
 				formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
 			};
-			// Flatten by_model for easier chart access
+			if (hasOther && bucket.by_model) {
+				let otherSum = 0;
+				for (const model of data.models) {
+					if (!topSet.has(model)) otherSum += bucket.by_model[model] ?? 0;
+				}
+				item[OTHER_SERIES_KEY] = otherSum;
+			}
 			models.forEach((model, idx) => {
-				item[`model_${idx}`] = bucket.by_model?.[model] || 0;
+				item[`model_${idx}`] = model === OTHER_SERIES_KEY ? (item[OTHER_SERIES_KEY] ?? 0) : (bucket.by_model?.[model] ?? 0);
 			});
 			return item;
 		});
@@ -115,17 +145,14 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip
-							content={<CustomTooltip selectedModel={selectedModel} models={data.models} />}
-							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
-						/>
+						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} />
 						{displayModels.map((model, idx) => (
 							<Bar
 								isAnimationActive={false}
 								key={model}
 								dataKey={`model_${idx}`}
 								stackId="cost"
-								fill={getModelColor(idx)}
+								fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
 								fillOpacity={0.9}
 								barSize={30}
 								radius={idx === displayModels.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
@@ -154,22 +181,27 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedModel={selectedModel} models={data.models} />} />
-						{displayModels.map((model, idx) => (
-							<Area
-								isAnimationActive={false}
-								key={model}
-								type="monotone"
-								dataKey={`model_${idx}`}
-								stackId="1"
-								stroke={getModelColor(idx)}
-								fill={getModelColor(idx)}
-								fillOpacity={0.7}
-							/>
-						))}
+						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} />
+						{displayModels.map((model, idx) => {
+							const color = model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
+							return (
+								<Area
+									isAnimationActive={false}
+									key={model}
+									type="monotone"
+									dataKey={`model_${idx}`}
+									stackId="1"
+									stroke={color}
+									fill={color}
+									fillOpacity={0.7}
+								/>
+							);
+						})}
 					</AreaChart>
 				)}
 			</ResponsiveContainer>
 		</ChartErrorBoundary>
 	);
 }
+
+export const CostChart = memo(CostChartImpl);

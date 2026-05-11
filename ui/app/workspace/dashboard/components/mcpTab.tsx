@@ -1,4 +1,5 @@
 import type { MCPCostHistogramResponse, MCPHistogramResponse, MCPTopToolsResponse } from "@/lib/types/logs";
+import { memo } from "react";
 import { CHART_COLORS, CHART_HEADER_ACTIONS_CLASS, CHART_HEADER_CONTROLS_CLASS, CHART_HEADER_LEGEND_CLASS } from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
 import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
@@ -30,7 +31,7 @@ export interface MCPTabProps {
 	onMcpCostChartToggle: (type: ChartType) => void;
 }
 
-export function MCPTab({
+function MCPTabImpl({
 	mcpHistogramData,
 	mcpCostData,
 	mcpTopToolsData,
@@ -105,3 +106,4 @@ export function MCPTab({
 		</div>
 	);
 }
+export const MCPTab = memo(MCPTabImpl);

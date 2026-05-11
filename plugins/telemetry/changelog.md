@@ -1,0 +1,2 @@
+- feat: add number of retries as a metric (#3392)
+- feat: removes system metrics from prometheus plugin and adds some more needed types (#3306)

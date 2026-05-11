@@ -47,7 +47,8 @@ export function formatTokens(tokens: number): string {
 	return tokens.toLocaleString();
 }
 
-// Color palette for models
+// Color palette for models. Length governs TOP_SERIES_LIMIT (top-N rollup cap),
+// so colors and named-series count stay coupled — adding a color expands top-N.
 export const MODEL_COLORS = [
 	"#10b981", // emerald-500
 	"#3b82f6", // blue-500
@@ -57,11 +58,39 @@ export const MODEL_COLORS = [
 	"#ec4899", // pink-500
 	"#06b6d4", // cyan-500
 	"#84cc16", // lime-500
+	"#f97316", // orange-500
+	"#14b8a6", // teal-500
+	"#eab308", // yellow-500
+	"#d946ef", // fuchsia-500
 ];
 
 // Get color for a model by index
 export function getModelColor(index: number): string {
 	return MODEL_COLORS[index % MODEL_COLORS.length];
+}
+
+// Top-N series rollup: keeps the visible recharts subtree bounded when a
+// dimension (models, providers) grows large. The palette has 8 colors and
+// the legend already says "+N more", so the data path follows the palette.
+export const TOP_SERIES_LIMIT = MODEL_COLORS.length;
+export const OTHER_SERIES_KEY = "__other__";
+export const OTHER_SERIES_LABEL = "Other";
+export const OTHER_SERIES_COLOR = "#94a3b8"; // slate-400
+
+export function pickTopSeries<T>(
+	buckets: T[],
+	seriesLabels: string[],
+	getValue: (bucket: T, label: string) => number,
+	limit: number = TOP_SERIES_LIMIT,
+): string[] {
+	if (seriesLabels.length <= limit) return seriesLabels;
+	const totals = new Map<string, number>();
+	for (const bucket of buckets) {
+		for (const label of seriesLabels) {
+			totals.set(label, (totals.get(label) ?? 0) + getValue(bucket, label));
+		}
+	}
+	return [...seriesLabels].sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0)).slice(0, limit);
 }
 
 // Format latency values
