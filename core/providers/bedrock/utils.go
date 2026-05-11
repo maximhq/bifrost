@@ -252,9 +252,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
 					// Opus 4.6+: adaptive thinking + output_config.effort
 					effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type": "adaptive",
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					} else if anthropic.IsOpus47(bifrostReq.Model) {
+						// Opus 4.7+ omits reasoning text by default; default to "summarized"
+						thinkingConfig["display"] = "summarized"
+					}
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
 					// Opus 4.5 and older models: budget_tokens thinking

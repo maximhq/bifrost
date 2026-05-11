@@ -545,10 +545,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// nothing to display", per the extended-thinking doc). We attach
 			// on non-disabled modes and let the upstream provider enforce
 			// model-level support.
-			if bifrostReq.Params.Reasoning.Display != nil &&
-				anthropicReq.Thinking != nil &&
-				anthropicReq.Thinking.Type != "disabled" {
-				anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+			// Opus 4.7+ omits reasoning text by default; default to "summarized"
+			// so the text is visible unless the caller explicitly requests "omitted".
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+				if bifrostReq.Params.Reasoning.Display != nil {
+					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+				} else if IsOpus47(bifrostReq.Model) {
+					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
+				}
 			}
 		}
 
