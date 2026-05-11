@@ -1361,6 +1361,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Entra (Azure AD)." }}
 {{- end }}
 {{- end }}
+{{- if eq $scimValidation.provider "keycloak" }}
+{{- if not $scimValidation.config.serverUrl }}
+{{- fail "ERROR: bifrost.scim.config.serverUrl is required when SCIM provider is Keycloak. Example: https://keycloak.company.com (must NOT include /realms/{realm})." }}
+{{- end }}
+{{- if not $scimValidation.config.realm }}
+{{- fail "ERROR: bifrost.scim.config.realm is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientSecret }}
+{{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/* Validate cluster config when enabled */}}

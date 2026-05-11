@@ -3069,6 +3069,18 @@ func (s *RDBLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) e
 	return s.db.WithContext(ctx).Create(entry).Error
 }
 
+// BatchCreateMCPToolLogsIfNotExists inserts multiple MCP tool log entries in a single transaction.
+// Uses ON CONFLICT DO NOTHING for idempotency.
+func (s *RDBLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(&entries).Error
+}
+
 // FindMCPToolLog retrieves a single MCP tool log entry by its ID.
 func (s *RDBLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error) {
 	var log MCPToolLog

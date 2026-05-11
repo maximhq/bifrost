@@ -222,6 +222,60 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	ctx.SetBody(errorBody)
 }
 
+// HTTP response header names for the routed identity. Set on every successful
+// response from any integration so callers can recover the actual provider /
+// model that handled the request — even when the integration converts the
+// body to a provider-native shape (Anthropic, OpenAI, Bedrock) that has no
+// place to surface Bifrost's `extra_fields`.
+//
+// Header values are derived from BifrostResponseExtraFields (populated by
+// PopulateExtraFields at the end of every request path, including after
+// fallback / routing-rule resolution). FallbackIndex is read from the
+// BifrostContext because it isn't a field on the response struct.
+//
+// Naming follows the existing `x-bf-*` request-side convention (see
+// `x-bf-vk`, `x-bf-key-id`, etc.).
+const (
+	HeaderBifrostProvider       = "x-bifrost-provider"
+	HeaderBifrostOriginalModel  = "x-bifrost-original-model"
+	HeaderBifrostResolvedModel  = "x-bifrost-resolved-model"
+	HeaderBifrostFallbackIndex  = "x-bifrost-fallback-index"
+	HeaderBifrostRequestType    = "x-bifrost-request-type"
+)
+
+// applyBifrostResponseHeaders writes both the upstream provider response
+// headers (forwarded verbatim) and the bifrost-level `x-bifrost-*` routing
+// identity headers onto the fasthttp response. Empty fields are skipped so
+// the headers never appear with a blank value. Safe to call when the case
+// didn't populate `extra` — the zero value for ExtraFields produces no
+// headers.
+func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
+	for key, value := range extra.ProviderResponseHeaders {
+		ctx.Response.Header.Set(key, value)
+	}
+	if extra.Provider != "" {
+		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
+	}
+	if extra.OriginalModelRequested != "" {
+		ctx.Response.Header.Set(HeaderBifrostOriginalModel, extra.OriginalModelRequested)
+	}
+	if extra.ResolvedModelUsed != "" {
+		ctx.Response.Header.Set(HeaderBifrostResolvedModel, extra.ResolvedModelUsed)
+	}
+	if extra.RequestType != "" {
+		ctx.Response.Header.Set(HeaderBifrostRequestType, string(extra.RequestType))
+	}
+	// Fallback index lives on the request context, not the response struct.
+	// 0 = primary provider succeeded; non-zero = which fallback fired
+	// (1-indexed). Only emit when non-zero so the absence of the header is
+	// the unambiguous "no fallback fired" signal.
+	if bifrostCtx != nil {
+		if idx, ok := bifrostCtx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok && idx > 0 {
+			ctx.Response.Header.Set(HeaderBifrostFallbackIndex, strconv.Itoa(idx))
+		}
+	}
+}
+
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
 func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}, extraHeaders map[string]string) {
 	ctx.SetStatusCode(fasthttp.StatusOK)

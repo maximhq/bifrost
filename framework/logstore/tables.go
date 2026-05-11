@@ -785,6 +785,7 @@ type MCPToolLog struct {
 	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
 	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
 	Metadata       string    `gorm:"type:text" json:"-"`                                                // JSON serialized map[string]interface{}
+	HasObject      bool      `gorm:"default:false" json:"-"`                                            // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - populated when needed

@@ -275,3 +275,77 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	assert.Equal(t, "req-123", string(ctx.Response.Header.Peek("x-amzn-requestid")))
 	assert.Equal(t, "ValidationException", string(ctx.Response.Header.Peek("x-amzn-errortype")))
 }
+
+// TestApplyBifrostResponseHeaders covers the routed-identity headers added so
+// drop-in integration callers (Anthropic SDK against `/anthropic/v1/messages`,
+// OpenAI SDK against `/openai/v1/chat/completions`, etc.) can recover the
+// actual provider/model that handled the request — including after fallback
+// or routing-rule resolution. The body shape they get back has no place to
+// surface this; headers do.
+func TestApplyBifrostResponseHeaders(t *testing.T) {
+	t.Run("routed identity emits all headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newTestBifrostContext()
+
+		extra := schemas.BifrostResponseExtraFields{
+			Provider:               schemas.Bedrock,
+			OriginalModelRequested: "claude-sonnet-4-6",
+			ResolvedModelUsed:      "us.anthropic.claude-sonnet-4-6",
+			RequestType:            schemas.ChatCompletionRequest,
+			ProviderResponseHeaders: map[string]string{
+				"x-amzn-requestid": "req-789",
+			},
+		}
+
+		applyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+
+		assert.Equal(t, "bedrock", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
+		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
+		assert.Equal(t, string(schemas.ChatCompletionRequest), string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
+		assert.Equal(t, "req-789", string(ctx.Response.Header.Peek("x-amzn-requestid")))
+		// No fallback fired — header must be absent.
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+	})
+
+	t.Run("fallback index from context emits when non-zero", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newTestBifrostContext()
+		bifrostCtx.SetValue(schemas.BifrostContextKeyFallbackIndex, 2)
+
+		extra := schemas.BifrostResponseExtraFields{
+			Provider:          schemas.Anthropic,
+			ResolvedModelUsed: "claude-haiku-4-5",
+		}
+
+		applyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+
+		assert.Equal(t, "2", string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+	})
+
+	t.Run("zero-value extra writes no headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newTestBifrostContext()
+
+		applyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{})
+
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+	})
+
+	t.Run("primary-provider success (FallbackIndex=0) does not emit fallback header", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newTestBifrostContext()
+		bifrostCtx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
+
+		applyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+		})
+
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)),
+			"FallbackIndex=0 means primary succeeded; absence of header is the signal")
+	})
+}

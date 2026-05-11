@@ -758,6 +758,8 @@ paths:
   # MCP Logs
   /api/mcp-logs:
     $ref: './paths/management/logging.yaml#/mcp-logs'
+  /api/mcp-logs/{id}:
+    $ref: './paths/management/logging.yaml#/mcp-logs-by-id'
   /api/mcp-logs/stats:
     $ref: './paths/management/logging.yaml#/mcp-logs-stats'
   /api/mcp-logs/filterdata:

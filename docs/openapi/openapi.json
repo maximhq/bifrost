@@ -32196,7 +32196,7 @@
       "put": {
         "operationId": "editMCPClient",
         "summary": "Edit MCP client",
-        "description": "Updates an existing MCP client's configuration.\nUnlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.\nOptionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.\n",
+        "description": "Updates an existing MCP client's configuration.\nUnlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.\nOptionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.\nSet disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.\n",
         "tags": [
           "MCP"
         ],
@@ -32316,6 +32316,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "When true, this MCP client's tools are accessible to all virtual keys without requiring\nexplicit per-key assignment. All tools are allowed by default. If a virtual key has an\nexplicit MCP config for this client, that config takes precedence and overrides this behaviour.\n"
+                  },
+                  "disabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, the client's connection, health monitor, and tool syncer are shut down.\nThe client entry is preserved so it can be re-enabled later by sending disabled: false.\nDisabled clients do not expose tools to inference requests.\n"
                   },
                   "vk_configs": {
                     "type": "array",
@@ -38665,6 +38670,146 @@
         }
       }
     },
+    "/api/mcp-logs/{id}": {
+      "get": {
+        "operationId": "getMCPLogById",
+        "summary": "Get MCP tool log by ID",
+        "description": "Retrieves a single MCP tool execution log by ID, including hydrated object-storage payloads when configured.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP tool log ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP tool log found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "MCP tool execution log entry",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Unique identifier for the log entry"
+                    },
+                    "llm_request_id": {
+                      "type": "string",
+                      "description": "Links to the LLM request that triggered this tool call"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "When the tool execution started"
+                    },
+                    "tool_name": {
+                      "type": "string",
+                      "description": "Name of the MCP tool that was executed"
+                    },
+                    "server_label": {
+                      "type": "string",
+                      "description": "Label of the MCP server that provided the tool"
+                    },
+                    "virtual_key_id": {
+                      "type": "string",
+                      "description": "ID of the virtual key used for this tool execution"
+                    },
+                    "virtual_key_name": {
+                      "type": "string",
+                      "description": "Name of the virtual key used for this tool execution"
+                    },
+                    "arguments": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Tool execution arguments"
+                    },
+                    "result": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Tool execution result"
+                    },
+                    "error_details": {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    "latency": {
+                      "type": "number",
+                      "description": "Execution time in milliseconds"
+                    },
+                    "cost": {
+                      "type": "number",
+                      "description": "Cost in dollars for this tool execution"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "processing",
+                        "success",
+                        "error"
+                      ],
+                      "description": "Execution status"
+                    },
+                    "metadata": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "When the log entry was created"
+                    },
+                    "virtual_key": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "description": "Full virtual key object (populated when virtual_key_id is set)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp-logs/stats": {
       "get": {
         "operationId": "getMCPLogsStats",
@@ -42514,6 +42659,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "normalized_name": {
+            "type": "string",
+            "description": "Human-readable name derived from the Bifrost datasheet base model (e.g. \"Claude Sonnet 4.5\"). Only present when the model has a matching entry in the Bifrost pricing catalog."
           },
           "deployment": {
             "type": "string"
@@ -54155,9 +54304,11 @@
             "enum": [
               "connected",
               "disconnected",
-              "error"
+              "error",
+              "pending_tools",
+              "disabled"
             ],
-            "description": "Connection state of an MCP client"
+            "description": "Connection state of an MCP client:\n- connected: Client is connected and ready to use\n- disconnected: Client is not connected (will be auto-recovered by health monitor)\n- error: Client is in an unrecoverable error state\n- pending_tools: Connected but tools not yet populated (per-user OAuth clients)\n- disabled: Client has been intentionally disabled; no connection or workers are active\n"
           },
           "vk_configs": {
             "type": "array",
@@ -54287,6 +54438,11 @@
             "type": "boolean",
             "default": false,
             "description": "When true, this MCP client's tools are accessible to all virtual keys without requiring\nexplicit per-key assignment. All tools are allowed by default. If a virtual key has an\nexplicit MCP config for this client, that config takes precedence and overrides this behaviour.\n"
+          },
+          "disabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether the client is intentionally disabled.\nWhen true, the client has no active connection or workers and its tools are not available for inference.\n"
           }
         }
       },

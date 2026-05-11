@@ -346,7 +346,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	};
 
 	return (
-		<Sheet open onOpenChange={onClose}>
+		<Sheet open onOpenChange={(open) => !open && !oauthFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
 				<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<div className="flex w-full items-center justify-between">

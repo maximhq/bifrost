@@ -298,6 +298,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddHasObjectColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHasObjectColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddAttemptTrailColumn(ctx, db); err != nil {
 		return err
 	}
@@ -2411,6 +2414,41 @@ func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddHasObjectColumnToMCPToolLogs adds the has_object boolean column to the mcp_tool_logs table.
+// Used by the hybrid log store to track whether an MCP tool log's payload is stored in object storage.
+func migrationAddHasObjectColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_has_object_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasColumn(&MCPToolLog{}, "has_object") {
+				if err := mgr.AddColumn(&MCPToolLog{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if mgr.HasColumn(&MCPToolLog{}, "has_object") {
+				if err := mgr.DropColumn(&MCPToolLog{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding has_object column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
 func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
@@ -2731,4 +2769,3 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB) error {
 	}
 	return nil
 }
-

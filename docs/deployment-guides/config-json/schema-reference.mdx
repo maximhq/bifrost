@@ -176,7 +176,7 @@ Storage backends. Each has `enabled` (boolean), `type` (string), and `config` (o
 | Store | Types |
 |-------|-------|
 | `config_store` | `"sqlite"`, `"postgres"` |
-| `logs_store` | `"sqlite"`, `"postgres"` (+ optional `object_storage`) |
+| `logs_store` | `"sqlite"`, `"postgres"` (+ optional `object_storage` for LLM and MCP logs) |
 | `vector_store` | `"weaviate"`, `"redis"`, `"qdrant"`, `"pinecone"` (`"redis"` also covers Valkey-compatible endpoints) |
 
 Full documentation: [Storage](/deployment-guides/config-json/storage).

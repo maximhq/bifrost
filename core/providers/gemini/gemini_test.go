@@ -2987,6 +2987,63 @@ func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T
 	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
 }
 
+// Regression: GenAI usageMetadata modality details must include tokenCount even when zero.
+// Some clients (e.g. @ai-sdk/google) validate tokenCount as required and reject missing fields.
+func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T) {
+	bifrostResp := &schemas.BifrostResponsesResponse{
+		Model: "google/gemini-2.5-flash",
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:  0,
+			OutputTokens: 0,
+			TotalTokens:  0,
+			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+				TextTokens:  0,
+				AudioTokens: 0,
+			},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+				TextTokens: 0,
+			},
+		},
+	}
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.NotNil(t, out.UsageMetadata)
+
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+
+	usageMetadata, ok := payload["usageMetadata"].(map[string]any)
+	require.True(t, ok, "usageMetadata should be present")
+
+	candidatesTokensDetails, ok := usageMetadata["candidatesTokensDetails"].([]any)
+	require.True(t, ok, "candidatesTokensDetails should be present")
+	require.NotEmpty(t, candidatesTokensDetails, "candidatesTokensDetails should not be empty")
+
+	firstDetail, ok := candidatesTokensDetails[0].(map[string]any)
+	require.True(t, ok, "first candidatesTokensDetails entry should be an object")
+
+	tokenCount, exists := firstDetail["tokenCount"]
+	require.True(t, exists, "tokenCount should be present even when zero")
+	assert.Equal(t, float64(0), tokenCount)
+
+	promptTokensDetails, ok := usageMetadata["promptTokensDetails"].([]any)
+	require.True(t, ok, "promptTokensDetails should be present")
+	require.NotEmpty(t, promptTokensDetails, "promptTokensDetails should not be empty")
+
+	for i, detail := range promptTokensDetails {
+		detailObj, ok := detail.(map[string]any)
+		require.True(t, ok, "promptTokensDetails entry %d should be an object", i)
+
+		promptTokenCount, exists := detailObj["tokenCount"]
+		require.True(t, exists, "promptTokensDetails entry %d should include tokenCount", i)
+		assert.Equal(t, float64(0), promptTokenCount)
+	}
+}
+
 // TestFunctionCallingConfigModeAny_RoundTrip verifies that FunctionCallingConfigMode.ANY and
 // AllowedFunctionNames survive the Gemini→Bifrost→Gemini round-trip on the GenAI passthrough path.
 // Regression: ANY was silently downgraded to AUTO (missing case in convertGeminiToolConfigToToolChoice)
