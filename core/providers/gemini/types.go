@@ -1870,7 +1870,7 @@ type ModalityTokenCount struct {
 	// Optional. The modality associated with this token count.
 	Modality Modality `json:"modality,omitempty"`
 	// Number of tokens.
-	TokenCount int32 `json:"tokenCount,omitempty"`
+	TokenCount int32 `json:"tokenCount"`
 }
 
 // GenerateContentResponseUsageMetadata represents usage metadata about response(s).

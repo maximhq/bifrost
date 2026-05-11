@@ -269,28 +269,29 @@ type Config struct {
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
 type LoggerPlugin struct {
-	ctx                   context.Context
-	store                 logstore.LogStore
-	disableContentLogging *bool
-	loggingHeaders        *[]string // Pointer to live config slice for headers to capture in metadata
-	pricingManager        *modelcatalog.ModelCatalog
-	mcpCatalog            *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
-	mu                    sync.Mutex
-	done                  chan struct{}
-	cleanupOnce           sync.Once // Ensures cleanup only runs once
-	wg                    sync.WaitGroup
-	logger                schemas.Logger
-	logCallback           LogCallback
-	mcpToolLogCallback    MCPToolLogCallback // Callback for MCP tool log entries
-	droppedRequests       atomic.Int64
-	cleanupTicker         *time.Ticker          // Ticker for cleaning up old processing logs
-	logMsgPool            sync.Pool             // Pool for reusing LogMessage structs
-	updateDataPool        sync.Pool             // Pool for reusing UpdateLogData structs
-	pendingLogsEntries    sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
-	pendingLogsToInject   sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
-	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
-	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem      chan struct{}         // Limits concurrent deferred usage DB updates
+	ctx                    context.Context
+	store                  logstore.LogStore
+	disableContentLogging  *bool
+	loggingHeaders         *[]string // Pointer to live config slice for headers to capture in metadata
+	pricingManager         *modelcatalog.ModelCatalog
+	mcpCatalog             *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
+	mu                     sync.Mutex
+	done                   chan struct{}
+	cleanupOnce            sync.Once // Ensures cleanup only runs once
+	wg                     sync.WaitGroup
+	logger                 schemas.Logger
+	logCallback            LogCallback
+	mcpToolLogCallback     MCPToolLogCallback // Callback for MCP tool log entries
+	droppedRequests        atomic.Int64
+	cleanupTicker          *time.Ticker          // Ticker for cleaning up old processing logs
+	logMsgPool             sync.Pool             // Pool for reusing LogMessage structs
+	updateDataPool         sync.Pool             // Pool for reusing UpdateLogData structs
+	pendingLogsEntries     sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	pendingLogsToInject    sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
+	pendingMCPLogsToInject sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
+	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
+	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
+	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -1196,49 +1197,43 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		mcpLogID = requestID
 	}
 
-	go func() {
-		entry := &logstore.MCPToolLog{
-			ID:          mcpLogID,
-			RequestID:   requestID,
-			Timestamp:   createdTimestamp,
-			ToolName:    toolName,
-			ServerLabel: serverLabel,
-			Status:      "processing",
-			CreatedAt:   createdTimestamp,
-		}
+	entry := &logstore.MCPToolLog{
+		ID:          mcpLogID,
+		RequestID:   requestID,
+		Timestamp:   createdTimestamp,
+		ToolName:    toolName,
+		ServerLabel: serverLabel,
+		Status:      "processing",
+		CreatedAt:   createdTimestamp,
+	}
 
-		if parentRequestID != "" {
-			entry.LLMRequestID = &parentRequestID
-		}
+	if parentRequestID != "" {
+		entry.LLMRequestID = &parentRequestID
+	}
 
-		if virtualKeyID != "" {
-			entry.VirtualKeyID = &virtualKeyID
-		}
-		if virtualKeyName != "" {
-			entry.VirtualKeyName = &virtualKeyName
-		}
+	if virtualKeyID != "" {
+		entry.VirtualKeyID = &virtualKeyID
+	}
+	if virtualKeyName != "" {
+		entry.VirtualKeyName = &virtualKeyName
+	}
 
-		// Set arguments if content logging is enabled
-		if p.contentLoggingEnabled(ctx) {
-			entry.ArgumentsParsed = arguments
-		}
+	// Set arguments if content logging is enabled
+	if p.contentLoggingEnabled(ctx) {
+		entry.ArgumentsParsed = arguments
+	}
 
-		// Capture configured logging headers and x-bf-lh-* headers into metadata
-		entry.MetadataParsed = p.captureLoggingHeaders(ctx)
+	// Capture configured logging headers and x-bf-lh-* headers into metadata
+	entry.MetadataParsed = p.captureLoggingHeaders(ctx)
 
-		if err := p.store.CreateMCPToolLog(p.ctx, entry); err != nil {
-			p.logger.Warn("Failed to insert initial MCP tool log entry for request %s: %v", requestID, err)
-		} else {
-			// Capture callback under lock, then call it outside the critical section
-			p.mu.Lock()
-			callback := p.mcpToolLogCallback
-			p.mu.Unlock()
+	p.pendingMCPLogsToInject.Store(mcpLogID, entry)
 
-			if callback != nil {
-				callback(entry)
-			}
-		}
-	}()
+	p.mu.Lock()
+	callback := p.mcpToolLogCallback
+	p.mu.Unlock()
+	if callback != nil {
+		callback(entry)
+	}
 
 	return req, nil, nil
 }
@@ -1281,107 +1276,83 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 
-	go func() {
-		updates := make(map[string]interface{})
-
-		// Update virtual key ID and name if they are set (from governance plugin)
-		if virtualKeyID != "" {
-			updates["virtual_key_id"] = virtualKeyID
+	pendingVal, hasPending := p.pendingMCPLogsToInject.LoadAndDelete(mcpLogID)
+	var entry *logstore.MCPToolLog
+	if hasPending {
+		if pending, ok := pendingVal.(*logstore.MCPToolLog); ok {
+			entry = pending
 		}
-		if virtualKeyName != "" {
-			updates["virtual_key_name"] = virtualKeyName
+	}
+	if entry == nil {
+		entry = &logstore.MCPToolLog{
+			ID:        mcpLogID,
+			RequestID: requestID,
+			Timestamp: time.Now().UTC(),
+			Status:    "processing",
+			CreatedAt: time.Now().UTC(),
 		}
+	}
 
-		// Get latency from response ExtraFields
-		if resp != nil {
-			updates["latency"] = float64(resp.ExtraFields.Latency)
+	if virtualKeyID != "" {
+		entry.VirtualKeyID = &virtualKeyID
+	}
+	if virtualKeyName != "" {
+		entry.VirtualKeyName = &virtualKeyName
+	}
+	if resp != nil {
+		latency := float64(resp.ExtraFields.Latency)
+		entry.Latency = &latency
+	}
+
+	success := resp != nil && bifrostErr == nil
+	if success && p.mcpCatalog != nil && resp.ExtraFields.ClientName != "" && resp.ExtraFields.ToolName != "" {
+		if pricingEntry, ok := p.mcpCatalog.GetPricingData(resp.ExtraFields.ClientName, resp.ExtraFields.ToolName); ok {
+			toolCost := pricingEntry.CostPerExecution
+			entry.Cost = &toolCost
+			p.logger.Debug("MCP tool cost for %s.%s: $%.6f", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName, toolCost)
 		}
+	}
 
-		// Calculate MCP tool cost from catalog if available
-		var toolCost float64
-		success := (resp != nil && bifrostErr == nil)
-		if success && resp != nil && p.mcpCatalog != nil && resp.ExtraFields.ClientName != "" && resp.ExtraFields.ToolName != "" {
-			// Use separate client name and tool name fields
-			if pricingEntry, ok := p.mcpCatalog.GetPricingData(resp.ExtraFields.ClientName, resp.ExtraFields.ToolName); ok {
-				toolCost = pricingEntry.CostPerExecution
-				updates["cost"] = toolCost
-				p.logger.Debug("MCP tool cost for %s.%s: $%.6f", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName, toolCost)
-			}
-		}
-
-		if bifrostErr != nil {
-			updates["status"] = "error"
-			// Serialize error details
-			tempEntry := &logstore.MCPToolLog{}
-			tempEntry.ErrorDetailsParsed = bifrostErr
-			if err := tempEntry.SerializeFields(); err == nil {
-				updates["error_details"] = tempEntry.ErrorDetails
-			}
-		} else if resp != nil {
-			updates["status"] = "success"
-			// Store result if content logging is enabled
-			if p.contentLoggingEnabled(ctx) {
-				var result interface{}
-				if resp.ChatMessage != nil {
-					// For ChatMessage, try to parse the content as JSON if it's a string
-					if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
-						contentStr := *resp.ChatMessage.Content.ContentStr
-						var parsedContent interface{}
-						if err := sonic.Unmarshal([]byte(contentStr), &parsedContent); err == nil {
-							// Content is valid JSON, use parsed version
-							result = parsedContent
-						} else {
-							// Content is not valid JSON or failed to parse, store the whole message
-							result = resp.ChatMessage
-						}
+	if bifrostErr != nil {
+		entry.Status = "error"
+		entry.ErrorDetailsParsed = bifrostErr
+	} else if resp != nil {
+		entry.Status = "success"
+		if p.contentLoggingEnabled(ctx) {
+			var result interface{}
+			if resp.ChatMessage != nil {
+				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
+					contentStr := *resp.ChatMessage.Content.ContentStr
+					var parsedContent interface{}
+					if err := sonic.Unmarshal([]byte(contentStr), &parsedContent); err == nil {
+						result = parsedContent
 					} else {
 						result = resp.ChatMessage
 					}
-				} else if resp.ResponsesMessage != nil {
-					result = resp.ResponsesMessage
-				}
-				if result != nil {
-					tempEntry := &logstore.MCPToolLog{}
-					tempEntry.ResultParsed = result
-					if err := tempEntry.SerializeFields(); err == nil {
-						updates["result"] = tempEntry.Result
-					}
-				}
-			}
-		} else {
-			updates["status"] = "error"
-			tempEntry := &logstore.MCPToolLog{}
-			tempEntry.ErrorDetailsParsed = &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: "MCP tool execution returned nil response",
-				},
-			}
-			if err := tempEntry.SerializeFields(); err == nil {
-				updates["error_details"] = tempEntry.ErrorDetails
-			}
-		}
-
-		processingErr := retryOnNotFound(p.ctx, func() error {
-			return p.store.UpdateMCPToolLog(p.ctx, mcpLogID, updates)
-		})
-		if processingErr != nil {
-			p.logger.Warn("failed to process MCP tool log update for request %s: %v", requestID, processingErr)
-		} else {
-			// Capture callback under lock, then perform DB I/O and invoke callback outside critical section
-			p.mu.Lock()
-			callback := p.mcpToolLogCallback
-			p.mu.Unlock()
-
-			if callback != nil {
-				if updatedEntry, getErr := p.store.FindMCPToolLog(p.ctx, mcpLogID); getErr == nil {
-					callback(updatedEntry)
 				} else {
-					p.logger.Warn("failed to find updated entry for callback: %v", getErr)
+					result = resp.ChatMessage
 				}
+			} else if resp.ResponsesMessage != nil {
+				result = resp.ResponsesMessage
+			}
+			if result != nil {
+				entry.ResultParsed = result
 			}
 		}
-	}()
+	} else {
+		entry.Status = "error"
+		entry.ErrorDetailsParsed = &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "MCP tool execution returned nil response",
+			},
+		}
+	}
+
+	p.mu.Lock()
+	callback := p.mcpToolLogCallback
+	p.mu.Unlock()
+	p.enqueueMCPToolLogEntry(entry, callback)
 
 	return resp, bifrostErr, nil
 }

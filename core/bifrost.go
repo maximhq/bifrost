@@ -425,11 +425,14 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 		ctx = bifrost.ctx
 	}
 
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	reqCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ListModelsRequest
 	bifrostReq.ListModelsRequest = req
 
-	resp, err := bifrost.handleRequest(ctx, bifrostReq)
+	resp, err := bifrost.handleRequest(reqCtx, bifrostReq)
 	if err != nil {
 		return nil, err
 	}

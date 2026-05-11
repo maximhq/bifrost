@@ -598,7 +598,7 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra
+    # Provider: okta, entra, keycloak
     provider: ""
     config: {}
       # Okta configuration:
@@ -619,6 +619,16 @@ bifrost:
       # audience: ""
       # appIdUri: ""
       # userIdField: "oid"
+      # teamIdsField: "groups"
+      # rolesField: "roles"
+      #
+      # Keycloak configuration:
+      # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
+      # realm: "bifrost-prod"
+      # clientId: "bifrost"
+      # clientSecret: "env.KEYCLOAK_CLIENT_SECRET"  # supports env. prefix
+      # audience: ""
+      # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,6 +142,113 @@ func TestObjectKey(t *testing.T) {
 	ts := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)
 	key := ObjectKey("bifrost", ts, "req_abc123")
 	assert.Equal(t, "bifrost/logs/2026/04/03/14/req_abc123.json.gz", key)
+}
+
+func TestMCPToolObjectKey(t *testing.T) {
+	ts := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)
+	key := MCPToolObjectKey("bifrost", ts, "mcp_abc123")
+	assert.Equal(t, "bifrost/mcp-logs/2026/04/03/14/mcp_abc123.json.gz", key)
+}
+
+func TestMCPToolLogPayload_RoundTripFullLog(t *testing.T) {
+	vkID := "vk_123"
+	cost := 0.01
+	latency := 42.5
+	entry := &MCPToolLog{
+		ID:             "mcp-1",
+		RequestID:      "req-1",
+		LLMRequestID:   strPtr("llm-1"),
+		Timestamp:      time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC),
+		ToolName:       "search",
+		ServerLabel:    "docs",
+		VirtualKeyID:   &vkID,
+		VirtualKeyName: strPtr("prod-key"),
+		Latency:        &latency,
+		Cost:           &cost,
+		Status:         "success",
+		CreatedAt:      time.Date(2026, 4, 3, 14, 0, 1, 0, time.UTC),
+		ArgumentsParsed: map[string]any{
+			"query": "full input",
+		},
+		ResultParsed: map[string]any{
+			"ok": true,
+		},
+		ErrorDetailsParsed: &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "stored for round trip",
+			},
+		},
+		MetadataParsed: map[string]interface{}{
+			"trace": "abc",
+		},
+	}
+
+	data, err := MarshalMCPToolLogPayload(entry)
+	require.NoError(t, err)
+
+	dbEntry := &MCPToolLog{HasObject: true}
+	err = MergeMCPToolLogPayloadFromJSON(dbEntry, data)
+	require.NoError(t, err)
+
+	assert.True(t, dbEntry.HasObject)
+	assert.Equal(t, entry.ID, dbEntry.ID)
+	assert.Equal(t, entry.RequestID, dbEntry.RequestID)
+	assert.Equal(t, entry.ToolName, dbEntry.ToolName)
+	assert.Equal(t, entry.ServerLabel, dbEntry.ServerLabel)
+	assert.Equal(t, entry.Status, dbEntry.Status)
+	assert.Equal(t, "full input", dbEntry.ArgumentsParsed.(map[string]interface{})["query"])
+	assert.Equal(t, true, dbEntry.ResultParsed.(map[string]interface{})["ok"])
+	assert.Equal(t, "stored for round trip", dbEntry.ErrorDetailsParsed.Error.Message)
+	assert.Equal(t, "abc", dbEntry.MetadataParsed["trace"])
+}
+
+func TestPrepareMCPToolDBEntry_KeepsOnlyInputPreview(t *testing.T) {
+	longInput := ""
+	for i := 0; i < 260; i++ {
+		longInput += "a"
+	}
+	entry := &MCPToolLog{
+		ID:          "mcp-preview",
+		RequestID:   "req-preview",
+		Timestamp:   time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC),
+		ToolName:    "echo",
+		ServerLabel: "local",
+		Status:      "success",
+		ArgumentsParsed: map[string]any{
+			"input": longInput,
+		},
+		ResultParsed: map[string]any{
+			"secret": "large result",
+		},
+		ErrorDetailsParsed: &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "large error",
+			},
+		},
+		MetadataParsed: map[string]interface{}{
+			"trace": "abc",
+		},
+	}
+
+	PrepareMCPToolDBEntry(entry)
+
+	assert.Equal(t, "mcp-preview", entry.ID)
+	assert.Equal(t, "req-preview", entry.RequestID)
+	assert.Equal(t, "echo", entry.ToolName)
+	assert.Equal(t, "local", entry.ServerLabel)
+	assert.Empty(t, entry.Result)
+	assert.Empty(t, entry.ErrorDetails)
+	assert.Nil(t, entry.ResultParsed)
+	assert.Nil(t, entry.ErrorDetailsParsed)
+	assert.NotEmpty(t, entry.Arguments)
+	assert.NotEmpty(t, entry.Metadata)
+
+	var preview string
+	require.NoError(t, sonic.Unmarshal([]byte(entry.Arguments), &preview))
+	assert.Len(t, []rune(preview), 200)
+	assert.Contains(t, preview, `"input":`)
 }
 
 func TestPayloadFieldNames(t *testing.T) {
