@@ -86,6 +86,7 @@ type PrometheusPlugin struct {
 	CostTotal                      *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
+	RequestRetries                 *prometheus.HistogramVec
 	KeyRotationEventsTotal         *prometheus.CounterVec
 	ActiveRequests                 *prometheus.GaugeVec
 	ProviderKeyUp                  *prometheus.GaugeVec
@@ -152,7 +153,6 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		"routing_rule_name",
 		"selected_key_id",
 		"selected_key_name",
-		"number_of_retries",
 		"fallback_index",
 		"team_id",
 		"team_name",
@@ -296,6 +296,15 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
+	bifrostRequestRetries := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_request_retries",
+			Help:    "Number of retries used per request (observed once per request).",
+			Buckets: []float64{0, 1, 2, 3, 5, 10},
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
 	// bifrostKeyRotationEventsTotal counts individual retry/rotation events from the attempt trail.
 	// One observation is emitted per failed attempt (where fail_reason is non-nil), not per request.
 	// Use this to track rate-limit pressure and network-error frequency per provider/key.
@@ -344,6 +353,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CostTotal:                      bifrostCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
+		RequestRetries:                 bifrostRequestRetries,
 		KeyRotationEventsTotal:         bifrostKeyRotationEventsTotal,
 		ActiveRequests:                 bifrostActiveRequests,
 		ProviderKeyUp:                  bifrostProviderKeyUp,
@@ -460,7 +470,6 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"routing_rule_name":   routingRuleName,
 		"selected_key_id":     selectedKeyID,
 		"selected_key_name":   selectedKeyName,
-		"number_of_retries":   strconv.Itoa(numberOfRetries),
 		"fallback_index":      strconv.Itoa(fallbackIndex),
 		"team_id":             teamID,
 		"team_name":           teamName,
@@ -555,6 +564,11 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+
+		// Record retries used for this request. Observed once per request (per the goroutine
+		// guarding around isStreamFinal), so .Sum/.Count map cleanly to "total retry attempts"
+		// and "total requests"; bucket le="0" gives "requests that succeeded on the first try".
+		p.RequestRetries.WithLabelValues(promLabelValues...).Observe(float64(numberOfRetries))
 
 		// Record latency
 		duration := time.Since(startTime).Seconds()

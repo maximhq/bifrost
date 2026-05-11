@@ -53,6 +53,7 @@ type MetricsExporter struct {
 	upstreamLatencySeconds         *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
+	requestRetries                 *syncFloat64Histogram
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -115,12 +116,13 @@ func (c *syncFloat64Counter) Add(ctx context.Context, value float64, opts ...met
 
 // syncFloat64Histogram wraps metric.Float64Histogram with thread-safe lazy initialization
 type syncFloat64Histogram struct {
-	histogram metric.Float64Histogram
-	once      sync.Once
-	name      string
-	desc      string
-	unit      string
-	meter     metric.Meter
+	histogram  metric.Float64Histogram
+	once       sync.Once
+	name       string
+	desc       string
+	unit       string
+	meter      metric.Meter
+	boundaries []float64
 }
 
 func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts ...metric.RecordOption) {
@@ -397,6 +399,14 @@ func (m *MetricsExporter) initMetrics() {
 		meter: m.meter,
 	}
 
+	m.requestRetries = &syncFloat64Histogram{
+		name:       "bifrost_request_retries",
+		desc:       "Number of retries used per request (observed once per request)",
+		unit:       "{retry}",
+		meter:      m.meter,
+		boundaries: []float64{0, 1, 2, 3, 5, 10},
+	}
+
 	// HTTP metrics
 	m.httpRequestsTotal = &syncInt64Counter{
 		name:  "http_requests_total",
@@ -485,6 +495,12 @@ func (m *MetricsExporter) RecordStreamInterTokenLatency(ctx context.Context, lat
 	m.streamInterTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
 }
 
+// RecordRequestRetries records the number of retries used for a single request.
+// Recorded once per request (off the final span), not once per attempt.
+func (m *MetricsExporter) RecordRequestRetries(ctx context.Context, retries float64, attrs ...attribute.KeyValue) {
+	m.requestRetries.Record(ctx, retries, metric.WithAttributes(attrs...))
+}
+
 // RecordHTTPRequest records an HTTP request metric
 func (m *MetricsExporter) RecordHTTPRequest(ctx context.Context, attrs ...attribute.KeyValue) {
 	m.httpRequestsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -505,8 +521,11 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 	m.httpResponseSizeBytes.Record(ctx, sizeBytes, metric.WithAttributes(attrs...))
 }
 
-// BuildBifrostAttributes builds common Bifrost metric attributes
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, numberOfRetries, fallbackIndex int, teamID, teamName, customerID, customerName string) []attribute.KeyValue {
+// BuildBifrostAttributes builds common Bifrost metric attributes.
+// Retry depth is intentionally NOT included here; it is reported via the dedicated
+// bifrost_request_retries histogram (recorded once per request) rather than as a label
+// on every per-attempt counter.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamID, teamName, customerID, customerName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -515,7 +534,6 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("virtual_key_name", virtualKeyName),
 		attribute.String("selected_key_id", selectedKeyID),
 		attribute.String("selected_key_name", selectedKeyName),
-		attribute.Int("number_of_retries", numberOfRetries),
 		attribute.Int("fallback_index", fallbackIndex),
 		attribute.String("team_id", teamID),
 		attribute.String("team_name", teamName),
