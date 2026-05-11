@@ -7,13 +7,13 @@ requires-python = ">=3.11"
 
 dependencies = [
     # Core testing framework
-    "pytest>=7.0.0",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.21.0",
     # Environment and configuration
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.2.2",
     "PyYAML>=6.0",
     # Image processing
-    "Pillow>=9.0.0",
+    "Pillow>=12.2.0",
     # HTTP requests for debugging
     "requests>=2.28.0",
     # Type hints
@@ -24,9 +24,9 @@ dependencies = [
     # AI/ML SDK dependencies
     "openai>=1.30.0",
     "anthropic>=0.25.0",
-    "litellm==1.80.5",
-    "langchain-openai==0.1.0",
-    "langchain-core==0.3.81",
+    "litellm>=1.83.7",
+    "langchain-openai>=1.1.14",
+    "langchain-core>=0.3.85",
     "langchain-anthropic==0.1.0",
     "langchain-google-genai==4.1.1",
     "langchain-mistralai==0.1.0",
@@ -123,4 +123,4 @@ exclude_lines = [
 
 
 [tool.uv]
-exclude-newer = "2026-04-08"
+exclude-newer = "2026-05-11"
