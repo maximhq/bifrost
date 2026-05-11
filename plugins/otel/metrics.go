@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -201,43 +202,51 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	return m, nil
 }
 
-// validateCACertPath validates the CA certificate path to prevent path traversal attacks.
-// It ensures the path is absolute, cleaned of traversal sequences, and exists as a regular file.
-const maxCACertFileSize = 1 << 20 // 1 MB — generous limit for CA cert bundles
+const maxCACertFileSize = 1 << 20 // 1 MB
 
-func validateCACertPath(certPath string) error {
+var allowedCACertDirs = []string{"/etc/", "/usr/", "/opt/", "/var/"}
+
+func validateCACertPath(certPath string) (string, error) {
 	if certPath == "" {
-		return nil
+		return "", nil
 	}
 
 	cleanPath := filepath.Clean(certPath)
 
 	if !filepath.IsAbs(cleanPath) {
-		return fmt.Errorf("TLS CA cert path must be absolute: %s", certPath)
+		return "", fmt.Errorf("TLS CA cert path must be absolute: %s", certPath)
 	}
 
-	if cleanPath != filepath.Clean(filepath.FromSlash(certPath)) {
-		return fmt.Errorf("invalid TLS CA cert path: %s", certPath)
+	allowed := false
+	for _, dir := range allowedCACertDirs {
+		if strings.HasPrefix(cleanPath, dir) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", fmt.Errorf("TLS CA cert path must be under one of %v: %s", allowedCACertDirs, certPath)
 	}
 
-	// Use os.Stat (not Lstat) then verify via Lstat that the direct entry
-	// is not a symlink.  This closes the Lstat→ReadFile TOCTOU window for
-	// the symlink check while still rejecting symlinks.
+	if strings.Contains(cleanPath, "..") {
+		return "", fmt.Errorf("invalid TLS CA cert path: %s", certPath)
+	}
+
 	info, err := os.Lstat(cleanPath)
 	if err != nil {
-		return fmt.Errorf("TLS CA cert path not accessible: %w", err)
+		return "", fmt.Errorf("TLS CA cert path not accessible: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("TLS CA cert path cannot be a symlink: %s", certPath)
+		return "", fmt.Errorf("TLS CA cert path cannot be a symlink: %s", certPath)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("TLS CA cert path is not a regular file: %s", certPath)
+		return "", fmt.Errorf("TLS CA cert path is not a regular file: %s", certPath)
 	}
 	if info.Size() > maxCACertFileSize {
-		return fmt.Errorf("TLS CA cert file too large (%d bytes, max %d)", info.Size(), maxCACertFileSize)
+		return "", fmt.Errorf("TLS CA cert file too large (%d bytes, max %d)", info.Size(), maxCACertFileSize)
 	}
 
-	return nil
+	return cleanPath, nil
 }
 
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
@@ -251,12 +260,11 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 
 	// TLS priority: custom CA > system roots > insecure
 	if config.TLSCACert != "" {
-		// Validate the CA cert path to prevent path traversal attacks
-		if err := validateCACertPath(config.TLSCACert); err != nil {
+		safePath, err := validateCACertPath(config.TLSCACert)
+		if err != nil {
 			return nil, err
 		}
-		// Use custom CA certificate
-		caCert, err := os.ReadFile(config.TLSCACert) // #nosec G304 — path validated by validateCACertPath above
+		caCert, err := os.ReadFile(safePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA cert: %w", err)
 		}
@@ -264,11 +272,10 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 		if !caCertPool.AppendCertsFromPEM(caCert) {
 			return nil, fmt.Errorf("failed to parse CA cert")
 		}
-		tlsConfig := &tls.Config{
+		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(&tls.Config{
 			RootCAs:    caCertPool,
 			MinVersion: tls.VersionTLS12,
-		}
-		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
+		}))
 	} else if config.Insecure {
 		// Skip TLS entirely
 		opts = append(opts, otlpmetrichttp.WithInsecure())
@@ -293,12 +300,11 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 
 	// TLS priority: custom CA > system roots > insecure
 	if config.TLSCACert != "" {
-		// Validate the CA cert path to prevent path traversal attacks
-		if err := validateCACertPath(config.TLSCACert); err != nil {
+		safePath, err := validateCACertPath(config.TLSCACert)
+		if err != nil {
 			return nil, err
 		}
-		// Use custom CA certificate with MinVersion
-		caCert, err := os.ReadFile(config.TLSCACert) // #nosec G304 — path validated by validateCACertPath above
+		caCert, err := os.ReadFile(safePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA cert: %w", err)
 		}

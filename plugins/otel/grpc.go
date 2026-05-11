@@ -26,12 +26,11 @@ func NewOtelClientGRPC(endpoint string, headers map[string]string, tlsCACert str
 	var creds credentials.TransportCredentials
 	// TLS priority: custom CA > system roots > insecure
 	if tlsCACert != "" {
-		// Validate the CA cert path to prevent path traversal attacks
-		if err := validateCACertPath(tlsCACert); err != nil {
+		safePath, err := validateCACertPath(tlsCACert)
+		if err != nil {
 			return nil, err
 		}
-		// Use custom CA certificate with MinVersion
-		caCert, err := os.ReadFile(tlsCACert) // #nosec G304 — path validated by validateCACertPath above
+		caCert, err := os.ReadFile(safePath)
 		if err != nil {
 			return nil, fmt.Errorf("fail to load provided CA cert: %w", err)
 		}
