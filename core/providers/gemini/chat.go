@@ -31,7 +31,11 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		}
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			tools, err := convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			if err != nil {
+				return nil, err
+			}
+			geminiReq.Tools = tools
 
 			// Convert tool choice to tool config
 			if bifrostReq.Params.ToolChoice != nil {
