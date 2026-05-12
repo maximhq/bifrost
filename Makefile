@@ -66,7 +66,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed format ui install-newman run-provider-harness-test run-cli-harness-test
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner
 
 all: help
 
@@ -1076,6 +1076,71 @@ test-all: test-core test-framework test-plugins test-http-transport test test-cl
 		ls -1 $(TEST_REPORTS_DIR)/*.xml 2>/dev/null | sed 's/^/  ✓ /' || $(ECHO) "  No reports found"; \
 		$(ECHO) ""; \
 	fi
+
+test-semantic-cache: ## Run semantic_cache e2e tests (Usage: [CACHE_TYPE=direct|semantic] [RUN_FORCE=0] make test-semantic-cache). RUN_FORCE defaults to 1. Auto-detects trail CLI and wraps the run when present.
+	@cd tests/semanticcache && \
+	case "$$CACHE_TYPE" in \
+		direct) \
+			filter='^(TestPreconditions|TestDirect|TestLifecycle)$$'; \
+			$(ECHO) "$(CYAN)CACHE_TYPE=direct → running preconditions + direct + lifecycle$(NC)"; \
+			;; \
+		semantic) \
+			filter='^(TestPreconditions|TestParaphraseFixtures|TestSemantic|TestLifecycle)$$'; \
+			$(ECHO) "$(CYAN)CACHE_TYPE=semantic → running preconditions + fixtures + semantic + lifecycle$(NC)"; \
+			;; \
+		'') \
+			filter=''; \
+			$(ECHO) "$(CYAN)CACHE_TYPE unset → running all phases$(NC)"; \
+			;; \
+		*) \
+			$(ECHO) "$(RED)CACHE_TYPE=$$CACHE_TYPE invalid; expected 'direct', 'semantic', or unset$(NC)"; \
+			exit 1; \
+			;; \
+	esac; \
+	if command -v trail >/dev/null 2>&1; then \
+		$(ECHO) "$(GREEN)trail detected — wrapping run in 'trail run' (session id will be printed by trail)$(NC)"; \
+		if [ -n "$$filter" ]; then \
+			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v -run "$$filter" ./...; \
+		else \
+			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...; \
+		fi; \
+	else \
+		$(ECHO) "$(YELLOW)trail not on PATH — falling back to direct go test (install 'trail' for capture-based debugging)$(NC)"; \
+		if [ -n "$$filter" ]; then \
+			exec env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v -run "$$filter" ./...; \
+		else \
+			exec env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...; \
+		fi; \
+	fi
+
+test-semantic-cache-complete: ## Run BOTH plugin unit tests + e2e tests for semantic_cache. RUN_FORCE defaults to 1. Wraps everything in trail if available.
+	@if command -v trail >/dev/null 2>&1; then \
+		$(ECHO) "$(GREEN)trail detected — wrapping unit + e2e tests in a single trail session (id printed by trail)$(NC)"; \
+		exec trail run -- $(MAKE) _test-semantic-cache-complete-inner; \
+	else \
+		$(ECHO) "$(YELLOW)trail not on PATH — running tests directly (install 'trail' for capture-based debugging)$(NC)"; \
+		$(MAKE) _test-semantic-cache-complete-inner; \
+	fi
+
+_test-semantic-cache-complete-inner:
+	@$(ECHO) ""
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(CYAN)  Running semantic_cache plugin UNIT tests                 $(NC)"
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@cd plugins/semanticcache && go test -v ./...
+	@$(ECHO) ""
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(GREEN)  Unit tests completed                                     $(NC)"
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) ""
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(CYAN)  Running semantic_cache E2E tests                          $(NC)"
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@cd tests/semanticcache && RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...
+	@$(ECHO) ""
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(GREEN)  E2E tests completed                                      $(NC)"
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 
 test-chatbot: ## Run interactive chatbot integration test (Usage: RUN_CHATBOT_TEST=1 make test-chatbot)
 	@$(EXPOSE_ENV); \
