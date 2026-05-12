@@ -1216,6 +1216,9 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		isEmbedding = true
 	}
 
+	// Determine the effective provider: the x-model-provider header takes precedence,
+	effectiveProvider, _ := schemas.ParseModelString(modelStr, provider)
+
 	headers := extractHeadersFromRequest(ctx)
 	schemas.ExtractAndSetUserAgentFromHeaders(headers, bifrostCtx)
 
@@ -1254,7 +1257,7 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
 			r.IsImageEdit = isImageEditRequest(r)
 		}
-		if !r.IsEmbedding {
+		if !r.IsEmbedding && effectiveProvider == schemas.Gemini {
 			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		}
@@ -1269,15 +1272,19 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		if modelStr != "" {
 			r.Model = modelStr
 		}
-		setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
-		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		if effectiveProvider == schemas.Gemini {
+			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
 		return nil
 	case *gemini.GeminiBatchCreateRequest:
 		if modelStr != "" {
 			r.Model = modelStr
 		}
-		setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
-		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		if effectiveProvider == schemas.Gemini {
+			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
 		return nil
 	}
 
