@@ -165,10 +165,16 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	builtinPlacement := schemas.Ptr(schemas.PluginPlacementBuiltin)
 
-	// 1. Telemetry (always first - tracks everything)
+	// 1. Telemetry (always first - tracks everything).
+	// Default-on: absent PluginConfig entry is treated as enabled, matching pre-#3269 behavior
+	// so upgraders don't silently lose /metrics. Only an explicit Enabled=false disables it.
 	telemetryPluginConfig := s.getPluginConfig(telemetry.PluginName)
-	if telemetryPluginConfig != nil && telemetryPluginConfig.Enabled {
-		s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, telemetryPluginConfig.Config, false)
+	var pluginConfig any
+	if telemetryPluginConfig != nil {
+		pluginConfig = telemetryPluginConfig.Config
+	}
+	if telemetryPluginConfig == nil || telemetryPluginConfig.Enabled {
+		s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, pluginConfig, false)
 	} else {
 		s.markPluginDisabled(telemetry.PluginName)
 	}

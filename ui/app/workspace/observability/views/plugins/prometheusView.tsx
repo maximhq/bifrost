@@ -31,7 +31,7 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 	const currentConfig = useMemo(() => {
 		const telemetryConfig = (selectedPlugin?.config as TelemetryConfig) ?? {};
 		const pushGateway = telemetryConfig.push_gateway ?? {};
-		const metricsEnabled = telemetryConfig.metrics_enabled ?? selectedPlugin?.enabled ?? true;
+		const metricsEnabled = telemetryConfig.metrics_enabled ?? true;
 		return {
 			...pushGateway,
 			metrics_enabled: metricsEnabled,
