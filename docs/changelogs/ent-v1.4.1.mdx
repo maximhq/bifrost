@@ -1,0 +1,150 @@
+---
+title: "v1.4.1"
+description: "Enterprise v1.4.1"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.1">
+
+## Changelog
+
+A focused follow-up to v1.4.0. Headline items: a new Gitleaks-backed **Secrets Detection guardrail**, a **PII Detection** template under the custom-regex guardrail, **finer-grained RBAC** (MCP Tool Groups, MCP Logs, API Keys, Inference, Guardrail Rules), and two paired clustered-governance correctness fixes (ghost nodes + leader-based state sync) that eliminate any possibility of budget and rate-limit drift across pod restarts, scale events, leader changes, and rolling deploys. Picks up the OSS `transports/v1.5.1` base (Azure Entra auth, per-dimension matviews and dimension-scoped filter sidebars, MCP log detail with object-storage offload, `x-bifrost-*` routed-identity response headers, and a wide set of provider/streaming fixes).
+
+## ✨ Features
+
+### Guardrails
+
+- **Secrets Detection Guardrail Provider** - New first-class secrets-detection provider built on the Gitleaks library, with config form, sheet, and view fragments in the UI and a dedicated `secrets.go` plugin path.
+- **PII Detection Template** - Pre-built PII detection template available under the custom-regex guardrail config form for common identifiers.
+- **Guardrail Rules RBAC (UI)** - Create/edit/delete on guardrail rules is now gated by RBAC permission in the UI.
+
+### RBAC & Identity
+
+- **MCP Tool Groups as a Distinct RBAC Resource** - Split out from `MCPGateway` so tool-group create/edit/delete can be governed independently.
+- **MCP Logs as a Dedicated RBAC Resource** - Split out from `MCPGateway` for separate read/manage permissions on MCP log data.
+- **API Keys, Inference, and Related RBAC Resources** - New `APIKeys` and `Inference` RBAC resources; the API keys view enforces permissions; the export button hides (and `onExport` becomes optional) when the user lacks export permission.
+- **Roles Endpoint Mapped to RBAC Resource** - `/roles` now maps to the dedicated RBAC resource instead of falling under `Settings`.
+- **Okta Migration & Probe-Based OAuth2 Discovery** - Okta normalization moved back to probe-based OAuth2 discovery with a backing migration; Okta config form refinements.
+- **Entra User Sync Fixes** - Multiple correctness fixes in the Entra user-sync flow and the Entra form's enable behavior.
+- **SCIM Form Tooltips** - Improved tooltip messages for SCIM form validation and verification.
+
+### Governance & Virtual Keys
+
+- **Assign Existing VK Flow** - New "assign existing virtual key" flow with search and pagination on the assignment surface.
+- **Unpaginated Users & Teams Endpoints** - Users and teams endpoints support no-limit responses for callers that need the full set in one round-trip.
+
+### Audit Log
+
+- **URL-State Filters & Pagination** - Audit log filters and pagination state are persisted in URL query params, so views are linkable and reload-stable.
+
+### OSS Base (transports/v1.5.1, core/v1.5.9, framework/v1.3.9)
+
+- **Azure Entra Auth on Transport** - `client_id`, `client_secret`, `tenant_id`, `scopes` added to the Azure transport schema; `api_version` is now optional.
+- **`x-bifrost-*` Response Headers** - Routed identity (provider, model, key alias, etc.) surfaced as response headers.
+- **Per-Dimension Matviews & Filterdata Caching** - `mv_logs_filterdata` split into per-dimension matviews with single-flight filterdata response caching; configurable `matviewRefreshInterval`.
+- **Dimension-Scoped Filter Sidebars** - `?dimensions=` query param for filter-data endpoints with a time-window hybrid matview gate; scoped dimension fetching for log and MCP filter sidebars.
+- **MCP Log Detail + Object Storage** - New MCP log detail endpoint with object-storage payload offload, batch logging for MCP logs, and a detail view in the UI.
+- **Normalized Model Names** - `ListModels` response now includes a `normalized_name` field.
+- **Azure Blob Batch Storage** - Azure blob fields available for the batch API.
+- **WebSocket Tickets Without Storage** - WS tickets are issued without backing storage.
+- **OTEL Retry Count + Cached Token Details** - New retries metric and cached-token details for the Responses API in OTEL exports.
+- **Bedrock Region from Model Name** - Region is extracted from the model name when passing through Bedrock models.
+- **ListModels Removed from Rate-Limit/Quota Path** - Governance no longer invokes `ListModels` for rate-limit and quota checks (latency and reliability win on the hot path).
+- **`x-operation-id` Approval Flow** - Approval flow added for operation IDs.
+- **xhigh Effort Mapping** - `xhigh` reasoning effort mapping added for GPT 5.4+.
+- **JSON Log Detail Rendering** - JSON text content rendered as formatted code in the log detail view.
+- **UBI9 Docker Builds** - UBI9 amd64/arm64 Docker build and multi-arch manifest jobs added to the release pipeline.
+- **Prometheus Plugin Cleanup** - System metrics removed from the Prometheus plugin; additional metric types added.
+
+## 🐞 Fixed
+
+### Governance & Cluster Correctness
+
+- **Ghost-Node Mechanism for Cluster Governance** - Prevents budget and rate-limit drift in multi-node deployments. When a node stops gossiping for 30s (pod reschedule, network blip, rolling restart), its usage data is moved into a "ghost" set instead of being deleted, so the leader keeps counting it. Ghosts are resurrected if the node returns, and ghost entries are dropped granularly when the relevant budget or rate-limit reset fires. Fixes both budget overshoot and spurious rate-limiting under cluster churn.
+- **Leader-Based Governance State Sync** - Pairs with the ghost-node fix to eliminate the second source of cluster drift, baseline misalignment after topology changes. After every leader election, non-leader pods request the leader's governance state (DB baselines, ghost node list, remote node deltas) over the cluster channel and apply it before serving traffic, so every pod computes the same `cluster total = local + sum(remote deltas)` from the same baseline. Includes leader-change detection on the broadcast tick (auto re-syncs when the leader pod is replaced), retry-with-timeout when the new leader is still warming up, targeted responses with `target_node_id`, self-ghost filtering, and a "skip DB reload on re-election for existing cluster members" rule that prevents reintroducing skew. Non-leaders return a transient error from governance checks until `IsReady()` flips. Validated under a 7-test kind-cluster suite covering single-pod kills, leader kill, scale 3 to 1 to 3, simultaneous 2-pod loss, and full rolling restart, all of which converged to identical state across pods.
+- **Audit Log Nested Governance Routes** - Target and tag extraction now correctly handles nested governance route paths.
+- **`addConfigHashColumns` & `addSCIMProviderConfigHashColumn` Ordering** - Reordered to land cleanly on installs that ran the original migration set.
+
+### OSS Streaming, Providers & Storage (from base bump)
+
+- **PostgreSQL `\^@` Sanitization** - JSON is sanitized of `\^@` before `jsonb` storage and list queries.
+- **Lock-Safe Matview Maintenance** - Batched updates, `CONCURRENTLY` indexes, and advisory locks for matview and migration maintenance.
+- **`pg_advisory_lock` Retry + Timeout** - Replaces the blocking call to prevent indefinite startup hangs.
+- **RDB Deadlocks in Rate-Limit Path** - Resolved.
+- **Empty MCP Config** - Returns an empty config instead of `nil` when no clients are configured.
+- **Bedrock Reasoning Display** - Reasoning display shorthand corrected; `display=summarized` set for Responses on Bedrock.
+- **Opus 4.7 Reasoning Default** - Defaults to `display=summarized`.
+- **Gemini Image Size Casing** - Removed lowercase normalization on image size in Gemini image requests.
+- **Gemini JSON Schema for Vertex** - Union types normalized for Vertex compatibility.
+- **Gemini Video Download** - Fixed.
+- **Gemini `tokenCount`** - Always included in modality usage details.
+- **Claude Code Native Converters Fallback** - Falls back to native converters when an output format is set on the Vertex messages API.
+- **Tool Choice `any` in GenAI** - Handled in the GenAI roundtrip.
+- **OTEL `anyOf` Schema** - Uses `anyOf` instead of `oneOf` to validate `host:port` format on the gRPC schema correctly.
+- **OAuth Flow Preservation** - `oauthFlow` is no longer cleared on OAuth error.
+- **MCP OAuth Window Null** - Fixed.
+- **Governance Video/Passthrough Types** - Updated for request types that do not require a `model` field.
+- **Custom Provider Sheet Layout** - Sticky header/footer with proper padding and a scrollable content area.
+- **Empty Filter Section Visibility** - Filter sections no longer hide when opened with empty data.
+- **Config JSON Client Credentials** - `client_id` / `client_secret` restored in the config JSON output.
+- **`scim_config` Keycloak Alignment** - Schema aligned with the documented Keycloak provider.
+- **Docker Volume Path** - Aligned with the configured app directory.
+- **Plugin Trace-Attribute Flow** - `context.SetTraceAttribute` flow updated across all plugins.
+
+## 📀 Base OSS version
+
+`transports/v1.5.1`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.2
+
+require (
+	cloud.google.com/go/bigquery v1.74.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2 v1.41.5
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.28.2
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.9
+	github.com/maximhq/bifrost/framework v1.3.9
+	github.com/maximhq/bifrost/plugins/governance v1.5.9
+	github.com/maximhq/bifrost/plugins/prompts v1.0.9
+	github.com/maximhq/bifrost/transports v1.5.1
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	github.com/zricethezav/gitleaks/v8 v8.30.1
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.274.0
+	google.golang.org/grpc v1.80.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>
