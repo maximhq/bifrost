@@ -1103,11 +1103,18 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
 	}
-	var cacheHandler *handlers.CacheHandler
-	semanticCachePlugin, _ := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
-	if semanticCachePlugin != nil {
-		cacheHandler = handlers.NewCacheHandler(semanticCachePlugin)
-	}
+	// Resolve the semantic_cache plugin per request so plugin reloads via
+	// /api/plugins are honored — the previous boot-time capture left stale
+	// references and (worse) skipped route registration entirely when the
+	// plugin wasn't in config.json at startup, causing 405 on all cache-clear
+	// endpoints for the process lifetime.
+	cacheHandler := handlers.NewCacheHandler(func() handlers.CacheClearer {
+		p, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
+		if err != nil || p == nil {
+			return nil
+		}
+		return p
+	})
 	var promptsReloader handlers.PromptCacheReloader
 	if promptsPlugin, err := lib.FindPluginAs[handlers.PromptCacheReloader](s.Config, s.getPromptsPluginName()); err == nil && promptsPlugin != nil {
 		promptsReloader = promptsPlugin
@@ -1152,9 +1159,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if promptsHandler != nil {
 		promptsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
-	if cacheHandler != nil {
-		cacheHandler.RegisterRoutes(s.Router, middlewares...)
-	}
+	cacheHandler.RegisterRoutes(s.Router, middlewares...)
 	if governanceHandler != nil {
 		governanceHandler.RegisterRoutes(s.Router, middlewares...)
 	}

@@ -11,10 +11,10 @@ import (
 // fakeCacheClearer records calls and returns configured errors so the handler
 // branches can be exercised without a real semantic cache plugin.
 type fakeCacheClearer struct {
-	clearByID    func(string) error
-	clearByKey   func(string) error
-	idCalls      []string
-	keyCalls     []string
+	clearByID  func(string) error
+	clearByKey func(string) error
+	idCalls    []string
+	keyCalls   []string
 }
 
 func (f *fakeCacheClearer) ClearCacheForCacheID(id string) error {
@@ -41,13 +41,19 @@ func newCacheCtx(userKey, userVal string) *fasthttp.RequestCtx {
 	return ctx
 }
 
+// newCacheHandler builds a CacheHandler whose resolver always returns the
+// given fake — mimics a steady-state "plugin loaded" environment.
+func newCacheHandler(clearer CacheClearer) *CacheHandler {
+	return NewCacheHandler(func() CacheClearer { return clearer })
+}
+
 // -----------------------------------------------------------------------------
 // clearCache (DELETE /api/cache/clear/{cacheId})
 // -----------------------------------------------------------------------------
 
 func TestClearCache_OK(t *testing.T) {
 	clearer := &fakeCacheClearer{}
-	h := &CacheHandler{plugin: clearer}
+	h := newCacheHandler(clearer)
 
 	ctx := newCacheCtx("cacheId", "abc-123")
 	h.clearCache(ctx)
@@ -62,7 +68,7 @@ func TestClearCache_OK(t *testing.T) {
 
 func TestClearCache_RejectsEmptyID(t *testing.T) {
 	clearer := &fakeCacheClearer{}
-	h := &CacheHandler{plugin: clearer}
+	h := newCacheHandler(clearer)
 
 	ctx := newCacheCtx("cacheId", "")
 	h.clearCache(ctx)
@@ -77,7 +83,7 @@ func TestClearCache_RejectsEmptyID(t *testing.T) {
 
 func TestClearCache_MissingUserValue(t *testing.T) {
 	clearer := &fakeCacheClearer{}
-	h := &CacheHandler{plugin: clearer}
+	h := newCacheHandler(clearer)
 
 	// No user value set at all (simulates a routing misconfiguration).
 	ctx := &fasthttp.RequestCtx{}
@@ -92,7 +98,7 @@ func TestClearCache_PluginErrorReturns500(t *testing.T) {
 	clearer := &fakeCacheClearer{
 		clearByID: func(string) error { return errors.New("store unavailable") },
 	}
-	h := &CacheHandler{plugin: clearer}
+	h := newCacheHandler(clearer)
 
 	ctx := newCacheCtx("cacheId", "abc-123")
 	h.clearCache(ctx)
@@ -105,13 +111,30 @@ func TestClearCache_PluginErrorReturns500(t *testing.T) {
 	}
 }
 
+// TestClearCache_PluginNotLoaded covers the regression where the handler
+// would 405 (route absent) or panic on a nil pointer when the plugin
+// wasn't loaded at boot. The new resolver-based handler must return 400.
+func TestClearCache_PluginNotLoaded(t *testing.T) {
+	h := NewCacheHandler(func() CacheClearer { return nil })
+
+	ctx := newCacheCtx("cacheId", "abc-123")
+	h.clearCache(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400 when plugin not loaded, got %d", got)
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "semantic_cache plugin is not loaded") {
+		t.Fatalf("expected plugin-not-loaded message, got %s", ctx.Response.Body())
+	}
+}
+
 // -----------------------------------------------------------------------------
 // clearCacheByKey (DELETE /api/cache/clear-by-key/{cacheKey})
 // -----------------------------------------------------------------------------
 
 func TestClearCacheByKey_OK(t *testing.T) {
 	clearer := &fakeCacheClearer{}
-	h := &CacheHandler{plugin: clearer}
+	h := newCacheHandler(clearer)
 
 	ctx := newCacheCtx("cacheKey", "session-42")
 	h.clearCacheByKey(ctx)
@@ -128,12 +151,26 @@ func TestClearCacheByKey_PluginErrorReturns500(t *testing.T) {
 	clearer := &fakeCacheClearer{
 		clearByKey: func(string) error { return errors.New("vector store down") },
 	}
-	h := &CacheHandler{plugin: clearer}
+	h := newCacheHandler(clearer)
 
 	ctx := newCacheCtx("cacheKey", "session-42")
 	h.clearCacheByKey(ctx)
 
 	if got := ctx.Response.StatusCode(); got != fasthttp.StatusInternalServerError {
 		t.Fatalf("expected 500 on plugin error, got %d", got)
+	}
+}
+
+func TestClearCacheByKey_PluginNotLoaded(t *testing.T) {
+	h := NewCacheHandler(func() CacheClearer { return nil })
+
+	ctx := newCacheCtx("cacheKey", "session-42")
+	h.clearCacheByKey(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400 when plugin not loaded, got %d", got)
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "semantic_cache plugin is not loaded") {
+		t.Fatalf("expected plugin-not-loaded message, got %s", ctx.Response.Body())
 	}
 }
