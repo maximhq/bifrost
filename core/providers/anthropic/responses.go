@@ -2,9 +2,12 @@ package anthropic
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -83,11 +86,44 @@ type anthropicToResponsesStreamState struct {
 	// webSearchItemIDs tracks item IDs for WebSearch tools so their argument deltas
 	// can be skipped and regenerated synthetically (with sanitization) at output_item.done.
 	webSearchItemIDs map[string]bool
+
+	// openContentBlockIndices tracks Anthropic content blocks that have started
+	// but have not emitted content_block_stop yet. Anthropic clients expect blocks
+	// to be strictly nested as start -> deltas -> stop, with no overlap.
+	openContentBlockIndices   map[int]bool
+	closedContentBlockIndices map[int]bool
+	openToolBlockIndices      map[int]bool
+	sawToolUse                bool
+
+	// currentMessageID scopes generated Anthropic-safe tool IDs for streaming.
+	// Some OpenAI-compatible providers reuse raw IDs like functions.Bash:0 across
+	// turns, but Anthropic clients expect each streamed tool_use ID to be unique.
+	currentMessageID string
+	streamToolUseIDs map[string]string
 }
 
 type anthropicToResponsesStreamStateKeyType struct{}
 
 var anthropicToResponsesStreamStateKey = anthropicToResponsesStreamStateKeyType{}
+
+const anthropicToolUseIDPrefix = "toolu_"
+
+func normalizeAnthropicToolUseID(id *string, scope *string) *string {
+	if id == nil || *id == "" || strings.HasPrefix(*id, anthropicToolUseIDPrefix) {
+		return id
+	}
+
+	seed := *id
+	if scope != nil && *scope != "" {
+		seed = *scope + ":" + seed
+	}
+
+	sum := sha256.Sum256([]byte(seed))
+	encoded := hex.EncodeToString(sum[:])
+	normalized := anthropicToolUseIDPrefix + encoded[:24]
+
+	return &normalized
+}
 
 // getOrCreateAnthropicToResponsesStreamState returns the per-request conversion state,
 // creating and storing it in ctx on first access.
@@ -98,6 +134,162 @@ func getOrCreateAnthropicToResponsesStreamState(ctx *schemas.BifrostContext) *an
 	state := &anthropicToResponsesStreamState{}
 	ctx.SetValue(anthropicToResponsesStreamStateKey, state)
 	return state
+}
+
+func (state *anthropicToResponsesStreamState) resetForMessage(messageID *string) {
+	if state == nil {
+		return
+	}
+	if state.webSearchItemIDs != nil {
+		clear(state.webSearchItemIDs)
+	}
+	if state.openContentBlockIndices != nil {
+		clear(state.openContentBlockIndices)
+	}
+	if state.closedContentBlockIndices != nil {
+		clear(state.closedContentBlockIndices)
+	}
+	if state.openToolBlockIndices != nil {
+		clear(state.openToolBlockIndices)
+	}
+	if state.streamToolUseIDs != nil {
+		clear(state.streamToolUseIDs)
+	}
+	state.sawToolUse = false
+	state.currentMessageID = ""
+	if messageID != nil {
+		state.currentMessageID = *messageID
+	}
+}
+
+func (state *anthropicToResponsesStreamState) normalizeStreamToolUseID(id *string, outputIndex *int) *string {
+	if id == nil || *id == "" || strings.HasPrefix(*id, anthropicToolUseIDPrefix) {
+		return id
+	}
+	if state == nil {
+		return normalizeAnthropicToolUseID(id, nil)
+	}
+	if state.streamToolUseIDs == nil {
+		state.streamToolUseIDs = make(map[string]string)
+	}
+
+	key := *id
+	if outputIndex != nil {
+		key = fmt.Sprintf("%s:%d", key, *outputIndex)
+	}
+	if normalized, ok := state.streamToolUseIDs[key]; ok {
+		return &normalized
+	}
+
+	seed := *id
+	if state.currentMessageID != "" {
+		seed = state.currentMessageID + ":" + seed
+	}
+	if outputIndex != nil {
+		seed = fmt.Sprintf("%s:%d", seed, *outputIndex)
+	}
+	normalized := normalizeAnthropicToolUseID(&seed, nil)
+	if normalized == nil {
+		return nil
+	}
+	state.streamToolUseIDs[key] = *normalized
+	return normalized
+}
+
+func (state *anthropicToResponsesStreamState) trackOpenContentBlock(index *int, isToolBlock bool) {
+	if state == nil || index == nil {
+		return
+	}
+	if state.openContentBlockIndices == nil {
+		state.openContentBlockIndices = make(map[int]bool)
+	}
+	if state.closedContentBlockIndices == nil {
+		state.closedContentBlockIndices = make(map[int]bool)
+	}
+	state.openContentBlockIndices[*index] = true
+	delete(state.closedContentBlockIndices, *index)
+
+	if !isToolBlock {
+		return
+	}
+	if state.openToolBlockIndices == nil {
+		state.openToolBlockIndices = make(map[int]bool)
+	}
+	state.openToolBlockIndices[*index] = true
+	state.sawToolUse = true
+}
+
+func (state *anthropicToResponsesStreamState) markContentBlockClosed(index *int) {
+	if state == nil || index == nil {
+		return
+	}
+	if state.openContentBlockIndices != nil {
+		delete(state.openContentBlockIndices, *index)
+	}
+	if state.openToolBlockIndices != nil {
+		delete(state.openToolBlockIndices, *index)
+	}
+	if state.closedContentBlockIndices == nil {
+		state.closedContentBlockIndices = make(map[int]bool)
+	}
+	state.closedContentBlockIndices[*index] = true
+}
+
+func (state *anthropicToResponsesStreamState) closeContentBlockEvent(index *int) []*AnthropicStreamEvent {
+	if state == nil || index == nil {
+		return nil
+	}
+	if state.closedContentBlockIndices != nil && state.closedContentBlockIndices[*index] {
+		return nil
+	}
+	if state.openContentBlockIndices == nil || !state.openContentBlockIndices[*index] {
+		return nil
+	}
+	state.markContentBlockClosed(index)
+	idx := *index
+	return []*AnthropicStreamEvent{{
+		Type:  AnthropicStreamEventTypeContentBlockStop,
+		Index: &idx,
+	}}
+}
+
+func (state *anthropicToResponsesStreamState) flushOpenContentBlockStops() []*AnthropicStreamEvent {
+	return state.flushOpenContentBlockStopsBefore(nil)
+}
+
+func (state *anthropicToResponsesStreamState) flushOpenContentBlockStopsBefore(nextIndex *int) []*AnthropicStreamEvent {
+	if state == nil || len(state.openContentBlockIndices) == 0 {
+		return nil
+	}
+	indices := make([]int, 0, len(state.openContentBlockIndices))
+	for index := range state.openContentBlockIndices {
+		if nextIndex != nil && index == *nextIndex {
+			continue
+		}
+		indices = append(indices, index)
+	}
+	if len(indices) == 0 {
+		return nil
+	}
+	sort.Ints(indices)
+
+	events := make([]*AnthropicStreamEvent, 0, len(indices))
+	for _, index := range indices {
+		idx := index
+		events = append(events, &AnthropicStreamEvent{
+			Type:  AnthropicStreamEventTypeContentBlockStop,
+			Index: &idx,
+		})
+		delete(state.openContentBlockIndices, index)
+		if state.openToolBlockIndices != nil {
+			delete(state.openToolBlockIndices, index)
+		}
+		if state.closedContentBlockIndices == nil {
+			state.closedContentBlockIndices = make(map[int]bool)
+		}
+		state.closedContentBlockIndices[index] = true
+	}
+	return events
 }
 
 // acquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
@@ -1425,7 +1617,9 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	case schemas.ResponsesStreamResponseTypeCreated:
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
+		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
 		if bifrostResp.Response != nil {
+			streamState.resetForMessage(bifrostResp.Response.ID)
 			// Use actual usage if available (forwarded from upstream message_start),
 			// otherwise fall back to zeros for non-Anthropic providers
 			var messageUsage *AnthropicUsage
@@ -1461,6 +1655,8 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				streamMessage.Model = bifrostResp.ExtraFields.OriginalModelRequested
 			}
 			streamResp.Message = streamMessage
+		} else {
+			streamState.resetForMessage(nil)
 		}
 	case schemas.ResponsesStreamResponseTypeInProgress:
 		// Skip converting response.in_progress back to avoid duplicate message_start events
@@ -1484,10 +1680,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 			// Build the content_block as tool_use
 			// Note: Computer tool calls should not be converted to thinking blocks
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
 			contentBlock := &AnthropicContentBlock{
 				Type: AnthropicContentBlockTypeToolUse,
-				ID:   bifrostResp.Item.ID,                            // The tool use ID
-				Name: schemas.Ptr(string(AnthropicToolNameComputer)), // "computer"
+				ID:   streamState.normalizeStreamToolUseID(bifrostResp.Item.ID, bifrostResp.OutputIndex), // The tool use ID
+				Name: schemas.Ptr(string(AnthropicToolNameComputer)),                                     // "computer"
 			}
 
 			// Always start with empty input for streaming compatibility
@@ -1597,7 +1794,8 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 							} else {
 								contentBlock.Type = AnthropicContentBlockTypeToolUse
 								if bifrostResp.Item.ResponsesToolMessage != nil {
-									contentBlock.ID = bifrostResp.Item.ResponsesToolMessage.CallID
+									streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+									contentBlock.ID = streamState.normalizeStreamToolUseID(bifrostResp.Item.ResponsesToolMessage.CallID, bifrostResp.OutputIndex)
 									contentBlock.Name = bifrostResp.Item.ResponsesToolMessage.Name
 									// Always start with empty input for streaming compatibility
 									contentBlock.Input = json.RawMessage("{}")
@@ -1637,7 +1835,18 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 		// Generate synthetic input_json_delta events for tool calls with arguments
 		var events []*AnthropicStreamEvent
+		if streamResp.Type == AnthropicStreamEventTypeContentBlockStart && streamResp.ContentBlock != nil {
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			events = append(events, streamState.flushOpenContentBlockStopsBefore(streamResp.Index)...)
+		}
 		events = append(events, streamResp)
+		if streamResp.Type == AnthropicStreamEventTypeContentBlockStart && streamResp.ContentBlock != nil {
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			isToolBlock := streamResp.ContentBlock.Type == AnthropicContentBlockTypeToolUse ||
+				streamResp.ContentBlock.Type == AnthropicContentBlockTypeMCPToolUse ||
+				streamResp.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse
+			streamState.trackOpenContentBlock(streamResp.Index, isToolBlock)
+		}
 
 		// Generate compaction_delta event for compaction items
 		if isCompactionItem(bifrostResp.Item) {
@@ -1697,7 +1906,6 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				events = append(events, deltaEvents...)
 			}
 		}
-
 		return events
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
 		return nil
@@ -1789,8 +1997,15 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			}
 		}
 
-	case schemas.ResponsesStreamResponseTypeContentPartDone:
-		return nil
+	case schemas.ResponsesStreamResponseTypeOutputTextDone,
+		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
+		schemas.ResponsesStreamResponseTypeContentPartDone:
+		indexToUse := bifrostResp.OutputIndex
+		if indexToUse == nil {
+			indexToUse = bifrostResp.ContentIndex
+		}
+		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+		return streamState.closeContentBlockEvent(indexToUse)
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		// Handle WebSearch tool completion with sanitization and synthetic delta generation
@@ -1826,10 +2041,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				Index: indexToUse,
 			}
 			events = append(events, stopEvent)
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			streamState.markContentBlockClosed(indexToUse)
 
 			// Clean up the tracking for this WebSearch item
 			if bifrostResp.Item.ID != nil {
-				streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
 				delete(streamState.webSearchItemIDs, *bifrostResp.Item.ID)
 			}
 
@@ -1914,6 +2130,8 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				stopEvent.Index = bifrostResp.OutputIndex
 			}
 			events = append(events, stopEvent)
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			streamState.markContentBlockClosed(stopEvent.Index)
 
 			// 2. Extract sources and create web_search_tool_result block if sources exist
 			if bifrostResp.Item.ResponsesToolMessage != nil &&
@@ -1976,13 +2194,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			(*bifrostResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall ||
 				*bifrostResp.Item.Type == schemas.ResponsesMessageTypeMCPCall) {
 
-			// Function call or MCP call complete - just emit content_block_stop
-			streamResp.Type = AnthropicStreamEventTypeContentBlockStop
-			if bifrostResp.ContentIndex != nil {
-				streamResp.Index = bifrostResp.ContentIndex
-			} else if bifrostResp.OutputIndex != nil {
-				streamResp.Index = bifrostResp.OutputIndex
-			}
+			// Some OpenAI-compatible providers emit output_item.done before all
+			// argument deltas. Close regular tool blocks at response.completed
+			// instead, after all deltas have been rendered.
+			return nil
 		} else {
 			// For text blocks and other content blocks, emit content_block_stop
 			streamResp.Type = AnthropicStreamEventTypeContentBlockStop
@@ -1992,6 +2207,8 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			} else if bifrostResp.ContentIndex != nil {
 				streamResp.Index = bifrostResp.ContentIndex
 			}
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			return streamState.closeContentBlockEvent(streamResp.Index)
 		}
 	case schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
 		schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
@@ -2005,10 +2222,12 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
+		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+		pendingContentBlockStops := streamState.flushOpenContentBlockStops()
 		// If a message_delta was already emitted from the upstream event, only emit message_stop
 		// to avoid sending a duplicate message_delta to the client.
 		if alreadyEmitted, ok := ctx.Value(schemas.BifrostContextKeyHasEmittedMessageDelta).(bool); ok && alreadyEmitted {
-			return []*AnthropicStreamEvent{streamResp}
+			return append(pendingContentBlockStops, streamResp)
 		}
 		anthropicContentDeltaEvent := &AnthropicStreamEvent{
 			Type: AnthropicStreamEventTypeMessageDelta,
@@ -2020,14 +2239,19 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		// Convert usage from Bifrost to Anthropic
 		if bifrostResp.Response != nil {
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+			stopReason := AnthropicStopReasonEndTurn
 			if bifrostResp.Response.StopReason != nil {
-				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
-					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
-					StopSequence: nil,
-				}
+				stopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)
+			}
+			if streamState.sawToolUse && stopReason == AnthropicStopReasonEndTurn {
+				stopReason = AnthropicStopReasonToolUse
+			}
+			anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
+				StopReason:   schemas.Ptr(stopReason),
+				StopSequence: nil,
 			}
 		}
-		return []*AnthropicStreamEvent{anthropicContentDeltaEvent, streamResp}
+		return append(pendingContentBlockStops, anthropicContentDeltaEvent, streamResp)
 
 	case schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta:
 		// MCP call arguments delta - convert to content_block_delta with input_json
@@ -2053,13 +2277,14 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 	case schemas.ResponsesStreamResponseTypeMCPCallCompleted:
 		// MCP call completed - emit content_block_stop
-		streamResp.Type = AnthropicStreamEventTypeContentBlockStop
 		// Use OutputIndex for global Anthropic indexing
 		if bifrostResp.OutputIndex != nil {
 			streamResp.Index = bifrostResp.OutputIndex
 		} else if bifrostResp.ContentIndex != nil {
 			streamResp.Index = bifrostResp.ContentIndex
 		}
+		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+		return streamState.closeContentBlockEvent(streamResp.Index)
 
 	case schemas.ResponsesStreamResponseTypeMCPCallFailed:
 		// MCP call failed - emit error event
@@ -2852,6 +3077,36 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	var pendingReasoningContentBlocks []AnthropicContentBlock
 	var currentAssistantMessage *AnthropicMessage
 
+	normalizedToolUseIDsByCallID := make(map[string][]string)
+	toolUseIDScope := func(index int, msg *schemas.ResponsesMessage) *string {
+		if msg != nil && msg.ID != nil && *msg.ID != "" {
+			return schemas.Ptr(fmt.Sprintf("%d:%s", index, *msg.ID))
+		}
+		return schemas.Ptr(fmt.Sprintf("%d", index))
+	}
+	recordNormalizedToolUseID := func(callID *string, normalizedID *string) {
+		if callID == nil || *callID == "" || normalizedID == nil || *normalizedID == "" {
+			return
+		}
+		normalizedToolUseIDsByCallID[*callID] = append(normalizedToolUseIDsByCallID[*callID], *normalizedID)
+	}
+	nextNormalizedToolUseID := func(callID *string) *string {
+		if callID == nil || *callID == "" {
+			return nil
+		}
+		ids := normalizedToolUseIDsByCallID[*callID]
+		if len(ids) == 0 {
+			return normalizeAnthropicToolUseID(callID, nil)
+		}
+		normalized := ids[0]
+		if len(ids) == 1 {
+			delete(normalizedToolUseIDsByCallID, *callID)
+		} else {
+			normalizedToolUseIDsByCallID[*callID] = ids[1:]
+		}
+		return &normalized
+	}
+
 	// Track tool call IDs for each assistant turn to properly match tool results
 	// Each assistant turn that contains tool_use blocks should have its tool results
 	// grouped in a corresponding user message
@@ -3039,8 +3294,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				pendingReasoningContentBlocks = nil
 			}
 
-			toolUseBlock := convertBifrostFunctionCallToAnthropicToolUse(ctx, &msg)
+			toolUseBlock := convertBifrostFunctionCallToAnthropicToolUse(ctx, &msg, toolUseIDScope(i, &msg))
 			if toolUseBlock != nil {
+				if msg.ResponsesToolMessage != nil {
+					recordNormalizedToolUseID(msg.ResponsesToolMessage.CallID, toolUseBlock.ID)
+				}
 				// If there was a previous assistant message (text only) that was just added,
 				// and we have no pending tool calls yet, we should merge the tool call into it.
 				// This handles the case where an assistant text message precedes tool calls.
@@ -3099,7 +3357,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			// Accumulate tool result blocks - they will be merged into a single user message
 			// This is required because Anthropic/Bedrock expect all tool results for parallel
 			// tool calls to be in the same user message, in the same order as the tool calls
-			toolResultBlock := convertBifrostFunctionCallOutputToAnthropicToolResultBlock(&msg)
+			var normalizedToolUseID *string
+			if msg.ResponsesToolMessage != nil {
+				normalizedToolUseID = nextNormalizedToolUseID(msg.ResponsesToolMessage.CallID)
+			}
+			toolResultBlock := convertBifrostFunctionCallOutputToAnthropicToolResultBlock(&msg, normalizedToolUseID)
 			if toolResultBlock != nil {
 				pendingToolResultBlocks = append(pendingToolResultBlocks, *toolResultBlock)
 			}
@@ -3133,8 +3395,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				pendingReasoningContentBlocks = nil
 			}
 
-			computerToolUseBlock := convertBifrostComputerCallToAnthropicToolUse(&msg)
+			computerToolUseBlock := convertBifrostComputerCallToAnthropicToolUse(&msg, toolUseIDScope(i, &msg))
 			if computerToolUseBlock != nil {
+				if msg.ResponsesToolMessage != nil {
+					recordNormalizedToolUseID(msg.ResponsesToolMessage.CallID, computerToolUseBlock.ID)
+				}
 				pendingToolCalls = append(pendingToolCalls, *computerToolUseBlock)
 
 				// Track the tool call ID for matching with tool results
@@ -3319,7 +3584,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			flushPendingToolCallsWithTracking()
 
 			// Accumulate computer call output with other tool results
-			computerResultBlock := convertBifrostComputerCallOutputToAnthropicToolResultBlock(&msg)
+			var normalizedToolUseID *string
+			if msg.ResponsesToolMessage != nil {
+				normalizedToolUseID = nextNormalizedToolUseID(msg.ResponsesToolMessage.CallID)
+			}
+			computerResultBlock := convertBifrostComputerCallOutputToAnthropicToolResultBlock(&msg, normalizedToolUseID)
 			if computerResultBlock != nil {
 				pendingToolResultBlocks = append(pendingToolResultBlocks, *computerResultBlock)
 			}
@@ -4253,16 +4522,14 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 }
 
 // convertBifrostFunctionCallToAnthropicToolUse converts a Bifrost function call to Anthropic tool use
-func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage) *AnthropicContentBlock {
+func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, toolUseIDScope *string) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil {
 		toolUseBlock := AnthropicContentBlock{
 			Type:         AnthropicContentBlockTypeToolUse,
 			CacheControl: msg.CacheControl,
 		}
 
-		if msg.ResponsesToolMessage.CallID != nil {
-			toolUseBlock.ID = msg.ResponsesToolMessage.CallID
-		}
+		toolUseBlock.ID = normalizeAnthropicToolUseID(msg.ResponsesToolMessage.CallID, toolUseIDScope)
 		if msg.ResponsesToolMessage.Name != nil {
 			toolUseBlock.Name = msg.ResponsesToolMessage.Name
 		}
@@ -4291,11 +4558,14 @@ func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, m
 
 // convertBifrostFunctionCallOutputToAnthropicToolResultBlock converts a Bifrost function call output to a single tool result block
 // This is used to accumulate multiple tool results into a single user message
-func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.ResponsesMessage) *AnthropicContentBlock {
+func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.ResponsesMessage, toolUseID *string) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil {
+		if toolUseID == nil {
+			toolUseID = normalizeAnthropicToolUseID(msg.ResponsesToolMessage.CallID, nil)
+		}
 		toolResultBlock := AnthropicContentBlock{
 			Type:         AnthropicContentBlockTypeToolResult,
-			ToolUseID:    msg.ResponsesToolMessage.CallID,
+			ToolUseID:    toolUseID,
 			CacheControl: msg.CacheControl,
 		}
 
@@ -4322,11 +4592,14 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 
 // convertBifrostComputerCallOutputToAnthropicToolResultBlock converts a Bifrost computer call output to a single tool result block
 // This is used to accumulate multiple tool results into a single user message
-func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.ResponsesMessage) *AnthropicContentBlock {
+func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.ResponsesMessage, toolUseID *string) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
+		if toolUseID == nil {
+			toolUseID = normalizeAnthropicToolUseID(msg.ResponsesToolMessage.CallID, nil)
+		}
 		toolResultBlock := AnthropicContentBlock{
 			Type:      AnthropicContentBlockTypeToolResult,
-			ToolUseID: msg.ResponsesToolMessage.CallID,
+			ToolUseID: toolUseID,
 		}
 
 		// Handle output
@@ -4405,15 +4678,13 @@ func convertBifrostItemReferenceToAnthropicMessage(msg *schemas.ResponsesMessage
 }
 
 // convertBifrostComputerCallToAnthropicToolUse converts a Bifrost computer call to Anthropic tool use
-func convertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage) *AnthropicContentBlock {
+func convertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage, toolUseIDScope *string) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil {
 		toolUseBlock := AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeToolUse,
 			Name: schemas.Ptr(string(AnthropicToolNameComputer)),
 		}
-		if msg.ResponsesToolMessage.CallID != nil {
-			toolUseBlock.ID = msg.ResponsesToolMessage.CallID
-		}
+		toolUseBlock.ID = normalizeAnthropicToolUseID(msg.ResponsesToolMessage.CallID, toolUseIDScope)
 		if msg.ResponsesToolMessage.Name != nil {
 			toolUseBlock.Name = msg.ResponsesToolMessage.Name
 		}
@@ -4603,7 +4874,7 @@ func convertBifrostComputerCallOutputToAnthropicMessage(msg *schemas.ResponsesMe
 	if msg.ResponsesToolMessage != nil {
 		toolResultBlock := AnthropicContentBlock{
 			Type:      AnthropicContentBlockTypeToolResult,
-			ToolUseID: msg.ResponsesToolMessage.CallID,
+			ToolUseID: normalizeAnthropicToolUseID(msg.ResponsesToolMessage.CallID, nil),
 		}
 
 		if msg.ResponsesToolMessage.Output != nil {

@@ -1480,7 +1480,7 @@ type AnthropicStreamDelta struct {
 	Signature    *string                  `json:"signature,omitempty"`
 	Citation     *AnthropicTextCitation   `json:"citation,omitempty"`    // For citations_delta
 	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
-	StopSequence *string                  `json:"stop_sequence"`
+	StopSequence *string                  `json:"stop_sequence,omitempty"`
 }
 
 // ==================== MODEL TYPES ====================
