@@ -174,7 +174,11 @@ Bifrost can automatically sync Okta groups for two purposes:
 
 ### Add Groups Claim to Tokens
 
-This approach adds the groups claim through your authorization server, providing more flexibility for complex configurations.
+The location of the groups claim depends on which authorization server you chose at the top of this guide.
+
+#### If you're using the **Custom Authorization Server** (`authServerType=custom`)
+
+This is the only option for Custom Auth Servers, because app-level Sign On Group Claims are NOT included in tokens issued by `/oauth2/<id>`.
 
 1. Navigate to **Security** → **API** → **Authorization Servers**
 2. Select your authorization server (e.g., **default**)
@@ -192,6 +196,26 @@ Configure the groups claim:
 | **Include in**            | Any scope                                                   |
 
 5. Click **Create**
+
+#### If you're using the **Org Authorization Server** (`authServerType=org`)
+
+The Org Authorization Server only honors **app-level Sign On Group Claims**; auth-server-level claims don't apply.
+
+1. Navigate to **Applications** → **\<your app\>** → **Sign On**
+2. In the **OpenID Connect ID Token** section, click **Edit**
+3. Set **Group claims type** to **Filter** (or **Expression**)
+4. Set **Group claim filter**:
+
+| Field        | Value                                                       |
+| ------------ | ----------------------------------------------------------- |
+| **Name**     | `groups`                                                    |
+| **Filter**   | Matches regex: `.*` (or specify a prefix like `bifrost-.*`) |
+
+5. Click **Save**
+
+<Note>
+The `groups` claim only contains groups the user belongs to AND that match the filter AND that are assigned to the application. Make sure your role/team groups are assigned to the app under **Assignments** (Step 6).
+</Note>
 
 ---
 
@@ -239,6 +263,29 @@ Now configure Bifrost to use Okta as the identity provider.
 
 ### Using the Bifrost UI
 
+
+## Choose your Authorization Server
+
+Okta exposes two authorization server flavors. Bifrost supports both; pick one before you start, because the rest of the setup (especially where you configure the `groups` claim) depends on this choice.
+
+| | **Org Authorization Server** | **Custom Authorization Server** |
+|---|---|---|
+| **Issuer URL** | `https://<your-domain>.okta.com` (bare) | `https://<your-domain>.okta.com/oauth2/default` (or another `/oauth2/<id>`) |
+| **Cost** | Free, available on every Okta tenant | Requires the **API Access Management** add-on (paid on most plans; included with Okta Developer Edition) |
+| **Where to configure the `groups` claim** | **Applications → \<your app\> → Sign On → OpenID Connect ID Token → Group Claims** (app-level) | **Security → API → Authorization Servers → \<id\> → Claims** (auth-server-level). App-level Sign On Group Claims are NOT emitted by Custom Auth Servers. |
+| **Custom claim expressions** (Okta EL) | Not supported | Supported |
+| **Custom audience** (e.g. `api://default`) | Not supported | Supported |
+| **Bifrost attribute-to-role/team/BU mappings** | Works (reads the `groups` claim) | Works (reads the `groups` claim) |
+| **`authServerType` value in Bifrost** | `org` | `custom` |
+
+**If you're not sure, start with Org Authorization Server.** It works on every Okta tenant and supports Bifrost's group-based role mappings via the OIDC app's Sign On Group Claims (the simplest path).
+
+<Warning>
+A common pitfall: configuring the `groups` claim under **Applications → Sign On → Group Claims** while Bifrost is pointed at `https://<tenant>.okta.com/oauth2/default`. Custom Authorization Servers do **not** inherit app-level Sign On claims, so the `groups` claim will be absent from the JWT and Bifrost will reject login with "no role resolvable from claims". Either move the claim to **Security → API → Authorization Servers → default → Claims**, or switch your Bifrost issuer to the bare org URL with `authServerType=org`.
+</Warning>
+
+---
+
 <Frame>
   <img src="/media/user-provisioning/okta-form.png" alt="Create token dialog in Okta" />
 </Frame>
@@ -247,12 +294,13 @@ Now configure Bifrost to use Okta as the identity provider.
 2. Select **Okta** as the SCIM Provider
 3. Enter the following configuration:
 
-| Field             | Value                                                                |
-| ----------------- | -------------------------------------------------------------------- |
-| **Client ID**     | Your Okta application Client ID                                      |
-| **Issuer URL**    | Issuer URL                                                           |
-| **Audience**      | Your API audience (e.g., `api://default` or custom)                  |
-| **Client Secret** | Your Okta application Client Secret (optional, for token revocation) |
+| Field                         | Value                                                                                                                                              |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Issuer URL**                | `https://<your-domain>.okta.com` for Org Authorization Server, or `https://<your-domain>.okta.com/oauth2/default` for Custom Authorization Server. |
+| **Authorization Server**      | `Org` (free, every tenant) or `Custom` (requires API Access Management). Must match the issuer URL; see "Choose your Authorization Server" above. |
+| **Client ID**                 | Your Okta application Client ID                                                                                                                    |
+| **Audience**                  | Only for Custom Authorization Server (e.g., `api://default`). Leave blank for Org Authorization Server.                                            |
+| **Client Secret**             | Your Okta application Client Secret (optional, for token revocation)                                                                               |
 
 4. **Verify** configuration and see if you get any errors. Make sure you get no errors/warnings.
 5. Toggle **Enabled** to activate the provider
@@ -314,15 +362,16 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ### Configuration Reference
 
-| Field                           | Required | Description                                                                         |
-| ------------------------------- | -------- | ----------------------------------------------------------------------------------- |
-| `issuerUrl`                     | Yes      | Okta authorization server URL (e.g., `https://your-domain.okta.com/oauth2/default`) |
-| `clientId`                      | Yes      | Application Client ID from Okta                                                     |
-| `clientSecret`                  | Yes       | Application Client Secret (enables token revocation)                                |
-| `audience`                      | Yes      | API audience identifier from your authorization server                              |
-| `attributeRoleMappings`         | Yes       | Ordered list of attribute→role mappings. First match wins.                           |
-| `attributeTeamMappings`         | No       | Attribute→team mappings (all matches apply).                                        |
-| `attributeBusinessUnitMappings` | No       | Attribute→business-unit mappings (all matches apply).                               |
+| Field                           | Required | Description                                                                                                                                                                                                                  |
+| ------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issuerUrl`                     | Yes      | Bare org URL (`https://<your-domain>.okta.com`) for Org Authorization Server, or `https://<your-domain>.okta.com/oauth2/<id>` for Custom Authorization Server.                                                               |
+| `authServerType`                | Yes      | `"org"` or `"custom"`. Must match the issuer URL shape. Set automatically by the migration for upgraded installs; for new installs the form defaults to `"org"`.                                                            |
+| `clientId`                      | Yes      | Application Client ID from Okta                                                                                                                                                                                              |
+| `clientSecret`                  | No       | Application Client Secret (enables token revocation)                                                                                                                                                                         |
+| `audience`                      | No       | API audience identifier, only for Custom Authorization Server (typically `api://default`). Org Authorization Server does not support a custom audience; leave empty.                                                         |
+| `attributeRoleMappings`         | Yes      | Ordered list of attribute→role mappings. First match wins.                                                                                                                                                                   |
+| `attributeTeamMappings`         | No       | Attribute→team mappings (all matches apply).                                                                                                                                                                                 |
+| `attributeBusinessUnitMappings` | No       | Attribute→business-unit mappings (all matches apply).                                                                                                                                                                        |
 
 
 ---
@@ -349,6 +398,25 @@ You can also map any custom attributes to any entity (role, team or business uni
 ### Attribute mapping is not working
 
 - Verify that token configuration includes all the attributes used for mapping.
+
+### `groups` claim is missing from the JWT
+
+This is the most common Okta integration issue and almost always means the claim is configured in the wrong place for the authorization server you're using.
+
+- **If `authServerType` is `custom`** (issuer ends with `/oauth2/<id>`): the `groups` claim must be configured under **Security → API → Authorization Servers → \<id\> → Claims**. App-level Sign On Group Claims are silently dropped by Custom Authorization Servers.
+- **If `authServerType` is `org`** (bare issuer): the `groups` claim must be configured under **Applications → \<your app\> → Sign On → OpenID Connect ID Token → Group Claims**. Auth-server-level claims are not honored by the Org Authorization Server.
+
+To check what's actually in the token, look at the Bifrost server logs after a failed login. The diagnostic line shows the present claim keys and the auth server type:
+
+```
+rejecting login: no role resolvable from claims userID=... provider=okta authServerType=custom claimKeys=[aud email exp iat iss name preferred_username sub] ...
+```
+
+If the present `claimKeys` list does not include `groups`, fix the claim configuration above and re-test.
+
+### Bifrost upgrades to 1.4.0+: existing Okta provider unexpectedly switched to Org Authorization Server
+
+The 1.4.0 migration probes `/oauth2/default/.well-known/openid-configuration` against your Okta tenant to backfill the new `authServerType` field. If the probe fails (network blip, tenant temporarily unreachable), the field is left empty and Bifrost defaults to `org` at runtime; login keeps working but Custom-Auth-Server-only features (claim expressions, custom audience) stop. The migration retries automatically on the next boot. To force the correct value immediately, edit the SCIM provider in the UI and pick the matching **Authorization Server** option, then save.
 
 ### Token refresh failing
 

@@ -259,8 +259,6 @@ type ProxyConfig struct {
 	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
-
-
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
 	redactedConfig := ProxyConfig{Type: pc.Type}
