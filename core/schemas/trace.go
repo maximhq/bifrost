@@ -164,6 +164,9 @@ const (
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
+	// SpanKindMCPClient represents an MCP client lifecycle operation (connect/ping/list_tools).
+	// These run in the background per-client and are not part of an LLM request flow.
+	SpanKindMCPClient SpanKind = "mcp.client"
 	// SpanKindRetry represents a retry attempt
 	SpanKindRetry SpanKind = "retry"
 	// SpanKindFallback represents a fallback to another provider
