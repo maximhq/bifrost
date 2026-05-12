@@ -226,7 +226,10 @@ func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugin")
 		return
 	}
-	SendJSON(ctx, plugin)
+	// Return the same shape as list/create/update — with runtime status
+	// merged in — so the UI doesn't see an empty status when refetching a
+	// single plugin via useGetPluginQuery.
+	SendJSON(ctx, h.buildPluginResponse(ctx, plugin))
 }
 
 // createPlugin creates a new plugin
