@@ -79,9 +79,10 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 			Content: &schemas.ChatMessageContent{ContentStr: &result},
 		},
 		ExtraFields: schemas.BifrostMCPResponseExtraFields{
-			ClientName: "docs",
-			ToolName:   "search",
-			Latency:    42,
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "docs",
+			ToolName:       "search",
+			Latency:        42,
 		},
 	}, nil)
 	if err != nil {

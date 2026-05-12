@@ -11,11 +11,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.0.4",
-    "zod": "3.25.0"
+    "zod": "3.24.1"
   },
   "devDependencies": {
     "@types/node": "20.0.0",
-    "typescript": "5.0.0"
+    "typescript": "5.9.3"
   },
   "overrides": {
     "hono": "4.12.14"
