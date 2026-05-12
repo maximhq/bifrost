@@ -31,7 +31,6 @@ type Config struct {
 	EmbeddingModel string                `json:"embedding_model,omitempty"` // Model to use for generating embeddings (optional)
 
 	// Plugin behavior settings
-	CleanUpOnShutdown    bool          `json:"cleanup_on_shutdown,omitempty"`    // Clean up cache on shutdown (default: false)
 	TTL                  time.Duration `json:"ttl,omitempty"`                    // Time-to-live for cached responses (default: 5min)
 	Threshold            float64       `json:"threshold,omitempty"`              // Cosine similarity threshold for semantic matching (0 = unset → default 0.8)
 	VectorStoreNamespace string        `json:"vector_store_namespace,omitempty"` // Namespace for vector store (optional)
@@ -683,43 +682,6 @@ func (plugin *Plugin) Cleanup() error {
 	// so any abandoned accumulator added in the window between the last tick
 	// and stopCh is still in memory. This call evicts those before we return.
 	plugin.cleanupOldStreamAccumulators()
-
-	// Only clean up cache entries if configured to do so
-	if !plugin.config.CleanUpOnShutdown {
-		plugin.logger.Debug("Cleanup on shutdown is disabled, skipping cache cleanup")
-		return nil
-	}
-
-	// Clean up all cache entries created by this plugin
-	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
-	defer cancel()
-
-	plugin.logger.Debug("Starting cleanup of cache entries...")
-
-	// Delete all cache entries created by this plugin
-	queries := []vectorstore.Query{
-		{
-			Field:    "from_bifrost_semantic_cache_plugin",
-			Operator: vectorstore.QueryOperatorEqual,
-			Value:    true,
-		},
-	}
-
-	results, err := plugin.store.DeleteAll(ctx, plugin.config.VectorStoreNamespace, queries)
-	if err != nil {
-		return fmt.Errorf("failed to delete cache entries: %w", err)
-	}
-
-	for _, result := range results {
-		if result.Status == vectorstore.DeleteStatusError {
-			plugin.logger.Warn("Failed to delete cache entry: %s", result.Error)
-		}
-	}
-	plugin.logger.Debug("Cleanup completed - deleted all cache entries")
-
-	if err := plugin.store.DeleteNamespace(ctx, plugin.config.VectorStoreNamespace); err != nil {
-		return fmt.Errorf("failed to delete namespace: %w", err)
-	}
 
 	return nil
 }

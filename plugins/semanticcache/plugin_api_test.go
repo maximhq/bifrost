@@ -16,15 +16,15 @@ import (
 // Delete / DeleteAll / DeleteNamespace calls so the tests can assert on the
 // public Clear* APIs and on Cleanup teardown behavior.
 type observableStore struct {
-	mu                sync.Mutex
-	chunks            map[string]vectorstore.SearchResult
-	addIDs            []string
-	deleteIDs         []string
-	deleteAllQueries  [][]vectorstore.Query
-	namespaceDeletes  int
-	deleteAllErr      error
-	deleteErr         error
-	deleteAllResults  []vectorstore.DeleteResult
+	mu               sync.Mutex
+	chunks           map[string]vectorstore.SearchResult
+	addIDs           []string
+	deleteIDs        []string
+	deleteAllQueries [][]vectorstore.Query
+	namespaceDeletes int
+	deleteAllErr     error
+	deleteErr        error
+	deleteAllResults []vectorstore.DeleteResult
 }
 
 func newObservableStore() *observableStore {
@@ -85,10 +85,9 @@ func (s *observableStore) DeleteAll(ctx context.Context, ns string, queries []ve
 }
 func (s *observableStore) Close(ctx context.Context, ns string) error { return nil }
 
-func newTestPlugin(t *testing.T, store vectorstore.VectorStore, cleanupOnShutdown bool) *Plugin {
+func newTestPlugin(t *testing.T, store vectorstore.VectorStore) *Plugin {
 	t.Helper()
 	cfg := getDefaultTestConfig()
-	cfg.CleanUpOnShutdown = cleanupOnShutdown
 	return &Plugin{
 		store:  store,
 		config: cfg,
@@ -102,7 +101,7 @@ func newTestPlugin(t *testing.T, store vectorstore.VectorStore, cleanupOnShutdow
 // -----------------------------------------------------------------------------
 
 func TestClearCacheForCacheID_EmptyIDRejected(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	if err := plugin.ClearCacheForCacheID(""); err == nil {
 		t.Fatal("expected error for empty cache ID")
 	}
@@ -110,7 +109,7 @@ func TestClearCacheForCacheID_EmptyIDRejected(t *testing.T) {
 
 func TestClearCacheForCacheID_PointDelete(t *testing.T) {
 	store := newObservableStore()
-	plugin := newTestPlugin(t, store, false)
+	plugin := newTestPlugin(t, store)
 
 	if err := plugin.ClearCacheForCacheID("cache-abc"); err != nil {
 		t.Fatalf("ClearCacheForCacheID failed: %v", err)
@@ -128,7 +127,7 @@ func TestClearCacheForCacheID_PointDelete(t *testing.T) {
 
 func TestClearCacheForKey_FiltersByCacheKeyAndPluginMarker(t *testing.T) {
 	store := newObservableStore()
-	plugin := newTestPlugin(t, store, false)
+	plugin := newTestPlugin(t, store)
 
 	if err := plugin.ClearCacheForKey("session-42"); err != nil {
 		t.Fatalf("ClearCacheForKey failed: %v", err)
@@ -162,7 +161,7 @@ func TestClearCacheForKey_FiltersByCacheKeyAndPluginMarker(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStampCacheDebugForMiss_AlwaysSetsCacheID(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{}
 	extra := &schemas.BifrostResponseExtraFields{}
 
@@ -184,7 +183,7 @@ func TestStampCacheDebugForMiss_AlwaysSetsCacheID(t *testing.T) {
 }
 
 func TestStampCacheDebugForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{EmbeddingsInputTokens: 42}
 	extra := &schemas.BifrostResponseExtraFields{}
 
@@ -199,7 +198,7 @@ func TestStampCacheDebugForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
 }
 
 func TestStampCacheDebugForMiss_StreamSkipsNonFinalChunks(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{}
 	extra := &schemas.BifrostResponseExtraFields{}
 
@@ -216,7 +215,7 @@ func TestStampCacheDebugForMiss_StreamSkipsNonFinalChunks(t *testing.T) {
 
 func TestCleanup_SkipsEntryDeletionWhenDisabled(t *testing.T) {
 	store := newObservableStore()
-	plugin := newTestPlugin(t, store, false) // CleanUpOnShutdown=false
+	plugin := newTestPlugin(t, store) // CleanUpOnShutdown=false
 
 	if err := plugin.Cleanup(); err != nil {
 		t.Fatalf("Cleanup failed: %v", err)
@@ -232,26 +231,8 @@ func TestCleanup_SkipsEntryDeletionWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestCleanup_DeletesEntriesAndNamespaceWhenEnabled(t *testing.T) {
-	store := newObservableStore()
-	plugin := newTestPlugin(t, store, true) // CleanUpOnShutdown=true
-
-	if err := plugin.Cleanup(); err != nil {
-		t.Fatalf("Cleanup failed: %v", err)
-	}
-
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if len(store.deleteAllQueries) != 1 {
-		t.Fatalf("expected one DeleteAll call, got %d", len(store.deleteAllQueries))
-	}
-	if store.namespaceDeletes != 1 {
-		t.Fatalf("expected one DeleteNamespace call, got %d", store.namespaceDeletes)
-	}
-}
-
 func TestCleanup_DrainsPendingWriters(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	var done atomic.Bool
 	plugin.writersWg.Add(1)
@@ -274,7 +255,7 @@ func TestCleanup_DrainsPendingWriters(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestCleanupOldCacheStates_ReapsOldEntries(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	plugin.cacheStates.Store("old-1", &cacheState{CreatedAt: time.Now().Add(-2 * cacheStateMaxAge)})
 	plugin.cacheStates.Store("old-2", &cacheState{CreatedAt: time.Now().Add(-2 * cacheStateMaxAge)})
@@ -298,7 +279,7 @@ func TestCleanupOldCacheStates_ReapsOldEntries(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestCleanupOldStreamAccumulators_ReapsByLastSeenAt(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	plugin.streamAccumulators.Store("old", &StreamAccumulator{
 		RequestID:  "old",
@@ -324,7 +305,7 @@ func TestCleanupOldStreamAccumulators_ReapsByLastSeenAt(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestBuildStreamingResponseFromResult_ConsumerAbandonment(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	// Build a cached entry with multiple chunks.
 	chunkJSON := `{"chat_response":{"choices":[]}}`

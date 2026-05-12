@@ -198,7 +198,6 @@ bifrostConfig := schemas.BifrostConfig{
         "embedding_model": "text-embedding-3-small",
         "dimension": 1536,
         
-        "cleanup_on_shutdown": true,
         "ttl": "5m",
         "threshold": 0.8,
         
@@ -281,7 +280,6 @@ bifrost:
       config:
         dimension: 1
         ttl: "5m"
-        cleanup_on_shutdown: true
         cache_by_model: true
         cache_by_provider: true
 ```
@@ -299,7 +297,6 @@ bifrost:
       "config": {
         "dimension": 1,
         "ttl": "5m",
-        "cleanup_on_shutdown": true,
         "cache_by_model": true,
         "cache_by_provider": true
       }
@@ -672,15 +669,10 @@ The semantic cache automatically handles cleanup to prevent storage bloat:
 - Restart Bifrost to clear all cache data
 
 <Warning>
-The semantic cache namespace and all its cache entries are deleted when Bifrost client shuts down **only if `cleanup_on_shutdown` is set to `true`**. By default (`cleanup_on_shutdown: false`), cache data persists between restarts. DO NOT use the plugin's namespace for external purposes.
-</Warning>
-
-<Warning>
 **Dimension / Provider / Model Changes**: A vector store namespace can only hold vectors of **one** dimension. If you change `dimension` (or switch to an embedding `provider`/`model` that produces a different vector size), the existing namespace is **not** recreated automatically — `CreateNamespace` is a no-op when the class/collection already exists. Subsequent writes will fail (vector-size mismatch) and reads will silently miss. Before saving the change, either:
 
 - point `vector_store_namespace` at a fresh name, or
 - drop the existing class/index in your vector store, or
-- set `cleanup_on_shutdown: true` and restart so the old namespace is removed first.
 </Warning>
 
 ---
