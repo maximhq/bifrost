@@ -49,33 +49,33 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			startTime := time.Now()
+			// startTime := time.Now()
 			// skip logging if it's a /health check request
 			if slices.IndexFunc(loggingSkipPaths, func(path string) bool {
 				return strings.HasPrefix(string(ctx.RequestURI()), path)
 			}) != -1 {
 				goto corsFlow
 			}
-			defer func() {
-				statusCode := ctx.Response.Header.StatusCode()
-				level := schemas.LogLevelInfo
-				if statusCode >= 500 {
-					level = schemas.LogLevelError
-				} else if statusCode >= 400 {
-					level = schemas.LogLevelWarn
-				}
-				logBuilder := logger.LogHTTPRequest(level, "request completed").
-					Str("http.method", string(ctx.Method())).
-					Str("http.target", string(ctx.RequestURI())).
-					Int("http.status_code", statusCode).
-					Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
-					Str("http.remote_addr", ctx.RemoteAddr().String()).
-					Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
-				if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
-					logBuilder = logBuilder.Str("trace_id", traceID)
-				}
-				logBuilder.Send()
-			}()
+			// defer func() {
+			// 	statusCode := ctx.Response.Header.StatusCode()
+			// 	level := schemas.LogLevelInfo
+			// 	if statusCode >= 500 {
+			// 		level = schemas.LogLevelError
+			// 	} else if statusCode >= 400 {
+			// 		level = schemas.LogLevelWarn
+			// 	}
+			// 	logBuilder := logger.LogHTTPRequest(level, "request completed").
+			// 		Str("http.method", string(ctx.Method())).
+			// 		Str("http.target", string(ctx.RequestURI())).
+			// 		Int("http.status_code", statusCode).
+			// 		Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
+			// 		Str("http.remote_addr", ctx.RemoteAddr().String()).
+			// 		Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
+			// 	if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+			// 		logBuilder = logBuilder.Str("trace_id", traceID)
+			// 	}
+			// 	logBuilder.Send()
+			// }()
 		corsFlow:
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
@@ -808,7 +808,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			}
 			authConfig := m.authConfig.Load()
 			if authConfig == nil || !authConfig.IsEnabled {
-				logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
+				// logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
 				// Mark as local admin so downstream RBAC bypasses cleanly when
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters

@@ -1412,6 +1412,10 @@ type BifrostCacheDebug struct {
 	// Semantic cache only (only when cache is hit)
 	Threshold  *float64 `json:"threshold,omitempty"`
 	Similarity *float64 `json:"similarity,omitempty"`
+
+	// CacheHitLatency is the time in milliseconds spent serving the cache hit
+	// (lookup + response build). Only set when CacheHit is true.
+	CacheHitLatency *int64 `json:"cache_hit_latency,omitempty"`
 }
 
 const (

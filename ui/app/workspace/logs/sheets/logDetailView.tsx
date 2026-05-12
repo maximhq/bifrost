@@ -398,7 +398,7 @@ function HeroStat({
   );
 }
 
-function CopyInlineButton({ text }: { text: string }) {
+function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
   const { copy } = useCopyToClipboard({ successMessage: "Copied" });
   return (
     <button
@@ -409,6 +409,7 @@ function CopyInlineButton({ text }: { text: string }) {
       }}
       className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-6 w-6 items-center justify-center rounded-sm transition"
       aria-label="Copy"
+      data-testid={testId}
     >
       <Clipboard className="h-3.5 w-3.5" />
     </button>
@@ -813,6 +814,22 @@ export function LogDetailView({
                   Async
                 </Badge>
               ) : null}
+              {log.cache_debug?.hit_type === "direct" ? (
+                <Badge
+                  variant="outline"
+                  className="rounded-sm bg-indigo-100 px-2 py-0.5 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200"
+                >
+                  Direct Cache
+                </Badge>
+              ) : null}
+              {log.cache_debug?.hit_type === "semantic" ? (
+                <Badge
+                  variant="outline"
+                  className="rounded-sm bg-rose-100 px-2 py-0.5 text-rose-800 dark:bg-rose-900 dark:text-rose-200"
+                >
+                  Semantic Cache
+                </Badge>
+              ) : null}
               {(log.is_large_payload_request ||
                 log.is_large_payload_response) && (
                   <Badge
@@ -824,33 +841,43 @@ export function LogDetailView({
                 )}
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
+              <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
                 Request
               </div>
               <code className="text-foreground truncate font-mono text-[13px]">
                 {log.id || "—"}
               </code>
-              {log.id ? <CopyInlineButton text={log.id} /> : null}
+              {log.id ? <CopyInlineButton text={log.id} testId="logdetails-copy-request-id-button" /> : null}
             </div>
-            {(log.routing_rule || log.selected_key) && (
-              <div className="text-muted-foreground mt-1 text-[12px]">
-                {log.routing_rule ? (
-                  <>
-                    matched rule{" "}
-                    <span className="text-foreground font-medium">
-                      &ldquo;{log.routing_rule.name}&rdquo;
-                    </span>
-                  </>
-                ) : null}
-                {log.routing_rule && log.selected_key ? " · " : ""}
-                {log.selected_key ? (
-                  <>
-                    key{" "}
-                    <span className="text-foreground font-mono">
-                      {log.selected_key.name}
-                    </span>
-                  </>
-                ) : null}
+            {log.cache_debug?.cache_id && (
+              <div className="mt-1 flex items-center gap-2">
+                <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+                  Cache {log.cache_debug.cache_hit ? "(hit)" : "(miss)"}
+                </div>
+                <code className="text-foreground truncate font-mono text-[13px]">
+                  {log.cache_debug.cache_id}
+                </code>
+                <CopyInlineButton text={log.cache_debug.cache_id} testId="logdetails-copy-cache-id-button" />
+              </div>
+            )}
+            {log.routing_rule && (
+              <div className="mt-1 flex items-center gap-2">
+                <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+                  Rule
+                </div>
+                <span className="text-foreground truncate text-[13px] font-medium">
+                  &ldquo;{log.routing_rule.name}&rdquo;
+                </span>
+              </div>
+            )}
+            {log.selected_key && (
+              <div className="mt-1 flex items-center gap-2">
+                <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+                  Key
+                </div>
+                <code className="text-foreground truncate font-mono text-[13px]">
+                  {log.selected_key.name}
+                </code>
               </div>
             )}
           </div>

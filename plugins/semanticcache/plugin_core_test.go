@@ -10,12 +10,17 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
-// TestSemanticCacheBasicFunctionality tests the core caching functionality
+// TestSemanticCacheBasicFunctionality tests the core caching functionality.
+//
+// Intentionally NOT parallel: the assertions at the bottom of this function
+// enforce wall-clock comparisons (cache must be faster than upstream, with at
+// least 1.5× speedup). Running this in parallel with other integration tests
+// causes CPU/network contention that flakes those ratios.
 func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-basic-value")
+	ctx := CreateContextWithCacheKey(t, "test-basic-value")
 
 	// Create test request
 	testRequest := CreateBasicChatRequest(
@@ -32,7 +37,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
@@ -106,13 +111,14 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 
 // TestSemanticSearch tests the semantic similarity search functionality
 func TestSemanticSearch(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Lower threshold for more flexible matching
 	setup.Config.Threshold = 0.5
 
-	ctx := CreateContextWithCacheKey("semantic-test-value")
+	ctx := CreateContextWithCacheKey(t, "semantic-test-value")
 
 	// First request - this will be cached
 	firstRequest := CreateBasicChatRequest(
@@ -127,7 +133,7 @@ func TestSemanticSearch(t *testing.T) {
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
@@ -209,7 +215,7 @@ func TestSemanticSearch(t *testing.T) {
 func TestToFloat32Embedding(t *testing.T) {
 	input := []float64{0.12345678901234568, -0.875, 1.5}
 
-	got := toFloat32Embedding(input)
+	got := float64ToFloat32Embedding(input)
 
 	if len(got) != len(input) {
 		t.Fatalf("expected %d elements, got %d", len(input), len(got))
@@ -246,13 +252,14 @@ func TestFlattenToFloat32Embedding(t *testing.T) {
 
 // TestDirectVsSemanticSearch tests the difference between direct hash matching and semantic search
 func TestDirectVsSemanticSearch(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Lower threshold for more flexible semantic matching
 	setup.Config.Threshold = 0.2
 
-	ctx := CreateContextWithCacheKey("direct-vs-semantic-test")
+	ctx := CreateContextWithCacheKey(t, "direct-vs-semantic-test")
 
 	// Test Case 1: Exact same request (should use direct hash matching)
 	t.Log("=== Test Case 1: Exact Same Request (Direct Hash Match) ===")
@@ -266,7 +273,7 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 	t.Log("Making first request...")
 	_, err1 := setup.Client.ChatCompletionRequest(ctx, exactRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	WaitForCache(setup.Plugin)
@@ -330,10 +337,11 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 
 // TestNoCacheScenarios tests scenarios where caching should NOT occur
 func TestNoCacheScenarios(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("no-cache-test")
+	ctx := CreateContextWithCacheKey(t, "no-cache-test")
 
 	// Test Case 1: Different parameters should NOT cache hit
 	t.Log("=== Test Case 1: Different Parameters ===")
@@ -344,7 +352,7 @@ func TestNoCacheScenarios(t *testing.T) {
 	request1 := CreateBasicChatRequest(basePrompt, 0.1, 50)
 	_, err1 := setup.Client.ChatCompletionRequest(ctx, request1)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	WaitForCache(setup.Plugin)
@@ -353,7 +361,7 @@ func TestNoCacheScenarios(t *testing.T) {
 	request2 := CreateBasicChatRequest(basePrompt, 0.9, 50) // Different temperature
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
 	if err2 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err2)
 	}
 
 	// Should NOT be cached
@@ -365,17 +373,28 @@ func TestNoCacheScenarios(t *testing.T) {
 	request3 := CreateBasicChatRequest(basePrompt, 0.1, 200) // Different max_tokens
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx, request3)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
-
-	// Should NOT be cached
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
+
+	WaitForCache(setup.Plugin)
+
+	// Make request3 a SECOND time. The miss above could be a miss for the
+	// wrong reason (e.g. caching disabled entirely). A second-call hit
+	// confirms (a) request3's params produce a distinct cache_key from the
+	// earlier requests AND (b) caching itself is functioning under this ctx.
+	response3Again, err := setup.Client.ChatCompletionRequest(ctx, request3)
+	if err != nil {
+		t.Fatalf("Repeat of request3 failed: %v", err)
+	}
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3Again}, string(CacheTypeDirect))
 
 	t.Log("✅ No cache scenarios test completed!")
 }
 
 // TestCacheConfiguration tests different cache configuration options
 func TestCacheConfiguration(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		config           *Config
@@ -408,7 +427,10 @@ func TestCacheConfiguration(t *testing.T) {
 				EmbeddingModel: "text-embedding-3-small",
 				Dimension:      1536,
 				Threshold:      0.8,
-				TTL:            1 * time.Hour, // Custom TTL
+				// Short TTL so the test can verify expiry is honored.
+				// 1h would only verify the configured value didn't crash;
+				// it can't distinguish "TTL applied" from "default TTL applied".
+				TTL: 2 * time.Second,
 			},
 			expectedBehavior: "custom_ttl",
 		},
@@ -419,19 +441,22 @@ func TestCacheConfiguration(t *testing.T) {
 			setup := NewTestSetupWithConfig(t, tt.config)
 			defer setup.Cleanup()
 
-			ctx := CreateContextWithCacheKey("config-test-" + tt.name)
+			ctx := CreateContextWithCacheKey(t, "config-test-"+tt.name)
 
 			// Basic functionality test with the configuration
 			testRequest := CreateBasicChatRequest("Test configuration: "+tt.name, 0.5, 50)
 
-			_, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
+			response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 			if err1 != nil {
-				return // Test will be skipped by retry function
+				t.Skipf("upstream request error, skipping test: %v", err1)
 			}
+			AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
 			WaitForCache(setup.Plugin)
 
-			_, err2 := setup.Client.ChatCompletionRequest(ctx, testRequest)
+			// Second identical request must hit (regardless of which config —
+			// all three configs cache identical requests via the direct path).
+			response2, err2 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 			if err2 != nil {
 				if err2.Error != nil {
 					t.Fatalf("Second request failed: %v", err2.Error.Message)
@@ -439,8 +464,32 @@ func TestCacheConfiguration(t *testing.T) {
 					t.Fatalf("Second request failed: %v", err2)
 				}
 			}
+			AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}, string(CacheTypeDirect))
 
-			t.Logf("✅ Configuration test '%s' completed", tt.name)
+			// Per-config behavioral check.
+			switch tt.expectedBehavior {
+			case "strict_matching":
+				// Threshold=0.95 should still allow direct hits on identical
+				// content (threshold only gates semantic search). Verified above.
+			case "loose_matching":
+				// Same — direct path doesn't use threshold. The relevant check
+				// is that the cache actually wrote (verified above).
+			case "custom_ttl":
+				// Verify Config.TTL was actually honored: wait past expiry
+				// and confirm a third request misses. If the plugin had
+				// fallen back to the default TTL, this would still hit.
+				time.Sleep(tt.config.TTL + 1*time.Second)
+				response3, err3 := setup.Client.ChatCompletionRequest(ctx, testRequest)
+				if err3 != nil {
+					if err3.Error != nil {
+						t.Fatalf("Post-expiry request failed: %v", err3.Error.Message)
+					} else {
+						t.Fatalf("Post-expiry request failed: %v", err3)
+					}
+				}
+				AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
+			}
+			t.Logf("✅ Configuration test '%s' completed (cache write + read verified)", tt.name)
 		})
 	}
 }
@@ -510,7 +559,7 @@ func (m *MockUnsupportedStore) Close(ctx context.Context, namespace string) erro
 
 // TestInvalidProviderRejection tests that providers without embedding support are rejected during initialization
 func TestInvalidProviderRejection(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx := newBaseTestContext()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
 	// Create a mock vector store for testing
@@ -551,7 +600,7 @@ func TestInvalidProviderRejection(t *testing.T) {
 
 // TestValidProviderAccepted tests that providers with embedding support are accepted during initialization
 func TestValidProviderAccepted(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx := newBaseTestContext()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
 	// Create a mock vector store for testing
