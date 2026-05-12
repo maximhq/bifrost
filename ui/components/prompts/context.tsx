@@ -1,5 +1,6 @@
 import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type VariableMap } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
+import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
 import {
 	useDeleteFolderMutation,
 	useDeletePromptMutation,
@@ -55,6 +56,11 @@ interface PromptContextValue {
 	// Jinja2 variables
 	variables: VariableMap;
 	setVariables: React.Dispatch<React.SetStateAction<VariableMap>>;
+
+	// Custom request headers (used to satisfy server-configured required headers)
+	customHeaders: Record<string, string>;
+	setCustomHeaders: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+	requiredHeaders: string[];
 
 	// Sheet states
 	folderSheet: { open: boolean; folder?: Folder };
@@ -155,6 +161,33 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const [isStreaming, setIsStreaming] = useState(false);
 	const activeRunRef = useRef<symbol | null>(null);
 	const [variables, setVariables] = useState<VariableMap>({});
+	const [customHeaders, setCustomHeaders] = useState<Record<string, string>>({});
+
+	// Sync customHeaders keys with the server-configured required_headers list.
+	// Adds new keys (empty), removes keys no longer required, preserves user-entered values.
+	const { data: coreConfig } = useGetCoreConfigQuery({});
+	const requiredHeaders = useMemo<string[]>(() => {
+		const raw = coreConfig?.client_config?.required_headers;
+		if (!Array.isArray(raw)) return [];
+		return raw.map((item) => String(item)).filter((s) => s.length > 0);
+	}, [coreConfig]);
+	useEffect(() => {
+		setCustomHeaders((prev) => {
+			if (requiredHeaders.length === 0) {
+				return Object.keys(prev).length > 0 ? {} : prev;
+			}
+			const next: Record<string, string> = {};
+			let changed = false;
+			for (const name of requiredHeaders) {
+				next[name] = prev[name] ?? "";
+				if (!(name in prev)) changed = true;
+			}
+			for (const name of Object.keys(prev)) {
+				if (!requiredHeaders.includes(name)) changed = true;
+			}
+			return changed ? next : prev;
+		});
+	}, [requiredHeaders]);
 
 	// Fetch model datasheet for capabilities
 	const { data: datasheetData } = useGetModelParametersQuery(model, { skip: !model });
@@ -430,7 +463,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			await executePrompt(
 				messages,
 				pendingMessage,
-				{ provider, model, modelParams, apiKeyId, variables },
+				{ provider, model, modelParams, apiKeyId, variables, customHeaders },
 				{
 					onStreamingStart: (allMessages, placeholder) => {
 						if (!isActive()) return;
@@ -481,7 +514,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			);
 		},
-		[messages, provider, model, modelParams, apiKeyId, variables],
+		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders],
 	);
 
 	const handleSubmitToolResult = useCallback(
@@ -509,7 +542,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			await executePrompt(
 				newMessages,
 				undefined,
-				{ provider, model, modelParams, apiKeyId, variables },
+				{ provider, model, modelParams, apiKeyId, variables, customHeaders },
 				{
 					onStreamingStart: (allMessages, placeholder) => {
 						if (!isActive()) return;
@@ -560,7 +593,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			);
 		},
-		[messages, provider, model, modelParams, apiKeyId, variables],
+		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders],
 	);
 
 	const value: PromptContextValue = {
@@ -592,6 +625,9 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		setApiKeyId,
 		variables,
 		setVariables,
+		customHeaders,
+		setCustomHeaders,
+		requiredHeaders,
 		folderSheet,
 		setFolderSheet,
 		promptSheet,
