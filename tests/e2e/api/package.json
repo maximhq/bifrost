@@ -4,8 +4,8 @@
   "private": true,
   "description": "E2E API test dependencies",
   "dependencies": {
-    "pg": "^8.13.0",
-    "better-sqlite3": "^11.0.0",
+    "pg": "8.13.0",
+    "better-sqlite3": "11.0.0",
     "newman-reporter-dbverify": "file:./newman-reporter-dbverify"
   }
 }

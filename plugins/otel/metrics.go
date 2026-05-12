@@ -114,6 +114,33 @@ func (c *syncFloat64Counter) Add(ctx context.Context, value float64, opts ...met
 	}
 }
 
+// Keep in sync with plugins/telemetry/main.go's identical arrays so the Prometheus
+// and OTel exporters report the same quantile estimates for the same metric.
+var (
+	// upstreamLatencyBuckets: end-to-end / upstream LLM call latency. Top end (900s)
+	// covers reasoning-model and long-context outliers; without these buckets p99
+	// collapses to the highest finite bucket boundary.
+	upstreamLatencyBuckets = []float64{
+		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
+		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
+	}
+
+	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
+	// providers, tens to hundreds of seconds for reasoning models. Purely additive
+	// over the prior SDK-default fallback so historical queries remain valid.
+	firstTokenLatencyBuckets = []float64{
+		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
+		10, 20, 30, 60, 120, 300,
+	}
+
+	// interTokenLatencyBuckets: inter-token latency. Typically single-digit ms to ~1s.
+	// Adds .001 for fast models (Haiku) and keeps 10 at the top so the array is
+	// purely additive over the prior SDK-default fallback.
+	interTokenLatencyBuckets = []float64{
+		.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10,
+	}
+)
+
 // syncFloat64Histogram wraps metric.Float64Histogram with thread-safe lazy initialization
 type syncFloat64Histogram struct {
 	histogram  metric.Float64Histogram
@@ -127,11 +154,18 @@ type syncFloat64Histogram struct {
 
 func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts ...metric.RecordOption) {
 	h.once.Do(func() {
-		var err error
-		h.histogram, err = h.meter.Float64Histogram(h.name,
+		// Explicit boundaries must be set at histogram-creation time; the SDK
+		// default is calibrated for milliseconds and silently collapses our
+		// seconds-valued latencies into +Inf above ~10s without this.
+		histOpts := []metric.Float64HistogramOption{
 			metric.WithDescription(h.desc),
 			metric.WithUnit(h.unit),
-		)
+		}
+		if len(h.boundaries) > 0 {
+			histOpts = append(histOpts, metric.WithExplicitBucketBoundaries(h.boundaries...))
+		}
+		var err error
+		h.histogram, err = h.meter.Float64Histogram(h.name, histOpts...)
 		if err != nil {
 			logger.Error("failed to create histogram %s: %v", h.name, err)
 		}
@@ -379,24 +413,27 @@ func (m *MetricsExporter) initMetrics() {
 	}
 
 	m.upstreamLatencySeconds = &syncFloat64Histogram{
-		name:  "bifrost_upstream_latency_seconds",
-		desc:  "Latency of requests forwarded to upstream providers by Bifrost",
-		unit:  "s",
-		meter: m.meter,
+		name:       "bifrost_upstream_latency_seconds",
+		desc:       "Latency of requests forwarded to upstream providers by Bifrost",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
 	}
 
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
-		name:  "bifrost_stream_first_token_latency_seconds",
-		desc:  "Latency of the first token of a stream response",
-		unit:  "s",
-		meter: m.meter,
+		name:       "bifrost_stream_first_token_latency_seconds",
+		desc:       "Latency of the first token of a stream response",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: firstTokenLatencyBuckets,
 	}
 
 	m.streamInterTokenLatencySeconds = &syncFloat64Histogram{
-		name:  "bifrost_stream_inter_token_latency_seconds",
-		desc:  "Latency of the intermediate tokens of a stream response",
-		unit:  "s",
-		meter: m.meter,
+		name:       "bifrost_stream_inter_token_latency_seconds",
+		desc:       "Latency of the intermediate tokens of a stream response",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: interTokenLatencyBuckets,
 	}
 
 	m.requestRetries = &syncFloat64Histogram{
@@ -416,10 +453,11 @@ func (m *MetricsExporter) initMetrics() {
 	}
 
 	m.httpRequestDuration = &syncFloat64Histogram{
-		name:  "http_request_duration_seconds",
-		desc:  "Duration of HTTP requests",
-		unit:  "s",
-		meter: m.meter,
+		name:       "http_request_duration_seconds",
+		desc:       "Duration of HTTP requests",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
 	}
 
 	m.httpRequestSizeBytes = &syncFloat64Histogram{
