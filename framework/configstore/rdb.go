@@ -3043,7 +3043,8 @@ func (s *RDBConfigStore) GetTeamByName(ctx context.Context, name string, custome
 
 // GetTeamBySourceID retrieves a team by its source ID.
 func (s *RDBConfigStore) GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error) {
-	if strings.TrimSpace(sourceID) == "" {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
 		return nil, ErrNotFound
 	}
 	var team tables.TableTeam
