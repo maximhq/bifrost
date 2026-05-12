@@ -1551,13 +1551,12 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			}
 			seenDurations[b.ResetDuration] = true
 			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        b.MaxLimit,
-				ResetDuration:   b.ResetDuration,
-				LastReset:       budgetLastReset(b.CalendarAligned, b.ResetDuration),
-				CurrentUsage:    0,
-				CalendarAligned: b.CalendarAligned,
-				TeamID:          &team.ID,
+				ID:            uuid.NewString(),
+				MaxLimit:      b.MaxLimit,
+				ResetDuration: b.ResetDuration,
+				LastReset:     budgetLastReset(b.CalendarAligned, b.ResetDuration),
+				CurrentUsage:  0,
+				TeamID:        &team.ID,
 			}
 			if err := validateBudget(&budget); err != nil {
 				return err
@@ -1688,14 +1687,12 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			matchedIDs := make(map[string]bool)
 			for _, b := range req.Budgets {
 				if existing, found := existingByDuration[b.ResetDuration]; found {
-					wasCalendarAligned := existing.CalendarAligned
 					existing.MaxLimit = b.MaxLimit
-					existing.CalendarAligned = b.CalendarAligned
 					// Match the UI's calendar-alignment confirmation promise: on the
 					// false → true transition, snap LastReset to the current period
 					// start and zero out CurrentUsage now, instead of lazily waiting
 					// for the next period boundary in ResetExpiredBudgetsInMemory.
-					if b.CalendarAligned && !wasCalendarAligned {
+					if b.CalendarAligned {
 						existing.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, time.Now())
 						existing.CurrentUsage = 0
 					}
@@ -1709,13 +1706,12 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 					matchedIDs[existing.ID] = true
 				} else {
 					budget := configstoreTables.TableBudget{
-						ID:              uuid.NewString(),
-						MaxLimit:        b.MaxLimit,
-						ResetDuration:   b.ResetDuration,
-						LastReset:       budgetLastReset(b.CalendarAligned, b.ResetDuration),
-						CurrentUsage:    0,
-						CalendarAligned: b.CalendarAligned,
-						TeamID:          &team.ID,
+						ID:            uuid.NewString(),
+						MaxLimit:      b.MaxLimit,
+						ResetDuration: b.ResetDuration,
+						LastReset:     budgetLastReset(b.CalendarAligned, b.ResetDuration),
+						CurrentUsage:  0,
+						TeamID:        &team.ID,
 					}
 					if err := validateBudget(&budget); err != nil {
 						return err
