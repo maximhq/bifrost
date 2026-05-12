@@ -21,6 +21,7 @@ import (
 type BedrockResponsesStreamState struct {
 	ContentIndexToOutputIndex map[int]int    // Maps Bedrock contentBlockIndex to OpenAI output_index
 	ToolArgumentBuffers       map[int]string // Maps output_index to accumulated tool argument JSON
+	TextBuffers               map[int]string // Maps output_index to accumulated assistant text for done events
 	ItemIDs                   map[int]string // Maps output_index to item ID for stable IDs
 	ToolCallIDs               map[int]string // Maps output_index to tool call ID (callID)
 	ToolCallNames             map[int]string // Maps output_index to tool call name
@@ -41,6 +42,7 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 		return &BedrockResponsesStreamState{
 			ContentIndexToOutputIndex: make(map[int]int),
 			ToolArgumentBuffers:       make(map[int]string),
+			TextBuffers:               make(map[int]string),
 			ItemIDs:                   make(map[int]string),
 			ToolCallIDs:               make(map[int]string),
 			ToolCallNames:             make(map[int]string),
@@ -68,6 +70,11 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 		state.ToolArgumentBuffers = make(map[int]string)
 	} else {
 		clear(state.ToolArgumentBuffers)
+	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]string)
+	} else {
+		clear(state.TextBuffers)
 	}
 	if state.ItemIDs == nil {
 		state.ItemIDs = make(map[int]string)
@@ -124,6 +131,11 @@ func (state *BedrockResponsesStreamState) flush() {
 		state.ToolArgumentBuffers = make(map[int]string)
 	} else {
 		clear(state.ToolArgumentBuffers)
+	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]string)
+	} else {
+		clear(state.TextBuffers)
 	}
 	if state.ItemIDs == nil {
 		state.ItemIDs = make(map[int]string)
@@ -664,6 +676,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			// If this is a text delta for a new content block, also emit the text delta in the same batch
 			if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
 				text := *chunk.Delta.Text
+				state.TextBuffers[outputIndex] += text
 				itemID := state.ItemIDs[outputIndex]
 				textDeltaResponse := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
@@ -690,6 +703,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			// Handle text delta
 			text := *chunk.Delta.Text
 			if text != "" {
+				state.TextBuffers[outputIndex] += text
 				itemID := state.ItemIDs[outputIndex]
 				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
@@ -966,22 +980,26 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		} else {
 			// This is likely a text item that needs to be closed
 
-			// Emit output_text.done (without accumulated text, just the event)
-			emptyText := ""
+			// Retrieve accumulated text from the delta buffer so clients that
+			// rehydrate from terminal events see the final message body, not
+			// an empty string.
+			accumulatedText := state.TextBuffers[outputIndex]
+
+			// Emit output_text.done with the accumulated text
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   &contentIndex,
 				ItemID:         &itemID,
-				Text:           &emptyText,
+				Text:           &accumulatedText,
 				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
 			// Emit content_part.done for text
 			part := &schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
+				Text: &accumulatedText,
 				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -996,16 +1014,27 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				Part:           part,
 			})
 
-			// Emit output_item.done for text
+			// Emit output_item.done for text (include the accumulated content)
 			statusCompleted := "completed"
 			messageType := schemas.ResponsesMessageTypeMessage
 			role := schemas.ResponsesInputMessageRoleAssistant
+			doneContentBlocks := []schemas.ResponsesMessageContentBlock{}
+			if accumulatedText != "" {
+				doneContentBlocks = append(doneContentBlocks, schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &accumulatedText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
+				})
+			}
 			doneItem := &schemas.ResponsesMessage{
 				Type:   &messageType,
 				Role:   &role,
 				Status: &statusCompleted,
 				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					ContentBlocks: doneContentBlocks,
 				},
 			}
 			if itemID != "" {
@@ -1132,6 +1161,43 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		} else {
 			response.StopReason = schemas.Ptr("stop")
 		}
+	}
+
+	// Populate Output with the accumulated text items so clients that rehydrate
+	// from response.completed (rather than accumulating deltas themselves) see
+	// the final message body. Tool-call items are materialised separately
+	// during the stream; this reconstructs plain-text items only.
+	for outIdx := 0; outIdx <= state.CurrentOutputIndex; outIdx++ {
+		text, ok := state.TextBuffers[outIdx]
+		if !ok || text == "" {
+			continue
+		}
+		itemID := state.ItemIDs[outIdx]
+		messageType := schemas.ResponsesMessageTypeMessage
+		role := schemas.ResponsesInputMessageRoleAssistant
+		statusCompleted := "completed"
+		textCopy := text
+		item := schemas.ResponsesMessage{
+			Type:   &messageType,
+			Role:   &role,
+			Status: &statusCompleted,
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &textCopy,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						},
+					},
+				},
+			},
+		}
+		if itemID != "" {
+			item.ID = &itemID
+		}
+		response.Output = append(response.Output, item)
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -2837,7 +2903,11 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			}
 
 			// Convert regular message
-			if role == schemas.ResponsesInputMessageRoleSystem {
+			// OpenAI's Responses API permits role="developer" as a system-message
+			// variant. Bedrock Converse rejects anything other than user/assistant,
+			// so fold "developer" into the system-message branch. See:
+			// github.com/maximhq/bifrost/issues/2492
+			if role == schemas.ResponsesInputMessageRoleSystem || role == schemas.ResponsesInputMessageRoleDeveloper {
 				// Convert to system message
 				systemMsgs := convertBifrostMessageToBedrockSystemMessages(&msg)
 				systemMessages = append(systemMessages, systemMsgs...)
@@ -2965,6 +3035,14 @@ func convertBifrostMessageToBedrockMessage(ctx context.Context, msg *schemas.Res
 	// Convert content
 	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, *msg.Content)
 	if err != nil {
+		return nil
+	}
+	// Bedrock Converse rejects messages with null/empty content. Codex CLI emits
+	// placeholder assistant messages with content=[] between tool-call turns,
+	// and historic transcripts may contain messages whose content consisted
+	// entirely of reasoning/metadata blocks that this converter doesn't map.
+	// Drop such messages so upstream callers can emit a coherent sequence.
+	if len(contentBlocks) == 0 {
 		return nil
 	}
 	bedrockMsg.Content = contentBlocks

@@ -591,8 +591,10 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 	for i := 0; i < len(bifrostMessages); i++ {
 		msg := bifrostMessages[i]
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
-			// Convert system message
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
+			// OpenAI's Chat Completions API accepts role="developer" as a
+			// system-message variant. Bedrock Converse rejects it, so fold it
+			// into the system branch. See github.com/maximhq/bifrost/issues/2492
 			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert system message: %w", err)
@@ -604,6 +606,12 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 			bedrockMsg, err := convertMessage(ctx, msg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert message: %w", err)
+			}
+			// Bedrock Converse rejects messages with null/empty content. Skip
+			// user/assistant turns that carry no text, tool calls, or reasoning
+			// (e.g. Codex CLI placeholder assistants between tool-call turns).
+			if len(bedrockMsg.Content) == 0 {
+				continue
 			}
 			messages = append(messages, bedrockMsg)
 
