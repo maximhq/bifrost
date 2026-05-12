@@ -2925,8 +2925,8 @@
       "type": "object",
       "properties": {
         "tool_execution_timeout": {
-          "type": "integer",
-          "description": "Tool execution timeout in seconds",
+          "type": ["integer", "string"],
+          "description": "Tool execution timeout. Accepts a duration string (e.g. \"30s\", \"2m\") or an integer number of seconds (e.g. 30 means 30 seconds).",
           "minimum": 1,
           "default": 30
         },
