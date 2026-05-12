@@ -5,6 +5,10 @@ description: "Enterprise v1.4.1"
 
 <Update label="Bifrost Enterprise" description="v1.4.1">
 
+<Warning>
+  **Breaking changes in v1.4.0.** See the [v1.4.0 Migration Guide](/enterprise/migration-guides/v1.4.0) for full before/after examples, automatic migration details, and a step-by-step checklist before upgrading.
+</Warning>
+
 ## Changelog
 
 A focused follow-up to v1.4.0. Headline items: a new Gitleaks-backed **Secrets Detection guardrail**, a **PII Detection** template under the custom-regex guardrail, **finer-grained RBAC** (MCP Tool Groups, MCP Logs, API Keys, Inference, Guardrail Rules), and two paired clustered-governance correctness fixes (ghost nodes + leader-based state sync) that eliminate any possibility of budget and rate-limit drift across pod restarts, scale events, leader changes, and rolling deploys. Picks up the OSS `transports/v1.5.1` base (Azure Entra auth, per-dimension matviews and dimension-scoped filter sidebars, MCP log detail with object-storage offload, `x-bifrost-*` routed-identity response headers, and a wide set of provider/streaming fixes).

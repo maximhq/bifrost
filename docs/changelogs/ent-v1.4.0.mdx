@@ -5,6 +5,10 @@ description: "Enterprise v1.4.0"
 
 <Update label="Bifrost Enterprise" description="v1.4.0">
 
+<Warning>
+  **Breaking changes in v1.4.0.** See the [v1.4.0 Migration Guide](/enterprise/migration-guides/v1.4.0) for full before/after examples, automatic migration details, and a step-by-step checklist before upgrading.
+</Warning>
+
 ## Changelog
 
 This release unifies the API authentication path so password-mode admin and API-key auth share the OSS `AuthMiddleware`/RBAC pipeline, splits SCIM provider configuration into per-provider forms, keeps governance usage snapshots alive across idle periods, and pulls in OSS base `transports/v1.5.0-prerelease8` with `objectStorageExcludeFields`, MCP server/client URL split, and a stack of provider correctness fixes (Anthropic routing, Bedrock structured-output streaming, SGL extra-params passthrough).
