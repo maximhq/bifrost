@@ -72,6 +72,7 @@ settings.local.json
 
 # MCP servers
 examples/mcps/**/bin/
+examples/mcps/oauth-demo-server/oauth-demo-server
 examples/mcps/http-no-ping-server/http-server
 examples/mcps/test-tools-server/dist/
 
