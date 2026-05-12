@@ -16,10 +16,10 @@ const defaultScrollbackCap = 5000
 // vt10x.WithOnScrollUp and read by the renderer when the user enters
 // scroll mode.
 //
-// Consecutive identical rows are deduplicated. This is a cheap heuristic
-// to absorb cases where a TUI emits a run of blank-line LFs at the bottom
-// of the screen (e.g. clearing trailing rows by scrolling them off), which
-// would otherwise produce many useless blank rows in history.
+// Consecutive blank rows are deduplicated so a TUI emitting a run of
+// blank-line LFs at the bottom of the screen (e.g. clearing trailing
+// rows by scrolling them off) doesn't bloat history. Non-blank repeats
+// are kept as-is because they often represent real user-visible output.
 type scrollback struct {
 	mu   sync.Mutex
 	rows [][]vt10x.Glyph // newest at the tail
@@ -41,13 +41,16 @@ func newScrollback(capRows int) *scrollback {
 // WithOnScrollUp already hands us defensive copies, so we don't copy
 // again. Consecutive blank rows are deduplicated so trailing blank-line
 // LFs from TUIs don't bloat history; non-blank repeats are preserved
-// because they often represent real user-visible output.
-func (s *scrollback) push(rows [][]vt10x.Glyph, _ bool) {
+// because they often represent real user-visible output. Returns the
+// number of rows actually added — the caller needs this to keep a
+// viewer's scroll position stable across evictions.
+func (s *scrollback) push(rows [][]vt10x.Glyph, _ bool) int {
 	if len(rows) == 0 {
-		return
+		return 0
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	added := 0
 	for _, row := range rows {
 		if len(s.rows) > 0 &&
 			isBlankRow(s.rows[len(s.rows)-1]) &&
@@ -62,7 +65,9 @@ func (s *scrollback) push(rows [][]vt10x.Glyph, _ bool) {
 			s.rows = s.rows[:len(s.rows)-1]
 		}
 		s.rows = append(s.rows, row)
+		added++
 	}
+	return added
 }
 
 // length returns the number of rows currently in scrollback.
@@ -145,8 +150,8 @@ func composeScrollbackView(sbRows [][]vt10x.Glyph, liveRows [][]vt10x.Glyph, col
 		offset = 0
 	}
 
-	bottomIdx := totalAvail - offset    // exclusive
-	topIdx := bottomIdx - contentRows   // can be negative
+	bottomIdx := totalAvail - offset  // exclusive
+	topIdx := bottomIdx - contentRows // can be negative
 	padTop := 0
 	if topIdx < 0 {
 		padTop = -topIdx
@@ -200,13 +205,32 @@ func snapshotLiveGrid(vt vt10x.View, cols, rows int) [][]vt10x.Glyph {
 }
 
 // writeRowGlyphs emits one row of glyphs with style-diffed SGR sequences,
-// padding to cols with default-style spaces when the row is shorter.
+// padding to cols with default-style spaces when the row is shorter than
+// the current display width, or truncating with a "…" indicator when
+// it's wider. Trailing default-style padding cells are stripped before
+// width comparison so resize-grow doesn't show absurd trailing whitespace
+// from when the original grid was narrower.
 func writeRowGlyphs(b *strings.Builder, row []vt10x.Glyph, cols int) {
+	effectiveLen := effectiveRowLen(row)
+
 	var prevFG, prevBG vt10x.Color
 	var prevMode int16
 	firstCell := true
+
+	// If the stored row is wider than the display, truncate at cols-1 and
+	// emit "…" so the user knows content was clipped by a resize-shrink.
+	truncate := effectiveLen > cols
+	contentEnd := effectiveLen
+	if truncate {
+		contentEnd = cols - 1
+		if contentEnd < 0 {
+			contentEnd = 0
+		}
+	}
+
 	for x := 0; x < cols; x++ {
-		if x < len(row) {
+		switch {
+		case x < contentEnd:
 			g := row[x]
 			if firstCell || g.FG != prevFG || g.BG != prevBG || g.Mode != prevMode {
 				writeStyleSequence(b, g)
@@ -218,7 +242,14 @@ func writeRowGlyphs(b *strings.Builder, row []vt10x.Glyph, cols int) {
 				ch = ' '
 			}
 			b.WriteRune(ch)
-		} else {
+		case truncate && x == cols-1:
+			if firstCell || prevFG != vt10x.DefaultFG || prevBG != vt10x.DefaultBG || prevMode != 0 {
+				b.WriteString("\x1b[0m\x1b[2m")
+				prevFG, prevBG, prevMode = vt10x.DefaultFG, vt10x.DefaultBG, 0
+				firstCell = false
+			}
+			b.WriteRune('…')
+		default:
 			if firstCell || prevFG != vt10x.DefaultFG || prevBG != vt10x.DefaultBG || prevMode != 0 {
 				b.WriteString("\x1b[0m")
 				prevFG, prevBG, prevMode = vt10x.DefaultFG, vt10x.DefaultBG, 0
@@ -227,6 +258,22 @@ func writeRowGlyphs(b *strings.Builder, row []vt10x.Glyph, cols int) {
 			b.WriteByte(' ')
 		}
 	}
+}
+
+// effectiveRowLen returns the row index just past the last cell that
+// carries visible content. A "padding" cell is one with the default fg/bg
+// and no attributes and either a NUL or space character — the state a
+// vt10x grid leaves untouched cells in.
+func effectiveRowLen(row []vt10x.Glyph) int {
+	for i := len(row) - 1; i >= 0; i-- {
+		g := row[i]
+		isPadChar := g.Char == 0 || g.Char == ' '
+		if isPadChar && g.FG == vt10x.DefaultFG && g.BG == vt10x.DefaultBG && g.Mode == 0 {
+			continue
+		}
+		return i + 1
+	}
+	return 0
 }
 
 func writeBlankRow(b *strings.Builder, cols int) {
