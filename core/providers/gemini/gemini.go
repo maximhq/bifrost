@@ -423,7 +423,7 @@ func HandleGeminiChatCompletionStream(
 	}
 
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := client.DoContext(ctx, req, resp)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -923,7 +923,7 @@ func HandleGeminiResponsesStream(
 	}
 
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := client.DoContext(ctx, req, resp)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -1412,7 +1412,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	}
 
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := provider.streamingClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1701,7 +1701,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	}
 
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := provider.streamingClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

@@ -424,7 +424,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	req.SetBody(body.Bytes())
 
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := provider.streamingClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

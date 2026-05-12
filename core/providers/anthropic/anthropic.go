@@ -631,7 +631,7 @@ func HandleAnthropicChatCompletionStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := activeClient.DoContext(ctx, req, resp)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
@@ -1098,7 +1098,7 @@ func HandleAnthropicResponsesStream(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := activeClient.DoContext(ctx, req, resp)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}

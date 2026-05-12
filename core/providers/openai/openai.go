@@ -485,20 +485,23 @@ func HandleOpenAITextCompletionStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := activeClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		if errors.Is(err, context.Canceled) {
-			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded)) {
+				return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Type:    schemas.Ptr(schemas.RequestCancelled),
+						Message: schemas.ErrRequestCancelled,
+						Error:   err,
+					},
+				}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			}
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, fasthttp.ErrTimeout) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
@@ -1023,7 +1026,7 @@ func HandleOpenAIChatCompletionStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := activeClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1612,7 +1615,7 @@ func HandleOpenAIResponsesStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := activeClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -2211,7 +2214,7 @@ func HandleOpenAISpeechStreamRequest(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := activeClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -2649,7 +2652,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	req.SetBody(body.Bytes())
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := client.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -3084,7 +3087,7 @@ func HandleOpenAIImageGenerationStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := activeClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -4318,7 +4321,7 @@ func HandleOpenAIImageEditStreamRequest(
 	req.SetBody(body.Bytes())
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := client.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

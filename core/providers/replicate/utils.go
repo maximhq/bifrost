@@ -106,7 +106,7 @@ func listenToReplicateStreamURL(
 	}
 
 	// Make request
-	err := client.Do(req, resp)
+	err := client.DoContext(ctx, req, resp)
 	fasthttp.ReleaseRequest(req)
 
 	if err != nil {

@@ -1004,7 +1004,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	}
 
 	// Make the request
-	requestErr := provider.client.Do(req, resp)
+	requestErr := provider.client.DoContext(ctx, req, resp)
 	if requestErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(requestErr, context.Canceled) {

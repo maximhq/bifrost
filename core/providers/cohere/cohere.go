@@ -455,7 +455,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	}
 
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := provider.streamingClient.DoContext(ctx, req, resp)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
@@ -719,7 +719,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := provider.streamingClient.DoContext(ctx, req, resp)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
 	}

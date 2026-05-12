@@ -350,7 +350,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 	// Make request
 	startTime := time.Now()
-	err := provider.streamingClient.Do(req, resp)
+	err := provider.streamingClient.DoContext(ctx, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

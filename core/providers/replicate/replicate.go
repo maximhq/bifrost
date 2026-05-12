@@ -1271,7 +1271,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Make the streaming request
-	streamErr := provider.streamingClient.Do(req, resp)
+	streamErr := provider.streamingClient.DoContext(ctx, req, resp)
 	if streamErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(streamErr, context.Canceled) {
