@@ -651,35 +651,35 @@ func (s *RDBLogStore) listSelectColumns() string {
 	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
 	switch s.db.Dialector.Name() {
 	case "postgres":
-		// Postgres jsonb cannot represent \u0000 (errcode 22P05) and rejects
-		// malformed JSON (22P02). A single bad row would otherwise abort the
-		// whole list query. Guard the cast: only attempt jsonb conversion
-		// when the TEXT looks like a JSON array and contains no \u0000
-		// escape; otherwise fall back to returning the raw TEXT.
+		// Postgres jsonb rejects malformed JSON (22P02), \u0000 escapes
+		// (22P05), and unpaired UTF-16 surrogates (22P05). A single bad row
+		// would otherwise abort the whole list query. bifrost_safe_jsonb
+		// wraps the cast in an EXCEPTION block and returns the raw TEXT on
+		// any parse failure; see migrationAddSafeJsonbFunction.
 		inputHistoryExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN input_history
-			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
-			     AND position('\u0000' in input_history) = 0
-			     AND left(btrim(input_history), 1) = '['
-			THEN jsonb_build_array(input_history::jsonb->-1)::text
-			ELSE input_history END AS input_history`
+			ELSE bifrost_safe_jsonb(input_history)
+			END AS input_history`
 		responsesInputExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN responses_input_history
-			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
-			     AND position('\u0000' in responses_input_history) = 0
-			     AND left(btrim(responses_input_history), 1) = '['
-			THEN jsonb_build_array(responses_input_history::jsonb->-1)::text
-			ELSE responses_input_history END AS responses_input_history`
+			ELSE bifrost_safe_jsonb(responses_input_history)
+			END AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
 	default: // sqlite
 		inputHistoryExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN input_history
 			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+			     AND json_valid(input_history) = 1
+			     AND json_type(input_history) = 'array'
+			     AND json_array_length(input_history) > 0
 			THEN json_array(json_extract(input_history, '$[' || (json_array_length(input_history) - 1) || ']'))
 			ELSE input_history END AS input_history`
 		responsesInputExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN responses_input_history
 			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+			     AND json_valid(responses_input_history) = 1
+			     AND json_type(responses_input_history) = 'array'
+			     AND json_array_length(responses_input_history) > 0
 			THEN json_array(json_extract(responses_input_history, '$[' || (json_array_length(responses_input_history) - 1) || ']'))
 			ELSE responses_input_history END AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
