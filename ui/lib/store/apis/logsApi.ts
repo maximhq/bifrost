@@ -68,6 +68,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
+	if (filters.cache_hit_types && filters.cache_hit_types.length > 0) {
+		params.cache_hit_types = filters.cache_hit_types.join(",");
+	}
 	if (filters.content_search) params.content_search = filters.content_search;
 	if (filters.user_ids && filters.user_ids.length > 0) {
 		params.user_ids = filters.user_ids.join(",");

@@ -701,12 +701,14 @@ export const updateProviderRequestSchema = z.object({
 
 // Cache config schema
 const baseCacheConfigSchema = z.object({
-  ttl_seconds: z.number().int().min(1).default(3600),
+  ttl: z.number().int().min(1).default(3600),
   threshold: z.number().min(0).max(1).default(0.8),
   conversation_history_threshold: z.number().int().min(0).optional(),
   exclude_system_prompt: z.boolean().optional(),
   cache_by_model: z.boolean().default(false),
   cache_by_provider: z.boolean().default(false),
+  vector_store_namespace: z.string().min(1).optional(),
+  default_cache_key: z.string().min(1).optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
 });

@@ -8,8 +8,16 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// cacheClearer is the minimal contract the handler needs from the semantic
+// cache plugin. Defined here (rather than imported) so tests can substitute
+// a fake without spinning up a real vector store.
+type cacheClearer interface {
+	ClearCacheForCacheID(cacheID string) error
+	ClearCacheForKey(cacheKey string) error
+}
+
 type CacheHandler struct {
-	plugin *semanticcache.Plugin
+	plugin cacheClearer
 }
 
 func NewCacheHandler(plugin schemas.LLMPlugin) *CacheHandler {
@@ -24,17 +32,17 @@ func NewCacheHandler(plugin schemas.LLMPlugin) *CacheHandler {
 }
 
 func (h *CacheHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	r.DELETE("/api/cache/clear/{requestId}", lib.ChainMiddlewares(h.clearCache, middlewares...))
+	r.DELETE("/api/cache/clear/{cacheId}", lib.ChainMiddlewares(h.clearCache, middlewares...))
 	r.DELETE("/api/cache/clear-by-key/{cacheKey}", lib.ChainMiddlewares(h.clearCacheByKey, middlewares...))
 }
 
 func (h *CacheHandler) clearCache(ctx *fasthttp.RequestCtx) {
-	requestID, ok := ctx.UserValue("requestId").(string)
-	if !ok {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request ID")
+	cacheID, ok := ctx.UserValue("cacheId").(string)
+	if !ok || cacheID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid cache ID")
 		return
 	}
-	if err := h.plugin.ClearCacheForRequestID(requestID); err != nil {
+	if err := h.plugin.ClearCacheForCacheID(cacheID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to clear cache")
 		return
 	}
