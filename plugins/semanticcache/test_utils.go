@@ -4,14 +4,63 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	mocker "github.com/maximhq/bifrost/plugins/mocker"
 )
+
+// isTransientUpstreamError reports whether a BifrostError reflects a
+// transient upstream condition (timeout, rate-limit, 5xx) where skipping
+// the test is reasonable. All other errors — including missing API keys,
+// client-side issues, or non-HTTP failures — should fail the test rather
+// than mask regressions behind a green skip.
+func isTransientUpstreamError(err *schemas.BifrostError) bool {
+	if err == nil || err.StatusCode == nil {
+		return false
+	}
+	code := *err.StatusCode
+	return code == 408 || code == 425 || code == 429 || code >= 500
+}
+
+// withTestRequestID stamps a fresh BifrostContextKeyRequestID on the context.
+// Unit tests that call PreLLMHook/PostLLMHook directly need this so the plugin
+// can anchor per-request state. In integration tests the framework overwrites
+// it, so setting it here is safe in either path.
+func withTestRequestID(ctx *schemas.BifrostContext) *schemas.BifrostContext {
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.NewString())
+	return ctx
+}
+
+// keyForTest returns a cache key namespaced by t.Name(). All tests should
+// derive their cache keys via this helper so two tests running in parallel
+// (t.Parallel) cannot see each other's entries through the shared Weaviate
+// namespace — direct lookups encode cache_key into the storage ID and
+// semantic search filters by it.
+//
+// Pass suffix="" for the most common single-key-per-test case. For tests
+// that exercise multiple distinct cache keys (e.g. cross-key isolation
+// tests), pass suffixes to disambiguate within the test.
+func keyForTest(t testing.TB, suffix string) string {
+	t.Helper()
+	if suffix == "" {
+		return t.Name()
+	}
+	return t.Name() + "/" + suffix
+}
+
+// newBaseTestContext returns a BifrostContext with a fresh request ID stamped.
+// Replaces bare schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+// in tests that call plugin.PreLLMHook / PostLLMHook directly — the plugin
+// requires a request ID to anchor per-request state.
+func newBaseTestContext() *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+}
 
 // getWeaviateConfigFromEnv retrieves Weaviate configuration from environment variables
 func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
@@ -379,10 +428,43 @@ func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 	return NewTestSetupWithVectorStore(t, config, vectorstore.VectorStoreTypeWeaviate)
 }
 
+// SharedTestNamespace is the single Weaviate class all parallel tests share.
+// Mirrors production: many concurrent requests hit one namespace, isolated
+// by per-test cache_keys (see keyForTest). Distinct from the plugin's
+// production default so test runs can't collide with a real cache.
+const SharedTestNamespace = "BifrostSemanticCachePluginTest"
+
+var (
+	sharedTestNamespaceOnce sync.Once
+	sharedTestNamespaceErr  error
+)
+
+// ensureSharedTestNamespace creates the shared test class exactly once per
+// test process — sync.Once gates the TOCTOU race between concurrent
+// Plugin.Init calls (each of which would otherwise check-then-create against
+// the shared store and one would lose the race).
+//
+// Subsequent Plugin.Init calls in tests still invoke CreateNamespace, but the
+// vectorstore implementations short-circuit when the class already exists.
+func ensureSharedTestNamespace(ctx context.Context, store vectorstore.VectorStore, dim int) error {
+	sharedTestNamespaceOnce.Do(func() {
+		sharedTestNamespaceErr = store.CreateNamespace(ctx, SharedTestNamespace, dim, VectorStoreProperties)
+	})
+	return sharedTestNamespaceErr
+}
+
 // NewTestSetupWithVectorStore creates a new test setup with custom configuration and vector store type
 func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectorstore.VectorStoreType) *TestSetup {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+
+	// All tests share one namespace; isolation comes from per-test cache_keys.
+	if config.VectorStoreNamespace == "" {
+		config.VectorStoreNamespace = SharedTestNamespace
+	}
+	// Tests must NOT delete the shared namespace at cleanup — other parallel
+	// tests are still using it. Override any caller default.
+	config.CleanUpOnShutdown = false
 
 	// Get the appropriate config for the vector store type
 	var storeConfig interface{}
@@ -406,6 +488,15 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 	}, logger)
 	if err != nil {
 		t.Skipf("Vector store %s not available or failed to connect: %v", storeType, err)
+	}
+
+	// Pre-create the shared namespace exactly once across the test process so
+	// concurrent Plugin.Init calls don't lose the TOCTOU race inside the
+	// vector store driver (check-then-create).
+	preCreateCtx, preCreateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer preCreateCancel()
+	if err := ensureSharedTestNamespace(preCreateCtx, store, config.Dimension); err != nil {
+		t.Fatalf("Failed to create shared test namespace: %v", err)
 	}
 
 	plugin, err := Init(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config, logger, store)
@@ -534,13 +625,29 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 	t.Log("✅ Response correctly not served from cache (cache_debug present but CacheHit=false)")
 }
 
-// WaitForCache waits for async cache operations to complete
+// WaitForCache waits for async cache operations to complete.
+//
+// WaitForPendingOperations now drains the writersWg accurately (every
+// PostLLMHook goroutine + the expired-entry async delete is tracked), so the
+// stored entries are guaranteed durable when this returns. The small sleep
+// below is a buffer for vector store index visibility on stores with eventual
+// consistency (Weaviate is usually immediate on single-node, but cloud or
+// multi-shard setups may need a tick to make the entry queryable).
+//
+// Override via SEMCACHE_TEST_INDEX_DELAY_MS for slower stores / CI.
 func WaitForCache(plugin schemas.LLMPlugin) {
 	if p, ok := plugin.(*Plugin); ok {
 		p.WaitForPendingOperations()
 	}
-	// Small buffer for Weaviate index consistency
-	time.Sleep(500 * time.Millisecond)
+	delayMs := 100
+	if v := os.Getenv("SEMCACHE_TEST_INDEX_DELAY_MS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			delayMs = parsed
+		}
+	}
+	if delayMs > 0 {
+		time.Sleep(time.Duration(delayMs) * time.Millisecond)
+	}
 }
 
 // CreateEmbeddingRequest creates an embedding request for testing
@@ -611,28 +718,30 @@ func CreateImageGenerationRequest(prompt string, size string, quality string) *s
 }
 
 // CreateContextWithCacheKey creates a context with the test cache key
-func CreateContextWithCacheKey(value string) *schemas.BifrostContext {
-	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value)
+// CreateContextWithCacheKey creates a context with a per-test cache key.
+// suffix may be "" for tests using only one cache key.
+func CreateContextWithCacheKey(t testing.TB, suffix string) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, keyForTest(t, suffix)))
 }
 
 // CreateContextWithCacheKeyAndType creates a context with cache key and cache type
-func CreateContextWithCacheKeyAndType(value string, cacheType CacheType) *schemas.BifrostContext {
-	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value).WithValue(CacheTypeKey, cacheType)
+func CreateContextWithCacheKeyAndType(t testing.TB, suffix string, cacheType CacheType) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, keyForTest(t, suffix)).WithValue(CacheTypeKey, cacheType))
 }
 
 // CreateContextWithCacheKeyAndTTL creates a context with cache key and custom TTL
-func CreateContextWithCacheKeyAndTTL(value string, ttl time.Duration) *schemas.BifrostContext {
-	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value).WithValue(CacheTTLKey, ttl)
+func CreateContextWithCacheKeyAndTTL(t testing.TB, suffix string, ttl time.Duration) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, keyForTest(t, suffix)).WithValue(CacheTTLKey, ttl))
 }
 
 // CreateContextWithCacheKeyAndThreshold creates a context with cache key and custom threshold
-func CreateContextWithCacheKeyAndThreshold(value string, threshold float64) *schemas.BifrostContext {
-	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, value).WithValue(CacheThresholdKey, threshold)
+func CreateContextWithCacheKeyAndThreshold(t testing.TB, suffix string, threshold float64) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, keyForTest(t, suffix)).WithValue(CacheThresholdKey, threshold))
 }
 
 // CreateContextWithCacheKeyAndNoStore creates a context with cache key and no-store flag
-func CreateContextWithCacheKeyAndNoStore(value string, noStore bool) *schemas.BifrostContext {
-	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, value).WithValue(CacheNoStoreKey, noStore)
+func CreateContextWithCacheKeyAndNoStore(t testing.TB, suffix string, noStore bool) *schemas.BifrostContext {
+	return withTestRequestID(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, keyForTest(t, suffix)).WithValue(CacheNoStoreKey, noStore))
 }
 
 // CreateTestSetupWithConversationThreshold creates a test setup with custom conversation history threshold

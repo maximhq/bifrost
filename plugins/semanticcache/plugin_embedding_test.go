@@ -9,10 +9,11 @@ import (
 
 // TestEmbeddingRequestsCaching tests that embedding requests are properly cached using direct hash matching
 func TestEmbeddingRequestsCaching(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-embedding-cache")
+	ctx := CreateContextWithCacheKey(t, "test-embedding-cache")
 
 	// Create embedding request
 	embeddingRequest := CreateEmbeddingRequest([]string{
@@ -28,7 +29,7 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil || len(response1.Data) == 0 {
@@ -76,33 +77,48 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 
 // TestEmbeddingRequestsNoCacheWithoutCacheKey tests that embedding requests without cache key are not cached
 func TestEmbeddingRequestsNoCacheWithoutCacheKey(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	// Don't set cache key in context
-	ctx := CreateContextWithCacheKey("")
+	// Don't set cache key in context. CreateContextWithCacheKey(t, "") would
+	// still populate CacheKey from t.Name() and turn this into a keyed
+	// request — using a base context keeps CacheKey unset so we exercise
+	// the cache-disabled path.
+	ctx := newBaseTestContext()
 
 	embeddingRequest := CreateEmbeddingRequest([]string{"Test embedding without cache key"})
 
-	t.Log("Making embedding request without cache key...")
-
-	response, err := setup.Client.EmbeddingRequest(ctx, embeddingRequest)
+	t.Log("Making first embedding request without cache key...")
+	response1, err := setup.Client.EmbeddingRequest(ctx, embeddingRequest)
 	if err != nil {
 		t.Fatalf("Embedding request failed: %v", err)
 	}
+	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
-	// Should not be cached
-	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response})
+	WaitForCache(setup.Plugin)
+
+	// Real check: a second identical request must ALSO miss. If the cache
+	// silently keyed off something else (e.g. a default key), this would
+	// surface as a hit and fail the assertion.
+	t.Log("Making second identical request — must also miss because nothing was cached...")
+	ctx2 := newBaseTestContext()
+	response2, err := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
+	if err != nil {
+		t.Fatalf("Second embedding request failed: %v", err)
+	}
+	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2})
 
 	t.Log("✅ Embedding requests without cache key are properly not cached")
 }
 
 // TestEmbeddingRequestsDifferentTexts tests that different embedding texts produce different cache entries
 func TestEmbeddingRequestsDifferentTexts(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-embedding-different")
+	ctx := CreateContextWithCacheKey(t, "test-embedding-different")
 
 	// Create two different embedding requests
 	request1 := CreateEmbeddingRequest([]string{"First set of texts"})
@@ -111,7 +127,7 @@ func TestEmbeddingRequestsDifferentTexts(t *testing.T) {
 	t.Log("Making first embedding request...")
 	response1, err1 := setup.Client.EmbeddingRequest(ctx, request1)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
@@ -120,7 +136,7 @@ func TestEmbeddingRequestsDifferentTexts(t *testing.T) {
 	t.Log("Making second different embedding request...")
 	response2, err2 := setup.Client.EmbeddingRequest(ctx, request2)
 	if err2 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err2)
 	}
 	// Should not be a cache hit since texts are different
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2})
@@ -130,19 +146,20 @@ func TestEmbeddingRequestsDifferentTexts(t *testing.T) {
 
 // TestEmbeddingRequestsCacheExpiration tests TTL functionality for embedding requests
 func TestEmbeddingRequestsCacheExpiration(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Set very short TTL for testing
 	shortTTL := 5 * time.Second
-	ctx := CreateContextWithCacheKeyAndTTL("test-embedding-ttl", shortTTL)
+	ctx := CreateContextWithCacheKeyAndTTL(t, "test-embedding-ttl", shortTTL)
 
 	embeddingRequest := CreateEmbeddingRequest([]string{"TTL test embedding"})
 
 	t.Log("Making first embedding request with short TTL...")
 	response1, err1 := setup.Client.EmbeddingRequest(ctx, embeddingRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
@@ -160,12 +177,15 @@ func TestEmbeddingRequestsCacheExpiration(t *testing.T) {
 	AssertCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2}, "direct")
 
 	t.Logf("Waiting for TTL expiration (%v)...", shortTTL)
-	time.Sleep(shortTTL + 1*time.Second) // Wait for TTL to expire
+	// expires_at is stored at second-precision Unix(); a 1s buffer can land
+	// on the same boundary as the entry's expiry under load. 2s is the
+	// minimum margin that's robust to seconds-level rounding + a slow CI.
+	time.Sleep(shortTTL + 2*time.Second)
 
 	t.Log("Making third request after TTL expiration...")
 	response3, err3 := setup.Client.EmbeddingRequest(ctx, embeddingRequest)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	// Should not be a cache hit since TTL expired
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response3})

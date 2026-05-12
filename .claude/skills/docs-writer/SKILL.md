@@ -176,7 +176,7 @@ grep -n 'func.*create\|func.*update\|func.*delete\|func.*get' transports/bifrost
 | `plugins.go` | `/api/plugins` | CRUD plugins |
 | `config.go` | `/api/config` | GET/PUT config |
 | `config.go` | `/api/proxy-config` | GET/PUT proxy config |
-| `cache.go` | `/api/cache/clear/{requestId}` | DELETE cache |
+| `cache.go` | `/api/cache/clear/{cacheId}` | DELETE cache |
 | `session.go` | `/api/session/*` | Login/logout/auth check |
 | `oauth2.go` | `/api/oauth/*` | OAuth callback/status |
 
