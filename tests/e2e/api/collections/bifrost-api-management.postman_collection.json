@@ -889,12 +889,12 @@
               "listen": "prerequest",
               "script": {
                 "exec": [
-                  "// Use captured log ID or fallback to empty array",
+                  "// Use captured log ID, or a synthetic UUID so the handler doesn't 400 on",
+                  "// empty IDs when Get Logs returned no rows (e.g. fresh DB with no inference",
+                  "// traffic yet). DeleteLogs is idempotent against unknown IDs - see",
+                  "// framework/logstore/rdb.go:3039 - so this still exercises the success path.",
                   "var logId = pm.collectionVariables.get('log_id');",
-                  "var ids = [];",
-                  "if (logId) {",
-                  "  ids.push(logId);",
-                  "}",
+                  "var ids = [logId || '00000000-0000-0000-0000-000000000000'];",
                   "pm.request.body.raw = JSON.stringify({ids: ids});"
                 ],
                 "type": "text/javascript"
