@@ -634,7 +634,8 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.MinLatency == nil && f.MaxLatency == nil &&
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
-		!f.MissingCostOnly
+		!f.MissingCostOnly &&
+		len(f.CacheHitTypes) == 0
 }
 
 // canUseMatView checks both that materialized views are ready (created and

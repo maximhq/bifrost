@@ -690,6 +690,67 @@ The supported `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` path c
 
 ---
 
+## Breaking Change 15: Semantic Cache Clear API is Now Cache-ID Based
+
+The semantic cache "clear by request ID" API has been removed. Storage IDs in the cache are deterministic UUIDv5 hashes derived from the request payload (so the same prompt across many requests maps to a single cache entry), which made the previous request-ID-based delete unable to match anything written by the direct-search path.
+
+The replacement is keyed on the cache entry's storage ID, which is now stamped on every response in `extra_fields.cache_debug.cache_id` — on cache hits **and** cache misses. Hold onto that ID from the response if you ever need to invalidate the entry.
+
+### REST API
+
+| Before (v1.4.x) | After (v1.5.0) |
+|---|---|
+| `DELETE /api/cache/clear/{requestId}` | `DELETE /api/cache/clear/{cacheId}` |
+
+The path parameter name and meaning both changed. The cache key endpoint (`DELETE /api/cache/clear-by-key/{cacheKey}`) is unchanged.
+
+**Before:**
+```bash
+curl -X DELETE localhost:8080/api/cache/clear/req-aaa-bbb-ccc
+```
+
+**After:**
+```bash
+# Read the cache ID from a prior response
+CACHE_ID=$(curl ... | jq -r '.extra_fields.cache_debug.cache_id')
+
+curl -X DELETE localhost:8080/api/cache/clear/$CACHE_ID
+```
+
+### Go SDK
+
+The `ClearCacheForRequestID` method on `*semanticcache.Plugin` has been removed and replaced by `ClearCacheForCacheID`.
+
+**Before:**
+```go
+err := plugin.ClearCacheForRequestID(requestID)
+```
+
+**After:**
+```go
+// On hit or miss, the storage ID is exposed via CacheDebug.CacheID
+cacheID := response.ExtraFields.CacheDebug.CacheID
+if cacheID != nil {
+    err := plugin.ClearCacheForCacheID(*cacheID)
+}
+```
+
+### Why the rename
+
+A single cache entry is reused across many request IDs (that is the point of caching). A request-ID-based delete only ever made sense for the original writer of the entry, and even that broke once direct search switched to deterministic storage IDs. The cache ID is the only stable handle that works for both writers and readers, so the API now reflects that.
+
+### CacheDebug on misses
+
+`extra_fields.cache_debug` is now populated on cache misses too — previously it was only emitted when semantic search ran. The new fields on a miss:
+
+- `cache_hit: false`
+- `cache_id`: the storage ID where the entry was written (use this with `ClearCacheForCacheID`)
+- `provider_used` / `model_used` / `input_tokens`: only present when semantic search actually ran (i.e. embedding model was invoked)
+
+If you parse `cache_debug` and assumed it was either absent or had `cache_hit: true`, update your consumer to handle the `cache_hit: false` shape.
+
+---
+
 ## Opting Out: `version: 1` Compatibility Mode
 
 If you are not ready to adopt the new deny-by-default semantics, you can add a single field to `config.json` to restore v1.4.x behavior for all allow-list fields loaded from that file:
@@ -787,6 +848,10 @@ If your code reads `selected_key_id` / `selected_key_name` from the request cont
 
 <Step title="Migrate direct-key callers off both surfaces">
 Remove `allow_direct_keys` from `config.json` and any `PUT /api/config` payloads. Audit HTTP callers that sent provider keys in `Authorization` / `x-api-key` / `x-goog-api-key` / `x-bf-bedrock-*` / `x-bf-azure-endpoint` headers — those keys are no longer forwarded. Audit Go SDK callers for any reference to `schemas.BifrostContextKeyDirectKey` — the constant is removed and code referencing it will not compile. Replace both flavours with a Bifrost-managed provider key, optionally pinned per request via `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` (Go SDK) or a virtual key (`sk-bf-*`, HTTP).
+</Step>
+
+<Step title="Switch semantic cache invalidation to cache IDs">
+Replace `DELETE /api/cache/clear/{requestId}` with `DELETE /api/cache/clear/{cacheId}`, and replace `plugin.ClearCacheForRequestID(...)` with `plugin.ClearCacheForCacheID(...)`. Read the cache ID from `extra_fields.cache_debug.cache_id` on the response (now populated on misses too).
 </Step>
 </Steps>
 

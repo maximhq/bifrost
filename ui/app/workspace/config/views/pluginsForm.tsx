@@ -2,20 +2,32 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { getProviderLabel } from "@/lib/constants/logs";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { EmbeddingSupportedProviders, getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetProvidersQuery, useUpdatePluginMutation } from "@/lib/store";
-import { CacheConfig, EditorCacheConfig, ModelProviderName } from "@/lib/types/config";
+import { CacheConfig, EditorCacheConfig, ModelProvider, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { cacheConfigSchema } from "@/lib/types/schemas";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+// Semantic caching needs an embedding-capable provider. Built-in providers are
+// gated by EmbeddingSupportedProviders; custom providers expose support via
+// custom_provider_config.allowed_requests.embedding.
+const supportsEmbedding = (provider: ModelProvider): boolean => {
+	if (provider.custom_provider_config) {
+		return provider.custom_provider_config.allowed_requests?.embedding === true;
+	}
+	return (EmbeddingSupportedProviders as readonly string[]).includes(provider.name);
+};
+
 const defaultCacheConfig: EditorCacheConfig = {
-	ttl_seconds: 300,
+	ttl: 300,
 	threshold: 0.8,
 	conversation_history_threshold: 3,
 	exclude_system_prompt: false,
@@ -23,14 +35,20 @@ const defaultCacheConfig: EditorCacheConfig = {
 	cache_by_provider: true,
 };
 
-const toEditorCacheConfig = (config?: Partial<CacheConfig>): EditorCacheConfig => ({
-	...defaultCacheConfig,
-	...config,
-});
+const toEditorCacheConfig = (config?: Partial<CacheConfig> & { ttl_seconds?: number }): EditorCacheConfig => {
+	const { ttl_seconds, ...rest } = config ?? {};
+	const merged: EditorCacheConfig = { ...defaultCacheConfig, ...rest };
+	// Migration: older saves stored TTL under `ttl_seconds`; the Go plugin only
+	// reads `ttl`, so adopt the legacy value if the new field isn't present.
+	if (rest.ttl === undefined && typeof ttl_seconds === "number") {
+		merged.ttl = ttl_seconds;
+	}
+	return merged;
+};
 
 const normalizeCacheConfigForSave = (config: EditorCacheConfig) => {
 	const normalized: Record<string, unknown> = {
-		ttl_seconds: config.ttl_seconds,
+		ttl: config.ttl,
 		threshold: config.threshold,
 		cache_by_model: config.cache_by_model,
 		cache_by_provider: config.cache_by_provider,
@@ -51,6 +69,8 @@ const normalizeCacheConfigForSave = (config: EditorCacheConfig) => {
 
 	const provider = config.provider?.trim();
 	const embeddingModel = config.embedding_model?.trim();
+	const namespace = config.vector_store_namespace?.trim();
+	const defaultKey = config.default_cache_key?.trim();
 
 	if (provider) {
 		normalized.provider = provider;
@@ -60,6 +80,12 @@ const normalizeCacheConfigForSave = (config: EditorCacheConfig) => {
 	}
 	if (config.dimension !== undefined) {
 		normalized.dimension = config.dimension;
+	}
+	if (namespace) {
+		normalized.vector_store_namespace = namespace;
+	}
+	if (defaultKey) {
+		normalized.default_cache_key = defaultKey;
 	}
 
 	return normalized;
@@ -78,6 +104,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	const { data: providersData, error: providersError, isLoading: providersLoading } = useGetProvidersQuery();
 
 	const providers = useMemo(() => providersData || [], [providersData]);
+	const embeddingProviders = useMemo(() => providers.filter(supportsEmbedding), [providers]);
 
 	useEffect(() => {
 		if (providersError) {
@@ -108,17 +135,23 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 		}
 	}, [semanticCachePlugin]);
 
-	// Update default provider when providers are loaded (only for new configs)
+	// Seed default provider/model/dimension when the providers list loads, but
+	// only for new configs that haven't picked a provider yet — re-running this
+	// effect on subsequent embeddingProviders changes would otherwise clobber
+	// an in-progress user selection.
 	useEffect(() => {
-		if (providers.length > 0 && !semanticCachePlugin?.config) {
-			setCacheConfig((prev) => ({
-				...prev,
-				provider: providers[0].name as ModelProviderName,
-				embedding_model: prev.embedding_model ?? "text-embedding-3-small",
-				dimension: prev.dimension ?? 1536,
-			}));
+		if (embeddingProviders.length > 0 && !semanticCachePlugin?.config) {
+			setCacheConfig((prev) => {
+				if (prev.provider) return prev;
+				return {
+					...prev,
+					provider: embeddingProviders[0].name as ModelProviderName,
+					embedding_model: prev.embedding_model ?? "text-embedding-3-small",
+					dimension: prev.dimension ?? 1536,
+				};
+			});
 		}
-	}, [providers, semanticCachePlugin?.config]);
+	}, [embeddingProviders, semanticCachePlugin?.config]);
 
 	const hasChanges = useMemo(() => {
 		if (originalCacheEnabled !== serverCacheEnabled) return true;
@@ -127,12 +160,14 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 			cacheConfig.provider !== serverCacheConfig.provider ||
 			cacheConfig.embedding_model !== serverCacheConfig.embedding_model ||
 			cacheConfig.dimension !== serverCacheConfig.dimension ||
-			cacheConfig.ttl_seconds !== serverCacheConfig.ttl_seconds ||
+			cacheConfig.ttl !== serverCacheConfig.ttl ||
 			cacheConfig.threshold !== serverCacheConfig.threshold ||
 			cacheConfig.conversation_history_threshold !== serverCacheConfig.conversation_history_threshold ||
 			cacheConfig.exclude_system_prompt !== serverCacheConfig.exclude_system_prompt ||
 			cacheConfig.cache_by_model !== serverCacheConfig.cache_by_model ||
-			cacheConfig.cache_by_provider !== serverCacheConfig.cache_by_provider
+			cacheConfig.cache_by_provider !== serverCacheConfig.cache_by_provider ||
+			(cacheConfig.vector_store_namespace ?? "") !== (serverCacheConfig.vector_store_namespace ?? "") ||
+			(cacheConfig.default_cache_key ?? "") !== (serverCacheConfig.default_cache_key ?? "")
 		);
 	}, [cacheConfig, serverCacheConfig, originalCacheEnabled, serverCacheEnabled]);
 
@@ -219,6 +254,13 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							{!providersLoading && providers?.length === 0 && (
 								<span className="text-destructive font-medium"> Requires at least one provider to be configured.</span>
 							)}
+							{!providersLoading && providers.length > 0 && embeddingProviders.length === 0 && (
+								<span className="text-destructive font-medium">
+									{" "}
+									Requires at least one provider that supports embedding requests. Configure a built-in embedding provider, or enable the
+									<code className="mx-1">embedding</code>request type on a custom provider.
+								</span>
+							)}
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
@@ -226,22 +268,13 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							id="enable-caching"
 							size="md"
 							checked={originalCacheEnabled && isVectorStoreEnabled}
-							disabled={!isVectorStoreEnabled || providersLoading || providers.length === 0}
+							disabled={!isVectorStoreEnabled || providersLoading || embeddingProviders.length === 0}
 							onCheckedChange={(checked) => {
 								if (isVectorStoreEnabled) {
 									handleSemanticCacheToggle(checked);
 								}
 							}}
 						/>
-						{(isSemanticCacheEnabled || originalCacheEnabled) && (
-							<Button
-								onClick={handleSave}
-								disabled={!hasChanges || isUpdating || isCreating || hasInvalidProviderBackedDimension}
-								size="sm"
-							>
-								{isUpdating || isCreating ? "Saving..." : "Save"}
-							</Button>
-						)}
 					</div>
 				</div>
 
@@ -267,6 +300,12 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 									embedding model&apos;s real dimension before saving, or remove the provider to stay in direct-only mode.
 								</div>
 							)}
+							<div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+								<b>Heads up:</b> a vector store namespace can only hold vectors of <em>one</em> dimension. Whenever you
+								change the embedding <b>provider</b>, <b>model</b>, or <b>dimension</b>, make sure the <b>dimension</b> still matches what the model produces - otherwise writes to the existing namespace will
+								fail and reads will silently miss. The namespace is <em>not</em> recreated automatically; either use a fresh namespace or drop the existing class/index in your vector store
+								before saving.
+							</div>
 							{/* Provider and Model Settings */}
 							<div className="space-y-4">
 								<h3 className="text-sm font-medium">Provider and Model Settings</h3>
@@ -275,17 +314,25 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										<Label htmlFor="provider">Configured Providers</Label>
 										<Select
 											value={cacheConfig.provider}
-											onValueChange={(value: ModelProviderName) => updateCacheConfigLocal({ provider: value })}
+											onValueChange={(value: ModelProviderName) =>
+												updateCacheConfigLocal({
+													provider: value,
+													embedding_model: value === cacheConfig.provider ? cacheConfig.embedding_model : "",
+												})
+											}
 										>
 											<SelectTrigger className="w-full">
 												<SelectValue placeholder="Select provider" />
 											</SelectTrigger>
 											<SelectContent>
-												{providers
+												{embeddingProviders
 													.filter((provider) => provider.name)
 													.map((provider) => (
 														<SelectItem key={provider.name} value={provider.name}>
-															{getProviderLabel(provider.name)}
+															<div className="flex items-center gap-2">
+																<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
+																<span>{getProviderLabel(provider.name)}</span>
+															</div>
 														</SelectItem>
 													))}
 											</SelectContent>
@@ -293,14 +340,21 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 									</div>
 									<div className="space-y-2">
 										<Label htmlFor="embedding_model">Embedding Model*</Label>
-										<Input
-											id="embedding_model"
-											placeholder="text-embedding-3-small"
+										<ModelMultiselect
+											inputId="embedding_model"
+											isSingleSelect
+											provider={cacheConfig.provider || undefined}
 											value={cacheConfig.embedding_model ?? ""}
-											onChange={(e) => updateCacheConfigLocal({ embedding_model: e.target.value })}
+											onChange={(model) => updateCacheConfigLocal({ embedding_model: model })}
+											placeholder={cacheConfig.provider ? "Search or type an embedding model..." : "Select a provider first"}
+											disabled={!cacheConfig.provider}
 										/>
 									</div>
 								</div>
+								<p className="text-muted-foreground text-xs">
+									API keys for the embedding provider will be inherited from the main provider configuration. The semantic cache will use
+									the configured provider&apos;s keys automatically.
+								</p>
 							</div>
 
 							{/* Cache Settings */}
@@ -313,16 +367,16 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											id="ttl"
 											type="number"
 											min="1"
-											value={cacheConfig.ttl_seconds === undefined || Number.isNaN(cacheConfig.ttl_seconds) ? "" : cacheConfig.ttl_seconds}
+											value={cacheConfig.ttl === undefined || Number.isNaN(cacheConfig.ttl) ? "" : cacheConfig.ttl}
 											onChange={(e) => {
 												const value = e.target.value;
 												if (value === "") {
-													updateCacheConfigLocal({ ttl_seconds: undefined });
+													updateCacheConfigLocal({ ttl: undefined });
 													return;
 												}
 												const parsed = parseInt(value);
 												if (!Number.isNaN(parsed)) {
-													updateCacheConfigLocal({ ttl_seconds: parsed });
+													updateCacheConfigLocal({ ttl: parsed });
 												}
 											}}
 										/>
@@ -368,12 +422,51 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 												}
 											}}
 										/>
+										<p className="text-muted-foreground text-xs">
+											Vector size produced by the embedding model - must match the model exactly (e.g. <code>1536</code> for
+											OpenAI <code>text-embedding-3-small</code>, <code>3072</code> for <code>text-embedding-3-large</code>,
+											<code>768</code> for many Cohere/Voyage models). Use <code>1</code> only in direct-only mode (no provider).
+										</p>
 									</div>
 								</div>
-								<p className="text-muted-foreground text-xs">
-									API keys for the embedding provider will be inherited from the main provider configuration. The semantic cache will use
-									the configured provider&apos;s keys automatically.
-								</p>
+							</div>
+
+							{/* Storage & Cache Key */}
+							<div className="space-y-4">
+								<h3 className="text-sm font-medium">Storage & Cache Key</h3>
+								<div className="grid grid-cols-2 gap-4">
+									<div className="space-y-2">
+										<Label htmlFor="vector_store_namespace">Vector Store Namespace</Label>
+										<Input
+											id="vector_store_namespace"
+											type="text"
+											placeholder="BifrostSemanticCachePlugin"
+											value={cacheConfig.vector_store_namespace ?? ""}
+											onChange={(e) => updateCacheConfigLocal({ vector_store_namespace: e.target.value })}
+										/>
+										<p className="text-muted-foreground text-xs">
+											Bucket/index name where cache entries are stored in the vector store. Leave blank to use the default
+											(<code>BifrostSemanticCachePlugin</code>). Changing the namespace points the plugin at a different (possibly empty) bucket. All previously
+											cached entries become inaccessible - every request will miss until the new namespace is repopulated.
+										</p>
+									</div>
+									<div className="space-y-2">
+										<Label htmlFor="default_cache_key">Default Cache Key</Label>
+										<Input
+											id="default_cache_key"
+											type="text"
+											placeholder="(none)"
+											value={cacheConfig.default_cache_key ?? ""}
+											onChange={(e) => updateCacheConfigLocal({ default_cache_key: e.target.value })}
+										/>
+										<p className="text-muted-foreground text-xs">
+											Fallback value used as the cache partition when a request doesn&apos;t set the <b>x-bf-cache-key</b> header.
+											Cache keys isolate entries: requests that share a key can hit each other&apos;s cached responses, while requests
+											with different keys can&apos;t. Leaving this blank means caching is <b>disabled</b> for any request that doesn&apos;t
+											send the header.
+										</p>
+									</div>
+								</div>
 							</div>
 
 							{/* Conversation Settings */}
@@ -455,6 +548,15 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										You can pass <b>x-bf-cache-no-store</b> header with &quot;true&quot; to disable response caching.
 									</li>
 								</ul>
+							</div>
+
+							<div className="flex justify-end pt-2">
+								<Button
+									onClick={handleSave}
+									disabled={!hasChanges || isUpdating || isCreating || hasInvalidProviderBackedDimension}
+								>
+									{isUpdating || isCreating ? "Saving..." : "Save Changes"}
+								</Button>
 							</div>
 						</div>
 					))}
