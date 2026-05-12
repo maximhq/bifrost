@@ -581,11 +581,10 @@ func TestInvalidProviderRejection(t *testing.T) {
 	for _, provider := range unsupportedProviders {
 		t.Run(string(provider), func(t *testing.T) {
 			config := &Config{
-				Provider:          provider,
-				EmbeddingModel:    "some-model",
-				Dimension:         1536,
-				Threshold:         0.8,
-				CleanUpOnShutdown: false,
+				Provider:       provider,
+				EmbeddingModel: "some-model",
+				Dimension:      1536,
+				Threshold:      0.8,
 			}
 
 			// Provider validation was moved to request time (global client handles it).
@@ -608,11 +607,10 @@ func TestValidProviderAccepted(t *testing.T) {
 
 	// Test a supported provider (OpenAI)
 	config := &Config{
-		Provider:          schemas.OpenAI,
-		EmbeddingModel:    "text-embedding-3-small",
-		Dimension:         1536,
-		Threshold:         0.8,
-		CleanUpOnShutdown: false,
+		Provider:       schemas.OpenAI,
+		EmbeddingModel: "text-embedding-3-small",
+		Dimension:      1536,
+		Threshold:      0.8,
 	}
 
 	// Init should succeed; provider validation happens at request time via the global client.
