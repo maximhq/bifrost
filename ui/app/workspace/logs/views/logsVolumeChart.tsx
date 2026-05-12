@@ -5,7 +5,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { HistogramBucket, LogsHistogramResponse } from "@/lib/types/logs";
+import type { HistogramBucket, LogsHistogramResponse, MCPHistogramResponse } from "@/lib/types/logs";
 import { getUnixRangeForPeriod } from "@/lib/utils/timeRange";
 import { ChevronDown, RotateCcw } from "lucide-react";
 import {
@@ -14,6 +14,7 @@ import {
   type ReactNode,
   useCallback,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -107,7 +108,7 @@ class ChartErrorBoundary extends Component<
 }
 
 interface LogsVolumeChartProps {
-  data: LogsHistogramResponse | null;
+  data: LogsHistogramResponse | MCPHistogramResponse | null;
   loading?: boolean;
   onTimeRangeChange: (startTime: number, endTime: number) => void;
   onResetZoom?: () => void;
@@ -226,6 +227,9 @@ export function LogsVolumeChart({
   const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
   const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
+  // Suppress the Bar onClick that fires immediately after a drag-select mouseUp,
+  // otherwise Recharts overwrites the dragged range with a single-bucket zoom.
+  const suppressNextBarClickRef = useRef(false);
 
   const effectingTimeRange = useMemo(() => {
     if (period) {
@@ -391,8 +395,14 @@ export function LogsVolumeChart({
       const selectionEnd =
         Math.max(leftTime, rightTime) + data.bucket_size_seconds;
 
-      // Only trigger if selection spans at least one bucket
-      if (selectionEnd - selectionStart >= data.bucket_size_seconds) {
+      // Only trigger a range change for real drags (more than one bucket).
+      // For single-bucket gestures, let the trailing Bar onClick own the zoom
+      // so we don't fire onTimeRangeChange twice with the same range.
+      if (
+        refAreaLeft !== refAreaRight &&
+        selectionEnd - selectionStart >= data.bucket_size_seconds
+      ) {
+        suppressNextBarClickRef.current = true;
         onTimeRangeChange(selectionStart, selectionEnd);
       }
     }
@@ -405,6 +415,10 @@ export function LogsVolumeChart({
   // Handle click on a bar (zoom into that bucket)
   const handleBarClick = useCallback(
     (barData: LogVolumeDataPoint | undefined) => {
+      if (suppressNextBarClickRef.current) {
+        suppressNextBarClickRef.current = false;
+        return;
+      }
       if (!data || !barData?.timestamp) return;
 
       const startTime = new Date(barData.timestamp).getTime() / 1000;
