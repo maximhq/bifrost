@@ -57,59 +57,51 @@ func TestPostLLMHook_SkipsOnBifrostError(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// shouldSkipCaching paths
+// shouldSkipCacheWrite paths
+//
+// shouldSkipCacheWrite gates only the cache WRITE — cache_debug telemetry is
+// stamped before this is consulted (see PostLLMHook). The cache-hit replay
+// case is handled separately as an early return in PostLLMHook and is not
+// exercised here.
 // -----------------------------------------------------------------------------
 
-func TestShouldSkipCaching_LargePayloadMode(t *testing.T) {
+func TestShouldSkipCacheWrite_LargePayloadMode(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 
 	ctx := newBaseTestContext()
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
-	res := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
 
-	if !plugin.shouldSkipCaching(ctx, res) {
-		t.Fatal("expected LargePayloadMode to skip caching")
+	if !plugin.shouldSkipCacheWrite(ctx) {
+		t.Fatal("expected LargePayloadMode to skip the cache write")
 	}
 }
 
-func TestShouldSkipCaching_LargeResponseMode(t *testing.T) {
+func TestShouldSkipCacheWrite_LargeResponseMode(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 
 	ctx := newBaseTestContext()
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
-	res := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
 
-	if !plugin.shouldSkipCaching(ctx, res) {
-		t.Fatal("expected LargeResponseMode to skip caching")
+	if !plugin.shouldSkipCacheWrite(ctx) {
+		t.Fatal("expected LargeResponseMode to skip the cache write")
 	}
 }
 
-func TestShouldSkipCaching_CacheHitReplay(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore())
-
-	ctx := newBaseTestContext()
-	res := &schemas.BifrostResponse{
-		ChatResponse: &schemas.BifrostChatResponse{
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				CacheDebug: &schemas.BifrostCacheDebug{CacheHit: true},
-			},
-		},
-	}
-
-	if !plugin.shouldSkipCaching(ctx, res) {
-		t.Fatal("expected cache-hit replay to skip re-caching")
-	}
-}
-
-func TestShouldSkipCaching_NoStoreFlag(t *testing.T) {
+func TestShouldSkipCacheWrite_NoStoreFlag(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 
 	ctx := newBaseTestContext()
 	ctx.SetValue(CacheNoStoreKey, true)
-	res := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
 
-	if !plugin.shouldSkipCaching(ctx, res) {
-		t.Fatal("expected CacheNoStoreKey=true to skip caching")
+	if !plugin.shouldSkipCacheWrite(ctx) {
+		t.Fatal("expected CacheNoStoreKey=true to skip the cache write")
+	}
+}
+
+func TestShouldSkipCacheWrite_DefaultIsFalse(t *testing.T) {
+	plugin := newTestPlugin(t, newObservableStore())
+	if plugin.shouldSkipCacheWrite(newBaseTestContext()) {
+		t.Fatal("expected default context to allow the cache write")
 	}
 }
 
