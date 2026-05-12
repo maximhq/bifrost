@@ -55,6 +55,13 @@ func applySaladCloudThinkingParams(params *schemas.ChatParameters) {
 	params.Reasoning = nil
 }
 
+// isSaladCloudThinkingEnabled maps Bifrost reasoning to the boolean
+// chat_template_kwargs.enable_thinking flag expected by SaladCloud.
+//
+// Precedence:
+//  1. Enabled, when set, is the explicit override.
+//  2. Effort == "none" disables thinking; any other non-empty effort enables it.
+//  3. Non-nil reasoning with no fields set enables thinking as an opt-in default.
 func isSaladCloudThinkingEnabled(reasoning *schemas.ChatReasoning) bool {
 	if reasoning == nil {
 		return false

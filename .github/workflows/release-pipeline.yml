@@ -150,6 +150,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            ai.salad.cloud:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -280,6 +281,7 @@ jobs:
           allowed-endpoints: >
             _grpc_config.cluster.qdrant.io:443
             _grpc_config.localhost:443
+            ai.salad.cloud:443
             api.github.com:443
             auth.docker.io:443
             cluster.qdrant.io:443
@@ -375,6 +377,7 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            ai.salad.cloud:443
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
@@ -705,6 +708,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            ai.salad.cloud:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -815,6 +819,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            ai.salad.cloud:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -939,6 +944,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            ai.salad.cloud:443
             api.github.com:443
             github.com:443
             nodejs.org:443
@@ -1036,6 +1042,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            ai.salad.cloud:443
             api.github.com:443
             github.com:443
             proxy.golang.org:443
@@ -1147,6 +1154,7 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            ai.salad.cloud:443
             api.github.com:443
             azure.archive.ubuntu.com:80
             esm.ubuntu.com:443

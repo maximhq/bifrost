@@ -98,27 +98,58 @@ Prefer remote image URLs for large images. SaladCloud accepts smaller base64 dat
 
 # 2. Configuration
 
-## Bifrost Config
-
-```yaml
-providers:
-  saladcloud:
-    keys:
-      - value: YOUR_SALAD_CLOUD_API_KEY
-```
-
 Bifrost's default base URL is `https://ai.salad.cloud`. Request handlers append `/v1/chat/completions` and `/v1/models` automatically. If you configure `https://ai.salad.cloud/v1`, Bifrost normalizes the trailing `/v1`.
 
-## Environment Variable
+<Tabs>
+<Tab title="Web UI">
 
-```yaml
-providers:
-  saladcloud:
-    keys:
-      - value:
-          from_env: true
-          env_var: SALAD_CLOUD_API_KEY
+1. Navigate to **Model Providers** → **Configurations** → **SaladCloud**
+2. Click **Add Key**
+3. Set **API Key** to your SaladCloud API key
+4. Set **Models** to `*` or specific model IDs like `qwen3.6-35b-a3b`
+5. Save the provider configuration
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "provider": "saladcloud",
+    "keys": [
+      {
+        "name": "saladcloud-key-1",
+        "value": "env.SALAD_CLOUD_API_KEY",
+        "models": ["*"],
+        "weight": 1.0
+      }
+    ]
+  }'
 ```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "saladcloud": {
+      "keys": [
+        {
+          "name": "saladcloud-key-1",
+          "value": "env.SALAD_CLOUD_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
 
 ---
 

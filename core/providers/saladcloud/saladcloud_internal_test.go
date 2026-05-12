@@ -64,6 +64,52 @@ func TestPrepareSaladCloudChatRequestEnablesThinkingFromReasoning(t *testing.T) 
 	}
 }
 
+func TestIsSaladCloudThinkingEnabledPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		reasoning *schemas.ChatReasoning
+		expected  bool
+	}{
+		{
+			name:     "nil reasoning disables thinking",
+			expected: false,
+		},
+		{
+			name:      "enabled true overrides effort none",
+			reasoning: &schemas.ChatReasoning{Enabled: schemas.Ptr(true), Effort: schemas.Ptr("none")},
+			expected:  true,
+		},
+		{
+			name:      "enabled false overrides high effort",
+			reasoning: &schemas.ChatReasoning{Enabled: schemas.Ptr(false), Effort: schemas.Ptr("high")},
+			expected:  false,
+		},
+		{
+			name:      "effort none disables thinking",
+			reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("none")},
+			expected:  false,
+		},
+		{
+			name:      "non-empty effort enables thinking",
+			reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")},
+			expected:  true,
+		},
+		{
+			name:      "non-nil reasoning defaults to thinking enabled",
+			reasoning: &schemas.ChatReasoning{},
+			expected:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if actual := isSaladCloudThinkingEnabled(tt.reasoning); actual != tt.expected {
+				t.Fatalf("expected %v, got %v", tt.expected, actual)
+			}
+		})
+	}
+}
+
 func TestPrepareSaladCloudChatRequestUsesSaladThinkingJSONShape(t *testing.T) {
 	prepared := prepareSaladCloudChatRequest(&schemas.BifrostChatRequest{
 		Provider: schemas.SaladCloud,
