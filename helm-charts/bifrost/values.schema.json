@@ -817,9 +817,6 @@
                     "exclude_system_prompt": {
                       "type": "boolean"
                     },
-                    "cleanup_on_shutdown": {
-                      "type": "boolean"
-                    },
                     "vector_store_namespace": {
                       "type": "string"
                     },

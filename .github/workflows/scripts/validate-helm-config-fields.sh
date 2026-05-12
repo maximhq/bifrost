@@ -637,7 +637,6 @@ bifrost:
         cache_by_model: true
         cache_by_provider: false
         exclude_system_prompt: true
-        cleanup_on_shutdown: true
         vector_store_namespace: "bifrost-cache"
     otel:
       enabled: true
@@ -710,7 +709,6 @@ assert_field_value 'plugins: semantic_cache conversation_history_threshold' '.pl
 assert_field_value 'plugins: semantic_cache cache_by_model' '.plugins.[4].config.cache_by_model' 'true'
 assert_field_value 'plugins: semantic_cache cache_by_provider' '.plugins.[4].config.cache_by_provider' 'false'
 assert_field_value 'plugins: semantic_cache exclude_system_prompt' '.plugins.[4].config.exclude_system_prompt' 'true'
-assert_field_value 'plugins: semantic_cache cleanup_on_shutdown' '.plugins.[4].config.cleanup_on_shutdown' 'true'
 assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4].config.vector_store_namespace' '"bifrost-cache"'
 
 # OTEL plugin

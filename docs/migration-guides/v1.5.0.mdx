@@ -751,6 +751,56 @@ If you parse `cache_debug` and assumed it was either absent or had `cache_hit: t
 
 ---
 
+## Breaking Change 16: Semantic Cache `cleanup_on_shutdown` Removed
+
+The `cleanup_on_shutdown` option on the semantic cache plugin config has been removed. Cache entries and the vector store namespace are no longer deleted when Bifrost shuts down — cache data always persists between restarts.
+
+**Before:**
+```json
+{
+  "plugins": {
+    "semantic_cache": {
+      "config": {
+        "ttl": "5m",
+        "cleanup_on_shutdown": true
+      }
+    }
+  }
+}
+```
+
+**After:**
+```json
+{
+  "plugins": {
+    "semantic_cache": {
+      "config": {
+        "ttl": "5m"
+      }
+    }
+  }
+}
+```
+
+The field is no longer part of the config schema and will be rejected by validation. Remove it from `config.json`, Helm values, and any `PUT /api/config` payloads.
+
+### How to clear cache data
+
+If you previously relied on `cleanup_on_shutdown: true` to drop the cache on restart, use one of the supported invalidation paths instead:
+
+- `DELETE /api/cache/clear/{cacheId}` — invalidate a single entry
+- `DELETE /api/cache/clear-by-key/{cacheKey}` — invalidate all entries for a cache key
+- Drop the vector store class/collection or point `vector_store_namespace` at a fresh name to start clean
+
+### Dimension / provider / model changes
+
+The previous `cleanup_on_shutdown: true` + restart workflow was the documented escape hatch for changing `dimension` (or switching to an embedding `provider`/`model` that produces a different vector size). That option is gone. To rotate the namespace now, either:
+
+- point `vector_store_namespace` at a fresh name, or
+- drop the existing class/index in your vector store before restarting
+
+---
+
 ## Opting Out: `version: 1` Compatibility Mode
 
 If you are not ready to adopt the new deny-by-default semantics, you can add a single field to `config.json` to restore v1.4.x behavior for all allow-list fields loaded from that file:
@@ -852,6 +902,10 @@ Remove `allow_direct_keys` from `config.json` and any `PUT /api/config` payloads
 
 <Step title="Switch semantic cache invalidation to cache IDs">
 Replace `DELETE /api/cache/clear/{requestId}` with `DELETE /api/cache/clear/{cacheId}`, and replace `plugin.ClearCacheForRequestID(...)` with `plugin.ClearCacheForCacheID(...)`. Read the cache ID from `extra_fields.cache_debug.cache_id` on the response (now populated on misses too).
+</Step>
+
+<Step title="Remove cleanup_on_shutdown from semantic cache config">
+Drop the `cleanup_on_shutdown` field from the semantic cache plugin config in `config.json`, Helm values, and any API payloads — it is no longer part of the schema. Cache data now always persists across restarts; use the cache clear endpoints or rotate `vector_store_namespace` to drop entries.
 </Step>
 </Steps>
 
