@@ -21,7 +21,7 @@ import (
 
 func TestPostLLMHook_SkipsOnBifrostError(t *testing.T) {
 	store := newObservableStore()
-	plugin := newTestPlugin(t, store, false)
+	plugin := newTestPlugin(t, store)
 
 	ctx := newBaseTestContext()
 	ctx.SetValue(CacheKey, keyForTest(t, ""))
@@ -61,7 +61,7 @@ func TestPostLLMHook_SkipsOnBifrostError(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestShouldSkipCaching_LargePayloadMode(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	ctx := newBaseTestContext()
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
@@ -73,7 +73,7 @@ func TestShouldSkipCaching_LargePayloadMode(t *testing.T) {
 }
 
 func TestShouldSkipCaching_LargeResponseMode(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	ctx := newBaseTestContext()
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
@@ -85,7 +85,7 @@ func TestShouldSkipCaching_LargeResponseMode(t *testing.T) {
 }
 
 func TestShouldSkipCaching_CacheHitReplay(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	ctx := newBaseTestContext()
 	res := &schemas.BifrostResponse{
@@ -102,7 +102,7 @@ func TestShouldSkipCaching_CacheHitReplay(t *testing.T) {
 }
 
 func TestShouldSkipCaching_NoStoreFlag(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	ctx := newBaseTestContext()
 	ctx.SetValue(CacheNoStoreKey, true)
@@ -162,7 +162,7 @@ func TestInit_AllowsDirectOnlyMode(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestPreLLMHook_FallsBackToDirectWhenExecutorMissing(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	// Intentionally do NOT set plugin.embeddingRequestExecutor.
 
 	req := &schemas.BifrostRequest{
@@ -197,7 +197,7 @@ func TestPreLLMHook_FallsBackToDirectWhenExecutorMissing(t *testing.T) {
 
 func TestExpiredEntry_DetectedAndDeleted(t *testing.T) {
 	store := newObservableStore()
-	plugin := newTestPlugin(t, store, false)
+	plugin := newTestPlugin(t, store)
 
 	// Plant an already-expired entry under a deterministic ID.
 	expiredID := "expired-id-1"
@@ -295,7 +295,7 @@ func TestUnmarshalJSON_RejectsBadDurationString(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStreamReplay_CancelImmediately(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	chunk := `{"chat_response":{"choices":[]}}`
 	streamArray := []string{chunk, chunk, chunk}
 
@@ -331,7 +331,7 @@ func TestStreamReplay_CancelImmediately(t *testing.T) {
 }
 
 func TestStreamReplay_FullDrain(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	chunk := `{"chat_response":{"choices":[]}}`
 	streamArray := []string{chunk, chunk, chunk}
 
@@ -379,7 +379,7 @@ func scopedTestContext(t testing.TB, suffix string) *schemas.BifrostContext {
 
 func TestPreLLMHook_EmitsPluginLogOnEmbeddingFailure(t *testing.T) {
 	store := newObservableStore()
-	plugin := newTestPlugin(t, store, false)
+	plugin := newTestPlugin(t, store)
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "rate limit exceeded"}}
 	})
@@ -438,7 +438,7 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 	// flow (hit/miss). cache_debug already conveys that. Only Warn-level
 	// failure logs should appear on the response.
 	store := newObservableStore()
-	plugin := newTestPlugin(t, store, false)
+	plugin := newTestPlugin(t, store)
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -461,7 +461,7 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 }
 
 func TestResolveCacheTypes_EmitsPluginLogOnInvalidValue(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	ctx := scopedTestContext(t, "")
 	ctx.SetValue(CacheTypeKey, "not-a-cache-type") // wrong type
 
@@ -484,7 +484,7 @@ func TestResolveCacheTypes_EmitsPluginLogOnInvalidValue(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestGenerateEmbedding_AcceptsInt8Array(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{
 			Data: []schemas.EmbeddingData{{
@@ -507,7 +507,7 @@ func TestGenerateEmbedding_AcceptsInt8Array(t *testing.T) {
 }
 
 func TestGenerateEmbedding_AcceptsInt32Array(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{
 			Data: []schemas.EmbeddingData{{
@@ -534,7 +534,7 @@ func TestGenerateEmbedding_AcceptsInt32Array(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestPreLLMHook_ConcurrentSameRequestID(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore(), false)
+	plugin := newTestPlugin(t, newObservableStore())
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,

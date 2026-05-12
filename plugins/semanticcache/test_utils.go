@@ -415,11 +415,10 @@ type TestSetup struct {
 // NewTestSetup creates a new test setup with default configuration
 func NewTestSetup(t *testing.T) *TestSetup {
 	return NewTestSetupWithConfig(t, &Config{
-		Provider:          schemas.OpenAI,
-		EmbeddingModel:    "text-embedding-3-small",
-		Dimension:         1536,
-		Threshold:         0.8,
-		CleanUpOnShutdown: true,
+		Provider:       schemas.OpenAI,
+		EmbeddingModel: "text-embedding-3-small",
+		Dimension:      1536,
+		Threshold:      0.8,
 	})
 }
 
@@ -462,9 +461,6 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 	if config.VectorStoreNamespace == "" {
 		config.VectorStoreNamespace = SharedTestNamespace
 	}
-	// Tests must NOT delete the shared namespace at cleanup — other parallel
-	// tests are still using it. Override any caller default.
-	config.CleanUpOnShutdown = false
 
 	// Get the appropriate config for the vector store type
 	var storeConfig interface{}
@@ -750,7 +746,6 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		Dimension:                    1536,
-		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 	}
@@ -764,7 +759,6 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		Provider:            schemas.OpenAI,
 		EmbeddingModel:      "text-embedding-3-small",
 		Dimension:           1536,
-		CleanUpOnShutdown:   true,
 		Threshold:           0.8,
 		ExcludeSystemPrompt: &excludeSystem,
 	}
@@ -778,7 +772,6 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
 		Dimension:                    1536,
-		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 		ExcludeSystemPrompt:          &excludeSystem,

@@ -16,9 +16,9 @@ import (
 )
 
 type PluginsLoader interface {
+	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
-	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 }
 
 // PluginsHandler is the handler for the plugins API

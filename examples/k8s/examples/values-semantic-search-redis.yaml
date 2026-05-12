@@ -18,7 +18,6 @@ bifrost:
         cache_by_model: true
         cache_by_provider: true
         exclude_system_prompt: true
-        cleanup_on_shutdown: false
         vector_store_namespace: "bifrost-semantic-cache"
 
 vectorStore:

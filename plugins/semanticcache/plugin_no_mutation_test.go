@@ -88,8 +88,6 @@ func TestCachingDoesNotMutateRequestSentToProvider(t *testing.T) {
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: DefaultConversationHistoryThreshold,
 		VectorStoreNamespace:         SharedTestNamespace,
-		// Do NOT clean up on shutdown — other parallel tests share the namespace.
-		CleanUpOnShutdown: false,
 	}
 	if err := ensureSharedTestNamespace(context.Background(), store, cfg.Dimension); err != nil {
 		t.Fatalf("ensureSharedTestNamespace: %v", err)
