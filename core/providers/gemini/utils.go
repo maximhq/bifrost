@@ -141,7 +141,6 @@ func isValidAudioBase64Payload(data string) bool {
 	decoded, err := decodeBase64StringToBytes(data)
 	return err == nil && len(decoded) > 0
 }
-}
 
 // supportsThinkingConfig returns true if the model supports ThinkingConfig.
 // Only specific Gemini models support thinking:
