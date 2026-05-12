@@ -360,6 +360,33 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 	performDirectSearch, performSemanticSearch := plugin.resolveCacheTypes(ctx)
 
+	// If neither search path can produce a lookup in the current plugin
+	// configuration, skip caching entirely (no read, no write). Concretely:
+	//   - x-bf-cache-type=semantic against a direct-only plugin (Provider="",
+	//     Dimension=1) — generateEmbedding would fail with "provider is
+	//     required", PostLLMHook would still write an orphan entry under a
+	//     random request UUID that no future read can find.
+	//   - x-bf-cache-type=direct against a misconfigured semantic-only plugin
+	//     where direct search is disabled.
+	//   - An unknown cache-type header value (resolveCacheTypes returns false
+	//     for both paths).
+	// The embedding executor alone isn't a sufficient gate — the framework
+	// wires it on every plugin, but the plugin's config decides whether
+	// semantic search is actually viable.
+	canDoSemanticSearch := plugin.embeddingRequestExecutor != nil &&
+		plugin.config.Provider != "" &&
+		plugin.config.EmbeddingModel != "" &&
+		plugin.config.Dimension > 1 &&
+		req.EmbeddingRequest == nil &&
+		req.TranscriptionRequest == nil
+	if !performDirectSearch && (!performSemanticSearch || !canDoSemanticSearch) {
+		plugin.clearCacheState(requestID)
+		msg := "skipping cache: no search path available for this request (cache_type narrowed to a path that the current plugin configuration cannot serve)"
+		plugin.logger.Warn(msg)
+		ctx.Log(schemas.LogLevelWarn, msg)
+		return req, nil, nil
+	}
+
 	// Compute metadata + paramsHash once and reuse across both search paths.
 	metadata, err := plugin.buildRequestMetadataForCaching(state, req)
 	if err != nil {
@@ -387,12 +414,11 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	}
 
 	if performSemanticSearch {
-		// Suppress semantic for ineligible cases (no executor, or request
-		// types whose input cannot itself be embedded).
-		semanticEligible := plugin.embeddingRequestExecutor != nil &&
-			req.EmbeddingRequest == nil &&
-			req.TranscriptionRequest == nil
-		if !semanticEligible {
+		// Reuse canDoSemanticSearch so the default cache-type path (both flags
+		// true) applies the same provider/model/dimension gate as the explicit
+		// semantic-only path — otherwise a misconfigured plugin wastes one
+		// generateEmbedding round-trip per request before failing downstream.
+		if !canDoSemanticSearch {
 			plugin.setZeroVectorIfRequired(state)
 		} else {
 			shortCircuit, err := plugin.performSemanticSearch(ctx, state, req, cacheKey, paramsHash)
@@ -486,10 +512,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// Final-chunk signaling for cache replays: stampCacheDebugForHit only
 	// stamps CacheDebug.CacheHit=true on the LAST replay chunk (see search.go).
 	// When we see that stamp, we set the stream-end indicator on the root ctx
-	// synchronously — same goroutine as the rest of the post-hook chain. This
-	// MUST run before shouldSkipCaching, otherwise we early-return without
-	// setting the indicator and downstream plugins (logging) never see
-	// isFinalChunk=true on the final replay chunk.
+	// synchronously — same goroutine as the rest of the post-hook chain.
 	//
 	// Why not set the indicator from the cache replay goroutine instead? It
 	// races: the producer can advance to its next iteration (and SetValue)
@@ -498,15 +521,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	if bifrost.IsStreamRequestType(requestType) && cacheDebug != nil && cacheDebug.CacheHit {
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	}
-	if plugin.shouldSkipCaching(ctx, res) {
-		// Clear state on the same condition the defer at the end of this
-		// function uses — otherwise the early return below leaks *cacheState
-		// (notably the ~6 KB Embeddings slice) until the periodic reaper
-		// runs. Non-final stream chunks of an in-flight short-circuit replay
-		// keep their state because they need it for later chunks.
-		if !bifrost.IsStreamRequestType(requestType) || bifrost.IsFinalChunk(ctx) {
-			plugin.clearCacheState(requestID)
-		}
+	// Cache hit replay: cache_debug was already stamped in PreLLMHook by
+	// stampCacheDebugForHit. There's nothing further to do here — no new
+	// telemetry to stamp, no write to perform.
+	if cacheDebug != nil && cacheDebug.CacheHit {
+		plugin.clearCacheState(requestID)
 		return res, nil, nil
 	}
 
@@ -523,8 +542,8 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	if state == nil || state.ParamsHash == "" {
 		// PreLLMHook bailed before computing the params hash (unsupported
 		// request type, conversation-history threshold, metadata error,
-		// etc.). Caching now would write an entry without params_hash that
-		// no future lookup can match.
+		// no-search-path narrow, etc.). Without state we have no telemetry
+		// to stamp and no entry to write.
 		return res, nil, nil
 	}
 
@@ -536,19 +555,31 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		}
 	}()
 
-	// PreLLMHook short-circuited from cache; chunks here are the cached
-	// replay, not a fresh upstream response. shouldSkipCaching only catches
-	// the FINAL chunk (the only one carrying CacheDebug.CacheHit=true via
-	// stampCacheDebugForHit) — without this guard the non-final chunks
-	// would slip into addStreamingResponse and trigger a duplicate write
-	// at the same directCacheID (Weaviate 422 "id already exists").
+	// PreLLMHook short-circuited from cache (non-final stream chunks of a
+	// replay land here). Telemetry is already stamped on the final chunk by
+	// stampCacheDebugForHit; non-final chunks have no telemetry to add.
+	// Without this guard non-final chunks would slip into addStreamingResponse
+	// and trigger a duplicate write at the same directCacheID
+	// (Weaviate 422 "id already exists").
 	if state.ShortCircuited {
 		return res, nil, nil
 	}
 
 	storageID, embedding, shouldStoreEmbeddings := plugin.resolveStorageIDAndEmbedding(ctx, state, requestID, requestType)
 
+	// Stamp cache_debug telemetry FIRST so callers can observe that the
+	// plugin ran a lookup, regardless of whether we then choose to skip
+	// writing the entry (no-store header, large-payload modes, etc.).
+	// Observability shouldn't depend on the write decision — that was
+	// previously the case and made the cache layer invisible to callers
+	// using no-store.
 	plugin.stampCacheDebugForMiss(state, extraFields, storageID, isStream, isFinalChunk)
+
+	// Now decide whether to actually write. Skipping the write still
+	// leaves cache_debug stamped above.
+	if plugin.shouldSkipCacheWrite(ctx) {
+		return res, nil, nil
+	}
 
 	cacheTTL := plugin.resolveTTL(ctx)
 	paramsHash := state.ParamsHash
@@ -579,17 +610,18 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	return res, nil, nil
 }
 
-// shouldSkipCaching returns true if the response cannot or should not be
-// written to the cache (large payload mode, cache hit replay, or explicit
-// no-store).
-func (plugin *Plugin) shouldSkipCaching(ctx *schemas.BifrostContext, res *schemas.BifrostResponse) bool {
+// shouldSkipCacheWrite returns true if the upstream response should NOT be
+// written to the cache store. Telemetry (cache_debug) is stamped before this
+// is consulted, so callers retain observability on misses even when no_store
+// or large-payload modes are in effect. The cache-hit-replay case is handled
+// separately as an early return in PostLLMHook because it must short-circuit
+// before stamping (cache_debug for hits is already populated by
+// stampCacheDebugForHit during PreLLMHook).
+func (plugin *Plugin) shouldSkipCacheWrite(ctx *schemas.BifrostContext) bool {
 	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
 		return true
 	}
 	if isLargeResponse, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); ok && isLargeResponse {
-		return true
-	}
-	if cacheDebug := res.GetExtraFields().CacheDebug; cacheDebug != nil && cacheDebug.CacheHit {
 		return true
 	}
 	if noStore, ok := ctx.Value(CacheNoStoreKey).(bool); ok && noStore {
@@ -650,13 +682,21 @@ func (plugin *Plugin) stampCacheDebugForMiss(state *cacheState, extraFields *sch
 	}
 }
 
-// resolveTTL returns the per-request TTL override if present, else the plugin default.
+// resolveTTL returns the per-request TTL override if present, else the plugin
+// default. A non-positive override (0 or negative) is treated as "use default"
+// to mirror how Config.UnmarshalJSON + Init treat TTL=0 at construction time —
+// otherwise a header of "0s" would yield expires_at=now and silently kill the
+// cache write for the affected request, which is rarely what the caller wants.
 func (plugin *Plugin) resolveTTL(ctx *schemas.BifrostContext) time.Duration {
 	if v := ctx.Value(CacheTTLKey); v != nil {
 		if ttl, ok := v.(time.Duration); ok {
-			return ttl
+			if ttl > 0 {
+				return ttl
+			}
+			plugin.logger.Debug("ignoring non-positive per-request TTL override %v, falling back to plugin default", ttl)
+		} else {
+			plugin.logger.Warn("TTL is not a time.Duration, using default TTL")
 		}
-		plugin.logger.Warn("TTL is not a time.Duration, using default TTL")
 	}
 	return plugin.config.TTL
 }
