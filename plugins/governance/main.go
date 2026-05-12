@@ -1424,6 +1424,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	toolName := req.GetToolName()
 
+	// Skip for non tool execution requests
+	if !req.RequestType.IsExecuteTool() {
+		return req, nil, nil
+	}
+
 	// Skip governance for codemode tools
 	if bifrost.IsCodemodeTool(toolName) {
 		return req, nil, nil
@@ -1498,6 +1503,19 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error) {
 	if _, ok := ctx.Value(governanceRejectedContextKey).(bool); ok {
+		return resp, bifrostErr, nil
+	}
+
+	// Skip non tool-execute envelopes. The MCP gate stamps MCPRequestType on both
+	// the success response (BifrostMCPResponse.ExtraFields) and the error
+	// (BifrostError.ExtraFields), so a single check covers both paths.
+	mcpReqType := schemas.MCPRequestType("")
+	if resp != nil {
+		mcpReqType = resp.ExtraFields.MCPRequestType
+	} else if bifrostErr != nil {
+		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
+	}
+	if !mcpReqType.IsExecuteTool() {
 		return resp, bifrostErr, nil
 	}
 

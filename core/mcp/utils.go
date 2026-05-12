@@ -288,10 +288,21 @@ func ExecuteWithRetry(
 	return lastErr
 }
 
-// retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
-// Uses exponential backoff retry logic (5 retries, 1-30 seconds) for tool retrieval.
-// Returns both the tools map and a name mapping (sanitized_name -> original_mcp_name) for tool execution.
-func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (map[string]schemas.ChatTool, map[string]string, error) {
+// listToolsResult captures the full outcome of retrieveExternalToolsDetailed so the
+// plugin gate can expose RawToolCount and SkippedTools to plugins.
+type listToolsResult struct {
+	tools           map[string]schemas.ChatTool
+	toolNameMapping map[string]string
+	rawCount        int
+	skipped         []schemas.SkippedMCPTool
+}
+
+// retrieveExternalToolsDetailed retrieves and filters tools from an external MCP server
+// without holding locks. Uses exponential backoff retry logic (5 retries, 1-30 seconds)
+// for tool retrieval. Returns the full result so the plugin gate can surface RawToolCount
+// and SkippedTools. All callers should go through MCPManager.runListToolsWithHooks rather
+// than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
+func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
@@ -314,15 +325,19 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		logger,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
+		return nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
 	}
 
 	if toolsResponse == nil {
-		return make(map[string]schemas.ChatTool), make(map[string]string), nil // No tools available
+		return &listToolsResult{
+			tools:           make(map[string]schemas.ChatTool),
+			toolNameMapping: make(map[string]string),
+		}, nil
 	}
 
 	tools := make(map[string]schemas.ChatTool)
 	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
+	var skipped []schemas.SkippedMCPTool
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
@@ -330,6 +345,10 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		validationName := strings.ReplaceAll(mcpTool.Name, "-", "_")
 		if err := validateNormalizedToolName(validationName); err != nil {
 			logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+			skipped = append(skipped, schemas.SkippedMCPTool{
+				OriginalName: mcpTool.Name,
+				Reason:       err.Error(),
+			})
 			continue
 		}
 
@@ -349,7 +368,12 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
-	return tools, toolNameMapping, nil
+	return &listToolsResult{
+		tools:           tools,
+		toolNameMapping: toolNameMapping,
+		rawCount:        len(toolsResponse.Tools),
+		skipped:         skipped,
+	}, nil
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.

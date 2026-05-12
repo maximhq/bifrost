@@ -22,10 +22,10 @@ func (m *mockToolClientManager) GetClientByName(clientName string) *schemas.MCPC
 		return &schemas.MCPClientState{
 			Name: "test-client",
 			ExecutionConfig: &schemas.MCPClientConfig{
-				ID:              "test-client",
-				Name:            "test-client",
+				ID:               "test-client",
+				Name:             "test-client",
 				IsCodeModeClient: false,
-				ToolsToExecute:  []string{"*"},
+				ToolsToExecute:   []string{"*"},
 			},
 		}
 	}
@@ -41,6 +41,9 @@ func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string
 		"test-client": m.tools,
 	}
 }
+
+func (m *mockToolClientManager) GetPluginPipeline() PluginPipeline             { return nil }
+func (m *mockToolClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 
 // makeTool is a convenience constructor for test tool fixtures.
 func makeTool(name string) schemas.ChatTool {
@@ -102,8 +105,6 @@ func newToolsManagerForTest(cm ClientManager) *ToolsManager {
 		},
 		cm,
 		nil, // fetchNewRequestIDFunc
-		nil, // pluginPipelineProvider
-		nil, // releasePluginPipeline
 		nil, // oauth2Provider
 		&MockLogger{},
 	)
@@ -154,8 +155,8 @@ func TestBuildIntegrationDuplicateCheckMap_NilFunction_IsSkipped(t *testing.T) {
 
 	tools := []schemas.ChatTool{
 		{Type: schemas.ChatToolTypeFunction, Function: nil}, // nil Function
-		makeTool(""),            // empty name
-		makeTool("valid_tool"),  // valid
+		makeTool(""),           // empty name
+		makeTool("valid_tool"), // valid
 	}
 
 	m := buildIntegrationDuplicateCheckMap(tools, "", defaultLogger)
