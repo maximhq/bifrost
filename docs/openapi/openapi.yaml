@@ -100,6 +100,8 @@ tags:
     description: Container management operations
   - name: Async Jobs
     description: Asynchronous job submission and retrieval endpoints
+  - name: Realtime
+    description: Realtime WebSocket and WebRTC endpoints
   # Provider Integrations
   - name: OpenAI Integration
     description: OpenAI-compatible API endpoints (/openai/*)
@@ -245,6 +247,16 @@ paths:
     $ref: './paths/inference/ocr.yaml#/async-ocr'
   /v1/async/ocr/{job_id}:
     $ref: './paths/inference/ocr.yaml#/async-ocr-job'
+
+  # ==================== Realtime API ====================
+  /v1/realtime:
+    $ref: './paths/inference/realtime.yaml#/realtime'
+  /v1/realtime/calls:
+    $ref: './paths/inference/realtime.yaml#/realtime-calls'
+  /v1/realtime/client_secrets:
+    $ref: './paths/inference/realtime.yaml#/realtime-client-secrets'
+  /v1/realtime/sessions:
+    $ref: './paths/inference/realtime.yaml#/realtime-sessions'
 
   # ==================== OpenAI Integration ====================
   # Chat Completions
@@ -624,6 +636,8 @@ paths:
   # Plugins
   /api/plugins:
     $ref: './paths/management/plugins.yaml#/plugins'
+  /api/plugins/builtins:
+    $ref: './paths/management/plugins.yaml#/plugins-builtins'
   /api/plugins/{name}:
     $ref: './paths/management/plugins.yaml#/~1plugins~1{name}'
 
@@ -730,6 +744,10 @@ paths:
     $ref: './paths/management/logging.yaml#/logs'
   /api/logs/{id}:
     $ref: './paths/management/logging.yaml#/logs-by-id'
+  /api/logs/sessions/{session_id}:
+    $ref: './paths/management/logging.yaml#/logs-sessions-by-id'
+  /api/logs/sessions/{session_id}/summary:
+    $ref: './paths/management/logging.yaml#/logs-sessions-summary-by-id'
   /api/logs/stats:
     $ref: './paths/management/logging.yaml#/logs-stats'
   /api/logs/histogram:
@@ -748,10 +766,18 @@ paths:
     $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-provider'
   /api/logs/histogram/latency/by-provider:
     $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-provider'
+  /api/logs/histogram/cost/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-cost-by-dimension'
+  /api/logs/histogram/tokens/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-dimension'
+  /api/logs/histogram/latency/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-dimension'
   /api/logs/dropped:
     $ref: './paths/management/logging.yaml#/logs-dropped'
   /api/logs/filterdata:
     $ref: './paths/management/logging.yaml#/logs-filterdata'
+  /api/logs/rankings:
+    $ref: './paths/management/logging.yaml#/logs-rankings'
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
 
@@ -764,6 +790,12 @@ paths:
     $ref: './paths/management/logging.yaml#/mcp-logs-stats'
   /api/mcp-logs/filterdata:
     $ref: './paths/management/logging.yaml#/mcp-logs-filterdata'
+  /api/mcp-logs/histogram:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram'
+  /api/mcp-logs/histogram/cost:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-cost'
+  /api/mcp-logs/histogram/top-tools:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-top-tools'
 
   # Prompt Repository
   /api/prompt-repo/folders:

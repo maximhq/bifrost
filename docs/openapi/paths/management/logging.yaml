@@ -1023,3 +1023,463 @@ mcp-logs-filterdata:
               $ref: '../../schemas/management/logging.yaml#/MCPLogsFilterDataResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-sessions-by-id:
+  get:
+    operationId: getLogSessionById
+    summary: Get logs for a session
+    description: |
+      Returns the paginated logs belonging to a single parent-request session
+      (grouped by `parent_request_id`). Sorted ascending by timestamp by default.
+    tags:
+      - Logging
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        description: Parent request ID identifying the session
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of logs to return (default 200, max 200)
+        schema:
+          type: integer
+          default: 200
+          maximum: 200
+      - name: offset
+        in: query
+        description: Number of logs to skip
+        schema:
+          type: integer
+          default: 0
+      - name: order
+        in: query
+        description: Sort order (default `asc`)
+        schema:
+          type: string
+          enum: [asc, desc]
+          default: asc
+    responses:
+      '200':
+        description: Session logs retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/SessionDetailResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-sessions-summary-by-id:
+  get:
+    operationId: getLogSessionSummaryById
+    summary: Get aggregate totals for a session
+    description: Returns aggregate request count, token usage, cost, and duration for a single session.
+    tags:
+      - Logging
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        description: Parent request ID identifying the session
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Session summary retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/SessionSummaryResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-rankings:
+  get:
+    operationId: getModelRankings
+    summary: Get model usage rankings
+    description: |
+      Returns models ranked by usage with trend percentages versus the previous
+      comparable period. Accepts the same filter parameters as the histogram
+      endpoints (time range, providers, models, dimensions).
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Model rankings retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/ModelRankingResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-cost-by-dimension:
+  get:
+    operationId: getLogsDimensionCostHistogram
+    summary: Get cost histogram by dimension
+    description: |
+      Returns time-bucketed cost data grouped by an arbitrary dimension
+      (`provider`, `team_id`, `customer_id`, `user_id`, `business_unit_id`).
+      The dimension is supplied via the required `dimension` query parameter.
+    tags:
+      - Logging
+    parameters:
+      - name: dimension
+        in: query
+        required: true
+        description: Grouping dimension
+        schema:
+          $ref: '../../schemas/management/logging.yaml#/HistogramDimension'
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Dimension cost histogram retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/DimensionCostHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-tokens-by-dimension:
+  get:
+    operationId: getLogsDimensionTokenHistogram
+    summary: Get token histogram by dimension
+    description: |
+      Returns time-bucketed token usage grouped by an arbitrary dimension.
+      See `getLogsDimensionCostHistogram` for the list of supported dimensions.
+    tags:
+      - Logging
+    parameters:
+      - name: dimension
+        in: query
+        required: true
+        description: Grouping dimension
+        schema:
+          $ref: '../../schemas/management/logging.yaml#/HistogramDimension'
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Dimension token histogram retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/DimensionTokenHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-latency-by-dimension:
+  get:
+    operationId: getLogsDimensionLatencyHistogram
+    summary: Get latency histogram by dimension
+    description: |
+      Returns time-bucketed latency percentiles (avg, p90, p95, p99) grouped by
+      an arbitrary dimension.
+    tags:
+      - Logging
+    parameters:
+      - name: dimension
+        in: query
+        required: true
+        description: Grouping dimension
+        schema:
+          $ref: '../../schemas/management/logging.yaml#/HistogramDimension'
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Dimension latency histogram retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/DimensionLatencyHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+mcp-logs-histogram:
+  get:
+    operationId: getMCPLogsHistogram
+    summary: Get MCP tool call volume histogram
+    description: Returns time-bucketed MCP tool call volume with success/error breakdown.
+    tags:
+      - Logging
+    parameters:
+      - name: tool_names
+        in: query
+        description: Comma-separated list of tool names to filter by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of server labels to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by (processing, success, error)
+        schema:
+          type: string
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: llm_request_ids
+        in: query
+        description: Comma-separated list of LLM request IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: min_latency
+        in: query
+        description: Minimum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: content_search
+        in: query
+        description: Search in tool arguments and results
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP histogram retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/MCPHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+mcp-logs-histogram-cost:
+  get:
+    operationId: getMCPLogsCostHistogram
+    summary: Get MCP cost histogram
+    description: Returns time-bucketed MCP tool call cost data.
+    tags:
+      - Logging
+    parameters:
+      - name: tool_names
+        in: query
+        description: Comma-separated list of tool names to filter by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of server labels to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by (processing, success, error)
+        schema:
+          type: string
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: llm_request_ids
+        in: query
+        description: Comma-separated list of LLM request IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: min_latency
+        in: query
+        description: Minimum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: content_search
+        in: query
+        description: Search in tool arguments and results
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP cost histogram retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/MCPCostHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+mcp-logs-histogram-top-tools:
+  get:
+    operationId: getMCPLogsTopTools
+    summary: Get top MCP tools by call count
+    description: Returns the top 10 MCP tools by call count, with cost totals.
+    tags:
+      - Logging
+    parameters:
+      - name: tool_names
+        in: query
+        description: Comma-separated list of tool names to filter by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of server labels to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by (processing, success, error)
+        schema:
+          type: string
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: llm_request_ids
+        in: query
+        description: Comma-separated list of LLM request IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: content_search
+        in: query
+        description: Search in tool arguments and results
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP top tools retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/MCPTopToolsResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
