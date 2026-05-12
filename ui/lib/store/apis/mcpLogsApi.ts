@@ -208,6 +208,7 @@ export const {
 	useLazyGetMCPLogByIdQuery,
 	useLazyGetMCPLogsStatsQuery,
 	useLazyGetMCPAvailableFilterDataQuery,
+	useGetMCPHistogramQuery,
 	useLazyGetMCPHistogramQuery,
 	useLazyGetMCPCostHistogramQuery,
 	useLazyGetMCPTopToolsQuery,

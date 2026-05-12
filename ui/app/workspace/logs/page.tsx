@@ -253,19 +253,22 @@ export default function LogsPage() {
 		const now = Math.floor(Date.now() / 1000);
 		const oneHour = now - 1 * 60 * 60;
 		setUrlState({
+			period: "1h",
 			start_time: oneHour,
 			end_time: now,
 			offset: 0,
+			polling: true,
 		});
 	}, [setUrlState]);
 
-	// Check if user has zoomed (time range is different from default 1h)
+	// Zoomed only when a custom absolute range is active (period cleared) and
+	// the range is meaningfully narrower than 1h.
 	const isZoomed = useMemo(() => {
+		if (urlState.period) return false;
 		const currentRange = urlState.end_time - urlState.start_time;
-		const defaultRange = 1 * 60 * 60; // 1 hours in seconds
-		// Consider zoomed if range is less than 90% of default (to account for minor differences)
+		const defaultRange = 1 * 60 * 60;
 		return currentRange < defaultRange * 0.9;
-	}, [urlState.start_time, urlState.end_time]);
+	}, [urlState.start_time, urlState.end_time, urlState.period]);
 
 	const {
 		data: logsData,
