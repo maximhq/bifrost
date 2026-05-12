@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"hash"
 	"maps"
+	"math"
 	"sort"
 	"strconv"
 
@@ -362,6 +363,27 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateClientConfigHashWithToolManager extends GenerateClientConfigHash to also cover
+// the mcp.tool_manager_config file section. When tm is nil it returns the same value as
+// GenerateClientConfigHash, so it is safe to call unconditionally.
+func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPToolManagerConfig) (string, error) {
+	base, err := c.GenerateClientConfigHash()
+	if err != nil || tm == nil {
+		return base, err
+	}
+	h := sha256.New()
+	h.Write([]byte(base))
+	h.Write([]byte("toolMgrAgentDepth:" + strconv.Itoa(tm.MaxAgentDepth)))
+	h.Write([]byte("toolMgrTimeout:" + strconv.FormatInt(int64(math.Ceil(tm.ToolExecutionTimeout.D().Seconds())), 10)))
+	h.Write([]byte("toolMgrCodeMode:" + string(tm.CodeModeBindingLevel)))
+	if tm.DisableAutoToolInject {
+		h.Write([]byte("toolMgrDisableAutoInject:true"))
+	} else {
+		h.Write([]byte("toolMgrDisableAutoInject:false"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.

@@ -541,10 +541,9 @@
               "type": "object",
               "properties": {
                 "toolExecutionTimeout": {
-                  "type": "integer",
-                  "description": "Tool execution timeout in seconds",
-                  "minimum": 1,
-                  "default": 30
+                  "type": ["integer", "string"],
+                  "description": "Tool execution timeout. Integer = seconds (e.g. 30), string = Go duration (e.g. \"30s\", \"2m\"). Prefer the string form.",
+                  "default": "30s"
                 },
                 "maxAgentDepth": {
                   "type": "integer",

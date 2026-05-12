@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -518,6 +520,18 @@ func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
 			t.Errorf("tool_manager_config with code_mode_binding_level should be valid, got: %v", err)
+		}
+		var root struct {
+			MCP schemas.MCPConfig `json:"mcp"`
+		}
+		if err := json.Unmarshal([]byte(config), &root); err != nil {
+			t.Errorf("failed to unmarshal mcp config: %v", err)
+		}
+		if root.MCP.ToolManagerConfig == nil {
+			t.Fatal("tool_manager_config missing after unmarshal")
+		}
+		if root.MCP.ToolManagerConfig.ToolExecutionTimeout.D() != 30*time.Second {
+			t.Errorf("tool_execution_timeout should be 30 seconds, got: %v", root.MCP.ToolManagerConfig.ToolExecutionTimeout.D())
 		}
 	})
 }
