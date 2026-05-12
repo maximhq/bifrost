@@ -413,7 +413,11 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			params.Offset = n
 		}
 
-		params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+		if !params.Export {
+			params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+		} else if params.Offset < 0 {
+			params.Offset = 0
+		}
 		virtualKeys, totalCount, err := h.configStore.GetVirtualKeysPaginated(ctx, params)
 		if err != nil {
 			logger.Error("failed to retrieve virtual keys: %v", err)
