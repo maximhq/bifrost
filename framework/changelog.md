@@ -1,0 +1,4 @@
+- fix: sync mcp.tool_manager_config on client config reload (#3432)
+- fix: enables all compat plugin settings by default (#3202)
+- feat: mistral reasoning effort entries in modelcatalog (#3203)
+- chore: compat plugin cachePoint drop catalog entries (#3154)

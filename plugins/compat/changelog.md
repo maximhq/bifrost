@@ -1,0 +1,5 @@
+- fix: drops messages with empty text or signature and adds conversion of thinking block for openai bedrock models (#3221)
+- fix: drops last assistant messages for anthropic models and converts unsupported reasoning effort values for mistral (#3203)
+- fix: enables all compat plugin settings by default (#3202)
+- fix: converts role system to role user if only system message is present for non-openai models (#3200)
+- fix: drops cachePoint for unsupported bedrock models and non-bedrock models (#3154)

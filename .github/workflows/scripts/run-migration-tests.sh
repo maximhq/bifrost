@@ -25,7 +25,7 @@ set -euo pipefail
 #   VERSIONS_TO_TEST  - Number of previous versions to test (default: 3)
 
 # Pull all the tags available
-git fetch --tags
+# git fetch --tags
 
 # Get the absolute path of the script directory
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
@@ -1564,6 +1564,12 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET has_object = false WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
+  # mcp_tool_logs.has_object (added in v1.5.0-prerelease2 via migrationAddHasObjectColumnToMCPToolLogs)
+  if column_exists_postgres "mcp_tool_logs" "has_object"; then
+    echo "UPDATE mcp_tool_logs SET has_object = false WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+    echo "UPDATE mcp_tool_logs SET has_object = false WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+  fi
+
   # logs governance context columns (added in v1.5.0-prerelease2 via migrationAddGovernanceContextColumns)
   for ctx_col in user_id team_id team_name customer_id customer_name business_unit_id business_unit_name; do
     if column_exists_postgres "logs" "$ctx_col"; then
@@ -2484,6 +2490,10 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET has_object = 0 WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET has_object = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET has_object = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # mcp_tool_logs.has_object (added in v1.5.0-prerelease2)
+  echo "UPDATE mcp_tool_logs SET has_object = 0 WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+  echo "UPDATE mcp_tool_logs SET has_object = 0 WHERE id = 'mcp-log-migration-002';" >> "$output_file"
 
   # logs governance context columns (added in v1.5.0-prerelease2)
   for ctx_col in user_id team_id team_name customer_id customer_name business_unit_id business_unit_name; do
@@ -3486,7 +3496,9 @@ compare_postgres_snapshots() {
   local new_cols_count=0
 
   # Tables to skip entirely (system/tracking tables that change during migration)
-  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing"
+  # governance_model_pricing, governance_model_parameters: synced from remote model catalog URL
+  # during startup (see framework/modelcatalog/sync.go) - row count grows from seed-only to full catalog
+  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters"
 
   # Columns to ignore when comparing (these are expected to change during migration)
   # - updated_at: timestamps are updated when records are touched
