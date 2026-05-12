@@ -31,8 +31,8 @@ The log export system enables:
       "region": "us-west-2",
       "prefix": "logs/{year}/{month}/{day}/",
       "credentials": {
-        "access_key_id": "${AWS_ACCESS_KEY_ID}",
-        "secret_access_key": "${AWS_SECRET_ACCESS_KEY}"
+        "access_key_id": "env.AWS_ACCESS_KEY_ID",
+        "secret_access_key": "env.AWS_SECRET_ACCESS_KEY"
       }
     }
   }
@@ -48,7 +48,7 @@ The log export system enables:
       "bucket": "bifrost-logs",
       "prefix": "logs/{year}/{month}/{day}/",
       "credentials": {
-        "service_account_key": "${GCP_SERVICE_ACCOUNT_KEY}"
+        "service_account_key": "env.GCP_SERVICE_ACCOUNT_KEY"
       }
     }
   }
@@ -62,8 +62,8 @@ The log export system enables:
     "destination": "azure_blob",
     "config": {
       "container": "bifrost-logs",
-      "account_name": "${AZURE_ACCOUNT_NAME}",
-      "account_key": "${AZURE_ACCOUNT_KEY}",
+      "account_name": "env.AZURE_ACCOUNT_NAME",
+      "account_key": "env.AZURE_ACCOUNT_KEY",
       "prefix": "logs/{year}/{month}/{day}/"
     }
   }
@@ -84,8 +84,8 @@ The log export system enables:
       "table": "request_logs",
       "warehouse": "COMPUTE_WH",
       "credentials": {
-        "username": "${SNOWFLAKE_USERNAME}",
-        "password": "${SNOWFLAKE_PASSWORD}"
+        "username": "env.SNOWFLAKE_USERNAME",
+        "password": "env.SNOWFLAKE_PASSWORD"
       }
     }
   }
@@ -104,8 +104,8 @@ The log export system enables:
       "table": "request_logs",
       "region": "us-west-2",
       "credentials": {
-        "username": "${REDSHIFT_USERNAME}",
-        "password": "${REDSHIFT_PASSWORD}"
+        "username": "env.REDSHIFT_USERNAME",
+        "password": "env.REDSHIFT_PASSWORD"
       }
     }
   }
@@ -122,7 +122,7 @@ The log export system enables:
       "dataset": "bifrost_logs",
       "table": "request_logs",
       "credentials": {
-        "service_account_key": "${GCP_SERVICE_ACCOUNT_KEY}"
+        "service_account_key": "env.GCP_SERVICE_ACCOUNT_KEY"
       }
     }
   }
@@ -190,8 +190,8 @@ The log export system enables:
             "region": "us-west-2",
             "prefix": "daily-exports/{year}/{month}/{day}/",
             "credentials": {
-              "access_key_id": "${AWS_ACCESS_KEY_ID}",
-              "secret_access_key": "${AWS_SECRET_ACCESS_KEY}"
+              "access_key_id": "env.AWS_ACCESS_KEY_ID",
+              "secret_access_key": "env.AWS_SECRET_ACCESS_KEY"
             }
           }
         },
@@ -225,7 +225,7 @@ The log export system enables:
             "dataset": "bifrost_analytics",
             "table": "weekly_logs",
             "credentials": {
-              "service_account_key": "${GCP_SERVICE_ACCOUNT_KEY}"
+              "service_account_key": "env.GCP_SERVICE_ACCOUNT_KEY"
             }
           }
         },
@@ -339,8 +339,8 @@ message log_record {
     {
       "type": "enrich",
       "add_fields": {
-        "export_timestamp": "${EXPORT_TIMESTAMP}",
-        "export_version": "${EXPORT_VERSION}"
+        "export_timestamp": "env.EXPORT_TIMESTAMP",
+        "export_version": "env.EXPORT_VERSION"
       }
     }
   ]

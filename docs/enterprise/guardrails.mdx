@@ -421,8 +421,8 @@ curl -X POST http://localhost:8080/api/enterprise/guardrails/providers \
     "policy_name": "PII Detection Profile",
     "enabled": true,
     "config": {
-      "access_key": "${AWS_ACCESS_KEY_ID}",
-      "secret_key": "${AWS_SECRET_ACCESS_KEY}",
+      "access_key": "env.AWS_ACCESS_KEY_ID",
+      "secret_key": "env.AWS_SECRET_ACCESS_KEY",
       "guardrail_arn": "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123",
       "guardrail_version": "1",
       "region": "us-east-1"
@@ -502,8 +502,8 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           "policy_name": "PII Detection Profile",
           "enabled": true,
           "config": {
-            "access_key": "${AWS_ACCESS_KEY_ID}",
-            "secret_key": "${AWS_SECRET_ACCESS_KEY}",
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
             "guardrail_arn": "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123",
             "guardrail_version": "1",
             "region": "us-east-1"
@@ -516,7 +516,7 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           "enabled": true,
           "config": {
             "endpoint": "https://your-resource.cognitiveservices.azure.com/",
-            "api_key": "${AZURE_CONTENT_SAFETY_API_KEY}",
+            "api_key": "env.AZURE_CONTENT_SAFETY_API_KEY",
             "analyze_enabled": true,
             "analyze_severity_threshold": "medium",
             "jailbreak_shield_enabled": true,
@@ -529,7 +529,7 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           "policy_name": "Custom Safety Rules",
           "enabled": true,
           "config": {
-            "api_key": "${GRAYSWAN_API_KEY}",
+            "api_key": "env.GRAYSWAN_API_KEY",
             "violation_threshold": 0.5,
             "reasoning_mode": "hybrid",
             "rules": {
@@ -544,7 +544,7 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           "policy_name": "Hallucination Detection",
           "enabled": true,
           "config": {
-            "api_key": "${PATRONUS_API_KEY}",
+            "api_key": "env.PATRONUS_API_KEY",
             "api_endpoint": "https://api.patronus.ai/v1"
           }
         }
@@ -588,8 +588,8 @@ guardrails_config:
         region: "us-east-1"
         # AWS Authentication (choose one method):
         # Option 1: Explicit credentials
-        access_key: "${AWS_ACCESS_KEY_ID}"
-        secret_key: "${AWS_SECRET_ACCESS_KEY}"
+        access_key: "env.AWS_ACCESS_KEY_ID"
+        secret_key: "env.AWS_SECRET_ACCESS_KEY"
         # Option 2: IAM Role - omit access_key and secret_key
         # (Bifrost will use IAM credentials from the environment)
     - id: 4
@@ -598,7 +598,7 @@ guardrails_config:
       enabled: true
       config:
         endpoint: "https://your-resource.cognitiveservices.azure.com/"
-        api_key: "${AZURE_CONTENT_SAFETY_API_KEY}"
+        api_key: "env.AZURE_CONTENT_SAFETY_API_KEY"
         analyze_enabled: true
         analyze_severity_threshold: "medium"
         jailbreak_shield_enabled: true
@@ -607,7 +607,7 @@ guardrails_config:
       policy_name: "Custom Safety Rules"
       enabled: true
       config:
-        api_key: "${GRAYSWAN_API_KEY}"
+        api_key: "env.GRAYSWAN_API_KEY"
         violation_threshold: 0.5
         reasoning_mode: "hybrid"
         rules:
