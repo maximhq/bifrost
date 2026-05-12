@@ -503,7 +503,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Value:          *schemas.NewEnvVar("env.SALAD_CLOUD_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
-				UseForBatchAPI: bifrost.Ptr(true),
+				UseForBatchAPI: bifrost.Ptr(false),
 			},
 		}, nil
 	case schemas.Ollama:
