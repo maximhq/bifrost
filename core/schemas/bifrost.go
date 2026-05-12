@@ -350,14 +350,24 @@ const (
 
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.
-// FailReason is supplementary retry metadata: it is populated only when another retry will be
-// attempted (i.e. a non-terminal attempt), and is nil on any terminal attempt — including success,
-// non-retryable failure, or a retryable error when no retries remain.
+//
+// FailReason is populated on every failed attempt (retryable or terminal), and is nil only on a
+// successful attempt. Use it to inspect what went wrong on a given try.
+//
+// TriggeredRotation is true iff this attempt's failure caused the next attempt to rotate to a
+// different key — i.e. a rate-limit error with retries remaining. It is false on:
+//   - the final (terminal) attempt of a request, regardless of outcome,
+//   - any successful attempt,
+//   - network-error retries (same key is reused on transient 5xx),
+//   - non-retryable failures.
+//
+// Use this (not FailReason) to count actual key rotations.
 type KeyAttemptRecord struct {
-	Attempt    int     `json:"attempt"`
-	KeyID      string  `json:"key_id"`
-	KeyName    string  `json:"key_name"`
-	FailReason *string `json:"fail_reason,omitempty"`
+	Attempt           int     `json:"attempt"`
+	KeyID             string  `json:"key_id"`
+	KeyName           string  `json:"key_name"`
+	FailReason        *string `json:"fail_reason,omitempty"`
+	TriggeredRotation bool    `json:"triggered_rotation"`
 }
 
 // RoutingEngineLogEntry represents a log entry from a routing engine

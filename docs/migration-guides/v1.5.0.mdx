@@ -557,7 +557,7 @@ The `attempt_trail` is now the authoritative record of every key tried and why e
 |---|---|---|
 | `selected_key_id` | Always set, even on error | Empty string when all retries exhausted |
 | `selected_key_name` | Always set, even on error | Empty string when all retries exhausted |
-| `attempt_trail` | Not present | Array of `{ key_id, key_name, fail_reason }` per attempt |
+| `attempt_trail` | Not present | Array of `{ attempt, key_id, key_name, fail_reason, triggered_rotation }` per attempt. `fail_reason` is set on every failed attempt; `triggered_rotation` is true when this attempt's rate-limit failure caused the next retry to switch keys. |
 
 ### Impact on logging and telemetry plugins
 
