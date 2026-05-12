@@ -54,11 +54,19 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		telConfig := &telemetry.Config{
 			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
 		}
-		// Merge push gateway config if provided (e.g., from config file or UI update)
+		// Merge persisted config if provided.
 		if pluginConfig != nil {
 			extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
-			if err == nil && extraConfig != nil && extraConfig.PushGateway != nil {
-				telConfig.PushGateway = extraConfig.PushGateway
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal telemetry plugin config: %w", err)
+			}
+			if extraConfig != nil {
+				if extraConfig.PushGateway != nil {
+					telConfig.PushGateway = extraConfig.PushGateway
+				}
+				if extraConfig.MetricsEnabled != nil {
+					telConfig.MetricsEnabled = extraConfig.MetricsEnabled
+				}
 			}
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)

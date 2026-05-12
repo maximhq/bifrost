@@ -1023,21 +1023,21 @@ export const prometheusConfigSchema = z
     }
   });
 
-// Prometheus form schema for the PrometheusFormFragment
+// Prometheus form schema for the PrometheusFormFragment.
 export const prometheusFormSchema = z
   .object({
-    enabled: z.boolean().default(true),
+    metrics_enabled: z.boolean().default(true),
+    push_gateway_enabled: z.boolean().default(false),
     prometheus_config: prometheusConfigSchema,
   })
   .superRefine((data, ctx) => {
-    // When enabled, push_gateway_url is required
-    if (data.enabled) {
+    if (data.push_gateway_enabled) {
       const url = (data.prometheus_config.push_gateway_url || "").trim();
       if (!url) {
         ctx.addIssue({
           code: "custom",
           path: ["prometheus_config", "push_gateway_url"],
-          message: "Push Gateway URL is required when enabled",
+          message: "Push Gateway URL is required when the push gateway is enabled",
         });
       }
     }

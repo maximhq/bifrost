@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -103,12 +104,17 @@ type PrometheusPlugin struct {
 	pushWg     sync.WaitGroup
 	pushMu     sync.RWMutex
 	pushActive bool
+
+	// MetricsEnabled gates the /metrics scrape endpoint.
+	metricsEnabled atomic.Bool
 }
 
 type Config struct {
 	CustomLabels []string `json:"custom_labels"`
 	Registry     *prometheus.Registry
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
+	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
+	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
 }
 
 // Init creates a new PrometheusPlugin with initialized metrics.
@@ -362,6 +368,14 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		defaultBifrostLabels:           defaultBifrostLabels,
 	}
 
+	// Default /metrics scraping to on when the config omits the field — preserves
+	// behavior for existing connectors written before metrics_enabled existed.
+	metricsEnabled := true
+	if config.MetricsEnabled != nil {
+		metricsEnabled = *config.MetricsEnabled
+	}
+	plugin.metricsEnabled.Store(metricsEnabled)
+
 	// Start push gateway if configured
 	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL != "" {
 		if err := plugin.EnablePushGateway(config.PushGateway); err != nil {
@@ -370,6 +384,12 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	}
 
 	return plugin, nil
+}
+
+// IsMetricsEnabled reports whether the /metrics scrape endpoint should serve
+// metrics on this instance. Safe to call from request-handling goroutines.
+func (p *PrometheusPlugin) IsMetricsEnabled() bool {
+	return p.metricsEnabled.Load()
 }
 
 func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {
