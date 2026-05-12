@@ -3,7 +3,8 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
-import { getErrorMessage, useDeleteMCPLogsMutation, useGetMCPLogsQuery, useGetMCPLogsStatsQuery } from "@/lib/store";
+import { getErrorMessage, useDeleteMCPLogsMutation, useGetMCPHistogramQuery, useGetMCPLogsQuery, useGetMCPLogsStatsQuery } from "@/lib/store";
+import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
@@ -64,6 +65,7 @@ export default function MCPLogsPage() {
 
 	const selectedLogId = urlState.selected_log || null;
 	const polling = urlState.polling;
+	const [isChartOpen, setIsChartOpen] = useState(true);
 
 
 	// Convert URL state to filters and pagination for API calls.
@@ -131,10 +133,56 @@ export default function MCPLogsPage() {
 		},
 	);
 
+	const {
+		data: histogram,
+		isLoading: histogramIsLoading,
+		refetch: refetchHistogram,
+	} = useGetMCPHistogramQuery(
+		{ filters },
+		{
+			pollingInterval: polling ? 10000 : 0,
+			skipPollingIfUnfocused: true,
+		},
+	);
+
 	const refreshAllData = useCallback(() => {
 		refetchLogs();
 		refetchStats();
-	}, [refetchLogs, refetchStats]);
+		refetchHistogram();
+	}, [refetchLogs, refetchStats, refetchHistogram]);
+
+	const handleTimeRangeChange = useCallback(
+		(startTime: number, endTime: number) => {
+			userModifiedTimeRange.current = true;
+			setUrlState({
+				period: "",
+				start_time: startTime,
+				end_time: endTime,
+				offset: 0,
+				polling: false,
+			});
+		},
+		[setUrlState],
+	);
+
+	const handleResetZoom = useCallback(() => {
+		const now = Math.floor(Date.now() / 1000);
+		const oneHour = now - 1 * 60 * 60;
+		setUrlState({
+			period: "1h",
+			start_time: oneHour,
+			end_time: now,
+			offset: 0,
+			polling: true,
+		});
+	}, [setUrlState]);
+
+	const isZoomed = useMemo(() => {
+		if (urlState.period) return false;
+		const currentRange = urlState.end_time - urlState.start_time;
+		const defaultRange = 1 * 60 * 60;
+		return currentRange < defaultRange * 0.9;
+	}, [urlState.start_time, urlState.end_time, urlState.period]);
 
 	// Derive data directly from RTK
 	const logs = logsData?.logs ?? [];
@@ -401,6 +449,21 @@ export default function MCPLogsPage() {
 										</CardContent>
 									</Card>
 								))}
+							</div>
+
+							<div className="mt-2">
+								<LogsVolumeChart
+									data={histogram ?? null}
+									loading={histogramIsLoading}
+									onTimeRangeChange={handleTimeRangeChange}
+									onResetZoom={handleResetZoom}
+									isZoomed={isZoomed}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									period={urlState.period}
+									isOpen={isChartOpen}
+									onOpenChange={setIsChartOpen}
+								/>
 							</div>
 
 							{displayError && (
