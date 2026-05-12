@@ -974,7 +974,20 @@ SessionDetailResult:
       items:
         $ref: '#/LogEntry'
     pagination:
-      $ref: '#/PaginationOptions'
+      type: object
+      description: Pagination metadata. Session logs are always sorted by timestamp; the `sort_by` field is not configurable.
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        order:
+          type: string
+          enum: [asc, desc]
+        total_count:
+          type: integer
+          format: int64
+          description: Total number of items matching the query
     count:
       type: integer
       format: int64

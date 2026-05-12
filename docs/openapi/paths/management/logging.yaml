@@ -1105,7 +1105,7 @@ logs-rankings:
     description: |
       Returns models ranked by usage with trend percentages versus the previous
       comparable period. Accepts the same filter parameters as the histogram
-      endpoints (time range, providers, models, dimensions).
+      endpoints.
     tags:
       - Logging
     parameters:
@@ -1467,6 +1467,16 @@ mcp-logs-histogram-top-tools:
         schema:
           type: string
           format: date-time
+      - name: min_latency
+        in: query
+        description: Minimum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter (milliseconds)
+        schema:
+          type: number
       - name: content_search
         in: query
         description: Search in tool arguments and results

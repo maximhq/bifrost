@@ -22,7 +22,7 @@ realtime:
         required: false
         description: |
           Provider model identifier in `provider/model` form (e.g. `openai/gpt-4o-realtime-preview`).
-          Either `model` or `deployment` must be supplied.
+          Either `model` or `deployment` must be supplied; requests with neither (or both) are rejected with HTTP 400 before the WebSocket upgrade completes.
         schema:
           type: string
       - name: deployment
