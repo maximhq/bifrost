@@ -115,6 +115,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -817,6 +818,38 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 				onCheckedChange={(checked) => onFiltersChange({ ...filters, missing_cost_only: !!checked })}
 				testId="cost-filter-missing-only-checkbox"
 			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// LocalCachingFilter – filter by semantic-cache hit type (direct / semantic)
+// ---------------------------------------------------------------------------
+
+const LocalCachingOptions: { key: string; label: string }[] = [
+	{ key: "direct", label: "Direct cache" },
+	{ key: "semantic", label: "Semantic cache" },
+];
+
+function LocalCachingFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.cache_hit_types || []).length > 0;
+	return (
+		<FilterSection title="Local Caching" defaultOpen={defaultOpen || hasActive} testId="local-caching-filter-toggle">
+			{LocalCachingOptions.map((option) => (
+				<CheckboxFilterItem
+					key={option.key}
+					label={option.label}
+					checked={(filters.cache_hit_types || []).includes(option.key)}
+					onCheckedChange={() => {
+						const current = filters.cache_hit_types || [];
+						const next = current.includes(option.key)
+							? current.filter((t) => t !== option.key)
+							: [...current, option.key];
+						onFiltersChange({ ...filters, cache_hit_types: next });
+					}}
+					testId={`local-caching-filter-checkbox-${option.key}`}
+				/>
+			))}
 		</FilterSection>
 	);
 }
