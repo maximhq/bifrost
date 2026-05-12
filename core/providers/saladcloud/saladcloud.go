@@ -3,6 +3,7 @@ package saladcloud
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
@@ -13,6 +14,124 @@ import (
 )
 
 const defaultBaseURL = "https://ai.salad.cloud"
+
+const saladCloudChatTemplateKwargsKey = "chat_template_kwargs"
+
+func prepareSaladCloudChatRequest(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil {
+		return nil
+	}
+
+	saladRequest := *request
+	params := &schemas.ChatParameters{}
+	if request.Params != nil {
+		paramsCopy := *request.Params
+		params = &paramsCopy
+	}
+	params.ExtraParams = maps.Clone(params.ExtraParams)
+	if params.ExtraParams == nil {
+		params.ExtraParams = make(map[string]interface{})
+	}
+
+	applySaladCloudThinkingParams(params)
+	saladRequest.Params = params
+	return &saladRequest
+}
+
+func applySaladCloudThinkingParams(params *schemas.ChatParameters) {
+	if params == nil {
+		return
+	}
+
+	_, hasCustomChatTemplateKwargs := params.ExtraParams[saladCloudChatTemplateKwargsKey]
+	if !hasCustomChatTemplateKwargs {
+		params.ExtraParams[saladCloudChatTemplateKwargsKey] = map[string]interface{}{
+			"enable_thinking": isSaladCloudThinkingEnabled(params.Reasoning),
+		}
+	}
+
+	// SaladCloud Qwen thinking is controlled through chat_template_kwargs. Do
+	// not also emit OpenAI-style reasoning_effort for this OpenAI-compatible API.
+	params.Reasoning = nil
+}
+
+func isSaladCloudThinkingEnabled(reasoning *schemas.ChatReasoning) bool {
+	if reasoning == nil {
+		return false
+	}
+	if reasoning.Enabled != nil {
+		return *reasoning.Enabled
+	}
+	if reasoning.Effort != nil && *reasoning.Effort == "none" {
+		return false
+	}
+	return true
+}
+
+func enableSaladCloudExtraParamPassthrough(ctx *schemas.BifrostContext) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	previousValue := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return func() {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, previousValue)
+	}
+}
+
+func handleSaladCloudChatResponse(responseBody []byte, response *schemas.BifrostChatResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return rawRequest, rawResponse, bifrostErr
+	}
+	normalizeSaladCloudChatResponse(response)
+	return rawRequest, rawResponse, nil
+}
+
+func normalizeSaladCloudChatResponse(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	if response == nil {
+		return nil
+	}
+	for i := range response.Choices {
+		choice := &response.Choices[i]
+		if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil {
+			normalizeSaladCloudChatMessage(choice.Message)
+		}
+		if choice.ChatStreamResponseChoice != nil && choice.Delta != nil {
+			normalizeSaladCloudChatDelta(choice.Delta)
+		}
+	}
+	return response
+}
+
+func normalizeSaladCloudChatMessage(message *schemas.ChatMessage) {
+	if message == nil || !isEmptyChatContent(message.Content) || message.ChatAssistantMessage == nil || message.ChatAssistantMessage.Reasoning == nil || *message.ChatAssistantMessage.Reasoning == "" {
+		return
+	}
+	reasoning := *message.ChatAssistantMessage.Reasoning
+	message.Content = &schemas.ChatMessageContent{ContentStr: &reasoning}
+}
+
+func normalizeSaladCloudChatDelta(delta *schemas.ChatStreamResponseChoiceDelta) {
+	if delta == nil || (delta.Content != nil && *delta.Content != "") || delta.Reasoning == nil || *delta.Reasoning == "" {
+		return
+	}
+	reasoning := *delta.Reasoning
+	delta.Content = &reasoning
+}
+
+func isEmptyChatContent(content *schemas.ChatMessageContent) bool {
+	if content == nil {
+		return true
+	}
+	if content.ContentStr != nil && *content.ContentStr != "" {
+		return false
+	}
+	if len(content.ContentBlocks) > 0 {
+		return false
+	}
+	return true
+}
 
 // SaladCloudProvider implements the Provider interface for SaladCloud AI Gateway.
 type SaladCloudProvider struct {
@@ -87,6 +206,9 @@ func (p *SaladCloudProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 }
 
 func (p *SaladCloudProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	request = prepareSaladCloudChatRequest(request)
+	restorePassthrough := enableSaladCloudExtraParamPassthrough(ctx)
+	defer restorePassthrough()
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		p.client,
@@ -97,13 +219,16 @@ func (p *SaladCloudProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
 		p.GetProviderKey(),
-		nil,
+		handleSaladCloudChatResponse,
 		nil,
 		p.logger,
 	)
 }
 
 func (p *SaladCloudProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	request = prepareSaladCloudChatRequest(request)
+	restorePassthrough := enableSaladCloudExtraParamPassthrough(ctx)
+	defer restorePassthrough()
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -123,7 +248,7 @@ func (p *SaladCloudProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		nil,
 		nil,
-		nil,
+		normalizeSaladCloudChatResponse,
 		p.logger,
 		postHookSpanFinalizer,
 	)
