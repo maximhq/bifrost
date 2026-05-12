@@ -1,6 +1,0 @@
-- fix: include mcp.tool_manager_config in client config hash (#3432)
-- fix: gemini fallback propagation in GenAI integration (#3338) (thanks [@Javtor](https://github.com/Javtor)!)
-- fix: drops messages with empty text or signature and adds conversion of thinking block for openai bedrock models (#3221)
-- fix: drops last assistant messages for anthropic models and converts unsupported reasoning effort values for mistral (#3203)
-- fix: converts role system to role user if only system message is present for non-openai models (#3200)
-- fix: fixes model passthrough prefix stripping in advisor tool for anthropic (#3420)
