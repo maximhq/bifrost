@@ -1440,10 +1440,6 @@
                       "type": "string",
                       "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
                     },
-                    "cleanup_on_shutdown": {
-                      "type": "boolean",
-                      "description": "Clean up cache on shutdown (default: false)"
-                    },
                     "ttl": {
                       "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
                       "oneOf": [

@@ -55,7 +55,6 @@ func getDefaultTestConfig() *Config {
 		EmbeddingModel:               "text-embedding-3-small",
 		Dimension:                    1536,
 		Threshold:                    0.8,
-		CleanUpOnShutdown:            true,
 		ConversationHistoryThreshold: DefaultConversationHistoryThreshold,
 	}
 }
