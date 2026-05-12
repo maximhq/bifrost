@@ -106,7 +106,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
 					<div className="flex items-center gap-2">
 						{headerActions}
-						{!isKeyless && (
+						{!isKeyless && hasUpdateProviderAccess ? (
 							<Button
 								disabled={!hasUpdateProviderAccess}
 								data-testid="add-key-btn"
@@ -117,7 +117,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								<PlusIcon className="h-4 w-4" />
 								Add new {entityLabel}
 							</Button>
-						)}
+						) : null}
 					</div>
 				</CardTitle>
 			</CardHeader>
@@ -152,7 +152,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										key={key.id}
 										data-testid={`key-row-${key.name}`}
 										className="text-sm transition-colors hover:bg-white"
-										onClick={() => {}}
+										onClick={() => { }}
 									>
 										<TableCell>
 											<div className="flex items-center space-x-2">
@@ -258,34 +258,36 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										</TableCell>
 										<TableCell className="text-right">
 											<div className="flex items-center justify-end space-x-2">
-												<DropdownMenu>
-													<DropdownMenuTrigger asChild>
-														<Button onClick={(e) => e.stopPropagation()} variant="ghost">
-															<EllipsisIcon className="h-5 w-5" />
-														</Button>
-													</DropdownMenuTrigger>
-													<DropdownMenuContent align="end">
-														<DropdownMenuItem
-															onClick={() => {
-																setShowAddNewKeyDialog({ show: true, keyId: key.id });
-															}}
-															disabled={!hasUpdateProviderAccess}
-														>
-															<PencilIcon className="mr-1 h-4 w-4" />
-															Edit
-														</DropdownMenuItem>
-														<DropdownMenuItem
-															variant="destructive"
-															onClick={() => {
-																setShowDeleteKeyDialog({ show: true, keyId: key.id });
-															}}
-															disabled={!hasDeleteProviderAccess}
-														>
-															<TrashIcon className="mr-1 h-4 w-4" />
-															Delete
-														</DropdownMenuItem>
-													</DropdownMenuContent>
-												</DropdownMenu>
+												{hasUpdateProviderAccess || hasDeleteProviderAccess ?
+													<DropdownMenu>
+														<DropdownMenuTrigger asChild>
+															<Button onClick={(e) => e.stopPropagation()} variant="ghost">
+																<EllipsisIcon className="h-5 w-5" />
+															</Button>
+														</DropdownMenuTrigger>
+														<DropdownMenuContent align="end">
+															<DropdownMenuItem
+																onClick={() => {
+																	setShowAddNewKeyDialog({ show: true, keyId: key.id });
+																}}
+																disabled={!hasUpdateProviderAccess}
+															>
+																<PencilIcon className="mr-1 h-4 w-4" />
+																Edit
+															</DropdownMenuItem>
+															<DropdownMenuItem
+																variant="destructive"
+																onClick={() => {
+																	setShowDeleteKeyDialog({ show: true, keyId: key.id });
+																}}
+																disabled={!hasDeleteProviderAccess}
+															>
+																<TrashIcon className="mr-1 h-4 w-4" />
+																Delete
+															</DropdownMenuItem>
+														</DropdownMenuContent>
+													</DropdownMenu> : null
+												}
 											</div>
 										</TableCell>
 									</TableRow>

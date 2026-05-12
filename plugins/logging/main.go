@@ -1147,6 +1147,11 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
+	// Only log for tool execute requests
+	if !req.RequestType.IsExecuteTool() {
+		return req, nil, nil
+	}
+
 	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
 		p.logger.Error("request-id not found in context or is empty in PreMCPHook")
@@ -1254,8 +1259,20 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		return resp, bifrostErr, nil
 	}
 
+	// Skip non tool-execute envelopes (Ping/ListTools). The MCP gate stamps
+	// MCPRequestType on both the success response and the error, so a single check
+	// covers both paths — no pending MCP log entry was created in PreMCPHook for
+	// anything but execute-tool requests.
+	mcpReqType := schemas.MCPRequestType("")
+	if resp != nil {
+		mcpReqType = resp.ExtraFields.MCPRequestType
+	} else if bifrostErr != nil {
+		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
+	}
+	if !mcpReqType.IsExecuteTool() {
+		return resp, bifrostErr, nil
+	}
 	// Skip logging for codemode tools (executeToolCode, listToolFiles, readToolFile)
-	// We check the tool name from the response instead of context flags
 	if resp != nil && bifrost.IsCodemodeTool(resp.ExtraFields.ToolName) {
 		return resp, bifrostErr, nil
 	}

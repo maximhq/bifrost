@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { ColumnDef } from "@tanstack/react-table";
+import { ColumnDef, Row } from "@tanstack/react-table";
 import { format, isValid } from "date-fns";
 import { ArrowUpDown, Trash2 } from "lucide-react";
 
@@ -95,24 +95,27 @@ export const createMCPColumns = (
 				return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
 			},
 		},
-		{
-			id: "actions",
-			size: 72,
-			cell: ({ row }) => {
-				const log = row.original;
-				return (
-					<Button
-						variant="outline"
-						size="icon"
-						data-testid="log-delete-btn"
-						aria-label="Delete log"
-						className="text-secondary-foreground/30 hover:bg-destructive/10 hover:text-destructive border-destructive/10"
-						onClick={() => void handleDelete(log)}
-						disabled={!hasDeleteAccess}
-					>
-						<Trash2 />
-					</Button>
-				);
-			},
-		},
+		...(hasDeleteAccess
+			? [
+				{
+					id: "actions",
+					size: 72,
+					cell: ({ row }: { row: Row<MCPToolLogEntry> }) => {
+						const log = row.original;
+						return (
+							<Button
+								variant="outline"
+								size="icon"
+								data-testid="log-delete-btn"
+								aria-label="Delete log"
+								className="text-destructive/60 border-destructive/60 hover:text-destructive hover:bg-destructive/10"
+								onClick={() => void handleDelete(log)}
+							>
+								<Trash2 />
+							</Button>
+						);
+					},
+				},
+			]
+			: []),
 	];

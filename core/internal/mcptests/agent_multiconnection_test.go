@@ -65,9 +65,6 @@ func TestAgent_MultiConnection_AllTypes(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -132,9 +129,6 @@ func TestAgent_MultiConnection_MixedPermissions(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -221,9 +215,6 @@ func TestAgent_MultiConnection_SequentialAfterParallel(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -274,9 +265,6 @@ func TestAgent_MultiConnection_ErrorInSTDIO(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -362,9 +350,6 @@ func TestAgent_MultiConnection_LargeParallelBatch(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions

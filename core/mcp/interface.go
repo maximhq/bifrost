@@ -28,23 +28,30 @@ type MCPManagerInterface interface {
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
 
 	// Agent Mode Operations
-	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API
+	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API.
+	// Tool executions inside the agent loop go through the plugin gate internally —
+	// callers no longer inject an executeTool function.
 	CheckAndExecuteAgentForChatRequest(
 		ctx *schemas.BifrostContext,
 		req *schemas.BifrostChatRequest,
 		response *schemas.BifrostChatResponse,
 		makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
-		executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	) (*schemas.BifrostChatResponse, *schemas.BifrostError)
 
-	// CheckAndExecuteAgentForResponsesRequest handles agent mode for Responses API
+	// CheckAndExecuteAgentForResponsesRequest handles agent mode for Responses API.
+	// Tool executions inside the agent loop go through the plugin gate internally.
 	CheckAndExecuteAgentForResponsesRequest(
 		ctx *schemas.BifrostContext,
 		req *schemas.BifrostResponsesRequest,
 		response *schemas.BifrostResponsesResponse,
 		makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
-		executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
+
+	// ExecuteChatTool / ExecuteResponsesTool run a single MCP tool call through the
+	// plugin gate and return the result in the appropriate API format. Bifrost's
+	// ExecuteChatMCPTool / ExecuteResponsesMCPTool delegate here.
+	ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
+	ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 
 	// Client Management
 	// GetClients returns all MCP clients
