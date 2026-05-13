@@ -2654,6 +2654,14 @@ func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.Respo
 			schema["required"] = format.JSONSchema.Required
 		}
 
+		if format.JSONSchema.Defs != nil {
+			schema["$defs"] = *format.JSONSchema.Defs
+		}
+
+		if format.JSONSchema.Definitions != nil {
+			schema["definitions"] = *format.JSONSchema.Definitions
+		}
+
 		if format.JSONSchema.Type != nil && *format.JSONSchema.Type == "object" {
 			schema["additionalProperties"] = false
 		} else if format.JSONSchema.AdditionalProperties != nil {
