@@ -1636,11 +1636,7 @@ install-newman: ## Install newman + htmlextra reporter if not already installed
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra...$(NC)" && npm install -g newman-reporter-htmlextra)
 	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
-<<<<<<< HEAD
-run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Per-provider parallelism is ON by default (~3-4× speedup); set PARALLEL=0 for sequential. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<keyword>" (matches request name/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. INCLUDE_SKIP=1 to run [SKIP]-tagged criss-cross cells for known-unsupported provider+modality pairs. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PARALLEL=0] [PROVIDER=anthropic] [FEATURE="web search"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [INCLUDE_SKIP=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
-=======
 run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
->>>>>>> f09185ec1 (harness improvements)
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
 		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
@@ -1666,20 +1662,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
-<<<<<<< HEAD
-		printf '  %s\n' "make run-provider-harness-test                       # full sweep, 6 providers concurrently (default ~3-4× speedup)"; \
-		printf '  %s\n' "make run-provider-harness-test PARALLEL=0            # sequential mode (ordered output, htmlextra report)"; \
-		printf '  %s\n' "make run-provider-harness-test FOLDER=\"8. Criss-Cross\"  # criss-cross matrix only (endpoint × provider × modality)"; \
-		printf '  %s\n' "make run-provider-harness-test FOLDER=\"8.2 Text Chat (streaming)\"  # criss-cross streaming sub-folder"; \
-		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only (includes bedrock-model cells across §8)"; \
-		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"  # all providers, web-search entries"; \
-		printf '  %s\n' "make run-provider-harness-test INCLUDE_SKIP=1        # also run [SKIP] cells (capability-gap matrix)"; \
-=======
 		printf '  %s\n' "make run-provider-harness-test                       # full 339-request sweep"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"                       # all providers, web-search entries"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"cross-cut,structured output\"      # AND of substrings"; \
->>>>>>> f09185ec1 (harness improvements)
 		printf '  %s\n' "make run-provider-harness-test RERUN_FAILED=1        # triage iteration loop"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=anthropic RERUN_FAILED=1   # anthropic failures only"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=passthrough  # passthrough sweep (incl. Bedrock SigV4)"; \
