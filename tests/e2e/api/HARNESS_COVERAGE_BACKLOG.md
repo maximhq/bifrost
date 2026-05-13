@@ -301,7 +301,7 @@ Vertex's API surface for Gemini largely mirrors AI Studio's generateContent — 
 ### Anthropic-on-Vertex specific
 
 - [x] Claude Opus 4.7 in user's region (`global` / `us-east5` / `europe-west1`)
-- [ ] **Claude Sonnet 4.6 / 4.5 / Haiku 4.5** (regional gating — must use `global` or `us-east5`)
+- [~] **Claude Sonnet 4.6 / 4.5 / Haiku 4.5** (regional gating - must use `global` or `us-east5`; Sonnet 4.6 cross-cut variants added in Cross-Cut Round 4 covering structured output, function calling, streaming, vision, tool_choice, stop sequences, multi-turn, system message, web search, PDF, sampling-params; Haiku 4.5 + Sonnet 4.5 still uncovered)
 - [ ] **`anthropic_version: "vertex-2023-10-16"` in body** (Vertex-specific replacement for the header)
 - [ ] **Vertex `:streamRawPredict` endpoint** for SSE streaming
 - [ ] **Beta headers via body field** (`anthropic_beta` instead of HTTP header)
@@ -358,20 +358,20 @@ These exercise Bifrost's translation layer between provider shapes — every che
 `POST /v1/chat/completions` endpoint with `provider/model` prefix routing.
 
 - [x] OpenAI / Anthropic / Bedrock / Gemini / Vertex Basic Chat (50 cross-model entries)
-- [~] Function calling cross-cut (4 providers tested; Vertex partially)
-- [~] Structured output cross-cut (OpenAI + Gemini + Vertex; **Anthropic + Bedrock missing**)
-- [~] Streaming cross-cut (4 providers tested; Vertex/Azure missing)
-- [~] Vision cross-cut (OpenAI + Anthropic + Gemini; **Bedrock + Vertex + Azure missing**)
-- [~] Web search cross-cut (3 providers; **Bedrock + Vertex + Azure missing**)
-- [ ] **Code execution cross-cut** (Anthropic + Gemini)
-- [ ] **Tool choice forced cross-cut** (multi-provider)
-- [ ] **Computer use via cross-model** (`anthropic/claude-...` with computer_2025x tools — verifies Bifrost's translation; currently only tested via /anthropic drop-in)
-- [ ] **Extended/adaptive thinking via cross-model**
-- [ ] **Prompt caching via cross-model**
-- [ ] **System message cross-cut** (every provider via `/v1/chat/completions`)
-- [ ] **Multi-turn conversation cross-cut** (provider-specific role normalization)
-- [ ] **Stop sequences cross-cut** (each provider has different stop semantics)
-- [ ] **Sampling-params normalization** (Bifrost should silently drop temperature for Opus 4.7+)
+- [x] Function calling cross-cut (OpenAI + Anthropic + Bedrock + Gemini + Vertex Claude + Vertex Gemini via Cross-Cut Round 4; Azure via Cross-Cut Round 4)
+- [x] Structured output cross-cut (OpenAI + Anthropic + Bedrock + Gemini + Vertex Gemini + Vertex Claude via Cross-Cut Round 4; Azure via Cross-Cut Round 4)
+- [x] Streaming cross-cut (OpenAI + Anthropic + Bedrock + Gemini + Vertex Claude + Vertex Gemini + Azure via Cross-Cut Round 4)
+- [x] Vision cross-cut (OpenAI + Anthropic + Bedrock + Gemini + Vertex Gemini + Vertex Claude + Azure via Cross-Cut Round 4)
+- [~] Web search cross-cut (Anthropic + Bedrock + Vertex Claude (sonnet) + Vertex Gemini (google_search) via Cross-Cut Round 4; **OpenAI Responses-style web_search via /v1/chat still missing**)
+- [~] **Code execution cross-cut** (Anthropic + Gemini + Bedrock + Vertex Claude (opus); **Vertex Gemini code execution via /v1/chat untested**)
+- [~] **Tool choice forced cross-cut** (OpenAI + Bedrock + Vertex Claude via Cross-Cut Round 4; **Anthropic + Gemini + Azure still missing**)
+- [ ] **Computer use via cross-model** (`anthropic/claude-...` with computer_2025x tools - verifies Bifrost's translation; currently only tested via /anthropic drop-in and `vertex/claude-opus-4-7` preview at L1279)
+- [~] **Extended/adaptive thinking via cross-model** (Anthropic enabled + Bedrock enabled/adaptive + Vertex Claude enabled/adaptive covered; **anthropic-direct adaptive Opus 4.7 still missing**)
+- [x] **Prompt caching via cross-model** (Anthropic + Bedrock 1h + Vertex Claude 1h covered)
+- [~] **System message cross-cut** (Vertex Claude added in Round 4; Azure added in Round 4; **other providers were already implicit via cross-cut entries** - if explicit test needed, file a ticket)
+- [~] **Multi-turn conversation cross-cut** (Vertex Claude added in Round 4; remaining providers still cross-cut-implicit only)
+- [x] **Stop sequences cross-cut** (OpenAI + Anthropic + Gemini already; + Bedrock + Vertex Claude + Vertex Gemini added in Cross-Cut Round 4)
+- [~] **Sampling-params normalization** (Bifrost should silently drop temperature for Opus 4.7+; Anthropic-direct + Vertex Claude Opus 4.7 covered; **Bedrock Opus 4.7 via cross-model still missing**)
 - [ ] **Failover scenarios** (request to provider X falls back to provider Y on 5xx)
 - [ ] **Virtual keys / governance** (`X-Bifrost-VK` header with allowed_models)
 - [ ] **Rate limit propagation** (provider 429 → Bifrost 429 with Retry-After preserved)
