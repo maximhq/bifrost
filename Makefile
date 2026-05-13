@@ -153,6 +153,20 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 
 dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@$(EXPOSE_ENV); \
+	set -m; \
+	cleanup() { \
+		trap - EXIT INT TERM HUP; \
+		kill %1 %2 2>/dev/null || true; \
+		sleep 1; \
+		kill -KILL %1 %2 2>/dev/null || true; \
+		wait 2>/dev/null || true; \
+	}; \
+	stop_dev() { \
+		cleanup; \
+		exit 130; \
+	}; \
+	trap cleanup EXIT; \
+	trap stop_dev INT TERM HUP; \
 	$(ECHO) "$(GREEN)Starting Bifrost complete development environment...$(NC)"; \
 	$(ECHO) "$(YELLOW)This will start:$(NC)"; \
 	$(ECHO) "  1. UI development server (localhost:3000)"; \
@@ -186,7 +200,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
+			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
 	else \
 		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
 			-host "$(HOST)" \
@@ -194,11 +208,28 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
-	fi
+			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
+	fi; \
+	while [ "$$(jobs -r | wc -l | tr -d ' ')" -eq 2 ]; do sleep 1; done; \
+	cleanup; \
+	exit 1
 
 dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment using pulse for hot reloading
 	@$(EXPOSE_ENV); \
+	set -m; \
+	cleanup() { \
+		trap - EXIT INT TERM HUP; \
+		kill %1 %2 2>/dev/null || true; \
+		sleep 1; \
+		kill -KILL %1 %2 2>/dev/null || true; \
+		wait 2>/dev/null || true; \
+	}; \
+	stop_dev() { \
+		cleanup; \
+		exit 130; \
+	}; \
+	trap cleanup EXIT; \
+	trap stop_dev INT TERM HUP; \
 	$(ECHO) "$(GREEN)Starting Bifrost complete development environment (pulse)...$(NC)"; \
 	$(ECHO) "$(YELLOW)This will start:$(NC)"; \
 	$(ECHO) "  1. UI development server (localhost:3000)"; \
@@ -232,7 +263,7 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
+			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
 	else \
 		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
 			-host "$(HOST)" \
@@ -240,8 +271,11 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
-	fi
+			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))") & \
+	fi; \
+	while [ "$$(jobs -r | wc -l | tr -d ' ')" -eq 2 ]; do sleep 1; done; \
+	cleanup; \
+	exit 1
 
 build-ui: install-ui ## Build ui
 	@$(ECHO) "$(GREEN)Building ui...$(NC)"
@@ -1602,7 +1636,11 @@ install-newman: ## Install newman + htmlextra reporter if not already installed
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra...$(NC)" && npm install -g newman-reporter-htmlextra)
 	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
+<<<<<<< HEAD
 run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Per-provider parallelism is ON by default (~3-4× speedup); set PARALLEL=0 for sequential. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<keyword>" (matches request name/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. INCLUDE_SKIP=1 to run [SKIP]-tagged criss-cross cells for known-unsupported provider+modality pairs. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PARALLEL=0] [PROVIDER=anthropic] [FEATURE="web search"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [INCLUDE_SKIP=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+=======
+run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+>>>>>>> f09185ec1 (harness improvements)
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
 		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
@@ -1611,8 +1649,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "HELP=1"          "Print this help and exit (no Bifrost or network activity)."; \
 		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: openai, anthropic, bedrock, gemini, vertex, azure, passthrough."; \
 		printf '  %-18s %s\n' ""                "  Matches via PROVIDER_KEYWORDS in tests/e2e/api/runners/filter-collection.mjs (loose name/body substring)."; \
-		printf '  %-18s %s\n' "FEATURE=\"<kw>\""  "Filter by case-insensitive keyword against the full request JSON (name + URL + body)."; \
-		printf '  %-18s %s\n' ""                "  Examples: FEATURE=\"web search\", FEATURE=\"streaming\", FEATURE=\"prompt caching\"."; \
+		printf '  %-18s %s\n' "FEATURE=\"<kw>\""  "Filter by case-insensitive keyword(s) against the full request JSON (name + URL + body + ancestor folder names)."; \
+		printf '  %-18s %s\n' ""                "  Single: FEATURE=\"web search\". Multi-keyword AND (comma-separated): FEATURE=\"cross-cut,structured output\"."; \
+		printf '  %-18s %s\n' ""                "  \"cross-cut\" is a structural keyword - matches any row routed through unified /v1/chat/completions with a provider/model body, regardless of name."; \
 		printf '  %-18s %s\n' "RERUN_FAILED=1"  "Re-run only requests that failed in the prior run (reads tmp/newman-report.json)."; \
 		printf '  %-18s %s\n' ""                "  Composes with PROVIDER and FEATURE (predicates AND together)."; \
 		printf '  %-18s %s\n' "BASE_URL=<url>"  "Bifrost gateway URL (default: http://localhost:8080). Skips auto-start if /health responds."; \
@@ -1627,6 +1666,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
+<<<<<<< HEAD
 		printf '  %s\n' "make run-provider-harness-test                       # full sweep, 6 providers concurrently (default ~3-4× speedup)"; \
 		printf '  %s\n' "make run-provider-harness-test PARALLEL=0            # sequential mode (ordered output, htmlextra report)"; \
 		printf '  %s\n' "make run-provider-harness-test FOLDER=\"8. Criss-Cross\"  # criss-cross matrix only (endpoint × provider × modality)"; \
@@ -1634,6 +1674,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only (includes bedrock-model cells across §8)"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"  # all providers, web-search entries"; \
 		printf '  %s\n' "make run-provider-harness-test INCLUDE_SKIP=1        # also run [SKIP] cells (capability-gap matrix)"; \
+=======
+		printf '  %s\n' "make run-provider-harness-test                       # full 339-request sweep"; \
+		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only"; \
+		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"                       # all providers, web-search entries"; \
+		printf '  %s\n' "make run-provider-harness-test FEATURE=\"cross-cut,structured output\"      # AND of substrings"; \
+>>>>>>> f09185ec1 (harness improvements)
 		printf '  %s\n' "make run-provider-harness-test RERUN_FAILED=1        # triage iteration loop"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=anthropic RERUN_FAILED=1   # anthropic failures only"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=passthrough  # passthrough sweep (incl. Bedrock SigV4)"; \
