@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -1025,11 +1026,18 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 			Temperature:       brr.Params.Temperature,
 			TopLogProbs:       brr.Params.TopLogProbs,
 			TopP:              brr.Params.TopP,
+			User:              brr.Params.User,
 			ExtraParams:       brr.Params.ExtraParams,
 
 			// Map specific fields
 			MaxCompletionTokens: brr.Params.MaxOutputTokens, // max_output_tokens -> max_completion_tokens
 			Metadata:            brr.Params.Metadata,
+		}
+
+		if brr.Params.Text != nil && brr.Params.Text.Format != nil && brr.Params.Text.Format.Type != "" && brr.Params.Text.Format.Type != "text" {
+			if responseFormat, err := ConvertViaJSON[interface{}](brr.Params.Text.Format); err == nil {
+				bcr.Params.ResponseFormat = &responseFormat
+			}
 		}
 
 		// Convert StreamOptions
@@ -1066,6 +1074,135 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	bcr.RawRequestBody = brr.RawRequestBody
 
 	return bcr
+}
+
+// ToChatFallbackRequest is the compatibility seam for Responses -> Chat fallback.
+// Keep fallback-specific request shaping behind this method so schema evolution has a
+// single place to update. This bridge is best-effort rather than fully lossless.
+func (brr *BifrostResponsesRequest) ToChatFallbackRequest() *BifrostChatRequest {
+	return brr.ToChatRequest()
+}
+
+// ChatFallbackWarnings returns known caveats for Responses -> Chat fallback.
+// It intentionally reports only request features that are dropped or normalized today.
+func (brr *BifrostResponsesRequest) ChatFallbackWarnings() []string {
+	if brr == nil {
+		return nil
+	}
+
+	warnings := make([]string, 0, 5)
+
+	for _, input := range brr.Input {
+		if input.Type != nil && *input.Type == ResponsesMessageTypeReasoning {
+			warnings = append(warnings, "reasoning input items are dropped during Responses to Chat fallback")
+			break
+		}
+	}
+
+	for _, input := range brr.Input {
+		if input.Role != nil && *input.Role == ResponsesInputMessageRoleDeveloper {
+			warnings = append(warnings, "developer role is normalized to system during Responses to Chat fallback")
+			break
+		}
+	}
+
+	if brr.Params == nil {
+		return warnings
+	}
+
+	for _, tool := range brr.Params.Tools {
+		if tool.Type != ResponsesToolTypeFunction {
+			warnings = append(warnings, "non-function tools are dropped during Responses to Chat fallback")
+			break
+		}
+	}
+
+	if brr.Params.ToolChoice != nil && brr.Params.ToolChoice.ResponsesToolChoiceStruct != nil {
+		switch brr.Params.ToolChoice.ResponsesToolChoiceStruct.Type {
+		case ResponsesToolChoiceTypeAllowedTools, ResponsesToolChoiceTypeCustom:
+			warnings = append(warnings, fmt.Sprintf("tool_choice type %q is not preserved during Responses to Chat fallback", brr.Params.ToolChoice.ResponsesToolChoiceStruct.Type))
+		}
+	}
+
+	if brr.Params.Truncation != nil {
+		warnings = append(warnings, "responses truncation is not forwarded during Responses to Chat fallback")
+	}
+
+	return warnings
+}
+
+// DefaultResponsesToChatCompletionRetryPolicy returns the retry policy for runtime
+// auto-detection of unsupported Responses endpoints. Only triggers on clear signals
+// that the endpoint does not exist:
+//   - HTTP 404/405/410/501 — unambiguous "not found" / "not implemented" status codes
+//   - HTML response body — provider returned a web page instead of JSON (common for
+//     servers that don't recognise the /v1/responses path)
+//
+// Intentionally excludes unmarshal failures and empty responses to avoid masking
+// transient errors or parsing bugs as unsupported-endpoint signals.
+func DefaultResponsesToChatCompletionRetryPolicy() *ResponsesToChatCompletionRetryPolicy {
+	return &ResponsesToChatCompletionRetryPolicy{
+		UnsupportedStatusCodes: []int{
+			http.StatusNotFound,
+			http.StatusMethodNotAllowed,
+			http.StatusGone,
+			http.StatusNotImplemented,
+		},
+		UnsupportedErrorSubstrings: []string{
+			strings.ToLower(ErrProviderResponseHTML),
+		},
+	}
+}
+
+func (policy *ResponsesToChatCompletionRetryPolicy) ShouldRetry(err *BifrostError) bool {
+	if policy == nil || err == nil {
+		return false
+	}
+
+	if err.StatusCode != nil {
+		for _, statusCode := range policy.UnsupportedStatusCodes {
+			if *err.StatusCode == statusCode {
+				return true
+			}
+		}
+	}
+
+	if err.Error == nil {
+		return false
+	}
+
+	message := strings.ToLower(strings.TrimSpace(err.Error.Message))
+	for _, unsupportedMarker := range policy.UnsupportedErrorSubstrings {
+		if strings.Contains(message, unsupportedMarker) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (state *ResponsesToChatCompletionCompatState) ShouldRetry(err *BifrostError) bool {
+	if state == nil || !state.RetryEligible || state.RetryPolicy == nil {
+		return false
+	}
+
+	return state.RetryPolicy.ShouldRetry(err)
+}
+
+func ResponsesToChatCompletionFallbackErrorMessage(err *BifrostError) string {
+	if err == nil {
+		return "unknown responses API error"
+	}
+
+	if err.Error == nil {
+		return "unknown responses API error"
+	}
+
+	if err.Error.Message == "" {
+		return "unknown responses API error"
+	}
+
+	return err.Error.Message
 }
 
 func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {

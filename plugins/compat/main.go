@@ -137,6 +137,11 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		applyParameterConversion(modifiedReq)
 	}
 
+	// Responses → Chat fallback: sets up compat state for configured-unsupported
+	// (SupportsResponsesAPI==false → immediate transform) and runtime auto-detection
+	// (SupportsResponsesAPI==nil → prepare retry-eligible state, keep original request).
+	modifiedReq = transformResponsesToChatRequest(ctx, modifiedReq, p.logger)
+
 	return modifiedReq, nil, nil
 }
 
@@ -163,6 +168,11 @@ func (p *CompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			extraFields.DroppedCompatPluginParams = p.droppedParams
 		}
 	}
+
+	// Responses → Chat fallback: convert chat response back to responses format
+	// when compat state is active (configured or runtime fallback path).
+	result = transformResponsesToChatResponse(ctx, result, p.logger)
+	bifrostErr = transformResponsesToChatError(ctx, bifrostErr)
 
 	return result, bifrostErr, nil
 }

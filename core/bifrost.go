@@ -4051,6 +4051,85 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
 }
 
+func setProviderContextMetadata(ctx *schemas.BifrostContext, config *schemas.ProviderConfig) {
+	isCustomProvider := config != nil && config.CustomProviderConfig != nil
+	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, isCustomProvider)
+	if isCustomProvider {
+		ctx.SetValue(schemas.BifrostContextKeyCustomProviderMetadata, &schemas.CustomProviderContextMetadata{
+			ProviderKey:          schemas.ModelProvider(config.CustomProviderConfig.CustomProviderKey),
+			BaseProviderType:     config.CustomProviderConfig.BaseProviderType,
+			SupportsResponsesAPI: config.CustomProviderConfig.SupportsResponsesAPI,
+		})
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyCustomProviderMetadata, nil)
+}
+
+func (bifrost *Bifrost) setProviderContextMetadataForKey(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider) error {
+	config, err := bifrost.account.GetConfigForProvider(providerKey)
+	if err != nil {
+		return fmt.Errorf("failed to get config for provider %s: %w", providerKey, err)
+	}
+	if config == nil {
+		return fmt.Errorf("config is nil for provider %s", providerKey)
+	}
+	setProviderContextMetadata(ctx, config)
+	return nil
+}
+
+func logResponsesToChatCompletionRetry(logger schemas.Logger, providerKey schemas.ModelProvider, model string, bifrostErr *schemas.BifrostError, warnings []string, isStreaming bool) {
+	if logger == nil {
+		return
+	}
+
+	if isStreaming {
+		logger.Warn("custom provider %s does not appear to support the OpenAI responses API cleanly for streaming; retrying via chat completions fallback: %s", providerKey, schemas.ResponsesToChatCompletionFallbackErrorMessage(bifrostErr))
+	} else {
+		logger.Warn("custom provider %s does not appear to support the OpenAI responses API cleanly; retrying via chat completions fallback: %s", providerKey, schemas.ResponsesToChatCompletionFallbackErrorMessage(bifrostErr))
+	}
+
+	if len(warnings) > 0 {
+		logger.Warn("responses->chat completion fallback for provider %s model %s is compatibility-only: %s", providerKey, model, strings.Join(warnings, "; "))
+	}
+}
+
+func runPostLLMHooksWithResponsesCompatMetadata(ctx *schemas.BifrostContext, pipeline *PluginPipeline, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	resp, processedErr := pipeline.RunPostLLMHooks(ctx, result, bifrostErr, runFrom)
+	schemas.ApplyResponsesToChatCompletionFallbackMetadata(ctx, resp, processedErr)
+	return resp, processedErr
+}
+
+// tryResponsesToChatCompletionFallback checks whether a failed Responses API call is eligible
+// for an operation-level fallback to Chat Completions (runtime auto-detection path,
+// SupportsResponsesAPI == nil). This is NOT a second retry system — it reuses the same
+// executeRequestWithRetries engine with the transformed request.
+//
+// Streaming semantics: fallback only triggers when executeRequestWithRetries returned an error,
+// meaning no partial stream was ever emitted to the client. The fallback starts a fresh
+// stream from scratch — no chunk duplication or data loss.
+//
+// Key reuse: the same keyProvider closure from the original call is passed through, so key
+// selection and rotation follow the exact same rules. For keyless providers (keyProvider == nil),
+// executeRequestWithRetries handles this natively with a zero-value key.
+func (bifrost *Bifrost) tryResponsesToChatCompletionFallback(
+	ctx *schemas.BifrostContext,
+	provider schemas.Provider,
+	bifrostErr *schemas.BifrostError,
+) bool {
+	if bifrostErr == nil {
+		return false
+	}
+	state, ok := schemas.GetResponsesToChatCompletionCompatState(ctx)
+	if !ok || state == nil || state.FallbackRequest == nil || !state.ShouldRetry(bifrostErr) {
+		return false
+	}
+
+	logResponsesToChatCompletionRetry(bifrost.logger, provider.GetProviderKey(), state.OriginalModel, bifrostErr, state.Warnings, state.IsStreaming)
+
+	_, activated := schemas.ActivateResponsesToChatCompletionCompatState(ctx, schemas.ResponsesToChatCompletionFallbackReasonRuntimeUnsupported)
+	return activated
+}
+
 // WSStreamHooks holds the post-hook runner and cleanup function returned by RunStreamPreHooks.
 // Call PostHookRunner for each streaming chunk, setting StreamEndIndicator on the final chunk.
 // Call Cleanup when done to release the pipeline back to the pool.
@@ -4076,6 +4155,19 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+
+	provider, model, _ := req.GetRequestFields()
+	if err := bifrost.setProviderContextMetadataForKey(ctx, provider); err != nil {
+		bifrostErr := newBifrostError(err)
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			OriginalModelRequested: model,
+		}
+		return nil, bifrostErr
+	}
+	schemas.ClearResponsesToChatCompletionFallback(ctx)
+	schemas.ClearResponsesToChatCompletionCompatState(ctx)
 
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
@@ -4129,7 +4221,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	if shortCircuit != nil {
 		if shortCircuit.Error != nil {
 			shortCircuit.Error.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
-			_, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			_, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, nil, shortCircuit.Error, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 			}
@@ -4145,7 +4237,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		}
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
-			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, reqProvider, reqModel, reqModel)
 			} else if resp != nil {
@@ -4176,7 +4268,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		if err != nil {
 			err.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
 		}
-		resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+		resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, result, err, preCount)
 		if IsFinalChunk(ctx) {
 			drainAndAttachPluginLogs(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
@@ -4676,6 +4768,18 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return nil, bifrostErr
 	}
 
+	if err := bifrost.setProviderContextMetadataForKey(ctx, provider); err != nil {
+		bifrostErr := newBifrostError(err)
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			OriginalModelRequested: model,
+		}
+		return nil, bifrostErr
+	}
+	schemas.ClearResponsesToChatCompletionFallback(ctx)
+	schemas.ClearResponsesToChatCompletionCompatState(ctx)
+
 	// Add MCP tools to request if MCP is configured and requested
 	if bifrost.MCPManager != nil {
 		req = bifrost.MCPManager.AddToolsToRequest(ctx, req)
@@ -4704,8 +4808,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
-			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			} else if resp != nil {
@@ -4719,8 +4822,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			shortCircuit.Error.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, nil, shortCircuit.Error, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			} else if resp != nil {
@@ -4822,7 +4924,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pluginCount := len(*bifrost.llmPlugins.Load())
 	select {
 	case result = <-msg.Response:
-		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
+		resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(msg.Context, pipeline, result, nil, pluginCount)
 		if bifrostErr != nil {
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if resp != nil {
@@ -4851,7 +4953,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
-		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
+		resp, bifrostErrPtr = runPostLLMHooksWithResponsesCompatMetadata(msg.Context, pipeline, nil, bifrostErrPtr, pluginCount)
 		if bifrostErrPtr != nil {
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if resp != nil {
@@ -4911,6 +5013,18 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, bifrostErr
 	}
 
+	if err := bifrost.setProviderContextMetadataForKey(ctx, provider); err != nil {
+		bifrostErr := newBifrostError(err)
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			OriginalModelRequested: model,
+		}
+		return nil, bifrostErr
+	}
+	schemas.ClearResponsesToChatCompletionFallback(ctx)
+	schemas.ClearResponsesToChatCompletionCompatState(ctx)
+
 	// Add MCP tools to request if MCP is configured and requested
 	if req.RequestType != schemas.SpeechStreamRequest && req.RequestType != schemas.TranscriptionStreamRequest && bifrost.MCPManager != nil {
 		req = bifrost.MCPManager.AddToolsToRequest(ctx, req)
@@ -4955,8 +5069,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
-			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			} else if resp != nil {
@@ -4985,7 +5098,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 				if err != nil {
 					err.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 				}
-				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+				resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, result, err, preCount)
 				if IsFinalChunk(ctx) {
 					drainAndAttachPluginLogs(ctx)
 				}
@@ -5034,20 +5147,19 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// Run post hooks on the stream message
 					processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, streamMsg.BifrostError)
 
-					// Build the client-facing chunk via the shared helper, which strips raw
-					// request/response fields when in logging-only mode without mutating the
-					// shared processedResponse or processedError objects.
 					streamResponse := providerUtils.BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-					// Guarded send: if the consumer abandons outputStream (client
-					// disconnect, ctx cancel), drain the upstream shortCircuit.Stream
-					// so its producer can exit cleanly instead of blocking on its send.
-					select {
-					case outputStream <- streamResponse:
-					case <-ctx.Done():
-						for range shortCircuit.Stream {
+					if streamResponse != nil {
+						// Guarded send: if the consumer abandons outputStream (client
+						// disconnect, ctx cancel), drain the upstream shortCircuit.Stream
+						// so its producer can exit cleanly instead of blocking on its send.
+						select {
+						case outputStream <- streamResponse:
+						case <-ctx.Done():
+							for range shortCircuit.Stream {
+							}
+							return
 						}
-						return
 					}
 
 					// TODO: Release the processed response immediately after use
@@ -5058,8 +5170,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			shortCircuit.Error.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			resp, bifrostErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, nil, shortCircuit.Error, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			} else if resp != nil {
@@ -5168,7 +5279,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Marking final chunk
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
-		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
+		recoveredResp, recoveredErr := runPostLLMHooksWithResponsesCompatMetadata(ctx, pipeline, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
 		if recoveredErr != nil {
 			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if recoveredResp != nil {
@@ -5563,7 +5674,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if cfg := config.CustomProviderConfig; cfg != nil && cfg.BaseProviderType != "" {
 			baseProvider = cfg.BaseProviderType
 		}
-		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+		setProviderContextMetadata(req.Context, config)
 
 		// Determine whether this provider attempt should capture raw payloads.
 		//
@@ -5846,6 +5957,90 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if IsStreamRequestType(req.RequestType) && bifrostError != nil {
 			if lastAttemptFinalizer != nil {
 				lastAttemptFinalizer(req.Context)
+			}
+		}
+
+		// Responses → Chat Completions operation-level fallback (runtime auto-detection).
+		// Only triggers when:
+		//   1. The Responses API returned a retryable error (HTTP 404/405/410/501)
+		//   2. The compat plugin marked the request as retry-eligible via context state
+		// Reuses the same keyProvider and executeRequestWithRetries engine — no separate
+		// retry system. The fallback creates its own per-attempt pipeline/postHookRunner
+		// inside the closure, matching the primary path's per-attempt allocation model.
+		// Streaming fallback only triggers if no stream was emitted (bifrostError != nil
+		// guarantees the original stream failed before any chunks were sent to the caller).
+		if bifrostError != nil {
+			if state, ok := schemas.GetResponsesToChatCompletionCompatState(req.Context); ok && state != nil && state.FallbackRequest != nil {
+				if bifrost.tryResponsesToChatCompletionFallback(req.Context, provider, bifrostError) {
+					fallbackMsg := &ChannelMessage{
+						BifrostRequest: *state.FallbackRequest,
+						Context:        req.Context,
+					}
+					fallbackModel := state.OriginalModel
+					if IsStreamRequestType(req.RequestType) {
+						stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+							// Resolve aliases for the key selected on this attempt
+							attemptResolvedModel := k.Aliases.Resolve(fallbackModel)
+							fallbackMsg.SetModel(attemptResolvedModel)
+							resolvedModel = attemptResolvedModel
+
+							// Per-attempt pipeline/postHookRunner — mirrors the primary streaming path.
+							// ExtraFields use state.OriginalRequestType (the caller-facing type, e.g.
+							// ResponsesStreamRequest) rather than the internal FallbackRequest type
+							// (ChatCompletionStreamRequest), so observability reflects the original intent.
+							pipeline := bifrost.getPluginPipeline()
+							postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+								if result != nil {
+									result.PopulateExtraFields(state.OriginalRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+								}
+								if err != nil {
+									err.PopulateExtraFields(state.OriginalRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+								}
+								resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
+								// Tag each streaming chunk with fallback metadata (the compat plugin's
+								// PostLLMHook only handles non-streaming response conversion).
+								schemas.ApplyResponsesToChatCompletionFallbackMetadata(ctx, resp, bifrostErr)
+								if IsFinalChunk(ctx) {
+									drainAndAttachPluginLogs(ctx)
+								}
+								if bifrostErr != nil {
+									bifrostErr.PopulateExtraFields(state.OriginalRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+									return nil, bifrostErr
+								} else if resp != nil {
+									resp.PopulateExtraFields(state.OriginalRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+								}
+								return resp, nil
+							}
+							var finalizerOnce sync.Once
+							postHookSpanFinalizer := func(ctx context.Context) {
+								finalizerOnce.Do(func() {
+									pipeline.FinalizeStreamingPostHookSpans(ctx)
+									bifrost.releasePluginPipeline(pipeline)
+								})
+							}
+							lastAttemptFinalizer = postHookSpanFinalizer
+							streamCh, streamErr := bifrost.handleProviderStreamRequest(provider, fallbackMsg, k, postHookRunner, postHookSpanFinalizer)
+							if streamErr != nil && streamCh == nil {
+								finalizerOnce.Do(func() {
+									bifrost.releasePluginPipeline(pipeline)
+								})
+							}
+							return streamCh, streamErr
+						}, keyProvider, state.FallbackRequest.RequestType, provider.GetProviderKey(), fallbackModel, state.FallbackRequest, bifrost.logger)
+
+						// Clean up fallback stream's last attempt finalizer on error
+						if bifrostError != nil && lastAttemptFinalizer != nil {
+							lastAttemptFinalizer(req.Context)
+						}
+					} else {
+						result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+							attemptResolvedModel := k.Aliases.Resolve(fallbackModel)
+							fallbackMsg.SetModel(attemptResolvedModel)
+							resolvedModel = attemptResolvedModel
+							return bifrost.handleProviderRequest(provider, config, fallbackMsg, k, keys)
+						}, keyProvider, state.FallbackRequest.RequestType, provider.GetProviderKey(), fallbackModel, state.FallbackRequest, bifrost.logger)
+					}
+				}
 			}
 		}
 

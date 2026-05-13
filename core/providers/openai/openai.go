@@ -93,6 +93,8 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	return provider.networkConfig.BaseURL + path
 }
 
+
+
 func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
@@ -730,8 +732,10 @@ func HandleOpenAITextCompletionStreaming(
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
-		return nil, err
+	if !schemas.ShouldSkipOperationCheck(ctx) {
+		if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+			return nil, err
+		}
 	}
 
 	if provider.disableStore {
@@ -895,8 +899,10 @@ func HandleOpenAIChatCompletionRequest(
 // Returns a channel for streaming responses and any error that occurred.
 func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
-		return nil, err
+	if !schemas.ShouldSkipOperationCheck(ctx) {
+		if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
+			return nil, err
+		}
 	}
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
@@ -1351,7 +1357,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	return HandleOpenAIResponsesRequest(
+	response, err := HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
@@ -1365,6 +1371,8 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		nil,
 		provider.logger,
 	)
+
+	return response, err
 }
 
 // HandleOpenAIResponsesRequest handles a responses request to OpenAI's API.
@@ -1506,6 +1514,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
+
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -1518,7 +1527,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 
 	// Use shared streaming logic
-	return HandleOpenAIResponsesStreaming(
+	streamChan, err := HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
@@ -1536,6 +1545,8 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+
+	return streamChan, err
 }
 
 // HandleOpenAIResponsesStreaming handles streaming for OpenAI-compatible APIs.

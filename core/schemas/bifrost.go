@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -207,7 +208,11 @@ const (
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
-	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySkipOperationCheck                       BifrostContextKey = "bifrost-skip-operation-check"                          // bool (set by compat plugin / core fallback — skip AllowedRequests gate for internal request-type conversions)
+	BifrostContextKeyIsResponsesToChatCompletionFallback     BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback"     // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyResponsesToChatCompletionFallbackReason BifrostContextKey = "bifrost-responses-to-chat-completion-fallback-reason" // ResponsesToChatCompletionFallbackReason (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyResponsesToChatCompletionCompatState    BifrostContextKey = "bifrost-responses-to-chat-completion-compat-state"    // *ResponsesToChatCompletionCompatState (set by bifrost/plugins - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyCustomProviderMetadata                  BifrostContextKey = "bifrost-custom-provider-metadata"                     // *CustomProviderContextMetadata (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
 	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
@@ -928,6 +933,174 @@ type BifrostResponse struct {
 	PassthroughResponse           *BifrostPassthroughResponse
 }
 
+type ResponsesToChatCompletionFallbackReason string
+
+const (
+	ResponsesToChatCompletionFallbackReasonConfiguredUnsupported ResponsesToChatCompletionFallbackReason = "configured_unsupported"
+	ResponsesToChatCompletionFallbackReasonRuntimeUnsupported    ResponsesToChatCompletionFallbackReason = "runtime_unsupported"
+)
+
+type CustomProviderContextMetadata struct {
+	ProviderKey          ModelProvider
+	BaseProviderType     ModelProvider
+	SupportsResponsesAPI *bool
+}
+
+type ResponsesToChatCompletionRetryPolicy struct {
+	UnsupportedStatusCodes     []int
+	UnsupportedErrorSubstrings []string
+}
+
+type ResponsesToChatCompletionCompatState struct {
+	OriginalRequestType RequestType
+	OriginalModel       string
+	IsStreaming         bool
+	RetryEligible       bool
+	RetryPolicy         *ResponsesToChatCompletionRetryPolicy
+	Active              bool
+	FallbackReason      ResponsesToChatCompletionFallbackReason
+	FallbackRequest     *BifrostRequest
+	Warnings            []string
+}
+
+func GetCustomProviderContextMetadata(ctx context.Context) (*CustomProviderContextMetadata, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+
+	metadata, ok := ctx.Value(BifrostContextKeyCustomProviderMetadata).(*CustomProviderContextMetadata)
+	if !ok || metadata == nil {
+		return nil, false
+	}
+
+	return metadata, true
+}
+
+func SetResponsesToChatCompletionCompatState(ctx *BifrostContext, state *ResponsesToChatCompletionCompatState) {
+	if ctx == nil {
+		return
+	}
+
+	if state == nil {
+		ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionCompatState)
+		return
+	}
+
+	ctx.SetValue(BifrostContextKeyResponsesToChatCompletionCompatState, state)
+}
+
+func ClearResponsesToChatCompletionCompatState(ctx *BifrostContext) {
+	if ctx == nil {
+		return
+	}
+
+	ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionCompatState)
+}
+
+func GetResponsesToChatCompletionCompatState(ctx context.Context) (*ResponsesToChatCompletionCompatState, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+
+	state, ok := ctx.Value(BifrostContextKeyResponsesToChatCompletionCompatState).(*ResponsesToChatCompletionCompatState)
+	if !ok || state == nil {
+		return nil, false
+	}
+
+	return state, true
+}
+
+// ShouldSkipOperationCheck returns true when the compat plugin or core fallback
+// has set the skip-operation-check flag on the context. Providers use this to
+// bypass the AllowedRequests gate for internally converted requests (e.g.
+// Responses→Chat fallback). The provider has no knowledge of WHY the check is
+// skipped — that decision lives in the compat plugin and core orchestration.
+func ShouldSkipOperationCheck(ctx *BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	skip, ok := ctx.Value(BifrostContextKeySkipOperationCheck).(bool)
+	return ok && skip
+}
+
+func ActivateResponsesToChatCompletionCompatState(ctx *BifrostContext, reason ResponsesToChatCompletionFallbackReason) (*ResponsesToChatCompletionCompatState, bool) {
+	state, ok := GetResponsesToChatCompletionCompatState(ctx)
+	if !ok || state == nil {
+		return nil, false
+	}
+
+	state.Active = true
+	state.RetryEligible = false
+	state.FallbackReason = reason
+	SetResponsesToChatCompletionFallback(ctx, reason)
+	// Allow the converted Chat request to bypass the provider's AllowedRequests gate.
+	// The original Responses request was already authorised; this is an internal conversion.
+	ctx.SetValue(BifrostContextKeySkipOperationCheck, true)
+
+	return state, true
+}
+
+func SetResponsesToChatCompletionFallback(ctx *BifrostContext, reason ResponsesToChatCompletionFallbackReason) {
+	if ctx == nil {
+		return
+	}
+
+	ctx.SetValue(BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+	if reason == "" {
+		ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionFallbackReason)
+		return
+	}
+	ctx.SetValue(BifrostContextKeyResponsesToChatCompletionFallbackReason, reason)
+}
+
+func ClearResponsesToChatCompletionFallback(ctx *BifrostContext) {
+	if ctx == nil {
+		return
+	}
+
+	ctx.ClearValue(BifrostContextKeyIsResponsesToChatCompletionFallback)
+	ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionFallbackReason)
+	ctx.ClearValue(BifrostContextKeySkipOperationCheck)
+}
+
+func GetResponsesToChatCompletionFallback(ctx context.Context) (ResponsesToChatCompletionFallbackReason, bool) {
+	if ctx == nil {
+		return "", false
+	}
+
+	isFallback, ok := ctx.Value(BifrostContextKeyIsResponsesToChatCompletionFallback).(bool)
+	if !ok || !isFallback {
+		return "", false
+	}
+
+	switch reason := ctx.Value(BifrostContextKeyResponsesToChatCompletionFallbackReason).(type) {
+	case ResponsesToChatCompletionFallbackReason:
+		return reason, true
+	case string:
+		return ResponsesToChatCompletionFallbackReason(reason), true
+	default:
+		return "", true
+	}
+}
+
+func ApplyResponsesToChatCompletionFallbackMetadata(ctx context.Context, response *BifrostResponse, bifrostErr *BifrostError) {
+	reason, ok := GetResponsesToChatCompletionFallback(ctx)
+	if !ok {
+		return
+	}
+
+	if response != nil {
+		extraFields := response.GetExtraFields()
+		extraFields.ResponsesToChatCompletionFallback = true
+		extraFields.ResponsesToChatCompletionFallbackReason = string(reason)
+	}
+
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.ResponsesToChatCompletionFallback = true
+		bifrostErr.ExtraFields.ResponsesToChatCompletionFallbackReason = string(reason)
+	}
+}
+
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
 	case r.ListModelsResponse != nil:
@@ -1384,6 +1557,8 @@ type BifrostResponseExtraFields struct {
 	ParseErrors               []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	ConvertedRequestType      RequestType        `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
+	ResponsesToChatCompletionFallback       bool          `json:"responses_to_chat_completion_fallback,omitempty"`
+	ResponsesToChatCompletionFallbackReason string        `json:"responses_to_chat_completion_fallback_reason,omitempty"`
 	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
 }
 
@@ -1626,6 +1801,8 @@ type BifrostErrorExtraFields struct {
 	RawResponse               interface{}                `json:"raw_response,omitempty"`
 	ConvertedRequestType      RequestType                `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string                   `json:"dropped_compat_plugin_params,omitempty"`
+	ResponsesToChatCompletionFallback       bool          `json:"responses_to_chat_completion_fallback,omitempty"`
+	ResponsesToChatCompletionFallbackReason string        `json:"responses_to_chat_completion_fallback_reason,omitempty"`
 	KeyStatuses               []KeyStatus                `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPUserOAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user OAuth MCP tool requires authentication
 }
