@@ -577,6 +577,143 @@ func TestConvertChatResponseFormatToAnthropicOutputFormat(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesSchemaRefs(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/$defs/Document",
+		},
+	}
+	defs := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+				"authors": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"$ref": "#/$defs/Person",
+					},
+				},
+			},
+			"required": []interface{}{"title", "authors"},
+		},
+		"Person": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":  map[string]interface{}{"type": "string"},
+				"email": map[string]interface{}{"type": []interface{}{"string", "null"}},
+			},
+			"required": []interface{}{"name", "email"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:       &schemaType,
+				Properties: &properties,
+				Required:   []string{"record"},
+				Defs:       &defs,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	if output["type"] != "json_schema" {
+		t.Fatalf("expected json_schema type, got %v", output["type"])
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("expected additionalProperties=false, got %v", schema["additionalProperties"])
+	}
+	if _, ok := schema["$defs"].(map[string]interface{}); !ok {
+		t.Fatalf("expected $defs to be preserved, got %v", schema["$defs"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/$defs/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinitions(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/definitions/Document",
+		},
+	}
+	definitions := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"title"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:        &schemaType,
+				Properties:  &properties,
+				Required:    []string{"record"},
+				Definitions: &definitions,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if _, ok := schema["definitions"].(map[string]interface{}); !ok {
+		t.Fatalf("expected definitions to be preserved, got %v", schema["definitions"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/definitions/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
 func TestValidateToolsForProvider(t *testing.T) {
 	tests := []struct {
 		name      string
