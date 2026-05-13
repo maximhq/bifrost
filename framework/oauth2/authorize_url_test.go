@@ -64,17 +64,35 @@ func TestBuildAuthorizeURLWithPKCEPreservesMultipleProviderParams(t *testing.T) 
 func TestBuildAuthorizeURLWithPKCERejectsInvalidAuthorizeURL(t *testing.T) {
 	provider := &OAuth2Provider{}
 
-	_, err := provider.buildAuthorizeURLWithPKCE(
-		"http://[::1",
-		"client-id",
-		"https://example.com/callback",
-		"state-value",
-		"challenge-value",
-		nil,
-	)
+	tests := []struct {
+		name         string
+		authorizeURL string
+	}{
+		{
+			name:         "malformed URL",
+			authorizeURL: "http://[::1",
+		},
+		{
+			name:         "relative URL",
+			authorizeURL: "api.notion.com/v1/oauth/authorize",
+		},
+	}
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid authorize_url")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := provider.buildAuthorizeURLWithPKCE(
+				tc.authorizeURL,
+				"client-id",
+				"https://example.com/callback",
+				"state-value",
+				"challenge-value",
+				nil,
+			)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid authorize_url")
+		})
+	}
 }
 
 func mustParseURL(t *testing.T, value string) *url.URL {

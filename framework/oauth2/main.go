@@ -602,6 +602,9 @@ func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redir
 	if err != nil {
 		return "", fmt.Errorf("invalid authorize_url %q: %w", authorizeURL, err)
 	}
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return "", fmt.Errorf("invalid authorize_url %q: must be an absolute URL", authorizeURL)
+	}
 
 	params := parsedURL.Query()
 	params.Set("response_type", "code")
