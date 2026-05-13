@@ -3142,6 +3142,95 @@ func TestGenAIFallbacks_PreservedInBifrostResponsesRequest(t *testing.T) {
 	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.Fallbacks[0].Model)
 }
 
+// TestNormalizeRawGenerateContentRequestForCompatibility tests that Bifrost-internal fields
+// (fallbacks) and provider-incompatible OpenAI fields (responseLogprobs, logprobs, presencePenalty,
+// frequencyPenalty) are stripped before the raw body is forwarded to the Gemini API.
+//
+// Regression: fallbacks was forwarded verbatim, causing Gemini to return 400
+// "Unknown name \"fallbacks\": Cannot find field."
+func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
+	parseBody := func(t *testing.T, b []byte) map[string]interface{} {
+		t.Helper()
+		var m map[string]interface{}
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+	genConfig := func(m map[string]interface{}) map[string]interface{} {
+		gc, _ := m["generationConfig"].(map[string]interface{})
+		return gc
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, result map[string]interface{})
+	}{
+		{
+			name:  "StripsFallbacksField",
+			input: `{"contents":[{"parts":[{"text":"Hello"}]}],"fallbacks":["openai/gpt-4o","vertex/gemini-2-flash"]}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks", "fallbacks must not be forwarded to Gemini")
+				assert.Contains(t, m, "contents", "contents must be preserved")
+			},
+		},
+		{
+			name:  "StripsGenerationConfigCompatFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"responseLogprobs":true,"logprobs":5,"presencePenalty":0.5,"frequencyPenalty":0.3}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.NotContains(t, gc, "responseLogprobs")
+				assert.NotContains(t, gc, "logprobs")
+				assert.NotContains(t, gc, "presencePenalty")
+				assert.NotContains(t, gc, "frequencyPenalty")
+				assert.Contains(t, gc, "temperature", "valid fields must be preserved")
+			},
+		},
+		{
+			name:  "StripsFallbacksAlongsideCompatFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"fallbacks":["openai/gpt-4o"],"generationConfig":{"temperature":0.5,"presencePenalty":0.2}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks")
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.NotContains(t, gc, "presencePenalty")
+				assert.Contains(t, gc, "temperature")
+			},
+		},
+		{
+			name:  "PreservesValidBodyWithNoStrippableFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"maxOutputTokens":1000}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.Contains(t, m, "contents")
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.Contains(t, gc, "temperature")
+				assert.Contains(t, gc, "maxOutputTokens")
+			},
+		},
+		{
+			name:  "HandlesBodyWithOnlyFallbacks",
+			input: `{"fallbacks":["openai/gpt-4o"]}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte(tt.input))
+			require.NotEmpty(t, result)
+			tt.validate(t, parseBody(t, result))
+		})
+	}
+
+	t.Run("EmptyBodyReturnsEmpty", func(t *testing.T) {
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte{}))
+	})
+}
+
 // TestFunctionCallingConfigModeAny_RoundTrip verifies that FunctionCallingConfigMode.ANY and
 // AllowedFunctionNames survive the Gemini→Bifrost→Gemini round-trip on the GenAI passthrough path.
 // Regression: ANY was silently downgraded to AUTO (missing case in convertGeminiToolConfigToToolChoice)

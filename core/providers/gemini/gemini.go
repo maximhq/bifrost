@@ -48,7 +48,10 @@ func setGeminiRequestBody(req *fasthttp.Request, bodyReader io.Reader, bodySize 
 
 func normalizeRawGenerateContentBody(ctx *schemas.BifrostContext, body []byte) []byte {
 	if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-		return NormalizeRawGenerateContentRequestForCompatibility(body)
+		body = NormalizeRawGenerateContentRequestForCompatibility(body)
+	}
+	if updated, err := providerUtils.DeleteJSONField(body, "fallbacks"); err == nil {
+		body = updated
 	}
 	return body
 }
@@ -2218,6 +2221,8 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
+	jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
+
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2456,7 +2461,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	var jsonData []byte
 	if rawBody, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request); ok && len(rawBody) > 0 {
-		jsonData = rawBody
+		jsonData = NormalizeRawGenerateContentRequestForCompatibility(rawBody)
 	}
 
 	// Validate that either InputFileID or Requests is provided, but not both
@@ -2556,6 +2561,10 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
+	}
+
+	if updated, err := providerUtils.DeleteJSONField(jsonData, "fallbacks"); err == nil {
+		jsonData = updated
 	}
 
 	// Create HTTP request

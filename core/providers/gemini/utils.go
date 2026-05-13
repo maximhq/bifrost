@@ -58,6 +58,7 @@ func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte 
 		"generationConfig.logprobs",
 		"generationConfig.presencePenalty",
 		"generationConfig.frequencyPenalty",
+		"fallbacks",
 	} {
 		if providerUtils.JSONFieldExists(out, path) {
 			if updated, err := providerUtils.DeleteJSONField(out, path); err == nil {
