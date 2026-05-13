@@ -391,6 +391,7 @@ type modelParametersParseResult struct {
 	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
 	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
+	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
 	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
 	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
 	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
@@ -437,6 +438,10 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 	if parsed.SupportsReasoning != nil && *parsed.SupportsReasoning {
 		addParam("reasoning")
+	}
+	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
+		addParam("response_format")
+		addParam("text")
 	}
 	if parsed.SupportsServiceTier != nil && *parsed.SupportsServiceTier {
 		addParam("service_tier")
