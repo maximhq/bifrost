@@ -93,6 +93,9 @@ type anthropicToResponsesStreamState struct {
 	openContentBlockIndices   map[int]bool
 	closedContentBlockIndices map[int]bool
 	openToolBlockIndices      map[int]bool
+	completedToolBlockIndices map[int]bool
+	toolArgumentDeltaQueues   map[int][]*AnthropicStreamEvent
+	pendingContentBlockStarts []pendingAnthropicContentBlockStart
 	sawToolUse                bool
 
 	// currentMessageID scopes generated Anthropic-safe tool IDs for streaming.
@@ -100,6 +103,11 @@ type anthropicToResponsesStreamState struct {
 	// turns, but Anthropic clients expect each streamed tool_use ID to be unique.
 	currentMessageID string
 	streamToolUseIDs map[string]string
+}
+
+type pendingAnthropicContentBlockStart struct {
+	event       *AnthropicStreamEvent
+	isToolBlock bool
 }
 
 type anthropicToResponsesStreamStateKeyType struct{}
@@ -152,9 +160,16 @@ func (state *anthropicToResponsesStreamState) resetForMessage(messageID *string)
 	if state.openToolBlockIndices != nil {
 		clear(state.openToolBlockIndices)
 	}
+	if state.completedToolBlockIndices != nil {
+		clear(state.completedToolBlockIndices)
+	}
+	if state.toolArgumentDeltaQueues != nil {
+		clear(state.toolArgumentDeltaQueues)
+	}
 	if state.streamToolUseIDs != nil {
 		clear(state.streamToolUseIDs)
 	}
+	state.pendingContentBlockStarts = state.pendingContentBlockStarts[:0]
 	state.sawToolUse = false
 	state.currentMessageID = ""
 	if messageID != nil {
@@ -233,6 +248,12 @@ func (state *anthropicToResponsesStreamState) markContentBlockClosed(index *int)
 		state.closedContentBlockIndices = make(map[int]bool)
 	}
 	state.closedContentBlockIndices[*index] = true
+	if state.completedToolBlockIndices != nil {
+		delete(state.completedToolBlockIndices, *index)
+	}
+	if state.toolArgumentDeltaQueues != nil {
+		delete(state.toolArgumentDeltaQueues, *index)
+	}
 }
 
 func (state *anthropicToResponsesStreamState) closeContentBlockEvent(index *int) []*AnthropicStreamEvent {
@@ -254,10 +275,20 @@ func (state *anthropicToResponsesStreamState) closeContentBlockEvent(index *int)
 }
 
 func (state *anthropicToResponsesStreamState) flushOpenContentBlockStops() []*AnthropicStreamEvent {
-	return state.flushOpenContentBlockStopsBefore(nil)
+	if state == nil {
+		return nil
+	}
+	events := state.flushOpenContentBlockStopsBeforeInternal(nil, true)
+	events = append(events, state.emitPendingContentBlockStarts(true)...)
+	events = append(events, state.flushOpenContentBlockStopsBeforeInternal(nil, true)...)
+	return events
 }
 
 func (state *anthropicToResponsesStreamState) flushOpenContentBlockStopsBefore(nextIndex *int) []*AnthropicStreamEvent {
+	return state.flushOpenContentBlockStopsBeforeInternal(nextIndex, false)
+}
+
+func (state *anthropicToResponsesStreamState) flushOpenContentBlockStopsBeforeInternal(nextIndex *int, forceToolStops bool) []*AnthropicStreamEvent {
 	if state == nil || len(state.openContentBlockIndices) == 0 {
 		return nil
 	}
@@ -275,6 +306,17 @@ func (state *anthropicToResponsesStreamState) flushOpenContentBlockStopsBefore(n
 
 	events := make([]*AnthropicStreamEvent, 0, len(indices))
 	for _, index := range indices {
+		if state.openToolBlockIndices != nil && state.openToolBlockIndices[index] {
+			if !forceToolStops && !state.isToolBlockComplete(index) {
+				continue
+			}
+			if forceToolStops {
+				state.markToolBlockCompleteOnly(index)
+			}
+			idx := index
+			events = append(events, state.drainCompletedToolBlock(&idx)...)
+			continue
+		}
 		idx := index
 		events = append(events, &AnthropicStreamEvent{
 			Type:  AnthropicStreamEventTypeContentBlockStop,
@@ -289,6 +331,129 @@ func (state *anthropicToResponsesStreamState) flushOpenContentBlockStopsBefore(n
 		}
 		state.closedContentBlockIndices[index] = true
 	}
+	return events
+}
+
+func (state *anthropicToResponsesStreamState) queueToolArgumentDelta(event *AnthropicStreamEvent) bool {
+	if state == nil || event == nil || event.Index == nil || event.Delta == nil {
+		return false
+	}
+	if state.toolArgumentDeltaQueues == nil {
+		state.toolArgumentDeltaQueues = make(map[int][]*AnthropicStreamEvent)
+	}
+	index := *event.Index
+	state.toolArgumentDeltaQueues[index] = append(state.toolArgumentDeltaQueues[index], event)
+	return true
+}
+
+func (state *anthropicToResponsesStreamState) queueToolArgumentDeltas(events []*AnthropicStreamEvent) {
+	for _, event := range events {
+		state.queueToolArgumentDelta(event)
+	}
+}
+
+func (state *anthropicToResponsesStreamState) hasQueuedToolArgumentDeltas(index *int) bool {
+	if state == nil || index == nil || state.toolArgumentDeltaQueues == nil {
+		return false
+	}
+	return len(state.toolArgumentDeltaQueues[*index]) > 0
+}
+
+func (state *anthropicToResponsesStreamState) markToolBlockCompleteOnly(index int) {
+	if state == nil {
+		return
+	}
+	if state.completedToolBlockIndices == nil {
+		state.completedToolBlockIndices = make(map[int]bool)
+	}
+	state.completedToolBlockIndices[index] = true
+}
+
+func (state *anthropicToResponsesStreamState) markToolBlockComplete(index *int) []*AnthropicStreamEvent {
+	if state == nil || index == nil {
+		return nil
+	}
+	state.markToolBlockCompleteOnly(*index)
+	events := state.drainCompletedToolBlock(index)
+	events = append(events, state.emitPendingContentBlockStarts(false)...)
+	return events
+}
+
+func (state *anthropicToResponsesStreamState) isToolBlockComplete(index int) bool {
+	return state != nil && state.completedToolBlockIndices != nil && state.completedToolBlockIndices[index]
+}
+
+func (state *anthropicToResponsesStreamState) hasBlockingOpenToolBlock(nextIndex *int) bool {
+	if state == nil || len(state.openToolBlockIndices) == 0 {
+		return false
+	}
+	for index := range state.openToolBlockIndices {
+		if nextIndex != nil && index == *nextIndex {
+			continue
+		}
+		if state.openContentBlockIndices != nil && state.openContentBlockIndices[index] && !state.isToolBlockComplete(index) {
+			return true
+		}
+	}
+	return false
+}
+
+func (state *anthropicToResponsesStreamState) queuePendingContentBlockStart(event *AnthropicStreamEvent, isToolBlock bool) {
+	if state == nil || event == nil || event.Index == nil {
+		return
+	}
+	for _, pending := range state.pendingContentBlockStarts {
+		if pending.event != nil && pending.event.Index != nil && *pending.event.Index == *event.Index {
+			return
+		}
+	}
+	state.pendingContentBlockStarts = append(state.pendingContentBlockStarts, pendingAnthropicContentBlockStart{
+		event:       event,
+		isToolBlock: isToolBlock,
+	})
+}
+
+func (state *anthropicToResponsesStreamState) emitPendingContentBlockStarts(forceToolStops bool) []*AnthropicStreamEvent {
+	if state == nil || len(state.pendingContentBlockStarts) == 0 {
+		return nil
+	}
+
+	var events []*AnthropicStreamEvent
+	for len(state.pendingContentBlockStarts) > 0 {
+		pending := state.pendingContentBlockStarts[0]
+		events = append(events, state.flushOpenContentBlockStopsBeforeInternal(pending.event.Index, forceToolStops)...)
+		if state.hasBlockingOpenToolBlock(pending.event.Index) {
+			break
+		}
+
+		state.pendingContentBlockStarts = state.pendingContentBlockStarts[1:]
+		events = append(events, pending.event)
+		state.trackOpenContentBlock(pending.event.Index, pending.isToolBlock)
+		if pending.isToolBlock {
+			if forceToolStops && pending.event.Index != nil {
+				state.markToolBlockCompleteOnly(*pending.event.Index)
+			}
+			if pending.event.Index != nil && state.isToolBlockComplete(*pending.event.Index) {
+				events = append(events, state.drainCompletedToolBlock(pending.event.Index)...)
+			}
+		}
+	}
+	return events
+}
+
+func (state *anthropicToResponsesStreamState) drainCompletedToolBlock(index *int) []*AnthropicStreamEvent {
+	if state == nil || index == nil {
+		return nil
+	}
+	if state.openContentBlockIndices == nil || !state.openContentBlockIndices[*index] {
+		return nil
+	}
+
+	var events []*AnthropicStreamEvent
+	if state.toolArgumentDeltaQueues != nil {
+		events = append(events, state.toolArgumentDeltaQueues[*index]...)
+	}
+	events = append(events, state.closeContentBlockEvent(index)...)
 	return events
 }
 
@@ -1835,17 +2000,22 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 		// Generate synthetic input_json_delta events for tool calls with arguments
 		var events []*AnthropicStreamEvent
+		var streamState *anthropicToResponsesStreamState
+		var isToolBlock bool
 		if streamResp.Type == AnthropicStreamEventTypeContentBlockStart && streamResp.ContentBlock != nil {
-			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			streamState = getOrCreateAnthropicToResponsesStreamState(ctx)
 			events = append(events, streamState.flushOpenContentBlockStopsBefore(streamResp.Index)...)
-		}
-		events = append(events, streamResp)
-		if streamResp.Type == AnthropicStreamEventTypeContentBlockStart && streamResp.ContentBlock != nil {
-			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-			isToolBlock := streamResp.ContentBlock.Type == AnthropicContentBlockTypeToolUse ||
+			isToolBlock = streamResp.ContentBlock.Type == AnthropicContentBlockTypeToolUse ||
 				streamResp.ContentBlock.Type == AnthropicContentBlockTypeMCPToolUse ||
 				streamResp.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse
-			streamState.trackOpenContentBlock(streamResp.Index, isToolBlock)
+			if streamState.hasBlockingOpenToolBlock(streamResp.Index) {
+				streamState.queuePendingContentBlockStart(streamResp, isToolBlock)
+			} else {
+				events = append(events, streamResp)
+				streamState.trackOpenContentBlock(streamResp.Index, isToolBlock)
+			}
+		} else {
+			events = append(events, streamResp)
 		}
 
 		// Generate compaction_delta event for compaction items
@@ -1903,7 +2073,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					indexToUse = bifrostResp.ContentIndex
 				}
 				deltaEvents := generateSyntheticInputJSONDeltas(argumentsJSON, indexToUse)
-				events = append(events, deltaEvents...)
+				if isToolBlock && streamState != nil {
+					streamState.queueToolArgumentDeltas(deltaEvents)
+				} else {
+					events = append(events, deltaEvents...)
+				}
 			}
 		}
 		return events
@@ -1954,6 +2128,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				PartialJSON: bifrostResp.Delta,
 			}
 		}
+		if streamResp.Delta != nil {
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			streamState.queueToolArgumentDelta(streamResp)
+		}
+		return nil
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
@@ -2210,6 +2389,18 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
 			return streamState.closeContentBlockEvent(streamResp.Index)
 		}
+	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone:
+		indexToUse := bifrostResp.OutputIndex
+		if indexToUse == nil {
+			indexToUse = bifrostResp.ContentIndex
+		}
+		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+		if !streamState.hasQueuedToolArgumentDeltas(indexToUse) && bifrostResp.Arguments != nil && *bifrostResp.Arguments != "" {
+			streamState.queueToolArgumentDeltas(generateSyntheticInputJSONDeltas(*bifrostResp.Arguments, indexToUse))
+		}
+		return streamState.markToolBlockComplete(indexToUse)
+
 	case schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
 		schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
 		schemas.ResponsesStreamResponseTypeWebSearchCallCompleted:
@@ -2274,6 +2465,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				PartialJSON: bifrostResp.Arguments,
 			}
 		}
+		if streamResp.Delta != nil {
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			streamState.queueToolArgumentDelta(streamResp)
+		}
+		return nil
 
 	case schemas.ResponsesStreamResponseTypeMCPCallCompleted:
 		// MCP call completed - emit content_block_stop
@@ -2284,7 +2480,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			streamResp.Index = bifrostResp.ContentIndex
 		}
 		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-		return streamState.closeContentBlockEvent(streamResp.Index)
+		return streamState.markToolBlockComplete(streamResp.Index)
 
 	case schemas.ResponsesStreamResponseTypeMCPCallFailed:
 		// MCP call failed - emit error event

@@ -517,6 +517,136 @@ func TestToAnthropicResponsesStreamResponse_DelaysToolStopUntilAfterLateArgument
 	}
 }
 
+func TestToAnthropicResponsesStreamResponse_BuffersInterleavedToolArgumentDeltasByOutputIndex(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	firstToolCallID := "functions.Read:0"
+	firstToolName := "Read"
+	secondToolCallID := "functions.Bash:1"
+	secondToolName := "Bash"
+	firstIndex := 0
+	secondIndex := 1
+	emptyArgs := ""
+	firstArgsPartOne := `{"file_path":"/`
+	firstArgsPartTwo := `tmp/config.json"}`
+	secondArgs := `{"command":"pwd"}`
+	firstArgsFull := firstArgsPartOne + firstArgsPartTwo
+
+	stream := []*schemas.BifrostResponsesStreamResponse{
+		{
+			Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			OutputIndex: &firstIndex,
+			Item: &schemas.ResponsesMessage{
+				ID:   &firstToolCallID,
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    &firstToolCallID,
+					Name:      &firstToolName,
+					Arguments: &emptyArgs,
+				},
+			},
+		},
+		{
+			Type:        schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			OutputIndex: &firstIndex,
+			ItemID:      &firstToolCallID,
+			Arguments:   &firstArgsPartOne,
+		},
+		{
+			Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			OutputIndex: &secondIndex,
+			Item: &schemas.ResponsesMessage{
+				ID:   &secondToolCallID,
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    &secondToolCallID,
+					Name:      &secondToolName,
+					Arguments: &emptyArgs,
+				},
+			},
+		},
+		{
+			Type:        schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			OutputIndex: &secondIndex,
+			ItemID:      &secondToolCallID,
+			Arguments:   &secondArgs,
+		},
+		{
+			Type:        schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			OutputIndex: &firstIndex,
+			ItemID:      &firstToolCallID,
+			Arguments:   &firstArgsPartTwo,
+		},
+		{
+			Type:        schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			OutputIndex: &firstIndex,
+			ItemID:      &firstToolCallID,
+			Arguments:   &firstArgsFull,
+		},
+		{
+			Type:        schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			OutputIndex: &secondIndex,
+			ItemID:      &secondToolCallID,
+			Arguments:   &secondArgs,
+		},
+		{
+			Type: schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{
+				StopReason: schemas.Ptr(string(schemas.BifrostFinishReasonToolCalls)),
+			},
+		},
+	}
+
+	var events []*AnthropicStreamEvent
+	for _, responseEvent := range stream {
+		events = append(events, ToAnthropicResponsesStreamResponse(ctx, responseEvent)...)
+	}
+
+	assertAnthropicStreamBlocksDoNotOverlap(t, events)
+
+	firstStopPosition := eventPosition(events, AnthropicStreamEventTypeContentBlockStop, firstIndex)
+	secondStartPosition := eventPosition(events, AnthropicStreamEventTypeContentBlockStart, secondIndex)
+	if firstStopPosition == -1 {
+		t.Fatal("expected first tool content_block_stop")
+	}
+	if secondStartPosition == -1 {
+		t.Fatal("expected second tool content_block_start")
+	}
+	if secondStartPosition < firstStopPosition {
+		t.Fatalf("second tool start position = %d, want after first tool stop position %d", secondStartPosition, firstStopPosition)
+	}
+
+	accumulated := map[int]string{}
+	lastDeltaPosition := map[int]int{}
+	for i, event := range events {
+		if event.Type != AnthropicStreamEventTypeContentBlockDelta ||
+			event.Index == nil ||
+			event.Delta == nil ||
+			event.Delta.Type != AnthropicStreamDeltaTypeInputJSON ||
+			event.Delta.PartialJSON == nil {
+			continue
+		}
+		accumulated[*event.Index] += *event.Delta.PartialJSON
+		lastDeltaPosition[*event.Index] = i
+	}
+
+	if accumulated[firstIndex] != firstArgsFull {
+		t.Fatalf("first tool arguments = %q, want %q", accumulated[firstIndex], firstArgsFull)
+	}
+	if accumulated[secondIndex] != secondArgs {
+		t.Fatalf("second tool arguments = %q, want %q", accumulated[secondIndex], secondArgs)
+	}
+	if lastDeltaPosition[firstIndex] > firstStopPosition {
+		t.Fatalf("first tool last delta position = %d, want before stop position %d", lastDeltaPosition[firstIndex], firstStopPosition)
+	}
+	if lastDeltaPosition[secondIndex] < secondStartPosition {
+		t.Fatalf("second tool first delta position = %d, want after start position %d", lastDeltaPosition[secondIndex], secondStartPosition)
+	}
+}
+
 func TestToAnthropicResponsesStreamResponse_ClosesTextBeforeStartingToolFromResponsesEvents(t *testing.T) {
 	t.Parallel()
 
