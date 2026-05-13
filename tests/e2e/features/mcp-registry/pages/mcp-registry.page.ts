@@ -10,7 +10,7 @@ export type MCPConnectionType = 'http' | 'sse' | 'stdio'
 /**
  * Authentication types for HTTP/SSE connections
  */
-export type MCPAuthType = 'none' | 'headers' | 'oauth'
+export type MCPAuthType = 'none' | 'headers' | 'oauth' | 'per_user_oauth'
 
 /** Header value shape used by API (value / env_var / from_env) */
 export type EnvVarLike = { value: string; env_var?: string; from_env?: boolean }
@@ -124,8 +124,22 @@ export class MCPRegistryPage extends BasePage {
   }
 
   async clientExists(name: string): Promise<boolean> {
-    await this.page.waitForTimeout(500) // Brief wait for UI update
-    return (await this.getClientRow(name).count()) > 0
+    try {
+      await expect(this.getClientRow(name)).toBeVisible({ timeout: 5000 })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async openClientActions(name: string): Promise<void> {
+    const row = this.getClientRow(name)
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await row.scrollIntoViewIfNeeded()
+
+    const actionsBtn = row.getByRole('button', { name: /MCP server actions/i })
+    await actionsBtn.waitFor({ state: 'visible', timeout: 10000 })
+    await actionsBtn.click()
   }
 
   /**
@@ -174,8 +188,8 @@ export class MCPRegistryPage extends BasePage {
     await expect(selectTrigger).toBeVisible({ timeout: 5000 })
     await selectTrigger.click()
 
-    // Select the option by data-testid
-    const optionTestId = `auth-type-${type}`
+    // Select the option by data-testid (per_user_oauth uses kebab-case in testid)
+    const optionTestId = `auth-type-${type.replace(/_/g, '-')}`
     const option = this.page.locator(`[data-testid="${optionTestId}"]`)
     await expect(option).toBeVisible({ timeout: 5000 })
     await option.click()
@@ -265,8 +279,8 @@ export class MCPRegistryPage extends BasePage {
         }
       }
 
-      // Handle OAuth config
-      if (config.authType === 'oauth') {
+      // Handle OAuth config (oauth and per_user_oauth share the same fields)
+      if (config.authType === 'oauth' || config.authType === 'per_user_oauth') {
         if (config.oauthClientId) {
           await this.oauthClientIdInput.fill(config.oauthClientId)
         }
@@ -520,10 +534,17 @@ export class MCPRegistryPage extends BasePage {
    * Reconnect an MCP client
    */
   async reconnectClient(name: string): Promise<void> {
-    const row = this.getClientRow(name)
-    // Stop propagation by clicking the reconnect button directly
-    const reconnectBtn = row.locator('button').filter({ has: this.page.locator('svg.lucide-refresh-ccw') })
-    await reconnectBtn.click()
+    await this.openClientActions(name)
+
+    const reconnectMenuItem = this.page.getByRole('menuitem', { name: /Reconnect/i })
+    await expect(reconnectMenuItem).toBeVisible({ timeout: 10000 })
+    await reconnectMenuItem.click()
+
+    const reconnectDialog = this.page.locator('[role="alertdialog"], [role="dialog"]').filter({ hasText: /Reconnect/i }).first()
+    if (await reconnectDialog.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await reconnectDialog.getByRole('button', { name: /Reconnect|Continue|Confirm/i }).click()
+    }
+
     await this.waitForSuccessToast('Reconnected')
   }
 
@@ -662,12 +683,14 @@ export class MCPRegistryPage extends BasePage {
    * disappearing from the table after the list refetches.
    */
   async deleteClient(name: string, options?: { requireToast?: boolean }): Promise<void> {
-    const row = this.getClientRow(name)
-    const deleteBtn = row
-      .locator('button')
-      .filter({ has: this.page.locator('svg.lucide-trash-2') })
-      .or(row.locator('button').filter({ has: this.page.locator('svg.lucide-trash') }))
-    await deleteBtn.click()
+    const exists = await this.clientExists(name)
+    if (!exists) return
+
+    await this.openClientActions(name)
+
+    const deleteMenuItem = this.page.getByRole('menuitem', { name: /Delete/i })
+    await expect(deleteMenuItem).toBeVisible({ timeout: 10000 })
+    await deleteMenuItem.click()
 
     const confirmDialog = this.page.locator('[role="alertdialog"]')
     await expect(confirmDialog).toBeVisible({ timeout: 5000 })
