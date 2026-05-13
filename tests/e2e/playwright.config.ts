@@ -53,6 +53,9 @@ export default defineConfig({
 
     // Timeout for navigation
     navigationTimeout: 30000,
+
+    // Grant clipboard permissions so copy-to-clipboard tests work on localhost
+    permissions: ['clipboard-read', 'clipboard-write'],
   },
 
   // Global timeout for each test

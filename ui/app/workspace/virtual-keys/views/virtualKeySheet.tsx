@@ -949,7 +949,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 
 																{/* Provider Budget Configuration */}
 																<MultiBudgetLines
-																	id={`providerBudget-${index}`}
 																	data-testid={`vk-provider-budget-${index}`}
 																	label="Provider Budget"
 																	lines={
@@ -1235,7 +1234,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 								{/* Budget Configuration */}
 								<div className="space-y-4">
 									<MultiBudgetLines
-										id="vkBudget"
 										data-testid="vk-budget-lines"
 										label="Budget Configuration"
 										lines={form.watch("budgets") ?? []}

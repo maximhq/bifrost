@@ -11,8 +11,7 @@ export interface BudgetLineEntry {
 }
 
 interface MultiBudgetLinesProps {
-  id?: string;
-  "data-testid"?: string;
+  "data-testid": string;
   label?: string;
   lines: BudgetLineEntry[];
   onChange: (lines: BudgetLineEntry[]) => void;
@@ -22,7 +21,6 @@ interface MultiBudgetLinesProps {
 }
 
 export default function MultiBudgetLines({
-  id,
   "data-testid": testId,
   label = "Budget Configuration",
   lines,
@@ -79,7 +77,7 @@ export default function MultiBudgetLines({
         <div className="flex items-center gap-2">
           {onReset && (showReset ?? true) && (
             <Button
-              data-testid={`${id}-reset-btn`}
+              data-testid={`${testId}-reset-btn`}
               type="button"
               variant="ghost"
               size="sm"
@@ -90,7 +88,7 @@ export default function MultiBudgetLines({
             </Button>
           )}
           <Button
-            data-testid={`${id}-add-btn`}
+            data-testid={`${testId}-add-btn`}
             variant="outline"
             size="sm"
             type="button"
@@ -111,11 +109,16 @@ export default function MultiBudgetLines({
       {lines.map((line, index) => {
         const isDuplicate = (usedDurations.get(line.reset_duration) || 0) > 1;
         return (
-          <div key={index} className="space-y-1">
+          <div
+            key={index}
+            className="space-y-1"
+            data-testid={`${testId}-line-${index}`}
+          >
             <div className="flex items-end gap-2">
               <div className="flex-1">
                 <NumberAndSelect
-                  id={`${id}-${index}`}
+                  id={`${testId}-${index}`}
+                  dataTestId={`${testId}-amount-${index}`}
                   labelClassName="font-normal"
                   label="Maximum Spend (USD)"
                   value={line.max_limit}
@@ -126,7 +129,7 @@ export default function MultiBudgetLines({
                 />
               </div>
               <Button
-                data-testid={`${id}-remove-${index}`}
+                data-testid={`${testId}-remove-${index}`}
                 aria-label={`Remove budget ${index + 1}`}
                 variant="ghost"
                 size="icon"
