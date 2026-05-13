@@ -452,6 +452,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
 					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
 					is_active: data.isActive,
+					calendar_aligned: data.budgetCalendarAligned,
 				};
 
 				// Add budgets if enabled
@@ -461,10 +462,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
 				if (validBudgets.length > 0) {
 					updateData.budgets = validBudgets;
-					updateData.calendar_aligned = data.budgetCalendarAligned;
 				} else if (hadBudget) {
 					updateData.budgets = [];
-					updateData.calendar_aligned = false;
 				}
 
 				// Add rate limit if enabled
@@ -495,6 +494,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
 					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
 					is_active: data.isActive,
+					// VK-level setting that governs both budget and rate-limit calendar alignment.
+					calendar_aligned: data.budgetCalendarAligned,
 				};
 
 				// Add budgets if enabled
@@ -503,7 +504,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 				);
 				if (validBudgets.length > 0) {
 					createData.budgets = validBudgets;
-					createData.calendar_aligned = data.budgetCalendarAligned;
 				}
 
 				// Add rate limit if enabled
