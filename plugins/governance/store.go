@@ -1454,13 +1454,34 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 		}
 		return nil
 	}
+	// Build reverse map from rate_limit ID to the owning VK's CalendarAligned
+	// setting. Rate limits attach to either a VK (vk.RateLimitID) or a provider
+	// config (pc.RateLimitID) which itself belongs to a VK. Rate limits not
+	// reachable from any VK (e.g. team-attached) remain non-aligned.
+	rateLimitCalendarAligned := make(map[string]bool)
+	gs.virtualKeys.Range(func(_, v any) bool {
+		vk, ok := v.(*configstoreTables.TableVirtualKey)
+		if !ok || vk == nil {
+			return true
+		}
+		if vk.RateLimitID != nil {
+			rateLimitCalendarAligned[*vk.RateLimitID] = vk.CalendarAligned
+		}
+		for i := range vk.ProviderConfigs {
+			if pc := &vk.ProviderConfigs[i]; pc.RateLimitID != nil {
+				rateLimitCalendarAligned[*pc.RateLimitID] = vk.CalendarAligned
+			}
+		}
+		return true
+	})
 	gs.rateLimits.Range(func(key, value any) bool {
 		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
 		if !ok || rateLimit == nil {
 			return true
 		}
-		tokenNewLastReset := resolvePeriodStart(rateLimit.TokenResetDuration, rateLimit.CalendarAligned, rateLimit.TokenLastReset)
-		requestNewLastReset := resolvePeriodStart(rateLimit.RequestResetDuration, rateLimit.CalendarAligned, rateLimit.RequestLastReset)
+		calendarAligned := rateLimitCalendarAligned[rateLimit.ID]
+		tokenNewLastReset := resolvePeriodStart(rateLimit.TokenResetDuration, calendarAligned, rateLimit.TokenLastReset)
+		requestNewLastReset := resolvePeriodStart(rateLimit.RequestResetDuration, calendarAligned, rateLimit.RequestLastReset)
 		if tokenNewLastReset == nil && requestNewLastReset == nil {
 			return true
 		}

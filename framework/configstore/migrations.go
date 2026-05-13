@@ -710,6 +710,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7526,4 +7529,37 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 	})
+}
+
+// migrationDropLegacyCalendarAlignedColumns drops the legacy calendar_aligned
+// columns from governance_budgets and governance_rate_limits. Calendar
+// alignment is now a VK-only setting (governance_virtual_keys.calendar_aligned);
+// budget and rate-limit reset logic derives the value from the owning VK at
+// reset time. The columns were re-added by migrate_calendar_aligned after
+// add_multi_budget_tables dropped governance_budgets.calendar_aligned, so any
+// DB that ran both still has them — this migration cleans them up.
+func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_legacy_calendar_aligned_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mig.DropColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop legacy calendar_aligned column from governance_budgets: %w", err)
+				}
+			}
+			if mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
+				if err := mig.DropColumn(&tables.TableRateLimit{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop legacy calendar_aligned column from governance_rate_limits: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_legacy_calendar_aligned_columns migration: %s", err.Error())
+	}
+	return nil
 }

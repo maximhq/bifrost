@@ -290,13 +290,20 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const watchedBudgets = form.watch("budgets");
 	const watchedTokenMaxLimit = form.watch("tokenMaxLimit");
 	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
+	const watchedTokenResetDuration = form.watch("tokenResetDuration");
+	const watchedRequestResetDuration = form.watch("requestResetDuration");
 	const watchedBudgetCalendarAligned = form.watch("budgetCalendarAligned");
 
-	// Calendar alignment is VK-wide: show toggle if any budget has a max_limit and supports alignment
+	// Calendar alignment is VK-wide and applies to both budgets and rate limits: show the
+	// toggle when any configured budget or rate-limit uses a calendar-alignable duration.
 	const hasAnyAlignableBudget =
 		watchedBudgets &&
 		watchedBudgets.length > 0 &&
 		watchedBudgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration || "1M"));
+	const hasAnyAlignableRateLimit =
+		(watchedTokenMaxLimit !== undefined && watchedTokenMaxLimit !== null && supportsCalendarAlignment(watchedTokenResetDuration || "1h")) ||
+		(watchedRequestMaxLimit !== undefined && watchedRequestMaxLimit !== null && supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
+	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
 
 	// Handle adding a new provider configuration
 	const handleAddProvider = (provider: string) => {
@@ -1243,54 +1250,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
 									/>
 
-									{/* Calendar alignment toggle — shown when any budget supports alignment */}
-									{hasAnyAlignableBudget && (
-										<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-											<div className="space-y-0.5">
-												<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
-													Align to calendar cycle
-												</Label>
-												<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
-													Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
-												</p>
-											</div>
-											<Switch
-												id="vk-budget-calendar-aligned-toggle"
-												aria-describedby="vk-budget-calendar-aligned-description"
-												checked={watchedBudgetCalendarAligned}
-												onCheckedChange={handleCalendarAlignedChange}
-												data-testid="vk-budget-calendar-aligned-toggle"
-											/>
-										</div>
-									)}
-
-									{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
-									<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
-										<AlertDialogContent>
-											<AlertDialogHeader>
-												<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
-												<AlertDialogDescription>
-													Enabling calendar alignment will reset all budget usage for this virtual key to{" "}
-													<span className="font-semibold">$0.00</span> and snap each budget&apos;s reset date to the start of its current
-													period (e.g. start of day, week, month, or year). The usage reset to $0.00 cannot be undone, but calendar
-													alignment can be turned off later. This will take effect when you save.
-												</AlertDialogDescription>
-											</AlertDialogHeader>
-											<AlertDialogFooter>
-												<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
-												<AlertDialogAction
-													data-testid="vk-calendar-align-enable-btn"
-													onClick={() => {
-														form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
-														setShowCalendarAlignWarning(false);
-													}}
-												>
-													Enable Calendar Alignment
-												</AlertDialogAction>
-											</AlertDialogFooter>
-										</AlertDialogContent>
-									</AlertDialog>
-
 									{/* Reassign team confirmation dialog */}
 									<AlertDialog
 										open={showReassignTeamWarning}
@@ -1391,6 +1350,54 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										)}
 									/>
 								</div>
+								{/* Calendar alignment — VK-wide setting that applies to both budgets and rate limits */}
+								{showCalendarAlignToggle && (
+									<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+										<div className="space-y-0.5">
+											<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
+												Align to calendar cycle
+											</Label>
+											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
+												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
+												date. Applies to durations of a day or longer.
+											</p>
+										</div>
+										<Switch
+											id="vk-budget-calendar-aligned-toggle"
+											aria-describedby="vk-budget-calendar-aligned-description"
+											checked={watchedBudgetCalendarAligned}
+											onCheckedChange={handleCalendarAlignedChange}
+											data-testid="vk-budget-calendar-aligned-toggle"
+										/>
+									</div>
+								)}
+
+								{/* Warning dialog shown when enabling calendar alignment on an existing VK */}
+								<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
+											<AlertDialogDescription>
+												Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
+												token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
+												reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot
+												be undone, but calendar alignment can be turned off later. This will take effect when you save.
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+											<AlertDialogAction
+												data-testid="vk-calendar-align-enable-btn"
+												onClick={() => {
+													form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
+													setShowCalendarAlignWarning(false);
+												}}
+											>
+												Enable Calendar Alignment
+											</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
 								{(teams?.length > 0 || customers?.length > 0) && (
 									<>
 										<DottedSeparator className="my-6" />
