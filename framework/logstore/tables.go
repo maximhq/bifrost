@@ -188,6 +188,8 @@ type Log struct {
 	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
 	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
 	ContentSummary          string    `gorm:"type:text" json:"-"`
+	InboundRequest          string    `gorm:"type:text" json:"inbound_request,omitempty"`           // JSON snapshot of the inbound HTTP request received by Bifrost
+	InternalBifrostRequest  string    `gorm:"type:text" json:"internal_bifrost_request,omitempty"`  // JSON snapshot of the converted Bifrost request
 	RawRequest              string    `gorm:"type:text" json:"raw_request"`                         // Populated when `send-back-raw-request` is on
 	RawResponse             string    `gorm:"type:text" json:"raw_response"`                        // Populated when `send-back-raw-response` is on
 	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)

@@ -327,11 +327,57 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddSafeJsonbFunction(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddNativeRequestLoggingColumns(ctx, db); err != nil {
+		return err
+	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
 	// release. Dropping mv_logs_filterdata while old replicas are still
 	// serving /api/logs/filterdata from it would surface "relation does not
 	// exist" during rolling deploys. A follow-up release wires it in once
 	// this one is fully rolled out. See the function's docstring.
+	return nil
+}
+
+// migrationAddNativeRequestLoggingColumns adds inbound/internal request snapshots to the logs table.
+func migrationAddNativeRequestLoggingColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_native_request_logging_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "inbound_request") {
+				if err := migrator.AddColumn(&Log{}, "inbound_request"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "internal_bifrost_request") {
+				if err := migrator.AddColumn(&Log{}, "internal_bifrost_request"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "internal_bifrost_request") {
+				if err := migrator.DropColumn(&Log{}, "internal_bifrost_request"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "inbound_request") {
+				if err := migrator.DropColumn(&Log{}, "inbound_request"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding native request logging columns: %s", err.Error())
+	}
 	return nil
 }
 
@@ -1691,7 +1737,7 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) 
           FROM batch
           WHERE mcp_tool_logs.ctid = batch.ctid
         `); err != nil {
-				return err
+					return err
 				}
 			} else {
 				result := tx.Exec("UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''")

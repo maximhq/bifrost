@@ -53,6 +53,10 @@ func (m *mockHandlerStore) ShouldAllowPerRequestStorageOverride() bool {
 	return false
 }
 
+func (m *mockHandlerStore) ShouldCaptureInboundRequests() bool {
+	return false
+}
+
 func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
 	return false
 }

@@ -401,18 +401,20 @@ func (c *ClientConfig) Redacted() ClientConfig {
 // ProviderConfig represents the configuration for a specific AI model provider.
 // It includes API keys, network settings, and concurrency settings.
 type ProviderConfig struct {
-	Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider with UUIDs
-	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
-	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
-	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
-	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
-	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
-	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
-	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
-	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
-	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
-	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
+	Keys                        []schemas.Key                     `json:"keys"`                                  // API keys for the provider with UUIDs
+	NetworkConfig               *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
+	ConcurrencyAndBufferSize    *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
+	ProxyConfig                 *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
+	SendBackRawRequest          bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
+	SendBackRawResponse         bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
+	StoreRawRequestResponse     bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
+	StoreInboundRequest         bool                              `json:"store_inbound_request"`                 // Capture inbound HTTP request for internal logging only
+	StoreInternalBifrostRequest bool                              `json:"store_internal_bifrost_request"`        // Capture converted Bifrost request for internal logging only
+	CustomProviderConfig        *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+	OpenAIConfig                *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	ConfigHash                  string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
+	Status                      string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
+	Description                 string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
 }
 
 // Redacted returns a redacted copy of the provider configuration.
@@ -423,16 +425,18 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		redactedNetworkConfig = p.NetworkConfig.Redacted()
 	}
 	redactedConfig := ProviderConfig{
-		NetworkConfig:            redactedNetworkConfig,
-		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
-		SendBackRawRequest:       p.SendBackRawRequest,
-		SendBackRawResponse:      p.SendBackRawResponse,
-		StoreRawRequestResponse:  p.StoreRawRequestResponse,
-		CustomProviderConfig:     p.CustomProviderConfig,
-		OpenAIConfig:             p.OpenAIConfig,
-		ConfigHash:               p.ConfigHash,
-		Status:                   p.Status,
-		Description:              p.Description,
+		NetworkConfig:               redactedNetworkConfig,
+		ConcurrencyAndBufferSize:    p.ConcurrencyAndBufferSize,
+		SendBackRawRequest:          p.SendBackRawRequest,
+		SendBackRawResponse:         p.SendBackRawResponse,
+		StoreRawRequestResponse:     p.StoreRawRequestResponse,
+		StoreInboundRequest:         p.StoreInboundRequest,
+		StoreInternalBifrostRequest: p.StoreInternalBifrostRequest,
+		CustomProviderConfig:        p.CustomProviderConfig,
+		OpenAIConfig:                p.OpenAIConfig,
+		ConfigHash:                  p.ConfigHash,
+		Status:                      p.Status,
+		Description:                 p.Description,
 	}
 
 	if p.ProxyConfig != nil {
@@ -638,6 +642,16 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash StoreRawRequestResponse
 	if p.StoreRawRequestResponse {
 		hash.Write([]byte("storeRawRequestResponse"))
+	}
+
+	// Hash StoreInboundRequest
+	if p.StoreInboundRequest {
+		hash.Write([]byte("storeInboundRequest"))
+	}
+
+	// Hash StoreInternalBifrostRequest
+	if p.StoreInternalBifrostRequest {
+		hash.Write([]byte("storeInternalBifrostRequest"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

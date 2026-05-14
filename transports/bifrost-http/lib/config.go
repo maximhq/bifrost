@@ -79,6 +79,8 @@ type HandlerStore interface {
 	GetMCPHeaderCombinedAllowlist() schemas.WhiteList
 	// ShouldAllowPerRequestStorageOverride returns whether per-request overrides for content storage are permitted
 	ShouldAllowPerRequestStorageOverride() bool
+	// ShouldCaptureInboundRequests returns whether any provider config captures inbound HTTP requests
+	ShouldCaptureInboundRequests() bool
 	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
 	ShouldAllowPerRequestRawOverride() bool
 	// GetMCPExternalServerURL returns the configured external base URL for OAuth server-side
@@ -3364,6 +3366,20 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 // ShouldAllowPerRequestStorageOverride returns whether per-request content storage overrides are permitted.
 func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
 	return c.ClientConfig.AllowPerRequestContentStorageOverride
+}
+
+// ShouldCaptureInboundRequests returns whether any configured provider persists
+// inbound HTTP request snapshots by default.
+func (c *Config) ShouldCaptureInboundRequests() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+
+	for _, provider := range c.Providers {
+		if provider.StoreInboundRequest {
+			return true
+		}
+	}
+	return false
 }
 
 // ShouldAllowPerRequestRawOverride returns whether per-request raw request/response overrides are permitted.

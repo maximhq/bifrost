@@ -45,6 +45,8 @@ var payloadFields = []string{
 	"cache_debug",
 	"token_usage",
 	"error_details",
+	"inbound_request",
+	"internal_bifrost_request",
 	"raw_request",
 	"raw_response",
 	"passthrough_request_body",
@@ -85,6 +87,8 @@ func ExtractPayload(l *Log) map[string]string {
 	m["cache_debug"] = l.CacheDebug
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
+	m["inbound_request"] = l.InboundRequest
+	m["internal_bifrost_request"] = l.InternalBifrostRequest
 	m["raw_request"] = l.RawRequest
 	m["raw_response"] = l.RawResponse
 	m["passthrough_request_body"] = l.PassthroughRequestBody
@@ -129,6 +133,8 @@ func ClearPayload(l *Log) {
 	l.CacheDebug = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
+	l.InboundRequest = ""
+	l.InternalBifrostRequest = ""
 	l.RawRequest = ""
 	l.RawResponse = ""
 	l.PassthroughRequestBody = ""
@@ -261,6 +267,12 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["error_details"]; ok && v != "" {
 		l.ErrorDetails = v
+	}
+	if v, ok := m["inbound_request"]; ok && v != "" {
+		l.InboundRequest = v
+	}
+	if v, ok := m["internal_bifrost_request"]; ok && v != "" {
+		l.InternalBifrostRequest = v
 	}
 	if v, ok := m["raw_request"]; ok && v != "" {
 		l.RawRequest = v
@@ -709,6 +721,10 @@ func clearPayloadField(l *Log, name string) {
 	case "error_details":
 		l.ErrorDetails = ""
 		l.ErrorDetailsParsed = nil
+	case "inbound_request":
+		l.InboundRequest = ""
+	case "internal_bifrost_request":
+		l.InternalBifrostRequest = ""
 	case "raw_request":
 		l.RawRequest = ""
 	case "raw_response":

@@ -889,6 +889,99 @@ func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
 	}
 }
 
+func setupProviderTestDBWithoutNativeRequestLoggingColumns(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "Failed to create test database")
+
+	err = db.Exec(`
+		CREATE TABLE config_providers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(50) NOT NULL UNIQUE,
+			network_config_json TEXT,
+			concurrency_buffer_json TEXT,
+			proxy_config_json TEXT,
+			custom_provider_config_json TEXT,
+			open_ai_config_json TEXT,
+			send_back_raw_request BOOLEAN DEFAULT 0,
+			send_back_raw_response BOOLEAN DEFAULT 0,
+			store_raw_request_response BOOLEAN DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			budget_id VARCHAR(255),
+			rate_limit_id VARCHAR(255),
+			config_hash VARCHAR(255),
+			status VARCHAR(50) DEFAULT 'unknown',
+			description TEXT,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create config_providers table")
+
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS migrations (
+			id VARCHAR(255) PRIMARY KEY
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create migrations table")
+
+	return db
+}
+
+func TestMigrationAddNativeRequestLoggingProviderColumnsBackfillsHashes(t *testing.T) {
+	db := setupProviderTestDBWithoutNativeRequestLoggingColumns(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	staleProviderName := "provider_stale_hash"
+	matchingProviderName := "provider_matching_hash"
+	matchingHash, err := (&ProviderConfig{}).GenerateConfigHash(matchingProviderName)
+	require.NoError(t, err)
+
+	err = db.Exec(`
+		INSERT INTO config_providers (
+			name, send_back_raw_request, send_back_raw_response, store_raw_request_response,
+			config_hash, created_at, updated_at, encryption_status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		staleProviderName, true, false, true, "stale_hash", now, now, "plain_text",
+		matchingProviderName, false, false, false, matchingHash, now, now, "plain_text",
+	).Error
+	require.NoError(t, err, "Failed to insert test providers")
+
+	err = migrationAddNativeRequestLoggingProviderColumns(ctx, db)
+	require.NoError(t, err, "Migration should succeed")
+
+	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "store_inbound_request"))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "store_internal_bifrost_request"))
+
+	expectedStaleHash, err := (&ProviderConfig{
+		SendBackRawRequest:      true,
+		StoreRawRequestResponse: true,
+	}).GenerateConfigHash(staleProviderName)
+	require.NoError(t, err)
+
+	var staleHash string
+	err = db.Table("config_providers").
+		Select("config_hash").
+		Where("name = ?", staleProviderName).
+		Scan(&staleHash).Error
+	require.NoError(t, err)
+	assert.Equal(t, expectedStaleHash, staleHash, "stale provider config_hash should be recomputed")
+
+	var matchingResult struct {
+		ConfigHash string
+		UpdatedAt  time.Time
+	}
+	err = db.Table("config_providers").
+		Select("config_hash, updated_at").
+		Where("name = ?", matchingProviderName).
+		Scan(&matchingResult).Error
+	require.NoError(t, err)
+	assert.Equal(t, matchingHash, matchingResult.ConfigHash, "matching provider config_hash should remain current")
+	assert.True(t, matchingResult.UpdatedAt.Equal(now), "matching provider should not be rewritten")
+}
+
 // setupKeyDBWithLegacyDeploymentColumns creates an in-memory SQLite database
 // with the config_keys table including legacy deployment columns and NO aliases_json.
 // This simulates the pre-aliases, post-encryption database state.

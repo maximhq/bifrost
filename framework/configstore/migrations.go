@@ -716,6 +716,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddNativeRequestLoggingProviderColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -789,6 +792,91 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running add store raw request response column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddNativeRequestLoggingProviderColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_native_request_logging_provider_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "store_inbound_request") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "store_inbound_request"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableProvider{}, "store_internal_bifrost_request") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "store_internal_bifrost_request"); err != nil {
+					return err
+				}
+			}
+			var providers []tables.TableProvider
+			if err := tx.
+				Select(
+					"id",
+					"name",
+					"network_config_json",
+					"concurrency_buffer_json",
+					"proxy_config_json",
+					"custom_provider_config_json",
+					"open_ai_config_json",
+					"send_back_raw_request",
+					"send_back_raw_response",
+					"store_raw_request_response",
+					"store_inbound_request",
+					"store_internal_bifrost_request",
+					"config_hash",
+					"encryption_status",
+				).
+				Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to fetch providers for native request logging hash backfill: %w", err)
+			}
+			for _, provider := range providers {
+				providerConfig := ProviderConfig{
+					NetworkConfig:               provider.NetworkConfig,
+					ConcurrencyAndBufferSize:    provider.ConcurrencyAndBufferSize,
+					ProxyConfig:                 provider.ProxyConfig,
+					SendBackRawRequest:          provider.SendBackRawRequest,
+					SendBackRawResponse:         provider.SendBackRawResponse,
+					StoreRawRequestResponse:     provider.StoreRawRequestResponse,
+					StoreInboundRequest:         provider.StoreInboundRequest,
+					StoreInternalBifrostRequest: provider.StoreInternalBifrostRequest,
+					CustomProviderConfig:        provider.CustomProviderConfig,
+					OpenAIConfig:                provider.OpenAIConfig,
+				}
+				hash, err := providerConfig.GenerateConfigHash(provider.Name)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for provider %s: %w", provider.Name, err)
+				}
+				if provider.ConfigHash == hash {
+					continue
+				}
+				if err := tx.Model(&tables.TableProvider{}).Where("id = ?", provider.ID).UpdateColumn("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for provider %s: %w", provider.Name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableProvider{}, "store_internal_bifrost_request") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "store_internal_bifrost_request"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TableProvider{}, "store_inbound_request") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "store_inbound_request"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add native request logging provider columns migration: %s", err.Error())
 	}
 	return nil
 }

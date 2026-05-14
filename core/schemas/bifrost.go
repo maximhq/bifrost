@@ -373,6 +373,14 @@ type LargePayloadMetadata struct {
 	StreamRequested    *bool    // stream flag when available in request payload metadata
 }
 
+const (
+	BifrostContextKeyStoreInboundRequest                     BifrostContextKey = "bifrost-store-inbound-request"                         // bool (per-request override - read by bifrost.go, never overwritten)
+	BifrostContextKeyStoreInternalBifrostRequest             BifrostContextKey = "bifrost-store-internal-bifrost-request"                // bool (per-request override - read by bifrost.go, never overwritten)
+	BifrostContextKeyShouldStoreInboundRequestInLogs         BifrostContextKey = "bifrost-should-store-inbound-request-in-logs"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - true when inbound HTTP request should be persisted in log records
+	BifrostContextKeyShouldStoreInternalBifrostRequestInLogs BifrostContextKey = "bifrost-should-store-internal-bifrost-request-in-logs" // bool (set by bifrost - DO NOT SET THIS MANUALLY) - true when internal Bifrost request should be persisted in log records
+	BifrostContextKeyInboundRequestJSON                      BifrostContextKey = "bifrost-inbound-request-json"                          // string (set by transport - DO NOT SET THIS MANUALLY) - JSON snapshot of the inbound HTTP request
+)
+
 //* Request Structs
 
 // Fallback represents a fallback model to be used if the primary model is not available.

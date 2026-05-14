@@ -259,8 +259,6 @@ type ProxyConfig struct {
 	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
-
-
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
 	redactedConfig := ProxyConfig{Type: pc.Type}
@@ -501,13 +499,15 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger                  Logger                `json:"-"`
-	ProxyConfig             *ProxyConfig          `json:"proxy_config,omitempty"`     // Proxy configuration
-	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
-	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
-	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
-	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+	Logger                      Logger                `json:"-"`
+	ProxyConfig                 *ProxyConfig          `json:"proxy_config,omitempty"`         // Proxy configuration
+	SendBackRawRequest          bool                  `json:"send_back_raw_request"`          // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse         bool                  `json:"send_back_raw_response"`         // Send raw response back in the bifrost response (default: false)
+	StoreRawRequestResponse     bool                  `json:"store_raw_request_response"`     // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	StoreInboundRequest         bool                  `json:"store_inbound_request"`          // Capture the inbound HTTP request received by Bifrost for internal logging only (default: false)
+	StoreInternalBifrostRequest bool                  `json:"store_internal_bifrost_request"` // Capture the converted Bifrost request for internal logging only (default: false)
+	CustomProviderConfig        *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	OpenAIConfig                *OpenAIConfig         `json:"openai_config,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.

@@ -28,6 +28,7 @@ func (s testHandlerStore) GetAsyncJobResultTTL() int                        { re
 func (s testHandlerStore) GetKVStore() *kvstore.Store                       { return s.kv }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList { return nil }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { return false }
+func (s testHandlerStore) ShouldCaptureInboundRequests() bool               { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }

@@ -85,6 +85,9 @@ export default function Providers() {
 							proxy_config: undefined,
 							send_back_raw_request: undefined,
 							send_back_raw_response: undefined,
+							store_raw_request_response: undefined,
+							store_inbound_request: undefined,
+							store_internal_bifrost_request: undefined,
 							provider_status: "error",
 						}),
 					);
