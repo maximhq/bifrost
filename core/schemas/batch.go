@@ -127,6 +127,11 @@ type BifrostBatchCreateResponse struct {
 	// Gemini-specific (operation response)
 	OperationName *string `json:"operation_name,omitempty"`
 
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
@@ -213,6 +218,11 @@ type BifrostBatchRetrieveResponse struct {
 	OperationName *string `json:"operation_name,omitempty"`
 	Done          *bool   `json:"done,omitempty"`
 	Progress      *int    `json:"progress,omitempty"` // Percentage progress
+
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
