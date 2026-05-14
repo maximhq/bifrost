@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -77,7 +78,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	providerKey, model, err := resolveRealtimeTarget(path, modelParam, deploymentParam)
+	providerKey, model, err := resolveRealtimeTarget(ctx, h.config, path, modelParam, deploymentParam)
 	if err != nil {
 		upgrader := h.websocketUpgrader("")
 		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
@@ -106,6 +107,13 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Capture governance/routing values set by the transport middleware.
+	// TransportInterceptorMiddleware copies BifrostContext user values to individual
+	// fasthttp UserValue slots after HTTPTransportPreHook runs. We snapshot them now
+	// because the fasthttp RequestCtx is recycled after the handler returns — the
+	// WebSocket session outlives it.
+	middlewareContextValues := snapshotRealtimeMiddlewareValues(ctx)
+
 	upgrader := h.websocketUpgrader(rtProvider.RealtimeWebSocketSubprotocol())
 	err = upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
@@ -118,7 +126,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		}
 		defer h.sessions.Remove(conn)
 
-		h.runRealtimeSession(clientConn, session, auth, path, providerKey, model)
+		h.runRealtimeSession(clientConn, session, auth, path, providerKey, model, middlewareContextValues)
 	})
 	if err != nil {
 		logger.Warn("websocket upgrade failed for %s: %v", path, err)
@@ -150,6 +158,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	path string,
 	providerKey schemas.ModelProvider,
 	model string,
+	middlewareValues map[any]any,
 ) {
 	clientConn.startHeartbeat()
 	defer clientConn.stopHeartbeat()
@@ -160,6 +169,12 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		return
 	}
 	defer cancel()
+
+	// Restore governance and routing values from the transport middleware context.
+	// These include routing rule ID/name, virtual key ID/name, routing engines,
+	// routing engine logs, raw-storage header overrides, and other values set by
+	// HTTPTransportPreHook plugins (governance, prompts, etc.).
+	applyRealtimeMiddlewareValues(bifrostCtx, middlewareValues)
 
 	// Resolve ephemeral key mapping to restore virtual key context.
 	token := extractRealtimeBearerTokenFromHeader(auth.authorization)
@@ -195,6 +210,15 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 
 	// Resolve model alias so the provider receives the actual model identifier.
 	model = key.Aliases.Resolve(model)
+
+	// Compute raw storage flag from provider config + per-request header overrides.
+	// Normal inference computes this inside bifrost.executeRequest, which is bypassed
+	// for realtime WebSocket connections. Setting it on the session context ensures
+	// turn-level hooks can read it via shouldStoreRealtimeRawPayloads().
+	applyRealtimeRawStorageContext(bifrostCtx, h.client.ComputeRawStorageForProvider(bifrostCtx, providerKey))
+
+	// Tag the session context with transport type for downstream logging/metadata.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRealtimeTransport, "websocket")
 
 	wsURL := rtProvider.RealtimeWebSocketURL(key, model)
 	realtimeHeaders, headerErr := rtProvider.RealtimeHeaders(bifrostCtx, key)
@@ -293,6 +317,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			}
 		}
 
+		sanitizeRealtimeSessionEventForProvider(event)
 		providerEvent, err := provider.ToProviderRealtimeEvent(event)
 		if err != nil {
 			if startsTurn {
@@ -314,6 +339,10 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
 			continue
 		}
+
+		// Track session metadata only after provider translation succeeds. Rejected
+		// session.update events must not affect later turn logs.
+		updateRealtimeSessionFromEvent(session, event)
 
 		// Record tool output / input only after the event passed validation.
 		if !startsTurn {
@@ -407,6 +436,8 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 				if event.Session != nil && event.Session.ID != "" {
 					session.SetProviderSessionID(event.Session.ID)
 				}
+				// Track session tool definitions from session.created/session.updated.
+				updateRealtimeSessionFromEvent(session, event)
 				if event.Delta != nil && provider.ShouldAccumulateRealtimeOutput(event.Type) {
 					session.AppendRealtimeOutputText(event.Delta.Text)
 					session.AppendRealtimeOutputText(event.Delta.Transcript)
@@ -486,25 +517,41 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 	}
 }
 
-func resolveRealtimeTarget(path, modelParam, deploymentParam string) (schemas.ModelProvider, string, error) {
+func resolveRealtimeTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path, modelParam, deploymentParam string) (schemas.ModelProvider, string, error) {
 	defaultProvider := realtimeDefaultProviderForPath(path)
 
+	var rawParam string
 	switch {
 	case strings.TrimSpace(modelParam) != "":
-		provider, model := schemas.ParseModelString(strings.TrimSpace(modelParam), defaultProvider)
-		if provider == "" || strings.TrimSpace(model) == "" {
-			return "", "", errRealtimeModelFormat
-		}
-		return provider, strings.TrimSpace(model), nil
+		rawParam = strings.TrimSpace(modelParam)
 	case strings.TrimSpace(deploymentParam) != "":
-		provider, model := schemas.ParseModelString(strings.TrimSpace(deploymentParam), defaultProvider)
-		if provider == "" || strings.TrimSpace(model) == "" {
-			return "", "", errRealtimeDeploymentFormat
-		}
-		return provider, strings.TrimSpace(model), nil
+		rawParam = strings.TrimSpace(deploymentParam)
 	default:
 		return "", "", errRealtimeModelRequired
 	}
+
+	provider, model := schemas.ParseModelString(rawParam, defaultProvider)
+	if strings.TrimSpace(model) == "" {
+		return "", "", errRealtimeModelFormat
+	}
+
+	// Model catalog auto-resolution: when no provider prefix is present and the
+	// path doesn't imply a default provider, look up the model catalog — same
+	// logic as resolveModelAndProvider in inference.go.
+	if provider == "" {
+		providers := config.GetProvidersForModel(model)
+		if len(providers) == 0 {
+			return "", "", errRealtimeModelFormat
+		}
+		ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
+			Model:            model,
+			ResolvedProvider: providers[0],
+			AllProviders:     providers,
+		})
+		provider = providers[0]
+	}
+
+	return provider, model, nil
 }
 
 func realtimeDefaultProviderForPath(path string) schemas.ModelProvider {
@@ -676,5 +723,115 @@ func newRealtimeWireBifrostError(status int, code, message string) *schemas.Bifr
 			Code:    &errType,
 			Message: message,
 		},
+	}
+}
+
+// applyRealtimeMiddlewareValues copies governance and routing values from the transport
+// middleware BifrostContext (populated by HTTPTransportPreHook plugins) to the long-lived
+// WebSocket session context. Without this, values set by the governance plugin during
+// the HTTP upgrade (routing rule ID/name, VK ID/name, routing engines, routing engine
+// logs, raw-storage overrides) would be lost because the WebSocket handler creates a
+// fresh BifrostContext that outlives the fasthttp request.
+//
+// Values already explicitly set by createBifrostContextFromAuth (VK, parent request ID,
+// request headers, extra headers) are preserved — middleware values do not overwrite them
+// since createBifrostContextFromAuth runs first.
+// realtimeMiddlewareKeys lists the BifrostContext keys that TransportInterceptorMiddleware
+// copies from the governance plugin's context onto individual fasthttp UserValue slots.
+// We snapshot exactly these keys before the WebSocket upgrade so the long-lived session
+// has access to routing rule info, virtual key resolution, routing engine logs, etc.
+var realtimeMiddlewareKeys = []any{
+	schemas.BifrostContextKeyGovernanceVirtualKeyID,
+	schemas.BifrostContextKeyGovernanceVirtualKeyName,
+	schemas.BifrostContextKeyGovernanceRoutingRuleID,
+	schemas.BifrostContextKeyGovernanceRoutingRuleName,
+	schemas.BifrostContextKeyGovernanceCustomerID,
+	schemas.BifrostContextKeyGovernanceCustomerName,
+	schemas.BifrostContextKeyGovernanceTeamID,
+	schemas.BifrostContextKeyGovernanceTeamName,
+	schemas.BifrostContextKeyGovernanceBusinessUnitID,
+	schemas.BifrostContextKeyGovernanceBusinessUnitName,
+	schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
+	schemas.BifrostContextKeyGovernancePluginName,
+	schemas.BifrostContextKeyRoutingEnginesUsed,
+	schemas.BifrostContextKeyRoutingEngineLogs,
+	schemas.BifrostContextKeyShouldStoreRawInLogs,
+	schemas.BifrostContextKeyCaptureRawRequest,
+	schemas.BifrostContextKeyCaptureRawResponse,
+	schemas.BifrostContextKeyDropRawRequestFromClient,
+	schemas.BifrostContextKeyDropRawResponseFromClient,
+	schemas.BifrostContextKeyUserID,
+	schemas.BifrostContextKeyUserName,
+	schemas.BifrostContextKeyAPIKeyID,
+	schemas.BifrostContextKeyAPIKeyName,
+	schemas.BifrostContextKeySelectedKeyID,
+	schemas.BifrostContextKeySelectedKeyName,
+	schemas.BifrostContextKeyTraceID,
+	schemas.BifrostContextKeyTransportPluginLogs,
+}
+
+// snapshotRealtimeMiddlewareValues reads governance/routing values from the fasthttp
+// context's UserValue store. TransportInterceptorMiddleware copies them there as
+// individual key-value pairs (not inside a BifrostContext).
+//
+// It also processes FastHTTPUserValueModelCatalogResolution, which is set by
+// resolveRealtimeTarget when a bare model name is auto-resolved via the model
+// catalog. ConvertToBifrostContext normally handles this for regular inference,
+// but WebSocket handlers use createBifrostContextFromAuth instead, so we do the
+// same log/engine enrichment here.
+func snapshotRealtimeMiddlewareValues(ctx *fasthttp.RequestCtx) map[any]any {
+	result := make(map[any]any)
+	for _, key := range realtimeMiddlewareKeys {
+		if value := ctx.UserValue(key); value != nil {
+			result[key] = value
+		}
+	}
+
+	// Model catalog auto-resolution: replicate the routing engine log that
+	// ConvertToBifrostContext would normally emit (see lib/ctx.go).
+	if res, ok := ctx.UserValue(lib.FastHTTPUserValueModelCatalogResolution).(*lib.ModelCatalogResolution); ok && res != nil {
+		providerStrs := make([]string, len(res.AllProviders))
+		for i, p := range res.AllProviders {
+			providerStrs[i] = string(p)
+		}
+		logEntry := schemas.RoutingEngineLogEntry{
+			Engine:    schemas.RoutingEngineModelCatalog,
+			Level:     schemas.LogLevelInfo,
+			Message:   fmt.Sprintf("No provider specified for model %s, found %d options in model catalog: [%s], selecting first: %s", res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider),
+			Timestamp: time.Now().UnixMilli(),
+		}
+		// Merge with any existing routing engine logs from governance middleware.
+		if existing, ok := result[schemas.BifrostContextKeyRoutingEngineLogs].([]schemas.RoutingEngineLogEntry); ok {
+			result[schemas.BifrostContextKeyRoutingEngineLogs] = append(existing, logEntry)
+		} else {
+			result[schemas.BifrostContextKeyRoutingEngineLogs] = []schemas.RoutingEngineLogEntry{logEntry}
+		}
+		if existing, ok := result[schemas.BifrostContextKeyRoutingEnginesUsed].([]string); ok {
+			result[schemas.BifrostContextKeyRoutingEnginesUsed] = append(existing, schemas.RoutingEngineModelCatalog)
+		} else {
+			result[schemas.BifrostContextKeyRoutingEnginesUsed] = []string{schemas.RoutingEngineModelCatalog}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func applyRealtimeMiddlewareValues(ctx *schemas.BifrostContext, middlewareValues map[any]any) {
+	if ctx == nil || len(middlewareValues) == 0 {
+		return
+	}
+	for key, value := range middlewareValues {
+		if value == nil {
+			continue
+		}
+		// Skip values already set by createBifrostContextFromAuth to avoid overwriting
+		// auth-resolved values with stale middleware copies.
+		if existing := ctx.Value(key); existing != nil {
+			continue
+		}
+		ctx.SetValue(key, value)
 	}
 }
