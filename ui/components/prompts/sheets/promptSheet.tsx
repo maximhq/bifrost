@@ -77,7 +77,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 					document.getElementById("name")?.focus();
 				}}
 			>
-				<form onSubmit={handleSubmit(onSubmit)} className="flex flex-col grow">
+				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
 					<SheetHeader className="flex flex-col items-start px-8 pt-8">
 						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
 						<SheetDescription>
@@ -85,8 +85,8 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 						</SheetDescription>
 					</SheetHeader>
 
-					<div className="flex flex-col gap-6 grow">
-						<div className="space-y-4 grow px-8" >
+					<div className="flex grow flex-col gap-6">
+						<div className="grow space-y-4 px-8">
 							<div className="space-y-2">
 								<Label htmlFor="name">Name</Label>
 								<Input
@@ -103,7 +103,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 							</div>
 						</div>
 
-						<SheetFooter className="flex flex-row items-center justify-end gap-2 py-4 px-8 border-t">
+						<SheetFooter className="flex flex-row items-center justify-end gap-2 border-t px-8 py-4">
 							<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
 								Cancel
 							</Button>

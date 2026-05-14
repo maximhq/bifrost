@@ -130,13 +130,8 @@ function UsageShareTooltip({ active, payload, models }: any) {
 					return (
 						<div key={model || `__unnamed_${idx}`} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span
-									className="h-2 w-2 rounded-full"
-									style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
-								/>
-								<span
-									className={`max-w-[140px] truncate text-zinc-600 dark:text-zinc-400${isUnnamed ? " italic" : ""}`}
-								>
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+								<span className={`max-w-[140px] truncate text-zinc-600 dark:text-zinc-400${isUnnamed ? " italic" : ""}`}>
 									{displayModelLabel(model)}
 								</span>
 							</span>
@@ -218,7 +213,7 @@ function TopModelsChart({
 	}, [rankingsData, displayModels]);
 
 	return (
-		<ChartCard title="Top Models" loading={loadingModels} testId="dashboard-rankings-top-models" className="h-full z-[1]">
+		<ChartCard title="Top Models" loading={loadingModels} testId="dashboard-rankings-top-models" className="z-[1] h-full">
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>

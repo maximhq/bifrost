@@ -429,15 +429,11 @@ export function OtelFormFragment({
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button
-										type="submit"
-										disabled={!hasOtelAccess || !form.formState.isDirty}
-										isLoading={isSaving}
-									>
+									<Button type="submit" disabled={!hasOtelAccess || !form.formState.isDirty} isLoading={isSaving}>
 										Save OTEL Configuration
 									</Button>
 								</TooltipTrigger>
-								{(!form.formState.isDirty) && (
+								{!form.formState.isDirty && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty && !form.formState.isValid

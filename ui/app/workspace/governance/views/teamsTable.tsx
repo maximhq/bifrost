@@ -11,12 +11,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -102,16 +97,13 @@ function TeamActionsMenu({
 					<AlertDialogHeader>
 						<AlertDialogTitle>Delete Team</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from this team. This action cannot be undone.
+							Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from this team. This action
+							cannot be undone.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel>Cancel</AlertDialogCancel>
-						<AlertDialogAction
-							onClick={() => onDelete(team.id)}
-							disabled={isDeleting}
-							className="bg-red-600 hover:bg-red-700"
-						>
+						<AlertDialogAction onClick={() => onDelete(team.id)} disabled={isDeleting} className="bg-red-600 hover:bg-red-700">
 							{isDeleting ? "Deleting..." : "Delete"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
@@ -155,9 +147,7 @@ export default function TeamsTable({
 	onDialogClose,
 }: TeamsTableProps) {
 	const showTeamDialog = selectedTeamId !== null && selectedTeamId !== "";
-	const editingTeam = selectedTeamId && selectedTeamId !== "new"
-		? teams.find((t) => t.id === selectedTeamId) ?? null
-		: null;
+	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
 
 	// If a team ID is in the URL but can't be resolved (deleted or filtered out),
 	// clear it so we don't silently open the dialog in "create" mode.
@@ -211,9 +201,7 @@ export default function TeamsTable({
 		return (
 			<>
 				<TooltipProvider>
-					{showTeamDialog && (
-						<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-					)}
+					{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -223,9 +211,7 @@ export default function TeamsTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showTeamDialog && (
-					<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-				)}
+				{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
@@ -279,9 +265,7 @@ export default function TeamsTable({
 
 										// Budget calculations — any of the team's budgets exhausted
 										const teamBudgets = team.budgets ?? [];
-										const isBudgetExhausted = teamBudgets.some(
-											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
-										);
+										const isBudgetExhausted = teamBudgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -329,8 +313,7 @@ export default function TeamsTable({
 													{teamBudgets.length > 0 ? (
 														<div className="space-y-2.5">
 															{teamBudgets.map((b) => {
-																const budgetPercentage =
-																	b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
+																const budgetPercentage = b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
 																const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
 																return (
 																	<Tooltip key={b.id}>
@@ -338,9 +321,7 @@ export default function TeamsTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4">
 																					<span className="font-medium">{formatCurrency(b.max_limit)}</span>
-																					<span className="text-muted-foreground text-xs">
-																						{formatResetDuration(b.reset_duration)}
-																					</span>
+																					<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
 																				</div>
 																				<Progress
 																					value={budgetPercentage}
@@ -359,9 +340,7 @@ export default function TeamsTable({
 																			<p className="font-medium">
 																				{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 																			</p>
-																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(b.reset_duration)}
-																			</p>
+																			<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(b.reset_duration)}</p>
 																		</TooltipContent>
 																	</Tooltip>
 																);
@@ -463,7 +442,9 @@ export default function TeamsTable({
 														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
-												<TableCell className={`bg-white group-hover:bg-muted sticky right-0 z-10 text-right dark:bg-card dark:group-hover:bg-muted ${PIN_SHADOW_RIGHT}`}>
+												<TableCell
+													className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+												>
 													<TeamActionsMenu
 														team={team}
 														hasUpdateAccess={hasUpdateAccess}
