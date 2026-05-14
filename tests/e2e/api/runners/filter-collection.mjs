@@ -29,6 +29,9 @@ const SOURCE = args.source;
 const OUT = args.out;
 const PROVIDER = (args.provider || "").toLowerCase();
 const FEATURE_PARTS = (args.feature || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+// --feature-any is the OR-of-keywords counterpart of --feature (which ANDs). Item passes
+// if it matches at least one keyword. Combines with --feature/--provider via AND.
+const FEATURE_ANY_PARTS = (args["feature-any"] || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
 const RERUN_FAILED = args["rerun-failed"] === "true";
 const REPORT = args.report || "tmp/newman-report.json";
 
@@ -36,8 +39,8 @@ if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !RERUN_FAILED) {
-  console.error("[filter-collection] need at least one of: --provider, --feature, --rerun-failed");
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !RERUN_FAILED) {
+  console.error("[filter-collection] need at least one of: --provider, --feature, --feature-any, --rerun-failed");
   process.exit(2);
 }
 
@@ -93,6 +96,16 @@ const itemMatchesFeature = (item, ancestorNames) => {
   });
 };
 
+const itemMatchesFeatureAny = (item, ancestorNames) => {
+  if (!FEATURE_ANY_PARTS.length) return true;
+  const haystack = buildHaystack(item, ancestorNames);
+  return FEATURE_ANY_PARTS.some((p) => {
+    const structural = STRUCTURAL_KEYWORDS[p];
+    if (structural) return structural(item) || haystack.includes(p);
+    return haystack.includes(p);
+  });
+};
+
 let failedNames = null;
 const itemMatchesRerunFailed = (item) => {
   if (!RERUN_FAILED) return true;
@@ -115,7 +128,10 @@ const itemMatchesRerunFailed = (item) => {
 
 const passes = (item, ancestorNames) => {
   if (!item.request) return true; // folders pass; we filter their items below
-  return itemMatchesProvider(item, ancestorNames) && itemMatchesFeature(item, ancestorNames) && itemMatchesRerunFailed(item);
+  return itemMatchesProvider(item, ancestorNames) &&
+    itemMatchesFeature(item, ancestorNames) &&
+    itemMatchesFeatureAny(item, ancestorNames) &&
+    itemMatchesRerunFailed(item);
 };
 
 const filterTree = (items, ancestorNames = []) => {
@@ -135,4 +151,4 @@ const collection = JSON.parse(readFileSync(SOURCE, "utf8"));
 const filtered = { ...collection, item: filterTree(collection.item || []) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
-console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, rerun-failed=${RERUN_FAILED})`);
+console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, rerun-failed=${RERUN_FAILED})`);
