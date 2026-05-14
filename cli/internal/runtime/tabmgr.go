@@ -64,6 +64,7 @@ type Tab struct {
 	prevScreenChange time.Time
 	lastUserInputAt  atomic.Int64
 	bellState        belParserState
+	sb               *scrollback // history of evicted VT rows; fed by vt10x.WithOnScrollUp
 }
 
 type mouseEvent struct {
@@ -105,6 +106,8 @@ type TabManager struct {
 	cols         uint16
 	paused       bool // true while chooser overlay is active
 	commandMode  bool // true while the tab-mode overlay owns the terminal
+	scrollMode   bool // true while the active tab's scrollback view is frozen for browsing
+	scrollOffset int  // lines scrolled up from the bottom of the (scrollback ++ live grid) stream
 	needsRender  bool // set by readPTY/switchTab/resize, cleared by renderFrame
 	lastCtrlCAt  time.Time
 	hostVTMode   vt10x.ModeFlag
@@ -312,11 +315,13 @@ func (tm *TabManager) createTab(ctx context.Context, spec LaunchSpec) (*Tab, err
 		cmd:       p,
 		done:      make(chan struct{}),
 		startedAt: time.Now(),
-		vt: vt10x.New(
-			vt10x.WithWriter(ptmx),
-			vt10x.WithSize(int(cols), int(contentRows)),
-		),
+		sb:        newScrollback(defaultScrollbackCap),
 	}
+	tab.vt = vt10x.New(
+		vt10x.WithWriter(ptmx),
+		vt10x.WithSize(int(cols), int(contentRows)),
+		vt10x.WithOnScrollUp(tab.sb.push),
+	)
 	tab.cursorVisible.Store(true)
 	tm.nextID++
 
@@ -537,6 +542,11 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 			pending = pending[consumed:]
 
 			if isTerminalResponse(token) {
+				continue
+			}
+
+			if tm.isScrollMode() {
+				tm.handleScrollKey(token)
 				continue
 			}
 
@@ -1060,6 +1070,146 @@ func (tm *TabManager) isCommandMode() bool {
 	return tm.commandMode
 }
 
+func (tm *TabManager) isScrollMode() bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.scrollMode
+}
+
+// enterScrollMode freezes the active tab's view at the current frame and
+// switches input handling into scrollback browsing. Caller should not
+// already hold tm.mu.
+func (tm *TabManager) enterScrollMode() {
+	tm.mu.Lock()
+	if len(tm.tabs) == 0 || tm.activeIdx >= len(tm.tabs) {
+		tm.mu.Unlock()
+		return
+	}
+	tm.commandMode = false
+	tm.scrollMode = true
+	tm.scrollOffset = 0
+	tm.needsRender = true
+	tm.mu.Unlock()
+}
+
+// exitScrollMode returns to live-follow rendering of the active tab.
+func (tm *TabManager) exitScrollMode() {
+	tm.mu.Lock()
+	tm.scrollMode = false
+	tm.scrollOffset = 0
+	tm.needsRender = true
+	tm.mu.Unlock()
+}
+
+// adjustScrollOffset shifts the scrollback view by delta lines (positive =
+// scroll up into history, negative = scroll back toward live). Clamps to
+// the valid range and exits scroll mode when the user reaches the bottom
+// by scrolling down. Caller should not already hold tm.mu.
+func (tm *TabManager) adjustScrollOffset(delta int) {
+	tm.mu.Lock()
+	if !tm.scrollMode || tm.activeIdx >= len(tm.tabs) {
+		tm.mu.Unlock()
+		return
+	}
+	tab := tm.tabs[tm.activeIdx]
+	tm.mu.Unlock()
+
+	sbLen := 0
+	if tab.sb != nil {
+		sbLen = tab.sb.length()
+	}
+	maxOffset := sbLen // can scroll up until the top of scrollback reaches the top of the view
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+
+	tm.mu.Lock()
+	newOffset := tm.scrollOffset + delta
+	if newOffset <= 0 {
+		// Scrolled down past live — exit scroll mode entirely.
+		tm.scrollMode = false
+		tm.scrollOffset = 0
+	} else {
+		if newOffset > maxOffset {
+			newOffset = maxOffset
+		}
+		tm.scrollOffset = newOffset
+	}
+	tm.needsRender = true
+	tm.mu.Unlock()
+}
+
+// handleScrollKey dispatches a token while in scroll mode. Returns true
+// when the token was consumed (i.e. not to be forwarded). Any unknown key
+// exits scroll mode without consuming further input.
+func (tm *TabManager) handleScrollKey(token []byte) bool {
+	if len(token) == 0 {
+		return true
+	}
+
+	tm.mu.Lock()
+	contentRows := int(tm.rows) - 1
+	tm.mu.Unlock()
+	if contentRows < 1 {
+		contentRows = 1
+	}
+	page := contentRows - 1
+	if page < 1 {
+		page = 1
+	}
+
+	// Single-byte tokens.
+	if len(token) == 1 {
+		switch token[0] {
+		case 'q', 0x1b, '\r', '\n':
+			tm.exitScrollMode()
+			return true
+		case 'k':
+			tm.adjustScrollOffset(1)
+			return true
+		case 'j':
+			tm.adjustScrollOffset(-1)
+			return true
+		case 'b', 0x15: // Ctrl+U
+			tm.adjustScrollOffset(page)
+			return true
+		case ' ', 0x04: // Ctrl+D
+			tm.adjustScrollOffset(-page)
+			return true
+		case 'g':
+			tm.adjustScrollOffset(1 << 30)
+			return true
+		case 'G':
+			tm.exitScrollMode()
+			return true
+		}
+		return true // swallow anything else while in scroll mode
+	}
+
+	// Multi-byte CSI tokens.
+	switch string(token) {
+	case "\x1b[A": // Up arrow
+		tm.adjustScrollOffset(1)
+		return true
+	case "\x1b[B": // Down arrow
+		tm.adjustScrollOffset(-1)
+		return true
+	case "\x1b[5~": // PageUp
+		tm.adjustScrollOffset(page)
+		return true
+	case "\x1b[6~": // PageDown
+		tm.adjustScrollOffset(-page)
+		return true
+	case "\x1b[H", "\x1b[1~": // Home
+		tm.adjustScrollOffset(1 << 30)
+		return true
+	case "\x1b[F", "\x1b[4~": // End
+		tm.exitScrollMode()
+		return true
+	}
+	return true
+}
+
 func (tm *TabManager) shouldExitWithoutTabs() bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -1199,6 +1349,8 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 			return ErrUpdateRequested
 		}
 		tm.emitNotice(TabNoticeInfo, "already up to date")
+	case b == '[':
+		tm.enterScrollMode()
 	}
 	return nil
 }
@@ -1785,12 +1937,29 @@ func (tm *TabManager) renderFrame() {
 	// intended cursor location (after CUP + \x1b[?25h). We'll use this
 	// saved position for rendering even when a subsequent hide+content
 	// write has moved the live cursor to end-of-content.
+	scrollMode := tm.isScrollMode()
+	tm.mu.Lock()
+	scrollOffset := tm.scrollOffset
+	tm.mu.Unlock()
+
 	tab.vt.Lock()
-	screenContent := renderVTScreen(tab.vt, cols, contentRows)
+	var screenContent string
+	var liveGridSnap [][]vt10x.Glyph
+	if scrollMode {
+		liveGridSnap = snapshotLiveGrid(tab.vt, cols, contentRows)
+	} else {
+		screenContent = renderVTScreen(tab.vt, cols, contentRows)
+	}
 	cursor := tab.vt.Cursor()
 	vtCursorVisible := tab.vt.CursorVisible()
 	vtMode := tab.vt.Mode()
 	tab.vt.Unlock()
+
+	if scrollMode {
+		sbTail := tab.sb.snapshotTail(scrollOffset + contentRows)
+		screenContent = composeScrollbackView(sbTail, liveGridSnap, cols, contentRows, scrollOffset)
+		vtCursorVisible = false
+	}
 
 	curX, curY, showCursor := resolveRenderCursor(
 		tab,
@@ -2090,6 +2259,8 @@ func (tm *TabManager) buildTabBarString() string {
 	active := tm.activeIdx
 	cols := int(tm.cols)
 	cmdMode := tm.commandMode
+	scrollMode := tm.scrollMode
+	scrollOffset := tm.scrollOffset
 	noticeText := tm.noticeText
 	noticeLevel := tm.noticeLevel
 	tm.mu.Unlock()
@@ -2151,8 +2322,14 @@ func (tm *TabManager) buildTabBarString() string {
 		} else {
 			hint = " " + noticeText + " "
 		}
+	} else if scrollMode {
+		sbLen := 0
+		if active < len(tabs) && tabs[active] != nil && tabs[active].sb != nil {
+			sbLen = tabs[active].sb.length()
+		}
+		hint = fmt.Sprintf(" SCROLL -%d/%d  j/k PgUp/PgDn g  q:exit ", scrollOffset, sbLen)
 	} else if cmdMode {
-		hint = " n:new e:edit session x:close h/l:move 1-9:jump"
+		hint = " n:new e:edit session x:close h/l:move 1-9:jump [:scroll"
 		if tm.updateVersion != "" {
 			hint += " u:update"
 		}
