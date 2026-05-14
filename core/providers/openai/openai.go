@@ -401,6 +401,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -422,6 +423,7 @@ func HandleOpenAITextCompletionStreaming(
 	request *schemas.BifrostTextCompletionRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -432,6 +434,7 @@ func HandleOpenAITextCompletionStreaming(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	headers := map[string]string{
 		"Content-Type":  "application/json",
 		"Accept":        "text/event-stream",
@@ -917,6 +920,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -940,6 +944,7 @@ func HandleOpenAIChatCompletionStreaming(
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -952,6 +957,7 @@ func HandleOpenAIChatCompletionStreaming(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Check if the request is a redirect from ResponsesStream to ChatCompletionStream
 	isResponsesToChatCompletionsFallback := false
 	var responsesStreamState *schemas.ChatToResponsesStreamState
@@ -1525,6 +1531,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -1547,6 +1554,7 @@ func HandleOpenAIResponsesStreaming(
 	request *schemas.BifrostResponsesRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -1558,6 +1566,7 @@ func HandleOpenAIResponsesStreaming(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -2128,6 +2137,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -2148,6 +2158,7 @@ func HandleOpenAISpeechStreamRequest(
 	request *schemas.BifrostSpeechRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -2157,6 +2168,7 @@ func HandleOpenAISpeechStreamRequest(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2568,6 +2580,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		false,
 		provider.GetProviderKey(),
@@ -2589,6 +2602,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	request *schemas.BifrostTranscriptionRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawResponse bool,
 	accumulateText bool,
 	providerName schemas.ModelProvider,
@@ -2599,6 +2613,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Use centralized converter
 	reqBody := ToOpenAITranscriptionRequest(request)
 	if reqBody == nil {
@@ -2997,6 +3012,7 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -3016,6 +3032,7 @@ func HandleOpenAIImageGenerationStreaming(
 	request *schemas.BifrostImageGenerationRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -3026,6 +3043,7 @@ func HandleOpenAIImageGenerationStreaming(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Set headers
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -4241,6 +4259,7 @@ func (provider *OpenAIProvider) ImageEditStream(ctx *schemas.BifrostContext, pos
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		false,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -4260,6 +4279,7 @@ func HandleOpenAIImageEditStreamRequest(
 	request *schemas.BifrostImageEditRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -4270,6 +4290,7 @@ func HandleOpenAIImageEditStreamRequest(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	reqBody := ToOpenAIImageEditRequest(request)
 	if reqBody == nil {
 		return nil, providerUtils.NewBifrostOperationError("image edit input is not provided", nil)
@@ -6912,6 +6933,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 		return nil, err
 	}
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 	path := req.Path
 	if after, ok := strings.CutPrefix(path, "/v1"); ok {
 		path = after
