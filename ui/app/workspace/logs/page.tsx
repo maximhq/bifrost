@@ -490,7 +490,11 @@ export default function LogsPage() {
 		togglePin: toggleColumnPin,
 		reorder: reorderColumns,
 		reset: resetColumns,
-	} = useColumnConfig({ columnIds, paramName: "cols" });
+	} = useColumnConfig({
+		columnIds,
+		paramName: "cols",
+		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
+	});
 
 	// Navigation for log detail sheet
 	const logs = logsData?.logs ?? [];
