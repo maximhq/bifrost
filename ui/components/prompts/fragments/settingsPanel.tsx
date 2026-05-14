@@ -228,15 +228,13 @@ export function SettingsPanel() {
 											<div className="flex flex-col gap-2">
 												{requiredHeaders.map((name) => (
 													<div key={name} className="flex items-center gap-2">
-														<Label htmlFor={`required-header-${name}`} className="w-40 shrink-0 truncate text-xs font-mono">
+														<Label htmlFor={`required-header-${name}`} className="w-40 shrink-0 truncate font-mono text-xs">
 															{name}
 														</Label>
 														<Input
 															id={`required-header-${name}`}
 															value={customHeaders[name] ?? ""}
-															onChange={(e) =>
-																setCustomHeaders((prev) => ({ ...prev, [name]: e.target.value }))
-															}
+															onChange={(e) => setCustomHeaders((prev) => ({ ...prev, [name]: e.target.value }))}
 															placeholder="value"
 															className="h-8 flex-1"
 														/>

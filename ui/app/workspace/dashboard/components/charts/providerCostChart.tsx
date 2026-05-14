@@ -36,15 +36,12 @@ function CustomTooltip({ active, payload, selectedProvider, displayProviders }: 
 					<>
 						{displayProviders.map((provider: string, idx: number) => {
 							const isOther = provider === OTHER_SERIES_KEY;
-							const cost = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : (data.by_provider?.[provider] || 0);
+							const cost = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : data.by_provider?.[provider] || 0;
 							if (cost === 0) return null;
 							return (
 								<div key={provider} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
-										<span
-											className="h-2 w-2 rounded-full"
-											style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
-										/>
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
 										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
 											{isOther ? OTHER_SERIES_LABEL : provider}
 										</span>
@@ -103,8 +100,7 @@ function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedPr
 				item[OTHER_SERIES_KEY] = otherSum;
 			}
 			providers.forEach((provider, idx) => {
-				item[`provider_${idx}`] =
-					provider === OTHER_SERIES_KEY ? (item[OTHER_SERIES_KEY] ?? 0) : (bucket.by_provider?.[provider] ?? 0);
+				item[`provider_${idx}`] = provider === OTHER_SERIES_KEY ? (item[OTHER_SERIES_KEY] ?? 0) : (bucket.by_provider?.[provider] ?? 0);
 			});
 			return item;
 		});
@@ -185,9 +181,7 @@ function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedPr
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip
-							content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />}
-						/>
+						<Tooltip content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />} />
 						{displayProviders.map((provider, idx) => {
 							const color = provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
 							return (

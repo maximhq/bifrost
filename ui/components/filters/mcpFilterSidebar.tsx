@@ -316,10 +316,11 @@ function ToolNamesFilter({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	const hasActive = (filters.tool_names || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetMCPLogsFilterDataQuery(
-		{ dimensions: ["tool_names"] },
-		{ skip: !opened && !hasActive },
-	);
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["tool_names"] }, { skip: !opened && !hasActive });
 	const availableToolNames = filterData?.tool_names || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableToolNames);
@@ -355,10 +356,11 @@ function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const hasActive = (filters.server_labels || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetMCPLogsFilterDataQuery(
-		{ dimensions: ["server_labels"] },
-		{ skip: !opened && !hasActive },
-	);
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["server_labels"] }, { skip: !opened && !hasActive });
 	const availableServerLabels = filterData?.server_labels || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableServerLabels);
@@ -394,10 +396,11 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 	const hasActive = (filters.virtual_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetMCPLogsFilterDataQuery(
-		{ dimensions: ["virtual_keys"] },
-		{ skip: !opened && !hasActive },
-	);
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["virtual_keys"] }, { skip: !opened && !hasActive });
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const nameToId = useMemo(() => new Map(availableVirtualKeys.map((key) => [key.name, key.id])), [availableVirtualKeys]);
 
