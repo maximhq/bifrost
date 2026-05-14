@@ -1,6 +1,7 @@
 import type { MCPHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -45,7 +46,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
+function MCPVolumeChartImpl({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -87,8 +88,8 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -129,8 +130,8 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -159,3 +160,4 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 		</ChartErrorBoundary>
 	);
 }
+export const MCPVolumeChart = memo(MCPVolumeChartImpl);

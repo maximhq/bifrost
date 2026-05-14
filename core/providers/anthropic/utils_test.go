@@ -577,6 +577,143 @@ func TestConvertChatResponseFormatToAnthropicOutputFormat(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesSchemaRefs(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/$defs/Document",
+		},
+	}
+	defs := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+				"authors": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"$ref": "#/$defs/Person",
+					},
+				},
+			},
+			"required": []interface{}{"title", "authors"},
+		},
+		"Person": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":  map[string]interface{}{"type": "string"},
+				"email": map[string]interface{}{"type": []interface{}{"string", "null"}},
+			},
+			"required": []interface{}{"name", "email"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:       &schemaType,
+				Properties: &properties,
+				Required:   []string{"record"},
+				Defs:       &defs,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	if output["type"] != "json_schema" {
+		t.Fatalf("expected json_schema type, got %v", output["type"])
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("expected additionalProperties=false, got %v", schema["additionalProperties"])
+	}
+	if _, ok := schema["$defs"].(map[string]interface{}); !ok {
+		t.Fatalf("expected $defs to be preserved, got %v", schema["$defs"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/$defs/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinitions(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/definitions/Document",
+		},
+	}
+	definitions := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"title"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:        &schemaType,
+				Properties:  &properties,
+				Required:    []string{"record"},
+				Definitions: &definitions,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if _, ok := schema["definitions"].(map[string]interface{}); !ok {
+		t.Fatalf("expected definitions to be preserved, got %v", schema["definitions"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/definitions/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
 func TestValidateToolsForProvider(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1538,6 +1675,64 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		}
 		if !providerUtils.JSONFieldExists(result, "container.skills") {
 			t.Errorf("expected container.skills preserved on Skills=true provider, got: %s", string(result))
+		}
+	})
+
+	t.Run("advisor_tool_model_prefix_stripped", func(t *testing.T) {
+		// Clients that read Bifrost's model catalog (e.g. Claude Code's /advisor)
+		// embed "anthropic/<id>" in the advisor tool's model field. Anthropic's
+		// upstream rejects that with `tools.N.model: anthropic/...`. The sanitizer
+		// should rewrite to the bare id.
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"tools":[
+				{"name":"Bash","description":"x","input_schema":{"type":"object"}},
+				{"type":"advisor_20260301","name":"advisor","model":"anthropic/claude-opus-4-7"}
+			]
+		}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "tools.1.model").String(); got != "claude-opus-4-7" {
+			t.Errorf("expected tools.1.model to be stripped to 'claude-opus-4-7', got %q (full: %s)", got, string(result))
+		}
+		// Function tool without a model field must be untouched.
+		if providerUtils.JSONFieldExists(result, "tools.0.model") {
+			t.Errorf("unexpected model field on function tool: %s", string(result))
+		}
+	})
+
+	t.Run("advisor_tool_bare_model_passes_through", func(t *testing.T) {
+		// Bare model ids must not be rewritten — ParseModelString only splits on
+		// known-provider prefixes, so "claude-opus-4-7" stays as-is.
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"tools":[{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-7"}]
+		}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "tools.0.model").String(); got != "claude-opus-4-7" {
+			t.Errorf("expected bare model id to pass through unchanged, got %q", got)
+		}
+	})
+
+	t.Run("advisor_tool_unknown_prefix_passes_through", func(t *testing.T) {
+		// Namespaced model ids that aren't a Bifrost provider prefix (e.g.
+		// "meta-llama/Llama-3.1-8B") must be preserved verbatim. ParseModelString
+		// already encodes this rule; the test pins the behavior at the tool level.
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"tools":[{"type":"advisor_20260301","name":"advisor","model":"some-namespace/custom-model"}]
+		}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "tools.0.model").String(); got != "some-namespace/custom-model" {
+			t.Errorf("expected unknown-prefix model to pass through, got %q", got)
 		}
 	})
 }
@@ -2629,6 +2824,59 @@ func TestIsClaudeCodeRequest(t *testing.T) {
 			got := IsClaudeCodeRequest(ctx)
 			if got != tc.expected {
 				t.Errorf("IsClaudeCodeRequest() = %v, want %v (userAgent=%v)", got, tc.expected, tc.userAgent)
+			}
+		})
+	}
+}
+
+// TestBudgetTokensNeverExceedsMaxTokens verifies the strict budget_tokens < max_tokens
+// invariant required by both Anthropic and Bedrock for all effort levels.
+func TestBudgetTokensNeverExceedsMaxTokens(t *testing.T) {
+	const minBudget = MinimumReasoningMaxTokens // 1024
+	maxTokensValues := []int{1025, 4096, 16000, 32000, 64000, 128000}
+	efforts := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+	for _, maxTok := range maxTokensValues {
+		for _, effort := range efforts {
+			t.Run(fmt.Sprintf("effort=%s/maxTokens=%d", effort, maxTok), func(t *testing.T) {
+				budget, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, minBudget, maxTok)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if budget >= maxTok {
+					t.Errorf("effort=%q maxTokens=%d: budget_tokens=%d violates strict budget_tokens < max_tokens",
+						effort, maxTok, budget)
+				}
+			})
+		}
+	}
+}
+
+// TestBudgetTokensMaxEffortCapsBelowMaxTokens specifically pins the "max" effort
+// behavior: ratio=1.0 would produce budget==maxTokens without the cap, which both
+// Anthropic and Bedrock reject ("max_tokens must be greater than thinking.budget_tokens").
+func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
+	const minBudget = MinimumReasoningMaxTokens
+
+	cases := []struct {
+		maxTokens    int
+		wantBudget   int
+	}{
+		{maxTokens: 16000, wantBudget: 15999},
+		{maxTokens: 32000, wantBudget: 31999},
+		{maxTokens: 64000, wantBudget: 63999},
+		{maxTokens: 128000, wantBudget: 127999},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("maxTokens=%d", tc.maxTokens), func(t *testing.T) {
+			budget, err := providerUtils.GetBudgetTokensFromReasoningEffort("max", minBudget, tc.maxTokens)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if budget != tc.wantBudget {
+				t.Errorf("max effort with maxTokens=%d: got budget=%d, want %d",
+					tc.maxTokens, budget, tc.wantBudget)
 			}
 		})
 	}

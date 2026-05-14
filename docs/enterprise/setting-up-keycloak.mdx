@@ -170,7 +170,7 @@ Create the roles and groups you plan to map into Bifrost.
       "serverUrl": "https://keycloak.company.com",
       "realm": "bifrost-prod",
       "clientId": "bifrost",
-      "clientSecret": "${KEYCLOAK_CLIENT_SECRET}",
+      "clientSecret": "env.KEYCLOAK_CLIENT_SECRET",
       "teamIdsField": "groups"
     }
   }

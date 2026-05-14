@@ -834,6 +834,9 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, idProp.AnyOf, 2, "anyOf should have 2 options")
 				assert.Equal(t, gemini.Type("string"), idProp.AnyOf[0].Type)
 				assert.Equal(t, gemini.Type("integer"), idProp.AnyOf[1].Type)
+
+				// Validate that sibling fields are stripped because Gemini rejects them
+				assert.Empty(t, idProp.Description, "description should be stripped from anyOf per Gemini validation rules")
 			},
 		},
 		{
@@ -2084,6 +2087,86 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 			},
 		},
 		{
+			name: "ResponsesAPI_ToolAnyOfWithSiblingFields",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Call the tool with a nullable parameter"),
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						{
+							Type:        schemas.ResponsesToolTypeFunction,
+							Name:        schemas.Ptr("get_process"),
+							Description: schemas.Ptr("Get process info"),
+							ResponsesToolFunction: &schemas.ResponsesToolFunction{
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("pid", map[string]interface{}{
+											"type": "integer",
+										}),
+										schemas.KV("timeout_secs", map[string]interface{}{
+											"anyOf": []interface{}{
+												map[string]interface{}{"type": "integer"},
+												map[string]interface{}{"type": "null"},
+											},
+											"description": "Optional timeout",
+										}),
+									),
+									Required: []string{"pid"},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Tools, 1)
+				fd := result.Tools[0].FunctionDeclarations[0]
+				require.NotNil(t, fd.Parameters)
+
+				timeoutProp := fd.Parameters.Properties["timeout_secs"]
+				require.NotNil(t, timeoutProp, "timeout_secs should be converted")
+				require.Len(t, timeoutProp.AnyOf, 2, "anyOf should be preserved")
+				assert.Equal(t, gemini.Type("integer"), timeoutProp.AnyOf[0].Type)
+				assert.Equal(t, gemini.Type("null"), timeoutProp.AnyOf[1].Type)
+				assert.Empty(t, timeoutProp.Description, "Gemini rejects sibling fields alongside anyOf")
+				assert.Empty(t, timeoutProp.Type, "Gemini rejects type alongside anyOf")
+
+				payload, err := json.Marshal(result)
+				require.NoError(t, err)
+
+				var raw map[string]interface{}
+				require.NoError(t, json.Unmarshal(payload, &raw))
+				tools, ok := raw["tools"].([]interface{})
+				require.True(t, ok)
+				tool, ok := tools[0].(map[string]interface{})
+				require.True(t, ok)
+				functionDeclarations, ok := tool["functionDeclarations"].([]interface{})
+				require.True(t, ok)
+				functionDeclaration, ok := functionDeclarations[0].(map[string]interface{})
+				require.True(t, ok)
+				parameters, ok := functionDeclaration["parameters"].(map[string]interface{})
+				require.True(t, ok)
+				properties, ok := parameters["properties"].(map[string]interface{})
+				require.True(t, ok)
+				timeoutSchema, ok := properties["timeout_secs"].(map[string]interface{})
+				require.True(t, ok)
+
+				assert.Contains(t, timeoutSchema, "anyOf")
+				assert.NotContains(t, timeoutSchema, "description")
+				assert.NotContains(t, timeoutSchema, "type")
+			},
+		},
+		{
 			name: "ResponsesAPI_ComplexNestedArrayOfObjects",
 			input: &schemas.BifrostResponsesRequest{
 				Provider: schemas.Gemini,
@@ -2987,6 +3070,167 @@ func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T
 	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
 }
 
+// Regression: GenAI usageMetadata modality details must include tokenCount even when zero.
+// Some clients (e.g. @ai-sdk/google) validate tokenCount as required and reject missing fields.
+func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T) {
+	bifrostResp := &schemas.BifrostResponsesResponse{
+		Model: "google/gemini-2.5-flash",
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:  0,
+			OutputTokens: 0,
+			TotalTokens:  0,
+			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+				TextTokens:  0,
+				AudioTokens: 0,
+			},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+				TextTokens: 0,
+			},
+		},
+	}
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.NotNil(t, out.UsageMetadata)
+
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+
+	usageMetadata, ok := payload["usageMetadata"].(map[string]any)
+	require.True(t, ok, "usageMetadata should be present")
+
+	candidatesTokensDetails, ok := usageMetadata["candidatesTokensDetails"].([]any)
+	require.True(t, ok, "candidatesTokensDetails should be present")
+	require.NotEmpty(t, candidatesTokensDetails, "candidatesTokensDetails should not be empty")
+
+	firstDetail, ok := candidatesTokensDetails[0].(map[string]any)
+	require.True(t, ok, "first candidatesTokensDetails entry should be an object")
+
+	tokenCount, exists := firstDetail["tokenCount"]
+	require.True(t, exists, "tokenCount should be present even when zero")
+	assert.Equal(t, float64(0), tokenCount)
+
+	promptTokensDetails, ok := usageMetadata["promptTokensDetails"].([]any)
+	require.True(t, ok, "promptTokensDetails should be present")
+	require.NotEmpty(t, promptTokensDetails, "promptTokensDetails should not be empty")
+
+	for i, detail := range promptTokensDetails {
+		detailObj, ok := detail.(map[string]any)
+		require.True(t, ok, "promptTokensDetails entry %d should be an object", i)
+
+		promptTokenCount, exists := detailObj["tokenCount"]
+		require.True(t, exists, "promptTokensDetails entry %d should include tokenCount", i)
+		assert.Equal(t, float64(0), promptTokenCount)
+	}
+}
+
+func TestGenAIFallbacks_PreservedInBifrostResponsesRequest(t *testing.T) {
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model:     "gemini/gemini-3-flash-preview",
+		Fallbacks: []string{"vertex/gemini-3-flash-preview"},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+
+	require.NotNil(t, bifrostReq)
+	require.Len(t, bifrostReq.Fallbacks, 1)
+	assert.Equal(t, schemas.Vertex, bifrostReq.Fallbacks[0].Provider)
+	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.Fallbacks[0].Model)
+}
+
+// TestNormalizeRawGenerateContentRequestForCompatibility tests that Bifrost-internal fields
+// (fallbacks) and provider-incompatible OpenAI fields (responseLogprobs, logprobs, presencePenalty,
+// frequencyPenalty) are stripped before the raw body is forwarded to the Gemini API.
+//
+// Regression: fallbacks was forwarded verbatim, causing Gemini to return 400
+// "Unknown name \"fallbacks\": Cannot find field."
+func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
+	parseBody := func(t *testing.T, b []byte) map[string]interface{} {
+		t.Helper()
+		var m map[string]interface{}
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+	genConfig := func(m map[string]interface{}) map[string]interface{} {
+		gc, _ := m["generationConfig"].(map[string]interface{})
+		return gc
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, result map[string]interface{})
+	}{
+		{
+			name:  "StripsFallbacksField",
+			input: `{"contents":[{"parts":[{"text":"Hello"}]}],"fallbacks":["openai/gpt-4o","vertex/gemini-2-flash"]}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks", "fallbacks must not be forwarded to Gemini")
+				assert.Contains(t, m, "contents", "contents must be preserved")
+			},
+		},
+		{
+			name:  "StripsGenerationConfigCompatFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"responseLogprobs":true,"logprobs":5,"presencePenalty":0.5,"frequencyPenalty":0.3}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.NotContains(t, gc, "responseLogprobs")
+				assert.NotContains(t, gc, "logprobs")
+				assert.NotContains(t, gc, "presencePenalty")
+				assert.NotContains(t, gc, "frequencyPenalty")
+				assert.Contains(t, gc, "temperature", "valid fields must be preserved")
+			},
+		},
+		{
+			name:  "StripsFallbacksAlongsideCompatFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"fallbacks":["openai/gpt-4o"],"generationConfig":{"temperature":0.5,"presencePenalty":0.2}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks")
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.NotContains(t, gc, "presencePenalty")
+				assert.Contains(t, gc, "temperature")
+			},
+		},
+		{
+			name:  "PreservesValidBodyWithNoStrippableFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"maxOutputTokens":1000}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.Contains(t, m, "contents")
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.Contains(t, gc, "temperature")
+				assert.Contains(t, gc, "maxOutputTokens")
+			},
+		},
+		{
+			name:  "HandlesBodyWithOnlyFallbacks",
+			input: `{"fallbacks":["openai/gpt-4o"]}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte(tt.input))
+			require.NotEmpty(t, result)
+			tt.validate(t, parseBody(t, result))
+		})
+	}
+
+	t.Run("EmptyBodyReturnsEmpty", func(t *testing.T) {
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte{}))
+	})
+}
+
 // TestFunctionCallingConfigModeAny_RoundTrip verifies that FunctionCallingConfigMode.ANY and
 // AllowedFunctionNames survive the Gemini→Bifrost→Gemini round-trip on the GenAI passthrough path.
 // Regression: ANY was silently downgraded to AUTO (missing case in convertGeminiToolConfigToToolChoice)
@@ -3067,6 +3311,125 @@ func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
 			got := roundTrip.ToolConfig.FunctionCallingConfig
 			assert.Equal(t, tt.wantMode, got.Mode, "FunctionCallingConfig.Mode must survive round-trip")
 			assert.Equal(t, tt.wantAllowedNames, got.AllowedFunctionNames, "AllowedFunctionNames must survive round-trip")
+		})
+	}
+}
+
+// TestImageSizeRoundtrip verifies that imageSize and aspectRatio survive the
+// GeminiGenerationRequest → BifrostImageGenerationRequest → GeminiGenerationRequest round-trip
+// and that the outbound imageSize is always uppercase ("2K" not "2k").
+func TestImageSizeRoundtrip(t *testing.T) {
+	tests := []struct {
+		name            string
+		inImageSize     string
+		inAspectRatio   string
+		wantSize        string // expected Bifrost WxH
+		wantImageSize   string // expected outbound Gemini imageSize
+		wantAspectRatio string
+	}{
+		{"1K_square", "1K", "1:1", "1024x1024", "1K", "1:1"},
+		{"2K_square", "2K", "1:1", "2048x2048", "2K", "1:1"},
+		{"4K_square", "4K", "1:1", "4096x4096", "4K", "1:1"},
+		{"2K_portrait", "2K", "3:4", "1536x2048", "2K", "3:4"},
+		{"2K_landscape", "2K", "4:3", "2048x1536", "2K", "4:3"},
+		{"lowercase_normalised", "2k", "1:1", "2048x2048", "2K", "1:1"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-3.1-flash-image-preview",
+				GenerationConfig: gemini.GenerationConfig{
+					ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+					ImageConfig: &gemini.GeminiImageConfig{
+						ImageSize:   tt.inImageSize,
+						AspectRatio: tt.inAspectRatio,
+					},
+				},
+				Contents: []gemini.Content{{
+					Role:  "user",
+					Parts: []*gemini.Part{{Text: "hello kitty"}},
+				}},
+			}
+
+			bifrostReq := inReq.ToBifrostImageGenerationRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params.Size, "Size must be extracted from ImageConfig")
+			assert.Equal(t, tt.wantSize, *bifrostReq.Params.Size)
+
+			outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+			require.NotNil(t, outReq)
+			require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set on outbound request")
+			assert.Equal(t, tt.wantImageSize, outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be uppercase")
+			assert.Equal(t, tt.wantAspectRatio, outReq.GenerationConfig.ImageConfig.AspectRatio)
+		})
+	}
+}
+
+// TestImageEditSizeRoundtrip mirrors TestImageSizeRoundtrip for the image-edit path.
+func TestImageEditSizeRoundtrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// minimal 1x1 PNG for inline image data
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+
+	inReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3.1-flash-image-preview",
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+			ImageConfig: &gemini.GeminiImageConfig{
+				ImageSize:   "2K",
+				AspectRatio: "1:1",
+			},
+		},
+		Contents: []gemini.Content{{
+			Role: "user",
+			Parts: []*gemini.Part{
+				{Text: "make it pop"},
+				{InlineData: &gemini.Blob{MIMEType: "image/png", Data: base64.StdEncoding.EncodeToString(pngPixel)}},
+			},
+		}},
+	}
+
+	bifrostReq := inReq.ToBifrostImageEditRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.NotNil(t, bifrostReq.Params.Size, "Size must be extracted from ImageConfig in edit path")
+	assert.Equal(t, "2048x2048", *bifrostReq.Params.Size)
+
+	outReq := gemini.ToGeminiImageEditRequest(bifrostReq)
+	require.NotNil(t, outReq)
+	require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set on outbound edit request")
+	assert.Equal(t, "2K", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be uppercase on edit path")
+	assert.Equal(t, "1:1", outReq.GenerationConfig.ImageConfig.AspectRatio)
+}
+
+// TestImagenImageSizeCasing verifies that the Imagen :predict path sends uppercase imageSize.
+func TestImagenImageSizeCasing(t *testing.T) {
+	tests := []struct {
+		wxh           string
+		wantImageSize string
+	}{
+		{"1024x1024", "1K"},
+		{"2048x2048", "2K"},
+		{"4096x4096", "4K"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantImageSize, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Gemini,
+				Model:    "imagen-4.0-generate-preview-05-20",
+				Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+				Params:   &schemas.ImageGenerationParameters{Size: &tt.wxh},
+			}
+			imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+			require.NotNil(t, imagenReq)
+			require.NotNil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be set")
+			assert.Equal(t, tt.wantImageSize, *imagenReq.Parameters.SampleImageSize, "Imagen imageSize must be uppercase")
 		})
 	}
 }

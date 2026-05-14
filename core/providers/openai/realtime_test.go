@@ -11,13 +11,13 @@ import (
 func TestNormalizeRealtimeClientSecretRequest(t *testing.T) {
 	t.Parallel()
 
-	body, model, bifrostErr := normalizeRealtimeClientSecretRequest(
+	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`),
 		schemas.OpenAI,
 		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
-		t.Fatalf("normalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
+		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
 	}
 	if model != "gpt-4o-realtime-preview" {
 		t.Fatalf("model = %q, want %q", model, "gpt-4o-realtime-preview")
@@ -46,13 +46,13 @@ func TestNormalizeRealtimeClientSecretRequest(t *testing.T) {
 func TestNormalizeRealtimeClientSecretRequestUsesDefaultProvider(t *testing.T) {
 	t.Parallel()
 
-	body, model, bifrostErr := normalizeRealtimeClientSecretRequest(
+	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"session":{"model":"gpt-4o-realtime-preview"}}`),
 		schemas.OpenAI,
 		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
-		t.Fatalf("normalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
+		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
 	}
 	if model != "gpt-4o-realtime-preview" {
 		t.Fatalf("model = %q, want %q", model, "gpt-4o-realtime-preview")
@@ -78,13 +78,13 @@ func TestNormalizeRealtimeClientSecretRequestUsesDefaultProvider(t *testing.T) {
 func TestNormalizeRealtimeSessionsRequest(t *testing.T) {
 	t.Parallel()
 
-	body, model, bifrostErr := normalizeRealtimeClientSecretRequest(
+	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"session":{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}}`),
 		schemas.OpenAI,
 		schemas.RealtimeSessionEndpointSessions,
 	)
 	if bifrostErr != nil {
-		t.Fatalf("normalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
+		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
 	}
 	if model != "gpt-4o-realtime-preview" {
 		t.Fatalf("model = %q, want %q", model, "gpt-4o-realtime-preview")

@@ -39,6 +39,12 @@ func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return m.tools
 }
 
+func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
+	return nil
+}
+
+func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipeline) {}
+
 func TestStarlarkToGo(t *testing.T) {
 	t.Run("Convert None", func(t *testing.T) {
 		result := starlarkToGo(starlark.None)

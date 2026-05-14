@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -102,7 +103,8 @@ func ToGeminiCachedContentListResponse(resp *schemas.BifrostCachedContentListRes
 		return nil
 	}
 	wire := geminiCachedContentList{
-		NextPageToken: resp.NextPageToken,
+		CachedContents: []geminiCachedContent{},
+		NextPageToken:  resp.NextPageToken,
 	}
 	if len(resp.CachedContents) > 0 {
 		wire.CachedContents = make([]geminiCachedContent, len(resp.CachedContents))
@@ -194,26 +196,36 @@ func (provider *GeminiProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		model = "models/" + model
 	}
 
-	body := geminiCachedContent{
-		Model:             model,
-		SystemInstruction: request.SystemInstruction,
-		Contents:          request.Contents,
-		Tools:             request.Tools,
-		ToolConfig:        request.ToolConfig,
-	}
-	if request.DisplayName != nil {
-		body.DisplayName = *request.DisplayName
-	}
-	if request.TTL != nil {
-		body.TTL = *request.TTL
-	}
-	if request.ExpireTime != nil {
-		body.ExpireTime = *request.ExpireTime
-	}
+	jsonBody, useRaw := providerUtils.CheckAndGetRawRequestBody(ctx, request)
+	if useRaw && len(jsonBody) > 0 {
+		var err error
+		jsonBody, err = sjson.SetBytes(jsonBody, "model", model)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to set cached content model", err)
+		}
+	} else {
+		body := geminiCachedContent{
+			Model:             model,
+			SystemInstruction: request.SystemInstruction,
+			Contents:          request.Contents,
+			Tools:             request.Tools,
+			ToolConfig:        request.ToolConfig,
+		}
+		if request.DisplayName != nil {
+			body.DisplayName = *request.DisplayName
+		}
+		if request.TTL != nil {
+			body.TTL = *request.TTL
+		}
+		if request.ExpireTime != nil {
+			body.ExpireTime = *request.ExpireTime
+		}
 
-	jsonBody, err := sonic.Marshal(body)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to marshal cached content create body", err)
+		var err error
+		jsonBody, err = sonic.Marshal(body)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to marshal cached content create body", err)
+		}
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -435,9 +447,13 @@ func (provider *GeminiProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 		updateMaskFields = append(updateMaskFields, "expireTime")
 	}
 
-	jsonBody, marshalErr := sonic.Marshal(body)
-	if marshalErr != nil {
-		return nil, 0, providerUtils.NewBifrostOperationError("failed to marshal cached content update body", marshalErr)
+	jsonBody, useRaw := providerUtils.CheckAndGetRawRequestBody(ctx, request)
+	if !useRaw || len(jsonBody) == 0 {
+		var marshalErr error
+		jsonBody, marshalErr = sonic.Marshal(body)
+		if marshalErr != nil {
+			return nil, 0, providerUtils.NewBifrostOperationError("failed to marshal cached content update body", marshalErr)
+		}
 	}
 
 	req := fasthttp.AcquireRequest()

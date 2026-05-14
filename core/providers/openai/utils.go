@@ -96,6 +96,37 @@ func isOpenAIReasoningModel(model string) bool {
 	return false
 }
 
+func normalizeOpenAIReasoningEffort(model string, effort string) string {
+	switch effort {
+	case "minimal":
+		return "low"
+	case "max":
+		if supportsOpenAIXHighReasoningEffort(model) {
+			return "xhigh"
+		}
+		return "high"
+	case "xhigh":
+		if supportsOpenAIXHighReasoningEffort(model) {
+			return "xhigh"
+		}
+		return "high"
+	default:
+		return effort
+	}
+}
+
+func supportsOpenAIXHighReasoningEffort(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	modelLower := strings.ToLower(model)
+	return strings.HasPrefix(modelLower, "gpt-5.2") ||
+		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
+		strings.HasPrefix(modelLower, "gpt-5.4") ||
+		strings.HasPrefix(modelLower, "gpt-5.5")
+}
+
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
 const MaxUserFieldLength = 64
 

@@ -2,7 +2,7 @@ import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { cn } from "@/lib/utils";
-import { formatCompactNumber } from "@/lib/utils/governance";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 
 interface RateLimitShape {
 	token_max_limit?: number | null;
@@ -37,7 +37,13 @@ function LimitText({ label, max, resetDuration }: { label: string; max: number; 
 	);
 }
 
-function Bar({ label, current, max, resetDuration, compact }: {
+function Bar({
+	label,
+	current,
+	max,
+	resetDuration,
+	compact,
+}: {
 	label: string;
 	current: number;
 	max: number;
@@ -46,11 +52,7 @@ function Bar({ label, current, max, resetDuration, compact }: {
 }) {
 	const pct = max > 0 ? Math.min((current / max) * 100, 100) : 0;
 	const isExhausted = max > 0 && current >= max;
-	const barClass = isExhausted
-		? "[&>div]:bg-red-500/70"
-		: pct > 80
-			? "[&>div]:bg-amber-500/70"
-			: "[&>div]:bg-emerald-500/70";
+	const barClass = isExhausted ? "[&>div]:bg-red-500/70" : pct > 80 ? "[&>div]:bg-amber-500/70" : "[&>div]:bg-emerald-500/70";
 
 	return (
 		<Tooltip>
@@ -69,9 +71,7 @@ function Bar({ label, current, max, resetDuration, compact }: {
 				<p className="font-medium">
 					{current.toLocaleString()} / {max.toLocaleString()} {label}
 				</p>
-				{resetDuration ? (
-					<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(resetDuration)}</p>
-				) : null}
+				{resetDuration ? <p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(resetDuration)}</p> : null}
 			</TooltipContent>
 		</Tooltip>
 	);

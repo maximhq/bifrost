@@ -260,6 +260,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	}
 
 	messages := bifrostReq.Input
+	if ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+		trimmed := len(messages)
+		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+			trimmed--
+		}
+		messages = messages[:trimmed]
+	}
+
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
 		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
@@ -545,10 +553,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// nothing to display", per the extended-thinking doc). We attach
 			// on non-disabled modes and let the upstream provider enforce
 			// model-level support.
-			if bifrostReq.Params.Reasoning.Display != nil &&
-				anthropicReq.Thinking != nil &&
-				anthropicReq.Thinking.Type != "disabled" {
-				anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+			// Opus 4.7+ omits reasoning text by default; default to "summarized"
+			// so the text is visible unless the caller explicitly requests "omitted".
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+				if bifrostReq.Params.Reasoning.Display != nil {
+					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+				} else if IsOpus47(bifrostReq.Model) {
+					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
+				}
 			}
 		}
 
@@ -565,7 +577,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		msg := messages[i]
 
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
 			// Handle system message separately
 			if msg.Content != nil {
 				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
@@ -584,6 +596,17 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					if len(blocks) > 0 {
 						systemContent = &AnthropicContent{ContentBlocks: blocks}
 					}
+				}
+			}
+			// If only a single system message is present, convert it user message (since openai allows it)
+			if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
+				if systemContent != nil {
+					content := systemContent
+					systemContent = nil
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:    AnthropicMessageRoleUser,
+						Content: *content,
+					})
 				}
 			}
 			i++
@@ -721,6 +744,20 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	anthropicReq.Messages = anthropicMessages
 	anthropicReq.System = systemContent
+
+	// Trim trailing whitespace from the last assistant message text blocks
+	// ContentStr is converted to a single text ContentBlock during message conversion
+	// so we trim the text of that block instead.
+	lastMsgIndex := len(anthropicReq.Messages) - 1
+	if lastMsgIndex >= 0 && anthropicReq.Messages[lastMsgIndex].Role == AnthropicMessageRoleAssistant {
+		blocks := anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if blocks[j].Type == AnthropicContentBlockTypeText && blocks[j].Text != nil {
+				anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+				break
+			}
+		}
+	}
 
 	// Strip request- and tool-level fields the target Anthropic-family
 	// provider does not support. Fail-closed tool validation stays in

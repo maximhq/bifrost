@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.14
+**Latest Version:** 2.1.17
 
 ## Changelog
+
+### 2.1.17
+
+- Added `max_turns_to_send` to guardrail rules. The integer caps how many historical conversation turns are sent to the guardrail provider on apply; the latest message is always included on top, and `0` (default) sends all turns. Wired into `values.schema.json`, `config.schema.json`, and `templates/_helpers.tpl` so it renders into `guardrails_config.guardrail_rules[].max_turns_to_send`.
 
 ### 2.1.14
 
@@ -563,7 +567,7 @@ bifrost:
 |-----------|-------------|---------|
 | `bifrost.mcp.enabled` | Enable MCP (Model Context Protocol) | `false` |
 | `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
-| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout in seconds | `30` |
+| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout. Integer = seconds, string = Go duration (e.g. `"30s"`, `"2m"`). Prefer the string form. | `"30s"` |
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |

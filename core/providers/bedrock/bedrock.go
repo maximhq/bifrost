@@ -182,16 +182,13 @@ var retryableBedrockExceptions = map[string]int{
 // completeRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
-func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
+func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key, model string) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
-
-	region := DefaultBedrockRegion
-	if config.Region != nil && config.Region.GetValue() != "" {
-		region = config.Region.GetValue()
-	}
+	region := resolveBedrockRegion(key, model)
 
 	// Create the request with the JSON body
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewBuffer(jsonData))
+	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
+	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -415,16 +412,12 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 // It formats the request, sends it to Bedrock, and returns the response.
 // Returns the response body and an error if the request fails.
 func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContext, jsonData []byte, key schemas.Key, model string, action string) (*http.Response, *schemas.BifrostError) {
-	// Format the path with proper model identifier for streaming
-	path := provider.getModelPath(action, model, key)
-
-	region := DefaultBedrockRegion
-	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
-		region = key.BedrockKeyConfig.Region.GetValue()
-	}
+	// Parse region and path in one pass to avoid running the regex twice.
+	path, region := provider.getModelPathAndRegion(action, model, key)
 
 	// Create HTTP request for streaming
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewReader(jsonData))
+	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr)
 	}
@@ -822,8 +815,8 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	path := provider.getModelPath("invoke", request.Model, key)
-	body, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, path, key)
+	path, _ := provider.getModelPathAndRegion("invoke", request.Model, key)
+	body, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -1047,10 +1040,10 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	}
 
 	// Format the path with proper model identifier
-	path := provider.getModelPath("converse", request.Model, key)
+	path, _ := provider.getModelPathAndRegion("converse", request.Model, key)
 
 	// Create the signed request
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -1426,10 +1419,10 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Format the path with proper model identifier
-	path := provider.getModelPath("converse", request.Model, key)
+	path, _ := provider.getModelPathAndRegion("converse", request.Model, key)
 
 	// Create the signed request
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -1799,8 +1792,8 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		path = provider.getModelPath("invoke", request.Model, key)
-		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
+		path, _ = provider.getModelPathAndRegion("invoke", request.Model, key)
+		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
 
 	case "cohere":
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
@@ -1812,8 +1805,8 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		path = provider.getModelPath("invoke", request.Model, key)
-		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
+		path, _ = provider.getModelPathAndRegion("invoke", request.Model, key)
+		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
 
 	default:
 		return nil, providerUtils.NewConfigurationError("unsupported embedding model type")
@@ -1965,7 +1958,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	var providerResponseHeaders map[string]string
 	var path string
 
-	path = provider.getModelPath("invoke", request.Model, key)
+	path, _ = provider.getModelPathAndRegion("invoke", request.Model, key)
 
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -1979,7 +1972,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
-	rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
+	rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -2038,7 +2031,7 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	var bifrostError *schemas.BifrostError
 
 	// Stability AI routing and task-type inference use the actual model ID.
-	path := provider.getModelPath("invoke", request.Model, key)
+	path, _ := provider.getModelPathAndRegion("invoke", request.Model, key)
 
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -2054,7 +2047,7 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Make API request (same URL as image generation)
-	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
+	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -2120,8 +2113,8 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	}
 
 	// Make API request (same URL as image generation)
-	path := provider.getModelPath("invoke", request.Model, key)
-	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
+	path, _ := provider.getModelPathAndRegion("invoke", request.Model, key)
+	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
@@ -3513,14 +3506,35 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 	return batchResultsResp, nil
 }
 
-func (provider *BedrockProvider) getModelPath(basePath string, model string, key schemas.Key) string {
-	path := fmt.Sprintf("%s/%s", model, basePath)
-	// If ARN is present, Bedrock expects the ARN-scoped identifier
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ARN != nil && key.BedrockKeyConfig.ARN.GetValue() != "" {
-		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", key.BedrockKeyConfig.ARN.GetValue(), model))
-		path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
+// resolveBedrockRegion returns the AWS region to use for a request.
+// the priority is: model string region > key configured region > default region
+func resolveBedrockRegion(key schemas.Key, model string) string {
+	if region, _ := parseBedrockRegionAndModel(model); region != "" {
+		return region
 	}
-	return path
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
+		return key.BedrockKeyConfig.Region.GetValue()
+	}
+	return DefaultBedrockRegion
+}
+
+// getModelPathAndRegion is a helper that calls parseBedrockRegionAndModel
+// once and returns both the request path and the AWS signing region
+func (provider *BedrockProvider) getModelPathAndRegion(basePath, model string, key schemas.Key) (path, region string) {
+	r, bareModel := parseBedrockRegionAndModel(model)
+	if r == "" {
+		if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
+			r = key.BedrockKeyConfig.Region.GetValue()
+		} else {
+			r = DefaultBedrockRegion
+		}
+	}
+	p := fmt.Sprintf("%s/%s", bareModel, basePath)
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ARN != nil && key.BedrockKeyConfig.ARN.GetValue() != "" {
+		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", key.BedrockKeyConfig.ARN.GetValue(), bareModel))
+		p = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
+	}
+	return p, r
 }
 
 func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
@@ -3544,10 +3558,10 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Format the path with proper model identifier
-	path := provider.getModelPath("count-tokens", request.Model, key)
+	path, _ := provider.getModelPathAndRegion("count-tokens", request.Model, key)
 
 	// Send the request
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}

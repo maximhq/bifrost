@@ -3,10 +3,34 @@ package tracing
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func formatTraceValue(v any) string {
+	if v == nil {
+		return ""
+	}
+
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct:
+		if data, err := schemas.MarshalString(v); err == nil {
+			return data
+		}
+	}
+
+	return fmt.Sprint(rv.Interface())
+}
 
 // PopulateRequestAttributes extracts common request attributes from a BifrostRequest.
 // This is the main entry point for populating request attributes on a span.
@@ -193,7 +217,7 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -348,7 +372,7 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 			attrs[schemas.AttrEcho] = *req.Params.Echo
 		}
 		if req.Params.LogitBias != nil {
-			attrs[schemas.AttrLogitBias] = fmt.Sprintf("%v", req.Params.LogitBias)
+			attrs[schemas.AttrLogitBias] = formatTraceValue(req.Params.LogitBias)
 		}
 		if req.Params.LogProbs != nil {
 			attrs[schemas.AttrLogProbs] = *req.Params.LogProbs
@@ -367,7 +391,7 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -441,7 +465,7 @@ func PopulateEmbeddingRequestAttributes(req *schemas.BifrostEmbeddingRequest, at
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -716,7 +740,7 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrRespMaxToolCalls] = *resp.MaxToolCalls
 	}
 	if resp.Metadata != nil {
-		attrs[schemas.AttrRespMetadata] = fmt.Sprintf("%v", resp.Metadata)
+		attrs[schemas.AttrRespMetadata] = formatTraceValue(resp.Metadata)
 	}
 	if resp.PreviousResponseID != nil {
 		attrs[schemas.AttrRespPreviousRespID] = *resp.PreviousResponseID
@@ -879,11 +903,11 @@ func PopulateBatchCreateRequestAttributes(req *schemas.BifrostBatchCreateRequest
 		attrs[schemas.AttrBatchRequestsCount] = len(req.Requests)
 	}
 	if len(req.Metadata) > 0 {
-		attrs[schemas.AttrBatchMetadata] = fmt.Sprintf("%v", req.Metadata)
+		attrs[schemas.AttrBatchMetadata] = formatTraceValue(req.Metadata)
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -913,7 +937,7 @@ func PopulateBatchListRequestAttributes(req *schemas.BifrostBatchListRequest, at
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -928,7 +952,7 @@ func PopulateBatchRetrieveRequestAttributes(req *schemas.BifrostBatchRetrieveReq
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -943,7 +967,7 @@ func PopulateBatchCancelRequestAttributes(req *schemas.BifrostBatchCancelRequest
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -958,7 +982,7 @@ func PopulateBatchResultsRequestAttributes(req *schemas.BifrostBatchResultsReque
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1133,7 +1157,7 @@ func PopulateFileUploadRequestAttributes(req *schemas.BifrostFileUploadRequest, 
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1157,7 +1181,7 @@ func PopulateFileListRequestAttributes(req *schemas.BifrostFileListRequest, attr
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1172,7 +1196,7 @@ func PopulateFileRetrieveRequestAttributes(req *schemas.BifrostFileRetrieveReque
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1187,7 +1211,7 @@ func PopulateFileDeleteRequestAttributes(req *schemas.BifrostFileDeleteRequest, 
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1202,7 +1226,7 @@ func PopulateFileContentRequestAttributes(req *schemas.BifrostFileContentRequest
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 

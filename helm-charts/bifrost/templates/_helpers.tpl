@@ -647,6 +647,7 @@ false
 {{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
+{{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -698,6 +699,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.maxOpenConns }}
 {{- $_ := set $pgConfig "max_open_conns" (.Values.storage.logsStore.maxOpenConns | int) }}
+{{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshInterval }}
+{{- $_ := set $pgConfig "matview_refresh_interval" .Values.storage.logsStore.matviewRefreshInterval }}
 {{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "logs_store" $logsStore }}
@@ -1097,9 +1101,6 @@ false
 {{- if hasKey $inputConfig "exclude_system_prompt" }}
 {{- $_ := set $scConfig "exclude_system_prompt" $inputConfig.exclude_system_prompt }}
 {{- end }}
-{{- if hasKey $inputConfig "cleanup_on_shutdown" }}
-{{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
-{{- end }}
 {{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
 {{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
@@ -1359,6 +1360,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Entra (Azure AD)." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "keycloak" }}
+{{- if not $scimValidation.config.serverUrl }}
+{{- fail "ERROR: bifrost.scim.config.serverUrl is required when SCIM provider is Keycloak. Example: https://keycloak.company.com (must NOT include /realms/{realm})." }}
+{{- end }}
+{{- if not $scimValidation.config.realm }}
+{{- fail "ERROR: bifrost.scim.config.realm is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientSecret }}
+{{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
 {{- end }}
 {{- end }}
 {{- end }}

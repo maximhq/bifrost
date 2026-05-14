@@ -7,10 +7,10 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,7 +23,7 @@ import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
@@ -63,11 +63,16 @@ export default function ModelLimitsTable({
 }: ModelLimitsTableProps) {
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
 	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
+	const [deleteModelConfigId, setDeleteModelConfigId] = useState<string | null>(null);
 
 	// Derive editingModelConfig from props so it stays in sync with RTK cache updates
 	const editingModelConfig = useMemo(
 		() => (editingModelConfigId ? (modelConfigs.find((mc) => mc.id === editingModelConfigId) ?? null) : null),
 		[editingModelConfigId, modelConfigs],
+	);
+	const deletingModelConfig = useMemo(
+		() => (deleteModelConfigId ? (modelConfigs.find((mc) => mc.id === deleteModelConfigId) ?? null) : null),
+		[deleteModelConfigId, modelConfigs],
 	);
 
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
@@ -80,6 +85,7 @@ export default function ModelLimitsTable({
 		try {
 			await deleteModelConfig(id).unwrap();
 			toast.success("Model limit deleted successfully");
+			setDeleteModelConfigId(null);
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -90,8 +96,7 @@ export default function ModelLimitsTable({
 		setShowModelLimitSheet(true);
 	};
 
-	const handleEditModelLimit = (config: ModelConfig, e: React.MouseEvent) => {
-		e.stopPropagation();
+	const handleEditModelLimit = (config: ModelConfig) => {
 		setEditingModelConfigId(config.id);
 		setShowModelLimitSheet(true);
 	};
@@ -120,6 +125,30 @@ export default function ModelLimitsTable({
 			{showModelLimitSheet && (
 				<ModelLimitSheet modelConfig={editingModelConfig} onSave={handleModelLimitSaved} onCancel={() => setShowModelLimitSheet(false)} />
 			)}
+			<AlertDialog open={!!deletingModelConfig} onOpenChange={(open) => !open && setDeleteModelConfigId(null)}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Delete Model Limit</AlertDialogTitle>
+						<AlertDialogDescription>
+							Are you sure you want to delete the limit for &quot;
+							{deletingModelConfig?.model_name && deletingModelConfig.model_name.length > 30
+								? `${deletingModelConfig.model_name.slice(0, 30)}...`
+								: deletingModelConfig?.model_name}
+							&quot;? This action cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => deletingModelConfig && handleDelete(deletingModelConfig.id)}
+							disabled={isDeleting}
+							className="bg-red-600 hover:bg-red-700"
+						>
+							{isDeleting ? "Deleting..." : "Delete"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
@@ -341,53 +370,47 @@ export default function ModelLimitsTable({
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
-												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-													<Button
-														variant="ghost"
-														size="icon"
-														className="h-8 w-8"
-														onClick={(e) => handleEditModelLimit(config, e)}
-														disabled={!hasUpdateAccess}
-														aria-label={`Edit model limit for ${config.model_name}`}
-														data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
-													>
-														<Edit className="h-4 w-4" />
-													</Button>
-													<AlertDialog>
-														<AlertDialogTrigger asChild>
+												<div className="flex items-center justify-end">
+													<DropdownMenu>
+														<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
 															<Button
 																variant="ghost"
 																size="icon"
-																className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																onClick={(e) => e.stopPropagation()}
+																className="h-8 w-8"
+																aria-label={`Actions for model limit ${config.model_name}`}
+																data-testid={`model-limit-button-actions-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+															>
+																<MoreHorizontal className="h-4 w-4" />
+															</Button>
+														</DropdownMenuTrigger>
+														<DropdownMenuContent align="end">
+															<DropdownMenuItem
+																className="cursor-pointer"
+																disabled={!hasUpdateAccess}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	handleEditModelLimit(config);
+																}}
+																data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+															>
+																<Edit className="h-4 w-4" />
+																Edit
+															</DropdownMenuItem>
+															<DropdownMenuItem
+																variant="destructive"
+																className="cursor-pointer"
 																disabled={!hasDeleteAccess}
-																aria-label={`Delete model limit for ${config.model_name}`}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	setDeleteModelConfigId(config.id);
+																}}
 																data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
 															>
 																<Trash2 className="h-4 w-4" />
-															</Button>
-														</AlertDialogTrigger>
-														<AlertDialogContent>
-															<AlertDialogHeader>
-																<AlertDialogTitle>Delete Model Limit</AlertDialogTitle>
-																<AlertDialogDescription>
-																	Are you sure you want to delete the limit for &quot;
-																	{config.model_name.length > 30 ? `${config.model_name.slice(0, 30)}...` : config.model_name}
-																	&quot;? This action cannot be undone.
-																</AlertDialogDescription>
-															</AlertDialogHeader>
-															<AlertDialogFooter>
-																<AlertDialogCancel>Cancel</AlertDialogCancel>
-																<AlertDialogAction
-																	onClick={() => handleDelete(config.id)}
-																	disabled={isDeleting}
-																	className="bg-red-600 hover:bg-red-700"
-																>
-																	{isDeleting ? "Deleting..." : "Delete"}
-																</AlertDialogAction>
-															</AlertDialogFooter>
-														</AlertDialogContent>
-													</AlertDialog>
+																Delete
+															</DropdownMenuItem>
+														</DropdownMenuContent>
+													</DropdownMenu>
 												</div>
 											</TableCell>
 										</TableRow>

@@ -31,6 +31,25 @@ export type ProviderName = (typeof KnownProvidersNames)[number];
 
 export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 
+// Built-in providers whose Bifrost implementation supports embedding requests.
+// Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
+export const EmbeddingSupportedProviders: readonly ProviderName[] = [
+	"azure",
+	"bedrock",
+	"cohere",
+	"fireworks",
+	"gemini",
+	"huggingface",
+	"mistral",
+	"nebius",
+	"ollama",
+	"openai",
+	"openrouter",
+	"sgl",
+	"vertex",
+	"vllm",
+] as const;
+
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [

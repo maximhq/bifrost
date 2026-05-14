@@ -130,7 +130,7 @@ func (cts *ClientToolSyncer) performSync() {
 	ctx, cancel := context.WithTimeout(context.Background(), cts.timeout)
 	defer cancel()
 
-	newTools, newMapping, err := retrieveExternalTools(ctx, conn, clientName, cts.logger)
+	newTools, newMapping, err := cts.manager.runListToolsWithHooks(ctx, conn, clientName)
 	if err != nil {
 		// On failure, keep existing tools intact
 		cts.logger.Warn("%s Tool sync failed for %s, keeping existing tools: %v", MCPLogPrefix, cts.clientID, err)

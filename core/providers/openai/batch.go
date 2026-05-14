@@ -10,11 +10,14 @@ import (
 
 // OpenAIBatchRequest represents the request body for creating a batch.
 type OpenAIBatchRequest struct {
-	InputFileID        string                     `json:"input_file_id"`
+	InputFileID        *string                    `json:"input_file_id,omitempty"`
 	Endpoint           string                     `json:"endpoint"`
 	CompletionWindow   string                     `json:"completion_window"`
 	Metadata           map[string]string          `json:"metadata,omitempty"`
 	OutputExpiresAfter *schemas.BatchExpiresAfter `json:"output_expires_after,omitempty"`
+
+	InputBlob    *string                    `json:"input_blob,omitempty"` // azure blob storage
+	OutputFolder *schemas.BatchOutputFolder `json:"output_folder,omitempty"`
 }
 
 // OpenAIBatchResponse represents an OpenAI batch response.
@@ -39,6 +42,11 @@ type OpenAIBatchResponse struct {
 	CancelledAt      *int64                    `json:"cancelled_at,omitempty"`
 	RequestCounts    *OpenAIBatchRequestCounts `json:"request_counts,omitempty"`
 	Metadata         map[string]string         `json:"metadata,omitempty"`
+
+	// Azure Blob Storage URLs (returned by Azure when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 }
 
 // OpenAIBatchRequestCounts represents the request counts for a batch.
@@ -94,6 +102,9 @@ func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(latency time.Duration
 		CreatedAt:        r.CreatedAt,
 		OutputFileID:     r.OutputFileID,
 		ErrorFileID:      r.ErrorFileID,
+		InputBlob:        r.InputBlob,
+		OutputBlob:       r.OutputBlob,
+		ErrorBlob:        r.ErrorBlob,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		},
@@ -143,6 +154,9 @@ func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(latency time.Durati
 		OutputFileID:     r.OutputFileID,
 		ErrorFileID:      r.ErrorFileID,
 		Errors:           r.Errors,
+		InputBlob:        r.InputBlob,
+		OutputBlob:       r.OutputBlob,
+		ErrorBlob:        r.ErrorBlob,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		},

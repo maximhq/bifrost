@@ -171,9 +171,9 @@ Web apps in Zitadel cannot use the `client_credentials` grant. Bifrost needs a d
       "domain": "my-instance.zitadel.cloud",
       "projectId": "123456789012345678",
       "clientId": "123456789012345678@my-project",
-      "clientSecret": "${ZITADEL_CLIENT_SECRET}",
+      "clientSecret": "env.ZITADEL_CLIENT_SECRET",
       "serviceAccountClientId": "987654321098765432@my-project",
-      "serviceAccountClientSecret": "${ZITADEL_SA_CLIENT_SECRET}",
+      "serviceAccountClientSecret": "env.ZITADEL_SA_CLIENT_SECRET",
       "teamIdsField": "groups"
     }
   }

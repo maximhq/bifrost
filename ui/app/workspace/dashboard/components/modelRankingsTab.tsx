@@ -3,11 +3,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import ProviderIcons, { type ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ModelHistogramResponse, ModelRankingEntry, ModelRankingsResponse } from "@/lib/types/logs";
-import { formatCompactNumber as formatNumber } from "@/lib/utils/governance";
+import { COMPACT_NUMBER_FORMAT, formatCompactNumber as formatNumber } from "@/lib/utils/numbers";
+import NumberFlow from "@number-flow/react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatFullTimestamp, formatTimestamp, getModelColor } from "../utils/chartUtils";
+import {
+	formatFullTimestamp,
+	formatTimestamp,
+	getModelColor,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	pickTopSeries,
+} from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
 
@@ -97,6 +106,13 @@ function SortableHeader({
 	);
 }
 
+const UNNAMED_MODEL_LABEL = "(unnamed)";
+
+function displayModelLabel(model: string): string {
+	if (model === OTHER_SERIES_KEY) return OTHER_SERIES_LABEL;
+	return model === "" ? UNNAMED_MODEL_LABEL : model;
+}
+
 // Tooltip for the usage share chart
 function UsageShareTooltip({ active, payload, models }: any) {
 	if (!active || !payload || !payload.length) return null;
@@ -110,11 +126,15 @@ function UsageShareTooltip({ active, payload, models }: any) {
 				{models.map((model: string, idx: number) => {
 					const val = data[`model_${idx}`];
 					if (!val || val === 0) return null;
+					const isOther = model === OTHER_SERIES_KEY;
+					const isUnnamed = !isOther && model === "";
 					return (
-						<div key={model} className="flex items-center justify-between gap-4">
+						<div key={model || `__unnamed_${idx}`} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-								<span className="max-w-[140px] truncate text-zinc-600 dark:text-zinc-400">{model}</span>
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+								<span className={`max-w-[140px] truncate text-zinc-600 dark:text-zinc-400${isUnnamed ? " italic" : ""}`}>
+									{displayModelLabel(model)}
+								</span>
 							</span>
 							<span className="font-medium">{val.toLocaleString()}</span>
 						</div>
@@ -144,20 +164,45 @@ function TopModelsChart({
 			return { chartData: [], displayModels: [] };
 		}
 
-		const models = [...(modelData.models || [])].sort((a, b) => a.localeCompare(b));
+		const allModels = modelData.models || [];
+		// Pick top-N by total request count, then sort the chosen labels alphabetically
+		// for legend stability. Other goes at the end.
+		const top = pickTopSeries(modelData.buckets, allModels, (b, m) => b.by_model?.[m]?.total ?? 0);
+		const hasOther = top.length < allModels.length;
+		const sortedTop = [...top].sort((a, b) => a.localeCompare(b));
+		const models = hasOther ? [...sortedTop, OTHER_SERIES_KEY] : sortedTop;
+		const topSet = new Set(sortedTop);
+
 		const processed = modelData.buckets.map((bucket, index) => {
 			const item: any = {
 				...bucket,
 				index,
 				formattedTime: formatTimestamp(bucket.timestamp, modelData.bucket_size_seconds),
 			};
+			let otherTotal = 0;
+			if (hasOther && bucket.by_model) {
+				for (const model of allModels) {
+					if (!topSet.has(model)) otherTotal += bucket.by_model[model]?.total ?? 0;
+				}
+			}
 			for (const [modelIdx, model] of models.entries()) {
-				item[`model_${modelIdx}`] = bucket.by_model?.[model]?.total || 0;
+				item[`model_${modelIdx}`] = model === OTHER_SERIES_KEY ? otherTotal : (bucket.by_model?.[model]?.total ?? 0);
 			}
 			return item;
 		});
 
 		return { chartData: processed, displayModels: models };
+	}, [modelData]);
+
+	const grandTotal = useMemo(() => {
+		if (!modelData?.buckets) return null;
+		let sum = 0;
+		const models = modelData.models || [];
+		for (const b of modelData.buckets) {
+			if (!b.by_model) continue;
+			for (const m of models) sum += b.by_model[m]?.total ?? 0;
+		}
+		return sum;
 	}, [modelData]);
 
 	// Compute totals per model for the ranked legend (aggregate across providers)
@@ -180,7 +225,15 @@ function TopModelsChart({
 	}, [rankingsData, displayModels]);
 
 	return (
-		<ChartCard title="Top Models" loading={loadingModels} testId="dashboard-rankings-top-models" className="h-full z-[1]">
+		<ChartCard
+			title="Top Models"
+			loading={loadingModels}
+			testId="dashboard-rankings-top-models"
+			className="z-[1] h-full"
+			totalLabel="Total"
+			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}
+		>
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
@@ -206,13 +259,13 @@ function TopModelsChart({
 									domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 									allowDataOverflow={false}
 								/>
-								<Tooltip content={<UsageShareTooltip models={displayModels} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip content={<UsageShareTooltip models={displayModels} />} />
 								{displayModels.map((model, idx) => (
 									<Bar
 										key={model}
 										dataKey={`model_${idx}`}
 										stackId="models"
-										fill={getModelColor(idx)}
+										fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
 										fillOpacity={0.9}
 										isAnimationActive={false}
 										barSize={30}
@@ -248,7 +301,7 @@ function TopModelsChart({
 	);
 }
 
-export function ModelRankingsTab({ rankingsData, loading, modelData, loadingModels, startTime, endTime }: ModelRankingsTabProps) {
+function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels, startTime, endTime }: ModelRankingsTabProps) {
 	const [sortField, setSortField] = useState<SortField>("total_requests");
 	const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
 
@@ -407,3 +460,4 @@ export function ModelRankingsTab({ rankingsData, loading, modelData, loadingMode
 		</div>
 	);
 }
+export const ModelRankingsTab = memo(ModelRankingsTabImpl);

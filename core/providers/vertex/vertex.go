@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 type VertexError struct {
@@ -508,6 +509,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+		}
+		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
+	}
 
 	projectID := key.VertexKeyConfig.ProjectID.GetValue()
 	if projectID == "" {
@@ -837,6 +844,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -968,6 +976,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			request,
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
@@ -1119,6 +1128,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
+		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+		}
+		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 
 		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
@@ -1294,6 +1307,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			jsonBody,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -1334,6 +1348,10 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
+		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
+			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonData)
+		}
+		jsonData = stripVertexGeminiUnsupportedFieldsRaw(jsonData)
 
 		// Auth query is used to pass the API key in the query string
 		authQuery := ""
@@ -2514,6 +2532,46 @@ func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequ
 	}
 }
 
+func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
+	if len(jsonBody) == 0 {
+		return jsonBody
+	}
+
+	contents := gjson.GetBytes(jsonBody, "contents")
+	if !contents.IsArray() {
+		return jsonBody
+	}
+
+	out := jsonBody
+	contentIndex := 0
+	contents.ForEach(func(_, content gjson.Result) bool {
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			contentIndex++
+			return true
+		}
+		partIndex := 0
+		parts.ForEach(func(_, part gjson.Result) bool {
+			if part.Get("functionCall.id").Exists() {
+				if updated, err := providerUtils.DeleteJSONField(out, fmt.Sprintf("contents.%d.parts.%d.functionCall.id", contentIndex, partIndex)); err == nil {
+					out = updated
+				}
+			}
+			if part.Get("functionResponse.id").Exists() {
+				if updated, err := providerUtils.DeleteJSONField(out, fmt.Sprintf("contents.%d.parts.%d.functionResponse.id", contentIndex, partIndex)); err == nil {
+					out = updated
+				}
+			}
+			partIndex++
+			return true
+		})
+		contentIndex++
+		return true
+	})
+
+	return out
+}
+
 // BatchCreate is not supported by Vertex AI provider.
 func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
@@ -2593,6 +2651,10 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		)
 		if bifrostErr != nil {
 			return nil, bifrostErr
+		}
+
+		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
 		}
 
 		// Skip field-stripping when large payload mode is active — jsonBody is nil

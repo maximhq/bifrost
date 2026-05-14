@@ -1,3 +1,4 @@
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -7,10 +8,10 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -21,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Input } from "@/components/ui/input";
-import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import CustomerDialog from "./customerDialog";
@@ -31,6 +32,61 @@ import { CustomersEmptyState } from "./customersEmptyState";
 const formatResetDuration = (duration: string) => {
 	return resetDurationLabels[duration] || duration;
 };
+
+const ACTIONS_COLUMN_CLASS = `sticky right-0 z-10 w-[56px] min-w-[56px] text-right ${PIN_SHADOW_RIGHT}`;
+
+interface CustomerActionsMenuProps {
+	customer: Customer;
+	canUpdate: boolean;
+	canDelete: boolean;
+	onEdit: (customer: Customer) => void;
+	onDelete: (customer: Customer) => void;
+}
+
+function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete }: CustomerActionsMenuProps) {
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Customer actions ${customer.name}`}
+					data-testid={`customer-actions-btn-${customer.id}`}
+					onClick={(e) => e.stopPropagation()}
+					onPointerDown={(e) => e.stopPropagation()}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					disabled={!canUpdate}
+					data-testid={`customer-button-edit-${customer.id}`}
+					onClick={(e) => {
+						e.stopPropagation();
+						onEdit(customer);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					disabled={!canDelete}
+					data-testid={`customer-button-delete-${customer.id}`}
+					onClick={(e) => {
+						e.stopPropagation();
+						onDelete(customer);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
 
 interface CustomersTableProps {
 	customers: Customer[];
@@ -59,6 +115,7 @@ export default function CustomersTable({
 }: CustomersTableProps) {
 	const [showCustomerDialog, setShowCustomerDialog] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+	const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState<Customer | null>(null);
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -72,6 +129,8 @@ export default function CustomersTable({
 			toast.success("Customer deleted successfully");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
+		} finally {
+			setConfirmDeleteCustomer(null);
 		}
 	};
 
@@ -147,8 +206,8 @@ export default function CustomersTable({
 						</div>
 					</div>
 
-					<div className="overflow-hidden rounded-sm border" data-testid="customer-table-container">
-						<Table>
+					<div className="overflow-auto rounded-sm border" data-testid="customer-table-container">
+						<Table className="min-w-[1100px]">
 							<TableHeader>
 								<TableRow>
 									<TableHead>Name</TableHead>
@@ -156,7 +215,7 @@ export default function CustomersTable({
 									<TableHead>Budget</TableHead>
 									<TableHead>Rate Limit</TableHead>
 									<TableHead>Virtual Keys</TableHead>
-									<TableHead className="text-right"></TableHead>
+									<TableHead className={`bg-muted ${ACTIONS_COLUMN_CLASS}`}></TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>
@@ -363,54 +422,20 @@ export default function CustomersTable({
 														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
-												<TableCell className="text-right">
-													<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-														<Button
-															variant="ghost"
-															size="icon"
-															className="h-8 w-8"
-															onClick={() => handleEditCustomer(customer)}
-															disabled={!hasUpdateAccess}
-															aria-label={`Edit customer ${customer.name}`}
-															data-testid={`customer-button-edit-${customer.id}`}
-														>
-															<Edit className="h-4 w-4" />
-														</Button>
-														<AlertDialog>
-															<AlertDialogTrigger asChild>
-																<Button
-																	variant="ghost"
-																	size="icon"
-																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																	disabled={!hasDeleteAccess}
-																	aria-label={`Delete customer ${customer.name}`}
-																	data-testid={`customer-button-delete-${customer.id}`}
-																>
-																	<Trash2 className="h-4 w-4" />
-																</Button>
-															</AlertDialogTrigger>
-															<AlertDialogContent>
-																<AlertDialogHeader>
-																	<AlertDialogTitle>Delete Customer</AlertDialogTitle>
-																	<AlertDialogDescription>
-																		Are you sure you want to delete &quot;{customer.name}&quot;? This will also delete all associated teams
-																		and unassign any virtual keys. This action cannot be undone.
-																	</AlertDialogDescription>
-																</AlertDialogHeader>
-																<AlertDialogFooter>
-																	<AlertDialogCancel data-testid="customer-button-delete-cancel">Cancel</AlertDialogCancel>
-																	<AlertDialogAction
-																		data-testid="customer-button-delete-confirm"
-																		onClick={() => handleDelete(customer.id)}
-																		disabled={isDeleting}
-																		className="bg-red-600 hover:bg-red-700"
-																	>
-																		{isDeleting ? "Deleting..." : "Delete"}
-																	</AlertDialogAction>
-																</AlertDialogFooter>
-															</AlertDialogContent>
-														</AlertDialog>
-													</div>
+												<TableCell
+													className={cn(
+														"dark:bg-card dark:group-hover:bg-muted",
+														isExhausted ? "bg-red-500/5 group-hover:bg-red-500/10" : "bg-white group-hover:bg-muted",
+														ACTIONS_COLUMN_CLASS,
+													)}
+												>
+													<CustomerActionsMenu
+														customer={customer}
+														canUpdate={hasUpdateAccess}
+														canDelete={hasDeleteAccess}
+														onEdit={handleEditCustomer}
+														onDelete={setConfirmDeleteCustomer}
+													/>
 												</TableCell>
 											</TableRow>
 										);
@@ -449,6 +474,29 @@ export default function CustomersTable({
 						</div>
 					)}
 				</div>
+
+				<AlertDialog open={!!confirmDeleteCustomer} onOpenChange={(open) => !open && setConfirmDeleteCustomer(null)}>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>Delete Customer</AlertDialogTitle>
+							<AlertDialogDescription>
+								Are you sure you want to delete &quot;{confirmDeleteCustomer?.name}&quot;? This will also delete all associated teams and
+								unassign any virtual keys. This action cannot be undone.
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel data-testid="customer-button-delete-cancel">Cancel</AlertDialogCancel>
+							<AlertDialogAction
+								data-testid="customer-button-delete-confirm"
+								onClick={() => confirmDeleteCustomer && handleDelete(confirmDeleteCustomer.id)}
+								disabled={isDeleting}
+								className="bg-red-600 hover:bg-red-700"
+							>
+								{isDeleting ? "Deleting..." : "Delete"}
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
 			</TooltipProvider>
 		</>
 	);

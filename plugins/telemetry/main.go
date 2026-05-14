@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -27,7 +28,8 @@ const (
 )
 
 const (
-	startTimeKey schemas.BifrostContextKey = "bf-prom-start-time"
+	startTimeKey         schemas.BifrostContextKey = "bf-prom-start-time"
+	activeRequestTypeKey schemas.BifrostContextKey = "bf-prom-active-req-type"
 )
 
 // PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
@@ -61,7 +63,8 @@ type BasicAuthConfig struct {
 //   - Error counts
 type PrometheusPlugin struct {
 	pricingManager *modelcatalog.ModelCatalog
-	registry       *prometheus.Registry
+	registry       *prometheus.Registry // Bifrost metrics only — used for push gateway
+	systemRegistry *prometheus.Registry // Go/process collectors — /metrics scraping only
 
 	logger schemas.Logger
 
@@ -84,7 +87,10 @@ type PrometheusPlugin struct {
 	CostTotal                      *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
+	RequestRetries                 *prometheus.HistogramVec
 	KeyRotationEventsTotal         *prometheus.CounterVec
+	ActiveRequests                 *prometheus.GaugeVec
+	ProviderKeyUp                  *prometheus.GaugeVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -98,13 +104,45 @@ type PrometheusPlugin struct {
 	pushWg     sync.WaitGroup
 	pushMu     sync.RWMutex
 	pushActive bool
+
+	// MetricsEnabled gates the /metrics scrape endpoint.
+	metricsEnabled atomic.Bool
 }
 
 type Config struct {
 	CustomLabels []string `json:"custom_labels"`
 	Registry     *prometheus.Registry
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
+	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
+	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
 }
+
+// Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
+// and OTel exporters report the same quantile estimates for the same metric.
+var (
+	// upstreamLatencyBuckets: end-to-end / upstream LLM call latency. Top end (900s)
+	// covers reasoning-model and long-context outliers; without these buckets p99
+	// collapses to the highest finite bucket boundary.
+	upstreamLatencyBuckets = []float64{
+		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
+		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
+	}
+
+	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
+	// providers, tens to hundreds of seconds for reasoning models. Purely additive
+	// over prometheus.DefBuckets so historical le-label queries remain valid.
+	firstTokenLatencyBuckets = []float64{
+		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
+		10, 20, 30, 60, 120, 300,
+	}
+
+	// interTokenLatencyBuckets: inter-token latency. Typically single-digit ms to ~1s.
+	// Adds .001 below DefBuckets for fast models (Haiku) and keeps 10 at the top so
+	// the array is purely additive over the previous DefBuckets fallback.
+	interTokenLatencyBuckets = []float64{
+		.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10,
+	}
+)
 
 // Init creates a new PrometheusPlugin with initialized metrics.
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
@@ -122,14 +160,16 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		registry = prometheus.NewRegistry()
 	}
 
-	// Create collectors and store references for cleanup
+	// GoCollector and ProcessCollector go into a separate registry so they are served
+	// on /metrics but never pushed to the push gateway (the gateway itself registers
+	// the same metric names and conflicts/spams warnings when they collide).
+	systemRegistry := prometheus.NewRegistry()
 	goCollector := collectors.NewGoCollector()
-	if err := registry.Register(goCollector); err != nil {
+	if err := systemRegistry.Register(goCollector); err != nil {
 		return nil, fmt.Errorf("failed to register Go collector: %v", err)
 	}
-
 	processCollector := collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})
-	if err := registry.Register(processCollector); err != nil {
+	if err := systemRegistry.Register(processCollector); err != nil {
 		return nil, fmt.Errorf("failed to register process collector: %v", err)
 	}
 
@@ -146,7 +186,6 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		"routing_rule_name",
 		"selected_key_id",
 		"selected_key_name",
-		"number_of_retries",
 		"fallback_index",
 		"team_id",
 		"team_name",
@@ -167,9 +206,6 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	factory := promauto.With(registry)
 
-	// Upstream LLM latency buckets - extended range for AI model inference times
-	upstreamLatencyBuckets := []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 15, 30, 45, 60, 90} // in seconds
-
 	httpRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
@@ -183,7 +219,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "Duration of HTTP requests.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: upstreamLatencyBuckets,
 		},
 		append(defaultHTTPLabels, filteredCustomLabels...),
 	)
@@ -276,16 +312,27 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name: "bifrost_stream_inter_token_latency_seconds",
-			Help: "Latency of the intermediate tokens of a stream response.",
+			Name:    "bifrost_stream_inter_token_latency_seconds",
+			Help:    "Latency of the intermediate tokens of a stream response.",
+			Buckets: interTokenLatencyBuckets,
 		},
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
 	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name: "bifrost_stream_first_token_latency_seconds",
-			Help: "Latency of the first token of a stream response.",
+			Name:    "bifrost_stream_first_token_latency_seconds",
+			Help:    "Latency of the first token of a stream response.",
+			Buckets: firstTokenLatencyBuckets,
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
+	bifrostRequestRetries := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_request_retries",
+			Help:    "Number of retries used per request (observed once per request).",
+			Buckets: []float64{0, 1, 2, 3, 5, 10},
 		},
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
@@ -301,10 +348,27 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
 
+	bifrostActiveRequests := factory.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "bifrost_active_requests",
+			Help: "Number of LLM requests currently in-flight.",
+		},
+		[]string{"method"},
+	)
+
+	bifrostProviderKeyUp := factory.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "bifrost_provider_key_up",
+			Help: "Health of a provider key. 1 = last attempt succeeded, 0 = last attempt failed.",
+		},
+		[]string{"provider", "key_id", "key_name"},
+	)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
 		registry:                       registry,
+		systemRegistry:                 systemRegistry,
 		GoCollector:                    goCollector,
 		ProcessCollector:               processCollector,
 		HTTPRequestsTotal:              httpRequestsTotal,
@@ -321,11 +385,22 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CostTotal:                      bifrostCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
+		RequestRetries:                 bifrostRequestRetries,
 		KeyRotationEventsTotal:         bifrostKeyRotationEventsTotal,
+		ActiveRequests:                 bifrostActiveRequests,
+		ProviderKeyUp:                  bifrostProviderKeyUp,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
 	}
+
+	// Default /metrics scraping to on when the config omits the field — preserves
+	// behavior for existing connectors written before metrics_enabled existed.
+	metricsEnabled := true
+	if config.MetricsEnabled != nil {
+		metricsEnabled = *config.MetricsEnabled
+	}
+	plugin.metricsEnabled.Store(metricsEnabled)
 
 	// Start push gateway if configured
 	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL != "" {
@@ -337,8 +412,20 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	return plugin, nil
 }
 
+// IsMetricsEnabled reports whether the /metrics scrape endpoint should serve
+// metrics on this instance. Safe to call from request-handling goroutines.
+func (p *PrometheusPlugin) IsMetricsEnabled() bool {
+	return p.metricsEnabled.Load()
+}
+
 func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {
 	return p.registry
+}
+
+// GetMetricsGatherer returns a combined gatherer for the /metrics endpoint,
+// including both Bifrost metrics and Go/process runtime collectors.
+func (p *PrometheusPlugin) GetMetricsGatherer() prometheus.Gatherer {
+	return prometheus.Gatherers{p.registry, p.systemRegistry}
 }
 
 // GetName returns the name of the plugin.
@@ -365,6 +452,8 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
+	ctx.SetValue(activeRequestTypeKey, req.RequestType)
+	p.ActiveRequests.WithLabelValues(string(req.RequestType)).Inc()
 	return req, nil, nil
 }
 
@@ -427,7 +516,6 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"routing_rule_name":   routingRuleName,
 		"selected_key_id":     selectedKeyID,
 		"selected_key_name":   selectedKeyName,
-		"number_of_retries":   strconv.Itoa(numberOfRetries),
 		"fallback_index":      strconv.Itoa(fallbackIndex),
 		"team_id":             teamID,
 		"team_name":           teamName,
@@ -471,6 +559,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
+	// Decrement active requests on the final (or only) call for this request
+	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
+	if isStreamFinal {
+		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
+			p.ActiveRequests.WithLabelValues(string(method)).Dec()
+		}
+	}
+
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
@@ -505,10 +601,20 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), originalModel, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
+				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
+		}
+		// Mark the selected key healthy if the request ultimately succeeded
+		if bifrostErr == nil && selectedKeyID != "" {
+			p.ProviderKeyUp.WithLabelValues(string(provider), selectedKeyID, selectedKeyName).Set(1)
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+
+		// Record retries used for this request. Observed once per request (per the goroutine
+		// guarding around isStreamFinal), so .Sum/.Count map cleanly to "total retry attempts"
+		// and "total requests"; bucket le="0" gives "requests that succeeded on the first try".
+		p.RequestRetries.WithLabelValues(promLabelValues...).Observe(float64(numberOfRetries))
 
 		// Record latency
 		duration := time.Since(startTime).Seconds()

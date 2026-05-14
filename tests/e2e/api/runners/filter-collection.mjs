@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-// Filters a Postman collection by provider, feature keyword, or "rerun failed"
+// Filters a Postman collection by provider, feature keyword(s), or "rerun failed"
 // from a prior newman report. Writes the filtered collection to --out.
 //
 // Usage:
 //   node filter-collection.mjs --source path.json --out /tmp/x.json --provider anthropic
 //   node filter-collection.mjs --source path.json --out /tmp/x.json --feature "web search"
+//   node filter-collection.mjs --source path.json --out /tmp/x.json --feature "cross-cut,structured output"   # multi-keyword AND
+//
+// Structural keyword: "cross-cut" matches by route shape (unified /v1/chat/completions
+// with a provider/model body), not just by name substring. Lets the AND filter find
+// every cross-cut row without renaming 100+ items to add a literal "Cross-cut:" prefix.
 //   node filter-collection.mjs --source path.json --out /tmp/x.json --rerun-failed --report tmp/newman-report.json
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -23,7 +28,10 @@ const args = Object.fromEntries(
 const SOURCE = args.source;
 const OUT = args.out;
 const PROVIDER = (args.provider || "").toLowerCase();
-const FEATURE = (args.feature || "").toLowerCase();
+const FEATURE_PARTS = (args.feature || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+// --feature-any is the OR-of-keywords counterpart of --feature (which ANDs). Item passes
+// if it matches at least one keyword. Combines with --feature/--provider via AND.
+const FEATURE_ANY_PARTS = (args["feature-any"] || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
 const RERUN_FAILED = args["rerun-failed"] === "true";
 const REPORT = args.report || "tmp/newman-report.json";
 
@@ -31,8 +39,8 @@ if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE && !RERUN_FAILED) {
-  console.error("[filter-collection] need at least one of: --provider, --feature, --rerun-failed");
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !RERUN_FAILED) {
+  console.error("[filter-collection] need at least one of: --provider, --feature, --feature-any, --rerun-failed");
   process.exit(2);
 }
 
@@ -46,17 +54,56 @@ const PROVIDER_KEYWORDS = {
   passthrough: ["_passthrough"],
 };
 
-const itemMatchesProvider = (item) => {
+// Haystack = item JSON + ancestor folder names. Folder names encode the harness
+// taxonomy ("Structured Output cross-cut", "Vertex Features", ...) so PROVIDER and
+// FEATURE filters need to see them, otherwise a row named "openai/gpt-4o-mini" inside
+// folder "Structured Output cross-cut" is invisible to FEATURE="cross-cut".
+const buildHaystack = (item, ancestorNames) =>
+  (JSON.stringify(item) + " " + ancestorNames.join(" ")).toLowerCase();
+
+// Structural keywords - matched against route shape, not name substring. Lets users
+// say FEATURE="cross-cut,structured output" and have it work for every row routed via
+// unified /v1/chat/completions with a provider/model prefix, regardless of how the
+// row is named or which folder it lives in.
+const STRUCTURAL_KEYWORDS = {
+  "cross-cut": (item) => {
+    const req = item.request || {};
+    const url = (typeof req.url === "string" ? req.url : req.url?.raw) || "";
+    const body = req.body?.raw || "";
+    const isUnified = /\/v1\/chat\/completions(\?|$)/.test(url) &&
+      !/\/(openai|anthropic|bedrock|genai|azure)\/v1/.test(url) &&
+      !/_passthrough/.test(url);
+    const hasProviderPrefix = /"model"\s*:\s*"(openai|anthropic|bedrock|gemini|vertex|azure)\//.test(body);
+    return isUnified && hasProviderPrefix;
+  },
+  crosscut: (item) => STRUCTURAL_KEYWORDS["cross-cut"](item),
+};
+
+const itemMatchesProvider = (item, ancestorNames) => {
   if (!PROVIDER) return true;
   const keywords = PROVIDER_KEYWORDS[PROVIDER] || [PROVIDER];
-  const haystack = JSON.stringify(item).toLowerCase();
+  const haystack = buildHaystack(item, ancestorNames);
   return keywords.some((k) => haystack.includes(k));
 };
 
-const itemMatchesFeature = (item) => {
-  if (!FEATURE) return true;
-  const haystack = JSON.stringify(item).toLowerCase();
-  return haystack.includes(FEATURE);
+const itemMatchesFeature = (item, ancestorNames) => {
+  if (!FEATURE_PARTS.length) return true;
+  const haystack = buildHaystack(item, ancestorNames);
+  return FEATURE_PARTS.every((p) => {
+    const structural = STRUCTURAL_KEYWORDS[p];
+    if (structural) return structural(item) || haystack.includes(p);
+    return haystack.includes(p);
+  });
+};
+
+const itemMatchesFeatureAny = (item, ancestorNames) => {
+  if (!FEATURE_ANY_PARTS.length) return true;
+  const haystack = buildHaystack(item, ancestorNames);
+  return FEATURE_ANY_PARTS.some((p) => {
+    const structural = STRUCTURAL_KEYWORDS[p];
+    if (structural) return structural(item) || haystack.includes(p);
+    return haystack.includes(p);
+  });
 };
 
 let failedNames = null;
@@ -79,18 +126,21 @@ const itemMatchesRerunFailed = (item) => {
   return failedNames.has(item.name);
 };
 
-const passes = (item) => {
+const passes = (item, ancestorNames) => {
   if (!item.request) return true; // folders pass; we filter their items below
-  return itemMatchesProvider(item) && itemMatchesFeature(item) && itemMatchesRerunFailed(item);
+  return itemMatchesProvider(item, ancestorNames) &&
+    itemMatchesFeature(item, ancestorNames) &&
+    itemMatchesFeatureAny(item, ancestorNames) &&
+    itemMatchesRerunFailed(item);
 };
 
-const filterTree = (items) => {
+const filterTree = (items, ancestorNames = []) => {
   const out = [];
   for (const item of items) {
     if (Array.isArray(item.item)) {
-      const kids = filterTree(item.item);
+      const kids = filterTree(item.item, [...ancestorNames, item.name || ""]);
       if (kids.length > 0) out.push({ ...item, item: kids });
-    } else if (passes(item)) {
+    } else if (passes(item, ancestorNames)) {
       out.push(item);
     }
   }
@@ -101,4 +151,4 @@ const collection = JSON.parse(readFileSync(SOURCE, "utf8"));
 const filtered = { ...collection, item: filterTree(collection.item || []) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
-console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE || "-"}, rerun-failed=${RERUN_FAILED})`);
+console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, rerun-failed=${RERUN_FAILED})`);

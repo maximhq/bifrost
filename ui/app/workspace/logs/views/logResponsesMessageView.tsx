@@ -385,7 +385,10 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 
 			{/* Handle additional tool-specific fields */}
 			{Object.keys(message).some(
-				(key) => !["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content", "output"].includes(key),
+				(key) =>
+					!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content", "output"].includes(
+						key,
+					),
 			) && (
 				<CollapsibleBox
 					title="Additional Fields"
@@ -394,9 +397,19 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 							Object.fromEntries(
 								Object.entries(message).filter(
 									([key]) =>
-										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content", "output"].includes(
-											key,
-										),
+										![
+											"id",
+											"type",
+											"status",
+											"role",
+											"content",
+											"call_id",
+											"name",
+											"arguments",
+											"summary",
+											"encrypted_content",
+											"output",
+										].includes(key),
 								),
 							),
 							null,
@@ -414,9 +427,19 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 							Object.fromEntries(
 								Object.entries(message).filter(
 									([key]) =>
-										!["id", "type", "status", "role", "content", "call_id", "name", "arguments", "summary", "encrypted_content", "output"].includes(
-											key,
-										),
+										![
+											"id",
+											"type",
+											"status",
+											"role",
+											"content",
+											"call_id",
+											"name",
+											"arguments",
+											"summary",
+											"encrypted_content",
+											"output",
+										].includes(key),
 								),
 							),
 							null,

@@ -1492,6 +1492,26 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 							}
 						}
 					}
+
+					// For Azure, extract inline requests from raw body
+					if createReq.Provider == schemas.Azure {
+						var extraFields map[string]interface{}
+						if err := json.Unmarshal(ctx.Request.Body(), &extraFields); err == nil {
+							// Extract requests array for inline batching
+							if inputBlob, ok := extraFields["input_blob"].(string); ok {
+								createReq.InputBlob = &inputBlob
+							}
+							if outputFolder, ok := extraFields["output_folder"].(map[string]interface{}); ok {
+								outputURL, ok := outputFolder["url"].(string)
+								if !ok || strings.TrimSpace(outputURL) == "" {
+									return errors.New("output_folder.url must be a non-empty string")
+								}
+								createReq.OutputFolder = &schemas.BatchOutputFolder{
+									URL: outputURL,
+								}
+							}
+						}
+					}
 				}
 				return nil
 			},

@@ -906,6 +906,34 @@ mcp-logs:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+mcp-logs-by-id:
+  get:
+    operationId: getMCPLogById
+    summary: Get MCP tool log by ID
+    description: Retrieves a single MCP tool execution log by ID, including hydrated object-storage payloads when configured.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP tool log ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP tool log found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/MCPToolLogEntry'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 mcp-logs-stats:
   get:
     operationId: getMCPLogsStats

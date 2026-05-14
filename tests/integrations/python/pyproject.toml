@@ -123,4 +123,4 @@ exclude_lines = [
 
 
 [tool.uv]
-exclude-newer = "2026-04-08"
+exclude-newer = "2026-05-08T00:00:00Z"

@@ -73,6 +73,7 @@ type LogStore interface {
 
 	// MCP Tool Log methods
 	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error
+	BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error
 	FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error)
 	UpdateMCPToolLog(ctx context.Context, id string, entry any) error
 	SearchMCPToolLogs(ctx context.Context, filters MCPToolLogSearchFilters, pagination PaginationOptions) (*MCPToolLogSearchResult, error)

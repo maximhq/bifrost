@@ -122,6 +122,9 @@ type LogManager interface {
 	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
 
 	// MCP Tool Log methods
+	// GetMCPToolLog retrieves a single MCP tool log entry by ID.
+	GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error)
+
 	// SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
 	SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error)
 
@@ -364,6 +367,17 @@ func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logsto
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.RecalculateCosts(ctx, *filters, limit)
+}
+
+// GetMCPToolLog retrieves a single MCP tool log entry by ID.
+func (p *PluginLogManager) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id cannot be empty")
+	}
+	return p.plugin.GetMCPToolLog(ctx, id)
 }
 
 // SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
@@ -738,6 +752,8 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 	set("provider_session_id", schemas.BifrostContextKeyRealtimeProviderSessionID)
 	set("realtime_source", schemas.BifrostContextKeyRealtimeSource)
 	set("realtime_event_type", schemas.BifrostContextKeyRealtimeEventType)
+	set("realtime_transport", schemas.BifrostContextKeyRealtimeTransport)
+	set("realtime_voice", schemas.BifrostContextKeyRealtimeVoice)
 	if bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID) != "" {
 		if metadata == nil {
 			metadata = make(map[string]interface{})

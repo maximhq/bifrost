@@ -378,16 +378,6 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		entry.StopReason = streamResponse.Data.FinishReason
 	}
 
-	// Cache
-	if streamResponse.Data.CacheDebug != nil {
-		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
-	}
-
-	// Finish/stop reason - always persist regardless of content logging settings
-	if streamResponse.Data.FinishReason != nil {
-		entry.StopReason = streamResponse.Data.FinishReason
-	}
-
 	// Passthrough status code
 	if streamResponse.Data.PassthroughOutput != nil {
 		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
@@ -977,6 +967,11 @@ func (p *LoggerPlugin) GetSessionSummary(ctx context.Context, sessionID string) 
 // GetLog retrieves a single log entry by ID including all fields (raw_request, raw_response).
 func (p *LoggerPlugin) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
 	return p.store.FindByID(ctx, id)
+}
+
+// GetMCPToolLog retrieves a single MCP tool log entry by ID.
+func (p *LoggerPlugin) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
+	return p.store.FindMCPToolLog(ctx, id)
 }
 
 // GetStats calculates statistics for logs matching the given filters

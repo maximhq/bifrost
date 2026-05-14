@@ -95,6 +95,7 @@ export default function LogsPage() {
 			polling: parseAsBoolean.withDefault(true).withOptions({ clearOnDefault: false }),
 			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
 			missing_cost_only: parseAsBoolean.withDefault(false),
+			cache_hit_types: parseAsArrayOf(parseAsString).withDefault([]),
 			metadata_filters: parseAsString.withDefault(""),
 			selected_log: parseAsString.withDefault(""),
 		},
@@ -129,20 +130,23 @@ export default function LogsPage() {
 			business_unit_ids: urlState.business_unit_ids,
 			content_search: urlState.content_search,
 			missing_cost_only: urlState.missing_cost_only,
+			cache_hit_types: urlState.cache_hit_types,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-					try {
-						return JSON.parse(urlState.metadata_filters);
-					} catch {
-						return undefined;
-					}
-				})()
+						try {
+							return JSON.parse(urlState.metadata_filters);
+						} catch {
+							return undefined;
+						}
+					})()
 				: undefined,
 			// Use a period if present
-			...(urlState.period ? { period: urlState.period } : {
-				start_time: dateUtils.toISOString(urlState.start_time),
-				end_time: dateUtils.toISOString(urlState.end_time),
-			})
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
@@ -163,6 +167,7 @@ export default function LogsPage() {
 			urlState.content_search,
 			urlState.parent_request_id,
 			urlState.missing_cost_only,
+			urlState.cache_hit_types,
 			urlState.metadata_filters,
 			urlState.start_time,
 			urlState.end_time,
@@ -213,6 +218,7 @@ export default function LogsPage() {
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
 				missing_cost_only: newFilters.missing_cost_only ?? false,
+				cache_hit_types: newFilters.cache_hit_types || [],
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
 				offset: 0,
 			});
@@ -242,7 +248,7 @@ export default function LogsPage() {
 				start_time: startTime,
 				end_time: endTime,
 				offset: 0,
-				polling: false
+				polling: false,
 			});
 		},
 		[setUrlState],
@@ -253,19 +259,22 @@ export default function LogsPage() {
 		const now = Math.floor(Date.now() / 1000);
 		const oneHour = now - 1 * 60 * 60;
 		setUrlState({
+			period: "1h",
 			start_time: oneHour,
 			end_time: now,
 			offset: 0,
+			polling: true,
 		});
 	}, [setUrlState]);
 
-	// Check if user has zoomed (time range is different from default 1h)
+	// Zoomed only when a custom absolute range is active (period cleared) and
+	// the range is meaningfully narrower than 1h.
 	const isZoomed = useMemo(() => {
+		if (urlState.period) return false;
 		const currentRange = urlState.end_time - urlState.start_time;
-		const defaultRange = 1 * 60 * 60; // 1 hours in seconds
-		// Consider zoomed if range is less than 90% of default (to account for minor differences)
+		const defaultRange = 1 * 60 * 60;
 		return currentRange < defaultRange * 0.9;
-	}, [urlState.start_time, urlState.end_time]);
+	}, [urlState.start_time, urlState.end_time, urlState.period]);
 
 	const {
 		data: logsData,
@@ -303,7 +312,7 @@ export default function LogsPage() {
 		refetch: refetchHistogram,
 	} = useGetLogsHistogramQuery(
 		{
-			filters
+			filters,
 		},
 		{
 			pollingInterval: polling ? 10000 : 0,
@@ -372,7 +381,7 @@ export default function LogsPage() {
 				setUrlState({
 					period: p,
 					offset: 0,
-					polling: true
+					polling: true,
 				});
 			} else if (from && to) {
 				setUrlState({
@@ -380,7 +389,7 @@ export default function LogsPage() {
 					end_time: Math.floor(to.getTime() / 1000),
 					offset: 0,
 					polling: false,
-					period: ""
+					period: "",
 				});
 			}
 		},
@@ -443,7 +452,9 @@ export default function LogsPage() {
 		[stats],
 	);
 
-	const { data: filterData } = useGetAvailableFilterDataQuery();
+	// Only need metadata_keys here (used to render dynamic columns even when the
+	// current page has no rows). Scope the request to that one dimension.
+	const { data: filterData } = useGetAvailableFilterDataQuery({ dimensions: ["metadata_keys"] });
 
 	// Get metadata keys from filterdata API so columns always show even with no data on current page
 	const metadataKeys = useMemo(() => {
@@ -481,7 +492,11 @@ export default function LogsPage() {
 		togglePin: toggleColumnPin,
 		reorder: reorderColumns,
 		reset: resetColumns,
-	} = useColumnConfig({ columnIds, paramName: "cols" });
+	} = useColumnConfig({
+		columnIds,
+		paramName: "cols",
+		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
+	});
 
 	// Navigation for log detail sheet
 	const logs = logsData?.logs ?? [];

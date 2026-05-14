@@ -138,6 +138,7 @@ type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
+	NormalizedName      *string            `json:"normalized_name,omitempty"` // Human-readable name derived from the datasheet base_model (e.g. "Claude Sonnet 4.5")
 	Alias               *string            `json:"alias,omitempty"` // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
 	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`

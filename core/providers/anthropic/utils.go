@@ -530,6 +530,17 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	if toolsResult := providerUtils.GetJSONField(jsonBody, "tools"); toolsResult.Exists() && toolsResult.IsArray() {
 		for i := range toolsResult.Array() {
 			base := fmt.Sprintf("tools.%d", i)
+			// Server tools with a nested `model` field (e.g. advisor_20260301)
+			// expect a bare Anthropic model id. Strip the prefix when
+			// it's a known Bifrost provider; bare ids pass through unchanged.
+			if modelResult := providerUtils.GetJSONField(jsonBody, base+".model"); modelResult.Exists() && modelResult.Type == gjson.String {
+				if prefixProvider, bare := schemas.ParseModelString(modelResult.String(), ""); prefixProvider != "" {
+					jsonBody, err = providerUtils.SetJSONField(jsonBody, base+".model", bare)
+					if err != nil {
+						return nil, fmt.Errorf("strip raw %s.model prefix: %w", base, err)
+					}
+				}
+			}
 			if !features.AdvancedToolUse {
 				if providerUtils.JSONFieldExists(jsonBody, base+".defer_loading") {
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".defer_loading")
@@ -2641,6 +2652,14 @@ func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.Respo
 
 		if len(format.JSONSchema.Required) > 0 {
 			schema["required"] = format.JSONSchema.Required
+		}
+
+		if format.JSONSchema.Defs != nil {
+			schema["$defs"] = *format.JSONSchema.Defs
+		}
+
+		if format.JSONSchema.Definitions != nil {
+			schema["definitions"] = *format.JSONSchema.Definitions
 		}
 
 		if format.JSONSchema.Type != nil && *format.JSONSchema.Type == "object" {

@@ -1592,6 +1592,9 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 		rateLimitUpdates = append(rateLimitUpdates, update)
 		return true
 	})
+	sort.Slice(rateLimitUpdates, func(i, j int) bool {
+		return rateLimitUpdates[i].ID < rateLimitUpdates[j].ID
+	})
 
 	// Save all updated rate limits to database using direct UPDATE to avoid overwriting config fields
 	if len(rateLimitUpdates) > 0 && gs.configStore != nil {
@@ -1653,10 +1656,16 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 		return true // continue iteration
 	})
 	if len(budgets) > 0 && gs.configStore != nil {
+		budgetIDs := make([]string, 0, len(budgets))
+		for id := range budgets {
+			budgetIDs = append(budgetIDs, id)
+		}
+		sort.Strings(budgetIDs)
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 			// Update each budget atomically using direct UPDATE to avoid deadlocks
 			// (SELECT + Save pattern causes deadlocks when multiple instances run concurrently)
-			for _, inMemoryBudget := range budgets {
+			for _, budgetID := range budgetIDs {
+				inMemoryBudget := budgets[budgetID]
 				// Calculate the new usage value
 				newUsage := inMemoryBudget.CurrentUsage
 				if baseline, exists := baselines[inMemoryBudget.ID]; exists {

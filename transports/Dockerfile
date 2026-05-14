@@ -90,15 +90,16 @@
     GOMEMLIMIT=""
   
   
-  RUN mkdir -p $APP_DIR/logs && \
+  RUN mkdir -p "$APP_DIR/logs" && \
     adduser -D -s /bin/sh appuser && \
     chown -R appuser:appuser /app && \
+    { [ "$APP_DIR" = "/app" ] || [ "${APP_DIR#/app/}" != "$APP_DIR" ] || chown -R appuser:appuser "$APP_DIR"; } && \
     chmod +x /app/docker-entrypoint.sh
   USER appuser
   
   
   # Declare volume for data persistence
-  VOLUME ["/app/data"]
+  VOLUME ["${APP_DIR}"]
   EXPOSE $APP_PORT
   
   # Health check for container status monitoring

@@ -156,16 +156,16 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		Architecture:    entry.Architecture,
 
 		// Costs - Text
-		InputCostPerToken:                 entry.InputCostPerToken,
-		OutputCostPerToken:                entry.OutputCostPerToken,
-		InputCostPerTokenBatches:          entry.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:         entry.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:         entry.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:        entry.OutputCostPerTokenPriority,
-		InputCostPerTokenFlex:             entry.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:            entry.OutputCostPerTokenFlex,
-		InputCostPerTokenAbove200kTokens:         entry.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority: entry.InputCostPerTokenAbove200kTokensPriority,
+		InputCostPerToken:                         entry.InputCostPerToken,
+		OutputCostPerToken:                        entry.OutputCostPerToken,
+		InputCostPerTokenBatches:                  entry.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                 entry.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:                 entry.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:                entry.OutputCostPerTokenPriority,
+		InputCostPerTokenFlex:                     entry.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:                    entry.OutputCostPerTokenFlex,
+		InputCostPerTokenAbove200kTokens:          entry.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:  entry.InputCostPerTokenAbove200kTokensPriority,
 		OutputCostPerTokenAbove200kTokens:         entry.OutputCostPerTokenAbove200kTokens,
 		OutputCostPerTokenAbove200kTokensPriority: entry.OutputCostPerTokenAbove200kTokensPriority,
 		// Costs - 272k Tier
@@ -240,16 +240,16 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModelPricing) *PricingEntry {
 	options := PricingOptions{
 		// Costs - Text
-		InputCostPerToken:                 pricing.InputCostPerToken,
-		OutputCostPerToken:                pricing.OutputCostPerToken,
-		InputCostPerTokenBatches:          pricing.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:         pricing.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:         pricing.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:        pricing.OutputCostPerTokenPriority,
-		InputCostPerTokenFlex:             pricing.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:            pricing.OutputCostPerTokenFlex,
-		InputCostPerTokenAbove200kTokens:         pricing.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority: pricing.InputCostPerTokenAbove200kTokensPriority,
+		InputCostPerToken:                         pricing.InputCostPerToken,
+		OutputCostPerToken:                        pricing.OutputCostPerToken,
+		InputCostPerTokenBatches:                  pricing.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                 pricing.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:                 pricing.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:                pricing.OutputCostPerTokenPriority,
+		InputCostPerTokenFlex:                     pricing.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:                    pricing.OutputCostPerTokenFlex,
+		InputCostPerTokenAbove200kTokens:          pricing.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:  pricing.InputCostPerTokenAbove200kTokensPriority,
 		OutputCostPerTokenAbove200kTokens:         pricing.OutputCostPerTokenAbove200kTokens,
 		OutputCostPerTokenAbove200kTokensPriority: pricing.OutputCostPerTokenAbove200kTokensPriority,
 		// Costs - 272k Tier
@@ -386,13 +386,15 @@ type modelParametersParseResult struct {
 	ModelParameters    []struct {
 		ID string `json:"id"`
 	} `json:"model_parameters,omitempty"`
+	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
 	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
 	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
 	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
+	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
 	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
 	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
-	VertexMultiRegionOnly       *bool `json:"vertex_multi_region_only,omitempty"`
+	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
 }
 
 // extractSupportedParams builds a list of supported OpenAI-compatible parameter
@@ -420,6 +422,11 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 
 	// From supports_* boolean flags
+	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
+		// not an actual model parameter; if present, trailing assistant messages
+		// for anthropic and bedrock's anthropic models will not be trimmed
+		addParam("assistant_prefill")
+	}
 	if parsed.SupportsFunctionCalling != nil && *parsed.SupportsFunctionCalling {
 		addParam("tools")
 	}
@@ -432,10 +439,16 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	if parsed.SupportsReasoning != nil && *parsed.SupportsReasoning {
 		addParam("reasoning")
 	}
+	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
+		addParam("response_format")
+		addParam("text")
+	}
 	if parsed.SupportsServiceTier != nil && *parsed.SupportsServiceTier {
 		addParam("service_tier")
 	}
 	if parsed.SupportsPromptCaching != nil && *parsed.SupportsPromptCaching {
+		addParam("cachePoint")
+		addParam("cache_control")
 		addParam("prompt_cache_key")
 		addParam("prompt_cache_retention")
 	}

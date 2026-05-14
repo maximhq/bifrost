@@ -395,7 +395,7 @@ func (mc *ModelCatalog) applyModelParameters(paramsData map[string]json.RawMessa
 		}
 		if err := json.Unmarshal(rawData, &p); err == nil && (p.MaxOutputTokens != nil || parsed.VertexMultiRegionOnly != nil) {
 			modelParamsEntries[model] = providerUtils.ModelParams{
-				MaxOutputTokens:        p.MaxOutputTokens,
+				MaxOutputTokens:         p.MaxOutputTokens,
 				IsVertexMultiRegionOnly: parsed.VertexMultiRegionOnly,
 			}
 		}

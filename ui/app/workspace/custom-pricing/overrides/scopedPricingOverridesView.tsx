@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useDebouncedValue } from "@/hooks/useDebounce";
@@ -25,7 +26,7 @@ import {
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { useLocation } from "@tanstack/react-router";
-import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import PricingOverrideSheet from "./pricingOverrideSheet";
@@ -312,25 +313,45 @@ export default function ScopedPricingOverridesView() {
 										<TableCell>{keyLabel(row, providerKeyLabelMap)}</TableCell>
 										<TableCell>{row.pattern}</TableCell>
 										<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-											<div className="flex items-center justify-end gap-2">
-												<Button
-													data-testid={`pricing-override-edit-btn-${row.id}`}
-													variant="ghost"
-													size="sm"
-													onClick={() => openEditDrawer(row)}
-													aria-label="Edit pricing override"
-												>
-													<Edit className="h-4 w-4" />
-												</Button>
-												<Button
-													data-testid={`pricing-override-delete-btn-${row.id}`}
-													variant="ghost"
-													size="sm"
-													onClick={() => setDeleteTarget(row)}
-													aria-label="Delete pricing override"
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
+											<div className="flex items-center justify-end">
+												<DropdownMenu>
+													<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
+														<Button
+															variant="ghost"
+															size="icon"
+															className="h-8 w-8"
+															aria-label={`Actions for pricing override ${row.name || row.id}`}
+															data-testid={`pricing-override-actions-btn-${row.id}`}
+														>
+															<MoreHorizontal className="h-4 w-4" />
+														</Button>
+													</DropdownMenuTrigger>
+													<DropdownMenuContent align="end">
+														<DropdownMenuItem
+															data-testid={`pricing-override-edit-btn-${row.id}`}
+															className="cursor-pointer"
+															onClick={(event) => {
+																event.stopPropagation();
+																openEditDrawer(row);
+															}}
+														>
+															<Edit className="h-4 w-4" />
+															Edit
+														</DropdownMenuItem>
+														<DropdownMenuItem
+															data-testid={`pricing-override-delete-btn-${row.id}`}
+															variant="destructive"
+															className="cursor-pointer"
+															onClick={(event) => {
+																event.stopPropagation();
+																setDeleteTarget(row);
+															}}
+														>
+															<Trash2 className="h-4 w-4" />
+															Delete
+														</DropdownMenuItem>
+													</DropdownMenuContent>
+												</DropdownMenu>
 											</div>
 										</TableCell>
 									</TableRow>

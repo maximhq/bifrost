@@ -40,7 +40,7 @@ export interface MCPClientConfig {
 	stdio_config?: MCPStdioConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
-	oauth_client_id?: EnvVar;     // Redacted existing client ID (populated on GET for oauth clients)
+	oauth_client_id?: EnvVar; // Redacted existing client ID (populated on GET for oauth clients)
 	oauth_client_secret?: EnvVar; // Redacted existing client secret (populated on GET for oauth clients)
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];

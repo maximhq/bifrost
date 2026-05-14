@@ -24,6 +24,9 @@ const (
 type uploadWork struct {
 	logID     string
 	timestamp time.Time
+	key       string
+	mcp       bool
+	status    string
 	payload   []byte // JSON-encoded payload
 	tags      map[string]string
 }
@@ -99,11 +102,25 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		}
 	}()
 
-	key := ObjectKey(h.prefix, work.timestamp, work.logID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := h.objects.Put(ctx, key, work.payload, work.tags); err != nil {
+	if work.mcp {
+		current, err := h.inner.FindMCPToolLog(ctx, work.logID)
+		if err != nil {
+			h.logger.Warn("objectstore: failed to check MCP tool log %s before upload: %v", work.logID, err)
+			h.droppedUploads.Add(1)
+			return
+		}
+		// Status is the only monotonic-ish signal available on MCP log rows today.
+		// If stricter upload ordering is needed, add an updated_at/version column
+		// and compare it here alongside status.
+		if work.status != "" && current.Status != work.status {
+			return
+		}
+	}
+
+	if err := h.objects.Put(ctx, work.key, work.payload, work.tags); err != nil {
 		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
 		h.droppedUploads.Add(1)
 		return
@@ -114,7 +131,12 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	// with exponential backoff to avoid orphaning the uploaded object.
 	for attempt := 0; attempt < 3; attempt++ {
 		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+		var err error
+		if work.mcp {
+			err = h.inner.UpdateMCPToolLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+		} else {
+			err = h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+		}
 		dbCancel()
 		if err == nil {
 			return
@@ -160,6 +182,18 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 		h.droppedUploads.Add(1)
 		return
 	}
+	h.enqueueRawUpload(logID, timestamp, ObjectKey(h.prefix, timestamp, logID), false, "", data, tags)
+}
+
+func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key string, mcp bool, status string, data []byte, tags map[string]string) {
+	if h.closed.Load() || len(data) == 0 {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			h.droppedUploads.Add(1)
+		}
+	}()
 	if h.pendingBytes.Load()+int64(len(data)) > defaultMaxUploadQueueBytes {
 		h.droppedUploads.Add(1)
 		h.logger.Warn("objectstore: upload queue memory limit reached, dropping upload for log %s", logID)
@@ -169,6 +203,9 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 	case h.uploadQueue <- &uploadWork{
 		logID:     logID,
 		timestamp: timestamp,
+		key:       key,
+		mcp:       mcp,
+		status:    status,
 		payload:   data,
 		tags:      tags,
 	}:
@@ -209,7 +246,7 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	ClearPayloadFiltered(dbEntry, excluded)
 
 	if _, hasInputHistoryExclusion := excluded["input_history"]; !hasInputHistoryExclusion {
-		dbEntry.InputHistory = lastUserMessage
+		dbEntry.InputHistory = sanitizeJSONForJSONB(lastUserMessage)
 	}
 }
 
@@ -248,6 +285,9 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 }
 
 func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
+	if len(entries) == 0 {
+		return nil
+	}
 	type pendingUpload struct {
 		logID     string
 		timestamp time.Time
@@ -256,8 +296,12 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 	}
 	var uploads []pendingUpload
 
-	dbEntries := make([]*Log, len(entries))
-	for i, entry := range entries {
+	dbEntries := make([]*Log, 0, len(entries))
+	origEntries := make([]*Log, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
 		if err := entry.SerializeFields(); err != nil {
 			return fmt.Errorf("logstore: serialize before extract: %w", err)
 		}
@@ -266,7 +310,8 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
 		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
-		dbEntries[i] = &dbEntry
+		dbEntries = append(dbEntries, &dbEntry)
+		origEntries = append(origEntries, entry)
 		uploads = append(uploads, pendingUpload{
 			logID:     entry.ID,
 			timestamp: entry.Timestamp,
@@ -275,11 +320,14 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		})
 	}
 
+	if len(dbEntries) == 0 {
+		return nil
+	}
 	if err := h.inner.BatchCreateIfNotExists(ctx, dbEntries); err != nil {
 		return err
 	}
 
-	for i, entry := range entries {
+	for i, entry := range origEntries {
 		entry.ContentSummary = dbEntries[i].ContentSummary
 	}
 
@@ -319,6 +367,28 @@ func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFiel
 		return
 	}
 	pruneUnrequestedPayloadFields(log, requestedFields)
+}
+
+func (h *HybridLogStore) hydrateMCPToolLog(ctx context.Context, log *MCPToolLog) error {
+	if log == nil || !log.HasObject {
+		return nil
+	}
+	return h.hydrateMCPToolLogFromObject(ctx, log)
+}
+
+func (h *HybridLogStore) hydrateMCPToolLogFromObject(ctx context.Context, log *MCPToolLog) error {
+	if log == nil {
+		return nil
+	}
+	key := MCPToolObjectKey(h.prefix, log.Timestamp, log.ID)
+	data, err := h.objects.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("objectstore: fetch MCP tool log payload for %s: %w", log.ID, err)
+	}
+	if mergeErr := MergeMCPToolLogPayloadFromJSON(log, data); mergeErr != nil {
+		return fmt.Errorf("objectstore: merge MCP tool log payload for %s: %w", log.ID, mergeErr)
+	}
+	return nil
 }
 
 func (h *HybridLogStore) Update(ctx context.Context, id string, entry any) error {
@@ -548,7 +618,8 @@ func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[strin
 	return h.inner.GetDistinctMetadataKeys(ctx)
 }
 
-// MCP Tool Log methods — delegated directly.
+// MCP Tool Log analytics methods are delegated directly. Detail/write paths
+// below offload full MCP log objects while keeping DB rows lightweight.
 
 func (h *HybridLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error) {
 	return h.inner.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
@@ -562,16 +633,353 @@ func (h *HybridLogStore) GetMCPTopTools(ctx context.Context, filters MCPToolLogS
 	return h.inner.GetMCPTopTools(ctx, filters, limit)
 }
 
+func applyMCPToolLogUpdate(target *MCPToolLog, entry any) error {
+	switch v := entry.(type) {
+	case map[string]interface{}:
+		return applyMCPToolLogUpdateMap(target, v)
+	case *MCPToolLog:
+		if v == nil {
+			return nil
+		}
+		update := *v
+		if err := update.SerializeFields(); err != nil {
+			return err
+		}
+		return applyMCPToolLogUpdateStruct(target, &update)
+	case MCPToolLog:
+		update := v
+		if err := update.SerializeFields(); err != nil {
+			return err
+		}
+		return applyMCPToolLogUpdateStruct(target, &update)
+	default:
+		return nil
+	}
+}
+
+func applyMCPToolLogUpdateMap(target *MCPToolLog, updates map[string]interface{}) error {
+	for key, value := range updates {
+		switch key {
+		case "request_id":
+			if v, ok := value.(string); ok {
+				target.RequestID = v
+			}
+		case "llm_request_id":
+			if v, ok := value.(string); ok {
+				target.LLMRequestID = &v
+			}
+		case "tool_name":
+			if v, ok := value.(string); ok {
+				target.ToolName = v
+			}
+		case "server_label":
+			if v, ok := value.(string); ok {
+				target.ServerLabel = v
+			}
+		case "virtual_key_id":
+			if v, ok := value.(string); ok {
+				target.VirtualKeyID = &v
+			}
+		case "virtual_key_name":
+			if v, ok := value.(string); ok {
+				target.VirtualKeyName = &v
+			}
+		case "arguments":
+			if v, ok := value.(string); ok {
+				target.Arguments = v
+				target.ArgumentsParsed = nil
+			}
+		case "result":
+			if v, ok := value.(string); ok {
+				target.Result = v
+				target.ResultParsed = nil
+			}
+		case "error_details":
+			if v, ok := value.(string); ok {
+				target.ErrorDetails = v
+				target.ErrorDetailsParsed = nil
+			}
+		case "metadata":
+			if v, ok := value.(string); ok {
+				target.Metadata = v
+				target.MetadataParsed = nil
+			}
+		case "latency":
+			if v, ok := numericToFloat64(value); ok {
+				target.Latency = &v
+			}
+		case "cost":
+			if v, ok := numericToFloat64(value); ok {
+				target.Cost = &v
+			}
+		case "status":
+			if v, ok := value.(string); ok {
+				target.Status = v
+			}
+		}
+	}
+	return target.DeserializeFields()
+}
+
+func applyMCPToolLogUpdateStruct(target *MCPToolLog, update *MCPToolLog) error {
+	if update.RequestID != "" {
+		target.RequestID = update.RequestID
+	}
+	if update.LLMRequestID != nil {
+		target.LLMRequestID = update.LLMRequestID
+	}
+	if !update.Timestamp.IsZero() {
+		target.Timestamp = update.Timestamp
+	}
+	if update.ToolName != "" {
+		target.ToolName = update.ToolName
+	}
+	if update.ServerLabel != "" {
+		target.ServerLabel = update.ServerLabel
+	}
+	if update.VirtualKeyID != nil {
+		target.VirtualKeyID = update.VirtualKeyID
+	}
+	if update.VirtualKeyName != nil {
+		target.VirtualKeyName = update.VirtualKeyName
+	}
+	if update.Arguments != "" {
+		target.Arguments = update.Arguments
+		target.ArgumentsParsed = nil
+	}
+	if update.Result != "" {
+		target.Result = update.Result
+		target.ResultParsed = nil
+	}
+	if update.ErrorDetails != "" {
+		target.ErrorDetails = update.ErrorDetails
+		target.ErrorDetailsParsed = nil
+	}
+	if update.Latency != nil {
+		target.Latency = update.Latency
+	}
+	if update.Cost != nil {
+		target.Cost = update.Cost
+	}
+	if update.Status != "" {
+		target.Status = update.Status
+	}
+	if update.Metadata != "" {
+		target.Metadata = update.Metadata
+		target.MetadataParsed = nil
+	}
+	if !update.CreatedAt.IsZero() {
+		target.CreatedAt = update.CreatedAt
+	}
+	return target.DeserializeFields()
+}
+
+func prepareMCPToolLogDBUpdates(entry any) (map[string]interface{}, error) {
+	switch v := entry.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			switch key {
+			case "has_object":
+				continue
+			case "result", "error_details":
+				out[key] = ""
+			case "arguments":
+				if s, ok := value.(string); ok {
+					out[key] = marshalMCPPreviewString(truncateRunes(s, maxMCPToolInputPreviewRunes))
+				}
+			default:
+				out[key] = value
+			}
+		}
+		return out, nil
+	case *MCPToolLog:
+		if v == nil {
+			return nil, nil
+		}
+		return prepareMCPToolLogDBUpdatesFromStruct(*v)
+	case MCPToolLog:
+		return prepareMCPToolLogDBUpdatesFromStruct(v)
+	default:
+		return nil, nil
+	}
+}
+
+func prepareMCPToolLogDBUpdatesFromStruct(update MCPToolLog) (map[string]interface{}, error) {
+	if err := update.SerializeFields(); err != nil {
+		return nil, err
+	}
+	PrepareMCPToolDBEntry(&update)
+	out := make(map[string]interface{})
+	if update.RequestID != "" {
+		out["request_id"] = update.RequestID
+	}
+	if update.LLMRequestID != nil {
+		out["llm_request_id"] = *update.LLMRequestID
+	}
+	if !update.Timestamp.IsZero() {
+		out["timestamp"] = update.Timestamp
+	}
+	if update.ToolName != "" {
+		out["tool_name"] = update.ToolName
+	}
+	if update.ServerLabel != "" {
+		out["server_label"] = update.ServerLabel
+	}
+	if update.VirtualKeyID != nil {
+		out["virtual_key_id"] = *update.VirtualKeyID
+	}
+	if update.VirtualKeyName != nil {
+		out["virtual_key_name"] = *update.VirtualKeyName
+	}
+	if update.Arguments != "" {
+		out["arguments"] = update.Arguments
+	}
+	if update.Latency != nil {
+		out["latency"] = *update.Latency
+	}
+	if update.Cost != nil {
+		out["cost"] = *update.Cost
+	}
+	if update.Status != "" {
+		out["status"] = update.Status
+	}
+	if update.Metadata != "" {
+		out["metadata"] = update.Metadata
+	}
+	if !update.CreatedAt.IsZero() {
+		out["created_at"] = update.CreatedAt
+	}
+	return out, nil
+}
+
+func numericToFloat64(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	default:
+		return 0, false
+	}
+}
+
+func marshalMCPPreviewString(s string) string {
+	data, err := sonic.Marshal(s)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 func (h *HybridLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error {
-	return h.inner.CreateMCPToolLog(ctx, entry)
+	payload, err := MarshalMCPToolLogPayload(entry)
+	if err != nil {
+		return fmt.Errorf("logstore: serialize MCP tool log before offload: %w", err)
+	}
+	tags := BuildMCPToolTags(entry)
+
+	dbEntry := *entry
+	PrepareMCPToolDBEntry(&dbEntry)
+	if err := h.inner.CreateMCPToolLog(ctx, &dbEntry); err != nil {
+		return err
+	}
+	h.enqueueRawUpload(entry.ID, entry.Timestamp, MCPToolObjectKey(h.prefix, entry.Timestamp, entry.ID), true, entry.Status, payload, tags)
+	return nil
+}
+
+func (h *HybridLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	type pendingUpload struct {
+		logID     string
+		timestamp time.Time
+		status    string
+		payload   []byte
+		tags      map[string]string
+	}
+	var uploads []pendingUpload
+
+	dbEntries := make([]*MCPToolLog, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		payload, err := MarshalMCPToolLogPayload(entry)
+		if err != nil {
+			return fmt.Errorf("logstore: serialize MCP tool log before offload: %w", err)
+		}
+		dbEntry := *entry
+		PrepareMCPToolDBEntry(&dbEntry)
+		dbEntries = append(dbEntries, &dbEntry)
+		uploads = append(uploads, pendingUpload{
+			logID:     entry.ID,
+			timestamp: entry.Timestamp,
+			status:    entry.Status,
+			payload:   payload,
+			tags:      BuildMCPToolTags(entry),
+		})
+	}
+
+	if len(dbEntries) == 0 {
+		return nil
+	}
+	if err := h.inner.BatchCreateMCPToolLogsIfNotExists(ctx, dbEntries); err != nil {
+		return err
+	}
+
+	for _, u := range uploads {
+		h.enqueueRawUpload(u.logID, u.timestamp, MCPToolObjectKey(h.prefix, u.timestamp, u.logID), true, u.status, u.payload, u.tags)
+	}
+	return nil
 }
 
 func (h *HybridLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error) {
-	return h.inner.FindMCPToolLog(ctx, id)
+	log, err := h.inner.FindMCPToolLog(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.hydrateMCPToolLog(ctx, log); err != nil {
+		h.logger.Warn("%v", err)
+	}
+	return log, nil
 }
 
 func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
-	return h.inner.UpdateMCPToolLog(ctx, id, entry)
+	current, err := h.inner.FindMCPToolLog(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := h.hydrateMCPToolLogFromObject(ctx, current); err != nil {
+		return err
+	}
+	if err := applyMCPToolLogUpdate(current, entry); err != nil {
+		return err
+	}
+
+	dbUpdates, err := prepareMCPToolLogDBUpdates(entry)
+	if err != nil {
+		return err
+	}
+	if len(dbUpdates) > 0 {
+		if err := h.inner.UpdateMCPToolLog(ctx, id, dbUpdates); err != nil {
+			return err
+		}
+	}
+
+	payload, err := MarshalMCPToolLogPayload(current)
+	if err != nil {
+		return fmt.Errorf("logstore: serialize MCP tool log update before offload: %w", err)
+	}
+	h.enqueueRawUpload(current.ID, current.Timestamp, MCPToolObjectKey(h.prefix, current.Timestamp, current.ID), true, current.Status, payload, BuildMCPToolTags(current))
+	return nil
 }
 
 func (h *HybridLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogSearchFilters, pagination PaginationOptions) (*MCPToolLogSearchResult, error) {
@@ -587,7 +995,25 @@ func (h *HybridLogStore) HasMCPToolLogs(ctx context.Context) (bool, error) {
 }
 
 func (h *HybridLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) error {
-	return h.inner.DeleteMCPToolLogs(ctx, ids)
+	var keys []string
+	for _, id := range ids {
+		log, findErr := h.inner.FindMCPToolLog(ctx, id)
+		if findErr != nil && !errors.Is(findErr, ErrNotFound) {
+			return findErr
+		}
+		if log != nil && log.HasObject {
+			keys = append(keys, MCPToolObjectKey(h.prefix, log.Timestamp, log.ID))
+		}
+	}
+	if err := h.inner.DeleteMCPToolLogs(ctx, ids); err != nil {
+		return err
+	}
+	if len(keys) > 0 {
+		if delErr := h.objects.DeleteBatch(ctx, keys); delErr != nil {
+			h.logger.Warn("objectstore: failed to batch delete %d MCP tool log objects: %v", len(keys), delErr)
+		}
+	}
+	return nil
 }
 
 func (h *HybridLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) error {

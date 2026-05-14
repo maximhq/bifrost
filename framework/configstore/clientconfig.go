@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"hash"
 	"maps"
+	"math"
 	"sort"
 	"strconv"
 
@@ -43,6 +44,25 @@ type CompatConfig struct {
 	ShouldConvertParams    bool `json:"should_convert_params"`
 }
 
+// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+func (c *CompatConfig) UnmarshalJSON(data []byte) error {
+	type compatConfig struct {
+		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams       *bool `json:"should_drop_params"`
+		ShouldConvertParams    *bool `json:"should_convert_params"`
+	}
+	var s compatConfig
+	if err := sonic.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	c.ConvertTextToChat = s.ConvertTextToChat == nil || *s.ConvertTextToChat
+	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
+	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
+	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	return nil
+}
+
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
@@ -77,6 +97,24 @@ type ClientConfig struct {
 	MCPExternalServerURL                  *schemas.EnvVar                  `json:"mcp_external_server_url,omitempty"`    // Public base URL advertised in OAuth server metadata (.well-known, WWW-Authenticate). Supports env var syntax ("env.MY_VAR")
 	MCPExternalClientURL                  *schemas.EnvVar                  `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
+}
+
+// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+func (c *ClientConfig) UnmarshalJSON(data []byte) error {
+	type ClientConfigAlias ClientConfig
+	alias := ClientConfigAlias{
+		Compat: CompatConfig{
+			ConvertTextToChat:      true,
+			ConvertChatToResponses: true,
+			ShouldDropParams:       true,
+			ShouldConvertParams:    true,
+		},
+	}
+	if err := sonic.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*c = ClientConfig(alias)
+	return nil
 }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
@@ -325,6 +363,27 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateClientConfigHashWithToolManager extends GenerateClientConfigHash to also cover
+// the mcp.tool_manager_config file section. When tm is nil it returns the same value as
+// GenerateClientConfigHash, so it is safe to call unconditionally.
+func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPToolManagerConfig) (string, error) {
+	base, err := c.GenerateClientConfigHash()
+	if err != nil || tm == nil {
+		return base, err
+	}
+	h := sha256.New()
+	h.Write([]byte(base))
+	h.Write([]byte("toolMgrAgentDepth:" + strconv.Itoa(tm.MaxAgentDepth)))
+	h.Write([]byte("toolMgrTimeout:" + strconv.FormatInt(int64(math.Ceil(tm.ToolExecutionTimeout.D().Seconds())), 10)))
+	h.Write([]byte("toolMgrCodeMode:" + string(tm.CodeModeBindingLevel)))
+	if tm.DisableAutoToolInject {
+		h.Write([]byte("toolMgrDisableAutoInject:true"))
+	} else {
+		h.Write([]byte("toolMgrDisableAutoInject:false"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.

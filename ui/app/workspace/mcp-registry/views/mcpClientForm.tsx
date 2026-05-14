@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPConnectionType, MCPStdioConfig, OAuthConfig } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPConnectionType, MCPStdioConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
@@ -31,14 +31,6 @@ const emptyStdioConfig: MCPStdioConfig = {
 };
 
 const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
-
-const emptyOAuthConfig: OAuthConfig = {
-	client_id: emptyEnvVar,
-	client_secret: emptyEnvVar,
-	authorize_url: "",
-	token_url: "",
-	scopes: [],
-};
 
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
@@ -71,12 +63,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	const connectionType = watch("connection_type");
 	const authType = watch("auth_type");
-	const connectionString = watch("connection_string");
-	const stdioConfig = watch("stdio_config");
-	const oauthConfig = watch("oauth_config");
 	const headers = watch("headers");
-	const isCodeMode = watch("is_code_mode_client");
-	const isPingAvailable = watch("is_ping_available");
 
 	// Inline header validation (shown live as user edits headers)
 	let headersValidationError: string | null = null;
@@ -161,7 +148,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
 							client_id: data.oauth_config?.client_id ?? emptyEnvVar,
-							client_secret: data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env ? data.oauth_config.client_secret : undefined,
+							client_secret:
+								data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env
+									? data.oauth_config.client_secret
+									: undefined,
 							authorize_url: data.oauth_config?.authorize_url || undefined,
 							token_url: data.oauth_config?.token_url || undefined,
 							registration_url: data.oauth_config?.registration_url || undefined,
@@ -197,7 +187,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	};
 
 	return (
-		<Sheet open={open} onOpenChange={(open) => !open && onClose()}>
+		<Sheet open={open} onOpenChange={(open) => !open && !oauthFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
 				<SheetHeader className="flex flex-col items-start px-7 pt-8">
 					<SheetTitle>New MCP Server</SheetTitle>
@@ -327,7 +317,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												</Tooltip>
 											</TooltipProvider>
 										</div>
-										<Switch id="ping-available" data-testid="mcp-is-ping-available" checked={field.value === true} onCheckedChange={field.onChange} />
+										<Switch
+											id="ping-available"
+											data-testid="mcp-is-ping-available"
+											checked={field.value === true}
+											onCheckedChange={field.onChange}
+										/>
 									</div>
 								)}
 							/>
@@ -451,7 +446,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 															</TooltipProvider>
 														</div>
 														<FormControl>
-															<EnvVarInput value={field.value} onChange={field.onChange} placeholder="your-client-id (auto-generated if empty)" data-testid="mcp-oauth-client-id" />
+															<EnvVarInput
+																value={field.value}
+																onChange={field.onChange}
+																placeholder="your-client-id (auto-generated if empty)"
+																data-testid="mcp-oauth-client-id"
+															/>
 														</FormControl>
 														<p className="text-muted-foreground text-xs">
 															Will be auto-generated via dynamic registration if left empty and provider supports it
@@ -469,7 +469,14 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 													<FormItem>
 														<FormLabel>OAuth Client Secret (optional for PKCE)</FormLabel>
 														<FormControl>
-															<EnvVarInput value={field.value} onChange={field.onChange} placeholder="your-client-secret" hideValueWhenEnv maskNonEnvValue data-testid="mcp-oauth-client-secret" />
+															<EnvVarInput
+																value={field.value}
+																onChange={field.onChange}
+																placeholder="your-client-secret"
+																hideValueWhenEnv
+																maskNonEnvValue
+																data-testid="mcp-oauth-client-secret"
+															/>
 														</FormControl>
 														<p className="text-muted-foreground text-xs">Leave empty for public clients using PKCE</p>
 														<FormMessage />
@@ -667,17 +674,15 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					open={!!oauthFlow}
 					onClose={() => {
 						setOauthFlow(null);
-						onClose();
 					}}
 					onSuccess={() => {
 						toast({ title: "Success", description: "MCP server connected with OAuth" });
-						onSaved();
 						setOauthFlow(null);
 						onClose();
+						onSaved();
 					}}
 					onError={(error) => {
 						toast({ title: "OAuth Error", description: error, variant: "destructive" });
-						setOauthFlow(null);
 					}}
 					authorizeUrl={oauthFlow.authorizeUrl}
 					oauthConfigId={oauthFlow.oauthConfigId}
