@@ -131,6 +131,11 @@ function ProviderUsageTabImpl({
 						<NumberFlow value={providerCostTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
 					) : undefined
 				}
+				totalTooltip={
+					providerCostTotal !== null
+						? providerCostTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+						: undefined
+				}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						{providerCostProvider === "all" ? (
@@ -215,6 +220,7 @@ function ProviderUsageTabImpl({
 				testId="chart-provider-tokens"
 				totalLabel="Total"
 				total={providerTokenTotal !== null ? <NumberFlow value={providerTokenTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+				totalTooltip={providerTokenTotal !== null ? providerTokenTotal.toLocaleString("en-US") : undefined}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						{providerTokenProvider === "all" ? (
@@ -303,6 +309,9 @@ function ProviderUsageTabImpl({
 					providerLatencyAvg !== null ? (
 						<NumberFlow value={providerLatencyAvg} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 					) : undefined
+				}
+				totalTooltip={
+					providerLatencyAvg !== null ? `${providerLatencyAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined
 				}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
