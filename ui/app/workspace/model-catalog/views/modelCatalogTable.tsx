@@ -92,7 +92,13 @@ export default function ModelCatalogTable({
 
 			{/* Table */}
 			<div className="rounded-sm border">
-				<Table>
+				<Table className="table-fixed">
+					<colgroup>
+						<col className="w-[26%]" />
+						<col className="w-[44%]" />
+						<col className="w-[16%]" />
+						<col className="w-[14%]" />
+					</colgroup>
 					<TableHeader>
 						<TableRow>
 							<TableHead>Provider</TableHead>
@@ -123,26 +129,26 @@ export default function ModelCatalogTable({
 						) : (
 							rows.map((row) => (
 								<TableRow key={row.providerName}>
-									<TableCell>
+									<TableCell className="overflow-hidden">
 										<div className="flex items-center gap-2">
 											<RenderProviderIcon
 												provider={(row.isCustom ? row.baseProviderType : row.providerName) as ProviderIconType}
 												size="sm"
 												className="h-4 w-4 shrink-0"
 											/>
-											<span className="font-medium">
+											<span className="truncate font-medium">
 												{row.isCustom
 													? row.providerName
 													: ProviderLabels[row.providerName as keyof typeof ProviderLabels] || row.providerName}
 											</span>
 											{row.isCustom && (
-												<Badge variant="secondary" className="text-muted-foreground px-1.5 py-0.5 text-[10px] font-bold">
+												<Badge variant="secondary" className="text-muted-foreground shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
 													CUSTOM
 												</Badge>
 											)}
 										</div>
 									</TableCell>
-									<TableCell>
+									<TableCell className="overflow-hidden">
 										{isLoadingModels ? (
 											<div className="flex items-center gap-1">
 												<Skeleton className="h-5 w-24 rounded-full" />
@@ -179,7 +185,7 @@ function ModelsUsedCell({ models: rawModels }: { models: string[] }) {
 		<TooltipProvider>
 			<div className="flex flex-wrap items-center gap-1">
 				{visible.map((m) => (
-					<Badge key={m} variant="outline" className="text-xs font-normal">
+					<Badge key={m} variant="outline" className="max-w-[220px] truncate text-xs font-normal">
 						{m}
 					</Badge>
 				))}
