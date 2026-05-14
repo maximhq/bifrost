@@ -11,6 +11,7 @@ function RouteComponent() {
 	const hasBusinessUnitsAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
+	const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
 	const hasAnyGovernanceAccess =
 		hasVirtualKeysAccess ||
@@ -19,7 +20,8 @@ function RouteComponent() {
 		hasCustomersAccess ||
 		hasBusinessUnitsAccess ||
 		hasRbacAccess ||
-		hasAccessProfilesAccess;
+		hasAccessProfilesAccess ||
+		hasGovernanceLegacyAccess;
 
 	const childMatches = useChildMatches();
 	if (!hasAnyGovernanceAccess) {

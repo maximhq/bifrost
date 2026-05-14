@@ -796,6 +796,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddGlobalGovernanceColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8538,4 +8541,65 @@ func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error running add_temp_tokens_table migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddGlobalGovernanceColumns adds is_global to governance_budgets and
+// governance_rate_limits so a single instance-wide cap can be stored without a
+// new table, and installs a partial unique index on governance_rate_limits so
+// the DB enforces "at most one global rate limit" under concurrency. Without
+// the index, two simultaneous UpsertGlobalGovernance transactions at READ
+// COMMITTED can both pass through DELETE-WHERE-is_global (when empty) and both
+// INSERT, leaving two global rows. SQLite and Postgres both support partial
+// unique indexes with `WHERE is_global` (boolean column in Postgres, truthy
+// integer in SQLite); MySQL doesn't, but configstore only wires up
+// sqlite/postgres so no dialect guard is needed here.
+func migrationAddGlobalGovernanceColumns(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "add_global_governance_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableBudget{}, "is_global") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "is_global"); err != nil {
+					return fmt.Errorf("add is_global to governance_budgets: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableRateLimit{}, "is_global") {
+				if err := mg.AddColumn(&tables.TableRateLimit{}, "is_global"); err != nil {
+					return fmt.Errorf("add is_global to governance_rate_limits: %w", err)
+				}
+			}
+			// Column is brand-new in this migration so no pre-existing rows can
+			// have is_global=true — dedup is unnecessary, just install the index.
+			if err := tx.Exec(`
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_governance_rate_limits_global
+				ON governance_rate_limits (is_global)
+				WHERE is_global
+			`).Error; err != nil {
+				return fmt.Errorf("create partial unique index on governance_rate_limits.is_global: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			// Drop the index first; Postgres rejects DROP COLUMN on a column
+			// referenced by an index, and SQLite quietly does the same via
+			// table rewrite.
+			if err := tx.Exec(`DROP INDEX IF EXISTS idx_governance_rate_limits_global`).Error; err != nil {
+				return fmt.Errorf("drop partial unique index on governance_rate_limits.is_global: %w", err)
+			}
+			if mg.HasColumn(&tables.TableBudget{}, "is_global") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "is_global"); err != nil {
+					return fmt.Errorf("failed to drop is_global column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableRateLimit{}, "is_global") {
+				if err := mg.DropColumn(&tables.TableRateLimit{}, "is_global"); err != nil {
+					return fmt.Errorf("failed to drop is_global column: %w", err)
+				}
+			}
+			return nil
+		},
+	})
 }

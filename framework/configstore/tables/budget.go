@@ -15,7 +15,9 @@ type TableBudget struct {
 	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
 	CurrentUsage  float64   `gorm:"default:0" json:"current_usage"`                  // Current usage in dollars
 
-	// Owner FKs: a budget belongs to at most one Team, one VK, or one ProviderConfig
+	// Owner FKs: a budget belongs to at most one Team, one VK, or one ProviderConfig.
+	// When IsGlobal=true all owner FKs must be nil — this is the instance-wide budget.
+	IsGlobal         bool    `gorm:"index;default:false" json:"is_global"`
 	TeamID           *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
 	VirtualKeyID     *string `gorm:"type:varchar(255);index" json:"virtual_key_id,omitempty"`
 	ProviderConfigID *uint   `gorm:"index" json:"provider_config_id,omitempty"`
@@ -57,7 +59,11 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	if b.ProviderConfigID != nil {
 		owners++
 	}
-	if owners > 1 {
+	if b.IsGlobal {
+		if owners != 0 {
+			return fmt.Errorf("global budget must not have an owner (team/virtual key/provider config)")
+		}
+	} else if owners > 1 {
 		return fmt.Errorf("budget cannot have more than one owner (team/virtual key/provider config)")
 	}
 	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y")

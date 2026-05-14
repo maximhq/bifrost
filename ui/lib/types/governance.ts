@@ -535,3 +535,24 @@ export interface GetProviderGovernanceResponse {
 	providers: ProviderGovernance[];
 	count: number;
 }
+
+// Global governance — instance-wide budget and rate limit enforced before all other tiers.
+export interface GlobalGovernance {
+	budgets: Budget[];
+	rate_limit: RateLimit | null;
+}
+
+export interface UpsertGlobalGovernanceRequest {
+	budgets?: Array<{
+		max_limit: number;
+		reset_duration: string;
+		calendar_aligned?: boolean;
+	}>;
+	rate_limit?: {
+		token_max_limit?: number;
+		token_reset_duration?: string;
+		request_max_limit?: number;
+		request_reset_duration?: string;
+		calendar_aligned?: boolean;
+	} | null;
+}

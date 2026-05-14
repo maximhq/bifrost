@@ -78,6 +78,28 @@ func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCa
 	}
 }
 
+// EvaluateGlobalRequest checks the instance-wide rate limit and budgets (step 0 of governance).
+// It runs before any provider/model/VK/team/customer/user check. When no global limits are
+// configured it returns DecisionAllow immediately with zero overhead.
+func (r *BudgetResolver) EvaluateGlobalRequest(ctx *schemas.BifrostContext) *EvaluationResult {
+	if decision, err := r.store.CheckGlobalRateLimit(ctx, nil, nil); err != nil || isRateLimitViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Global rate limit exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+	if decision, err := r.store.CheckGlobalBudget(ctx, nil); err != nil || isBudgetViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Global budget exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+	return &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "Global checks passed",
+	}
+}
+
 // EvaluateModelAndProviderRequest evaluates provider-level and model-level rate limits and budgets
 // This applies even when virtual keys are disabled or not present
 func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *EvaluationResult {

@@ -23,6 +23,7 @@ import {
 	GetUsageStatsResponse,
 	GetVirtualKeysParams,
 	GetVirtualKeysResponse,
+	GlobalGovernance,
 	HealthCheckResponse,
 	ModelConfig,
 	ProviderGovernance,
@@ -37,6 +38,7 @@ import {
 	UpdateRateLimitRequest,
 	UpdateTeamRequest,
 	UpdateVirtualKeyRequest,
+	UpsertGlobalGovernanceRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
@@ -798,6 +800,48 @@ export const governanceApi = baseApi.injectEndpoints({
 				}
 			},
 		}),
+
+		// Global governance
+		getGlobalGovernance: builder.query<GlobalGovernance, void>({
+			query: () => ({ url: "/governance/global" }),
+			providesTags: ["GlobalGovernance"],
+		}),
+
+		upsertGlobalGovernance: builder.mutation<GlobalGovernance, UpsertGlobalGovernanceRequest>({
+			query: (data) => ({
+				url: "/governance/global",
+				method: "PUT",
+				body: data,
+			}),
+			async onQueryStarted(_, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					dispatch(governanceApi.util.updateQueryData("getGlobalGovernance", undefined, () => data));
+				} catch {
+					// Mutation failed
+				}
+			},
+		}),
+
+		deleteGlobalGovernance: builder.mutation<void, void>({
+			query: () => ({
+				url: "/governance/global",
+				method: "DELETE",
+			}),
+			async onQueryStarted(_, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getGlobalGovernance", undefined, (draft) => {
+							draft.budgets = [];
+							draft.rate_limit = null;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
+		}),
 	}),
 });
 
@@ -860,6 +904,11 @@ export const {
 	useGetProviderGovernanceQuery,
 	useUpdateProviderGovernanceMutation,
 	useDeleteProviderGovernanceMutation,
+
+	// Global governance
+	useGetGlobalGovernanceQuery,
+	useUpsertGlobalGovernanceMutation,
+	useDeleteGlobalGovernanceMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

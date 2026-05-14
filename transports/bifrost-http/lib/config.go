@@ -1988,6 +1988,34 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
 	}
+	// Sync global governance from config.json whenever the file is reloaded.
+	// Global entries are items in Governance.Budgets / Governance.RateLimits with IsGlobal=true.
+	// UpsertGlobalGovernance is idempotent (delete-then-insert) so this is safe to call every cycle.
+	if config.ConfigStore != nil && configData.Governance != nil {
+		var globalBudgets []configstoreTables.TableBudget
+		for _, b := range configData.Governance.Budgets {
+			if !b.IsGlobal {
+				continue
+			}
+			if b.ID == "" {
+				b.ID = uuid.NewString()
+			}
+			globalBudgets = append(globalBudgets, b)
+		}
+		var globalRateLimit *configstoreTables.TableRateLimit
+		for i := range configData.Governance.RateLimits {
+			if configData.Governance.RateLimits[i].IsGlobal {
+				globalRateLimit = &configData.Governance.RateLimits[i]
+				break
+			}
+		}
+		if len(globalBudgets) > 0 || globalRateLimit != nil {
+			if err := config.ConfigStore.UpsertGlobalGovernance(ctx, globalBudgets, globalRateLimit); err != nil {
+				logger.Error("failed to sync global governance during merge: %v", err)
+			}
+		}
+	}
+
 	// Sync pricing overrides into the model catalog in one batch to avoid
 	// rebuilding the lookup map on every iteration.
 	if config.ModelCatalog != nil {
@@ -2640,6 +2668,31 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		for _, budget := range pendingProviderConfigBudgets {
 			if err := createBudget(budget); err != nil {
 				return err
+			}
+		}
+
+		// Sync global governance from config.json (instance-wide budget + rate limit).
+		// Global entries are items in GovernanceConfig.Budgets / GovernanceConfig.RateLimits with IsGlobal=true.
+		var globalBudgets []configstoreTables.TableBudget
+		for _, b := range config.GovernanceConfig.Budgets {
+			if !b.IsGlobal {
+				continue
+			}
+			if b.ID == "" {
+				b.ID = uuid.NewString()
+			}
+			globalBudgets = append(globalBudgets, b)
+		}
+		var globalRateLimit *configstoreTables.TableRateLimit
+		for i := range config.GovernanceConfig.RateLimits {
+			if config.GovernanceConfig.RateLimits[i].IsGlobal {
+				globalRateLimit = &config.GovernanceConfig.RateLimits[i]
+				break
+			}
+		}
+		if len(globalBudgets) > 0 || globalRateLimit != nil {
+			if err := config.ConfigStore.UpsertGlobalGovernance(ctx, globalBudgets, globalRateLimit); err != nil {
+				return fmt.Errorf("failed to sync global governance: %w", err)
 			}
 		}
 

@@ -105,6 +105,9 @@ type ServerCallbacks interface {
 	ReconnectMCPClient(ctx context.Context, id string) error
 	DisableMCPClient(ctx context.Context, id string) error
 	EnableMCPClient(ctx context.Context, id string) error
+	// Global governance callbacks
+	UpsertGlobalGovernance(ctx context.Context, budgets []*tables.TableBudget, rateLimit *tables.TableRateLimit) error
+	DeleteGlobalGovernance(ctx context.Context) error
 }
 
 // BifrostHTTPServer represents a HTTP server instance.
@@ -928,6 +931,26 @@ func (s *BifrostHTTPServer) DeletePricingOverride(ctx context.Context, id string
 		return fmt.Errorf("pricing manager not found")
 	}
 	s.Config.ModelCatalog.DeletePricingOverride(id)
+	return nil
+}
+
+// UpsertGlobalGovernance replaces the in-memory global budgets and rate limit.
+func (s *BifrostHTTPServer) UpsertGlobalGovernance(ctx context.Context, budgets []*tables.TableBudget, rateLimit *tables.TableRateLimit) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	governancePlugin.GetGovernanceStore().UpsertGlobalGovernanceInMemory(ctx, budgets, rateLimit)
+	return nil
+}
+
+// DeleteGlobalGovernance removes all global governance from the in-memory store.
+func (s *BifrostHTTPServer) DeleteGlobalGovernance(ctx context.Context) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	governancePlugin.GetGovernanceStore().DeleteGlobalGovernanceInMemory(ctx)
 	return nil
 }
 

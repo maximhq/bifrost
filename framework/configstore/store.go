@@ -216,6 +216,12 @@ type ConfigStore interface {
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error
 	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error
 
+	// Global governance CRUD (instance-wide cap stored as is_global=true rows)
+	GetGlobalBudgets(ctx context.Context) ([]tables.TableBudget, error)
+	GetGlobalRateLimit(ctx context.Context) (*tables.TableRateLimit, error)
+	UpsertGlobalGovernance(ctx context.Context, budgets []tables.TableBudget, rateLimit *tables.TableRateLimit) error
+	DeleteGlobalGovernance(ctx context.Context) error
+
 	// Routing Rules CRUD
 	GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error)
 	GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error)

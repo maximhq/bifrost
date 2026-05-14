@@ -178,6 +178,7 @@ export const baseApi = createApi({
     "MCPToolGroups",
     "AuditLogs",
     "UserGovernance",
+		"GlobalGovernance",
     "LargePayloadConfig",
     "Folders",
     "Prompts",

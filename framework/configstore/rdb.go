@@ -3698,6 +3698,77 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 	return nil
 }
 
+// GetGlobalBudgets returns all budgets flagged as instance-wide (is_global=true).
+func (s *RDBConfigStore) GetGlobalBudgets(ctx context.Context) ([]tables.TableBudget, error) {
+	var budgets []tables.TableBudget
+	if err := s.DB().WithContext(ctx).Where("is_global = ?", true).Order("created_at ASC").Find(&budgets).Error; err != nil {
+		return nil, err
+	}
+	return budgets, nil
+}
+
+// GetGlobalRateLimit returns the single instance-wide rate limit row (is_global=true), or nil if none is set.
+func (s *RDBConfigStore) GetGlobalRateLimit(ctx context.Context) (*tables.TableRateLimit, error) {
+	var rl tables.TableRateLimit
+	if err := s.DB().WithContext(ctx).Where("is_global = ?", true).First(&rl).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &rl, nil
+}
+
+// UpsertGlobalGovernance replaces all global budgets and the global rate limit in a single transaction.
+// Budgets are matched by reset_duration; the rate limit is replaced wholesale.
+// Rejects duplicate ResetDuration values up-front so we never commit an inconsistent
+// global budget set (no DB-level unique index covers this).
+func (s *RDBConfigStore) UpsertGlobalGovernance(ctx context.Context, budgets []tables.TableBudget, rateLimit *tables.TableRateLimit) error {
+	seenDurations := make(map[string]struct{}, len(budgets))
+	for i := range budgets {
+		if _, ok := seenDurations[budgets[i].ResetDuration]; ok {
+			return fmt.Errorf("duplicate reset_duration in global budgets: %s", budgets[i].ResetDuration)
+		}
+		seenDurations[budgets[i].ResetDuration] = struct{}{}
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Replace global budgets: delete existing then insert new ones.
+		if err := tx.Where("is_global = ?", true).Delete(&tables.TableBudget{}).Error; err != nil {
+			return fmt.Errorf("delete existing global budgets: %w", err)
+		}
+		for i := range budgets {
+			budgets[i].IsGlobal = true
+			if err := tx.Create(&budgets[i]).Error; err != nil {
+				return fmt.Errorf("create global budget (reset_duration=%s): %w", budgets[i].ResetDuration, err)
+			}
+		}
+		// Replace global rate limit.
+		if err := tx.Where("is_global = ?", true).Delete(&tables.TableRateLimit{}).Error; err != nil {
+			return fmt.Errorf("delete existing global rate limit: %w", err)
+		}
+		if rateLimit != nil {
+			rateLimit.IsGlobal = true
+			if err := tx.Create(rateLimit).Error; err != nil {
+				return s.parseGormError(err)
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteGlobalGovernance removes all is_global=true rows from both governance tables.
+func (s *RDBConfigStore) DeleteGlobalGovernance(ctx context.Context) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("is_global = ?", true).Delete(&tables.TableBudget{}).Error; err != nil {
+			return fmt.Errorf("delete global budgets: %w", err)
+		}
+		if err := tx.Where("is_global = ?", true).Delete(&tables.TableRateLimit{}).Error; err != nil {
+			return fmt.Errorf("delete global rate limit: %w", err)
+		}
+		return nil
+	})
+}
+
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
 // rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {

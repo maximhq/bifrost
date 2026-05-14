@@ -377,6 +377,11 @@
                 "type": "boolean",
                 "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
+              },
+              "is_global": {
+                "type": "boolean",
+                "description": "When true, this budget is an instance-wide cap enforced before any per-entity checks",
+                "default": false
               }
             },
             "required": ["id", "max_limit", "reset_duration"],
@@ -432,6 +437,11 @@
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
+                "default": false
+              },
+              "is_global": {
+                "type": "boolean",
+                "description": "When true, this rate limit is an instance-wide cap enforced before any per-entity checks",
                 "default": false
               }
             },

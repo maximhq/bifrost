@@ -79,6 +79,16 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	shouldUpdateRequests := !update.IsStreaming || (update.IsStreaming && update.IsFinalChunk)
 	shouldUpdateBudget := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
 
+	// 0. Update global (instance-wide) usage before any per-entity updates.
+	if err := t.store.UpdateGlobalRateLimitUsageInMemory(ctx, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+		t.logger.Error("failed to update global rate limit usage: %v", err)
+	}
+	if shouldUpdateBudget && update.Cost > 0 {
+		if err := t.store.UpdateGlobalBudgetUsageInMemory(ctx, update.Cost); err != nil {
+			t.logger.Error("failed to update global budget usage: %v", err)
+		}
+	}
+
 	// 1. Update rate limit usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
 	// Guard: only update when both Provider and Model are set (MCP paths may not have these)

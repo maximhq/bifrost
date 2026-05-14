@@ -29,6 +29,8 @@ type TableRateLimit struct {
 	// promote any true value here to the owner's top-level CalendarAligned at
 	// load time.
 	CalendarAlignedInput *bool `gorm:"-" json:"calendar_aligned,omitempty"`
+	// IsGlobal marks this as the instance-wide rate limit. Only one row can have is_global=true,
+	IsGlobal        bool `gorm:"index;default:false" json:"is_global"`
 
 	// Derived from the owning entity. See TableBudget.IsCalendarAligned.
 	IsCalendarAligned bool `gorm:"-" json:"-"`

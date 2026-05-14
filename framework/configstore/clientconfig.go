@@ -1368,6 +1368,7 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
+// Instance-wide (global) budgets and rate limits live in Budgets/RateLimits with IsGlobal=true.
 type GovernanceConfig struct {
 	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
 	Teams            []tables.TableTeam            `json:"teams"`
