@@ -1,3 +1,4 @@
+import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import { MCPFilterSidebar } from "@/components/filters/mcpFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
@@ -10,7 +11,6 @@ import {
   useGetMCPLogsQuery,
   useGetMCPLogsStatsQuery,
 } from "@/lib/store";
-import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type {
   MCPToolLogEntry,
@@ -108,9 +108,9 @@ export default function MCPLogsPage() {
       ...(urlState.period
         ? { period: urlState.period }
         : {
-            start_time: dateUtils.toISOString(urlState.start_time),
-            end_time: dateUtils.toISOString(urlState.end_time),
-          }),
+          start_time: dateUtils.toISOString(urlState.start_time),
+          end_time: dateUtils.toISOString(urlState.end_time),
+        }),
     }),
     [
       urlState.tool_names,
@@ -396,17 +396,6 @@ export default function MCPLogsPage() {
     [columns],
   );
 
-  const MCP_COLUMN_LABELS: Record<string, string> = useMemo(
-    () => ({
-      timestamp: "Time",
-      tool_name: "Tool Name",
-      server_label: "Server",
-      latency: "Latency",
-      cost: "Cost",
-    }),
-    [],
-  );
-
   const {
     entries: columnEntries,
     columnOrder,
@@ -419,8 +408,19 @@ export default function MCPLogsPage() {
   } = useColumnConfig({
     columnIds,
     paramName: "mcp_cols",
-    fixedColumns: { left: [], right: [] },
+    fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
   });
+
+  const MCP_COLUMN_LABELS: Record<string, string> = useMemo(
+    () => ({
+      timestamp: "Time",
+      tool_name: "Tool Name",
+      server_label: "Server",
+      latency: "Latency",
+      cost: "Cost",
+    }),
+    [],
+  );
 
   const selectedLogIndex = useMemo(
     () => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
