@@ -14,12 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -165,7 +160,13 @@ function VKActionsMenu({
 		<>
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild>
-					<Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Virtual key actions" data-testid={`vk-actions-btn-${vk.name}`}>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="h-8 w-8"
+						aria-label="Virtual key actions"
+						data-testid={`vk-actions-btn-${vk.name}`}
+					>
 						<MoreHorizontal className="h-4 w-4" />
 					</Button>
 				</DropdownMenuTrigger>
@@ -187,11 +188,7 @@ function VKActionsMenu({
 						className="cursor-pointer"
 						disabled={!hasDeleteAccess || isManagedByProfile}
 						data-testid={`vk-delete-btn-${vk.name}`}
-						title={
-							isManagedByProfile
-								? "This virtual key is managed by an access profile and can't be deleted here."
-								: undefined
-						}
+						title={isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined}
 						onSelect={(e) => {
 							e.preventDefault();
 							setDeleteOpen(true);
@@ -207,7 +204,8 @@ function VKActionsMenu({
 					<AlertDialogHeader>
 						<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete &quot;{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}&quot;? This action cannot be undone.
+							Are you sure you want to delete &quot;{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}&quot;? This action cannot
+							be undone.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -418,7 +416,6 @@ export default function VirtualKeysTable({
 		);
 	};
 
-
 	// True empty state: no VKs at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
 		return (
@@ -580,7 +577,7 @@ export default function VirtualKeysTable({
 						value={customerFilter || null}
 						onValueChange={(val) => onCustomerFilterChange(val ?? "")}
 						placeholder="All Customers"
-						className="w-[180px] h-9"
+						className="h-9 w-[180px]"
 					/>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
 					<ComboboxSelect
@@ -589,12 +586,12 @@ export default function VirtualKeysTable({
 						value={teamFilter || null}
 						onValueChange={(val) => onTeamFilterChange(val ?? "")}
 						placeholder="All Teams"
-						className="w-[180px] h-9"
+						className="h-9 w-[180px]"
 					/>
 				</div>
 
 				<div className="rounded-sm border">
-					<Table className="table-fixed min-w-[1480px] w-full" data-testid="vk-table">
+					<Table className="w-full min-w-[1480px] table-fixed" data-testid="vk-table">
 						<TableHeader>
 							<TableRow>
 								<TableHead className="w-[250px]">
@@ -635,11 +632,15 @@ export default function VirtualKeysTable({
 											</TableCell>
 											<TableCell>
 												{vk.team ? (
-													<Badge variant="outline" className="max-w-full truncate text-left block">Team: {vk.team.name}</Badge>
+													<Badge variant="outline" className="block max-w-full truncate text-left">
+														Team: {vk.team.name}
+													</Badge>
 												) : vk.customer ? (
-													<Badge variant="outline" className="max-w-full truncate text-left block">Customer: {vk.customer.name}</Badge>
+													<Badge variant="outline" className="block max-w-full truncate text-left">
+														Customer: {vk.customer.name}
+													</Badge>
 												) : (
-													<span className="text-muted-foreground text-sm truncate max-w-full text-left">-</span>
+													<span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
@@ -677,7 +678,7 @@ export default function VirtualKeysTable({
 												<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
 											</TableCell>
 											<TableCell
-												className={`bg-white group-hover:bg-muted sticky right-0 z-10 text-right dark:bg-card dark:group-hover:bg-muted ${PIN_SHADOW_RIGHT}`}
+												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
 												onClick={(e) => e.stopPropagation()}
 											>
 												<VKActionsMenu

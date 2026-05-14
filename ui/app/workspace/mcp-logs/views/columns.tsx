@@ -21,83 +21,83 @@ export const createMCPColumns = (
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>,
 	hasDeleteAccess: boolean,
 ): ColumnDef<MCPToolLogEntry>[] => [
-		{
-			accessorKey: "status",
-			header: "",
-			size: 8,
-			maxSize: 8,
-			cell: ({ row }) => {
-				const status = getValidatedStatus(row.original.status);
-				return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
-			},
+	{
+		accessorKey: "status",
+		header: "",
+		size: 8,
+		maxSize: 8,
+		cell: ({ row }) => {
+			const status = getValidatedStatus(row.original.status);
+			return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
 		},
-		{
-			accessorKey: "timestamp",
-			header: ({ column }) => (
-				<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Time
-					<ArrowUpDown className="ml-2 h-4 w-4" />
-				</Button>
-			),
-			size: 230,
-			cell: ({ row }) => {
-				const timestamp = row.original.timestamp;
-				const date = new Date(timestamp);
-				return <div className="truncate text-xs">{isValid(date) ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "Invalid date"}</div>;
-			},
+	},
+	{
+		accessorKey: "timestamp",
+		header: ({ column }) => (
+			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+				Time
+				<ArrowUpDown className="ml-2 h-4 w-4" />
+			</Button>
+		),
+		size: 230,
+		cell: ({ row }) => {
+			const timestamp = row.original.timestamp;
+			const date = new Date(timestamp);
+			return <div className="truncate text-xs">{isValid(date) ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "Invalid date"}</div>;
 		},
-		{
-			accessorKey: "tool_name",
-			header: "Tool Name",
-			size: 300,
-			cell: ({ row }) => {
-				const toolName = row.getValue("tool_name") as string;
-				return <span className="block max-w-full truncate font-mono text-sm">{toolName}</span>;
-			},
+	},
+	{
+		accessorKey: "tool_name",
+		header: "Tool Name",
+		size: 300,
+		cell: ({ row }) => {
+			const toolName = row.getValue("tool_name") as string;
+			return <span className="block max-w-full truncate font-mono text-sm">{toolName}</span>;
 		},
-		{
-			accessorKey: "server_label",
-			header: "Server",
-			size: 150,
-			cell: ({ row }) => {
-				const serverLabel = row.getValue("server_label") as string;
-				return serverLabel ? (
-					<Badge variant="secondary" className="font-mono">
-						{serverLabel}
-					</Badge>
-				) : (
-					<span className="text-muted-foreground">-</span>
-				);
-			},
+	},
+	{
+		accessorKey: "server_label",
+		header: "Server",
+		size: 150,
+		cell: ({ row }) => {
+			const serverLabel = row.getValue("server_label") as string;
+			return serverLabel ? (
+				<Badge variant="secondary" className="font-mono">
+					{serverLabel}
+				</Badge>
+			) : (
+				<span className="text-muted-foreground">-</span>
+			);
 		},
-		{
-			accessorKey: "latency",
-			header: ({ column }) => (
-				<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Latency
-					<ArrowUpDown className="ml-2 h-4 w-4" />
-				</Button>
-			),
-			size: 120,
-			cell: ({ row }) => {
-				const latency = row.original.latency;
-				return (
-					<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
-				);
-			},
+	},
+	{
+		accessorKey: "latency",
+		header: ({ column }) => (
+			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+				Latency
+				<ArrowUpDown className="ml-2 h-4 w-4" />
+			</Button>
+		),
+		size: 120,
+		cell: ({ row }) => {
+			const latency = row.original.latency;
+			return (
+				<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
+			);
 		},
-		{
-			accessorKey: "cost",
-			header: "Cost",
-			size: 120,
-			cell: ({ row }) => {
-				const cost = row.original.cost;
-				const isValidNumber = typeof cost === "number" && Number.isFinite(cost);
-				return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
-			},
+	},
+	{
+		accessorKey: "cost",
+		header: "Cost",
+		size: 120,
+		cell: ({ row }) => {
+			const cost = row.original.cost;
+			const isValidNumber = typeof cost === "number" && Number.isFinite(cost);
+			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
 		},
-		...(hasDeleteAccess
-			? [
+	},
+	...(hasDeleteAccess
+		? [
 				{
 					id: "actions",
 					header: "",
@@ -132,5 +132,5 @@ export const createMCPColumns = (
 					},
 				},
 			]
-			: []),
-	];
+		: []),
+];
