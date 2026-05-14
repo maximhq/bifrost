@@ -247,6 +247,7 @@ func (p *SaladCloudProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		request,
 		authHeader,
 		p.networkConfig.ExtraHeaders,
+		p.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
 		schemas.SaladCloud,
