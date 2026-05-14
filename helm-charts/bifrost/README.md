@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.14
+**Latest Version:** 2.1.17
 
 ## Changelog
+
+### 2.1.17
+
+- Added `max_turns_to_send` to guardrail rules. The integer caps how many historical conversation turns are sent to the guardrail provider on apply; the latest message is always included on top, and `0` (default) sends all turns. Wired into `values.schema.json`, `config.schema.json`, and `templates/_helpers.tpl` so it renders into `guardrails_config.guardrail_rules[].max_turns_to_send`.
 
 ### 2.1.14
 

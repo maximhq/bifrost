@@ -2016,7 +2016,12 @@
                   "timeout": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Timeout in milliseconds for rule execution"
+                    "description": "Timeout in seconds for rule execution"
+                  },
+                  "max_turns_to_send": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
                   },
                   "provider_config_ids": {
                     "type": "array",
@@ -2061,7 +2066,7 @@
                   "timeout": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Timeout in milliseconds for provider execution"
+                    "description": "Timeout in seconds for provider execution"
                   },
                   "config": {
                     "type": "object",
