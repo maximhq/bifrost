@@ -260,15 +260,14 @@ const SidebarItemView = ({
 
   const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-    isHighlighted
-      ? "bg-sidebar-accent text-accent-foreground border-primary/20"
-      : isActive || isAnySubItemActive
-        ? "bg-sidebar-accent text-primary border-primary/20"
-        : item.hasAccess
-          ? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-          : "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-  } `;
+  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+    ? "bg-sidebar-accent text-accent-foreground border-primary/20"
+    : isActive || isAnySubItemActive
+      ? "bg-sidebar-accent text-primary border-primary/20"
+      : item.hasAccess
+        ? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+        : "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+    } `;
 
   const innerContent = (
     <div className="flex w-full items-center justify-between">
@@ -407,7 +406,7 @@ const SidebarItemView = ({
               const href = getSidebarItemHref(subItem);
               const isSubItemActive = subItem.queryParam
                 ? pathname === subItem.url
-                : pathname.startsWith(subItem.url);
+                : isRouteMatch(subItem.url);
               const SubItemIcon = subItem.icon;
               const subSlug = slug(subItem.title);
               const inner = (
@@ -495,15 +494,14 @@ const SidebarItemView = ({
               ? subItemHref.startsWith(highlightedUrl)
               : false;
             const SubItemIcon = subItem.icon;
-            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-              isSubItemHighlighted
-                ? "bg-sidebar-accent text-accent-foreground"
-                : isSubItemActive
-                  ? "bg-sidebar-accent text-primary font-medium"
-                  : subItem.hasAccess === false
-                    ? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-                    : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-            }`;
+            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+              ? "bg-sidebar-accent text-accent-foreground"
+              : isSubItemActive
+                ? "bg-sidebar-accent text-primary font-medium"
+                : subItem.hasAccess === false
+                  ? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+                  : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+              }`;
             const subInner = (
               <div className="flex w-full items-center gap-2">
                 {SubItemIcon && (
@@ -950,14 +948,14 @@ export default function AppSidebar() {
       },
       ...(isDbConnected
         ? [
-            {
-              title: "Prompt Repository",
-              url: "/workspace/prompt-repo",
-              icon: FolderGit,
-              description: "Prompt repository",
-              hasAccess: hasPromptRepositoryAccess,
-            },
-          ]
+          {
+            title: "Prompt Repository",
+            url: "/workspace/prompt-repo",
+            icon: FolderGit,
+            description: "Prompt repository",
+            hasAccess: hasPromptRepositoryAccess,
+          },
+        ]
         : []),
       {
         title: "Evals",
@@ -1005,14 +1003,14 @@ export default function AppSidebar() {
           },
           ...(IS_ENTERPRISE
             ? [
-                {
-                  title: "Proxy",
-                  url: "/workspace/config/proxy",
-                  icon: Globe,
-                  description: "Proxy configuration",
-                  hasAccess: hasSettingsAccess,
-                },
-              ]
+              {
+                title: "Proxy",
+                url: "/workspace/config/proxy",
+                icon: Globe,
+                description: "Proxy configuration",
+                hasAccess: hasSettingsAccess,
+              },
+            ]
             : []),
           {
             title: "API Keys",
@@ -1033,6 +1031,7 @@ export default function AppSidebar() {
     ],
     [
       hasLogsAccess,
+      hasAPIKeyAccess,
       hasObservabilityAccess,
       hasModelProvidersAccess,
       hasMCPGatewayAccess,
@@ -1544,8 +1543,8 @@ export default function AppSidebar() {
               ))}
               <ThemeToggle />
               {IS_ENTERPRISE &&
-              userInfo &&
-              (userInfo.name || userInfo.email) ? (
+                userInfo &&
+                (userInfo.name || userInfo.email) ? (
                 <Popover
                   open={userPopoverOpen}
                   onOpenChange={setUserPopoverOpen}
