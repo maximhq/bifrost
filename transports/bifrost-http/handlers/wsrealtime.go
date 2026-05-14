@@ -197,11 +197,16 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	model = key.Aliases.Resolve(model)
 
 	wsURL := rtProvider.RealtimeWebSocketURL(key, model)
+	realtimeHeaders, headerErr := rtProvider.RealtimeHeaders(bifrostCtx, key)
+	if headerErr != nil {
+		clientConn.writeRealtimeError(headerErr)
+		return
+	}
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
 		KeyID:    key.ID,
 		Endpoint: wsURL,
-	}, mapToHTTPHeader(rtProvider.RealtimeHeaders(key)))
+	}, mapToHTTPHeader(realtimeHeaders))
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))
 		return

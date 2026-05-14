@@ -49,7 +49,10 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 		}
 
 		wsURL := rtProvider.RealtimeWebSocketURL(key, testConfig.RealtimeModel)
-		hdrs := rtProvider.RealtimeHeaders(key)
+		hdrs, headerErr := rtProvider.RealtimeHeaders(bfCtx, key)
+		if headerErr != nil {
+			t.Fatalf("failed to build realtime headers for provider %s: %v", testConfig.Provider, headerErr)
+		}
 
 		httpHeaders := http.Header{}
 		for k, v := range hdrs {
