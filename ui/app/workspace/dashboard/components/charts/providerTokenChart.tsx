@@ -35,18 +35,13 @@ function AllProvidersTooltip({ active, payload, displayProviders }: any) {
 			<div className="space-y-1 text-sm">
 				{displayProviders.map((provider: string, idx: number) => {
 					const isOther = provider === OTHER_SERIES_KEY;
-					const tokens = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : (data.by_provider?.[provider]?.total_tokens || 0);
+					const tokens = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : data.by_provider?.[provider]?.total_tokens || 0;
 					if (tokens === 0) return null;
 					return (
 						<div key={provider} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span
-									className="h-2 w-2 rounded-full"
-									style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
-								/>
-								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
-									{isOther ? OTHER_SERIES_LABEL : provider}
-								</span>
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : provider}</span>
 							</span>
 							<span className="font-medium">{formatTokens(tokens)}</span>
 						</div>
@@ -132,9 +127,7 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 				}
 				providers.forEach((provider, idx) => {
 					item[`provider_${idx}`] =
-						provider === OTHER_SERIES_KEY
-							? (item[OTHER_SERIES_KEY] ?? 0)
-							: (bucket.by_provider?.[provider]?.total_tokens ?? 0);
+						provider === OTHER_SERIES_KEY ? (item[OTHER_SERIES_KEY] ?? 0) : (bucket.by_provider?.[provider]?.total_tokens ?? 0);
 				});
 			}
 
@@ -202,7 +195,10 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip displayProviders={displayProviders} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip
+									content={<AllProvidersTooltip displayProviders={displayProviders} />}
+									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+								/>
 								{displayProviders.map((provider, idx) => (
 									<Bar
 										isAnimationActive={false}

@@ -286,21 +286,23 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 						</>
 					)}
 
-				{(status === "pending" || status === "blocked") && (
-					<>
-						<p className="text-muted-foreground text-sm">
-							{status === "blocked"
-								? "Your browser blocked the authorization window. Open it manually to continue."
-								: "Open the authorization window to sign in and complete the connection."}
-						</p>
-						<div className="flex w-full justify-end space-x-2">
-							<Button onClick={handleCancel} variant="outline" data-testid="oauth-pending-cancel-btn">
-								Cancel
-							</Button>
-							<Button onClick={openPopup} data-testid="oauth-open-window-btn">Open Authorization Window</Button>
-						</div>
-					</>
-				)}
+					{(status === "pending" || status === "blocked") && (
+						<>
+							<p className="text-muted-foreground text-sm">
+								{status === "blocked"
+									? "Your browser blocked the authorization window. Open it manually to continue."
+									: "Open the authorization window to sign in and complete the connection."}
+							</p>
+							<div className="flex w-full justify-end space-x-2">
+								<Button onClick={handleCancel} variant="outline" data-testid="oauth-pending-cancel-btn">
+									Cancel
+								</Button>
+								<Button onClick={openPopup} data-testid="oauth-open-window-btn">
+									Open Authorization Window
+								</Button>
+							</div>
+						</>
+					)}
 
 					{status === "polling" && (
 						<>

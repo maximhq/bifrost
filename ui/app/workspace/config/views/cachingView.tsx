@@ -240,15 +240,15 @@ export default function CachingView() {
 		try {
 			const updated = semanticCachePlugin
 				? await updatePlugin({
-					name: SEMANTIC_CACHE_PLUGIN,
-					data: { enabled: semanticCachePlugin.enabled, config: payload },
-				}).unwrap()
+						name: SEMANTIC_CACHE_PLUGIN,
+						data: { enabled: semanticCachePlugin.enabled, config: payload },
+					}).unwrap()
 				: await createPlugin({
-					name: SEMANTIC_CACHE_PLUGIN,
-					enabled: false,
-					config: payload,
-					path: "",
-				}).unwrap();
+						name: SEMANTIC_CACHE_PLUGIN,
+						enabled: false,
+						config: payload,
+						path: "",
+					}).unwrap();
 			const editor = toEditorCacheConfig(updated.config as Partial<EditorCacheConfig>);
 			setCacheConfig(editor);
 			setServerCacheConfig(editor);
@@ -267,9 +267,9 @@ export default function CachingView() {
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Local Cache</h2>
 				<p className="text-muted-foreground text-sm">
-					Cache responses locally with two complementary lookup paths: <b>direct</b> hash matching for exact replays, and{" "}
-					<b>semantic</b> similarity search for related content. Send the <b>x-bf-cache-key</b> header to scope cached
-					responses to a tenant or feature. 	{!isVectorStoreEnabled && (
+					Cache responses locally with two complementary lookup paths: <b>direct</b> hash matching for exact replays, and <b>semantic</b>{" "}
+					similarity search for related content. Send the <b>x-bf-cache-key</b> header to scope cached responses to a tenant or feature.{" "}
+					{!isVectorStoreEnabled && (
 						<span className="text-destructive font-medium">
 							Requires a vector store to be configured and enabled in <code>config.json</code>.
 						</span>
@@ -303,9 +303,8 @@ export default function CachingView() {
 								Enable Caching
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Loads (or unloads) the plugin without a server restart. Configuration changes you make below mutate the live
-								plugin in place, no redeploy needed.{" "}
-
+								Loads (or unloads) the plugin without a server restart. Configuration changes you make below mutate the live plugin in
+								place, no redeploy needed.{" "}
 							</p>
 						</div>
 						<Switch
@@ -324,10 +323,7 @@ export default function CachingView() {
 						</div>
 					) : (
 						<>
-							<div
-								className={cn("space-y-4", !cachingActive && "pointer-events-none opacity-50")}
-								aria-disabled={!cachingActive}
-							>
+							<div className={cn("space-y-4", !cachingActive && "pointer-events-none opacity-50")} aria-disabled={!cachingActive}>
 								{/* Mode picker. Direct-only is first-class. */}
 								<div className="space-y-2">
 									<Label className="text-sm font-medium">Cache Mode</Label>
@@ -341,9 +337,7 @@ export default function CachingView() {
 												data-testid="caching-mode-semantic-tab"
 												disabled={embeddingProviders.length === 0}
 												title={
-													embeddingProviders.length === 0
-														? "Configure an embedding-capable provider to enable semantic mode."
-														: undefined
+													embeddingProviders.length === 0 ? "Configure an embedding-capable provider to enable semantic mode." : undefined
 												}
 											>
 												Direct + Semantic
@@ -353,14 +347,14 @@ export default function CachingView() {
 									<p className="text-muted-foreground text-xs">
 										{mode === "direct" ? (
 											<>
-												Direct-only mode hashes each request and replays an exact match. No embeddings, no provider needed.
-												Cheapest path, perfect for stable prompts.
+												Direct-only mode hashes each request and replays an exact match. No embeddings, no provider needed. Cheapest path,
+												perfect for stable prompts.
 											</>
 										) : (
 											<>
-												Direct + semantic mode adds vector similarity search on top of direct hash matching. Requires an
-												embedding-capable provider and the model&apos;s real dimension. Direct hits are still served first;
-												semantic search runs only when the direct lookup misses.
+												Direct + semantic mode adds vector similarity search on top of direct hash matching. Requires an embedding-capable
+												provider and the model&apos;s real dimension. Direct hits are still served first; semantic search runs only when the
+												direct lookup misses.
 											</>
 										)}
 									</p>
@@ -377,11 +371,11 @@ export default function CachingView() {
 									<>
 										{hasStructuralChange && (
 											<div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-												<b>Heads up:</b> a vector store namespace can only hold vectors of <em>one</em> dimension. Whenever you
-												change the embedding <b>provider</b>, <b>model</b>, or <b>dimension</b>, make sure the <b>dimension</b>{" "}
-												still matches what the model produces, otherwise writes to the existing namespace will fail and reads
-												will silently miss. The namespace is <em>not</em> recreated automatically; either use a fresh namespace
-												or drop the existing class/index in your vector store before saving.
+												<b>Heads up:</b> a vector store namespace can only hold vectors of <em>one</em> dimension. Whenever you change the
+												embedding <b>provider</b>, <b>model</b>, or <b>dimension</b>, make sure the <b>dimension</b> still matches what the
+												model produces, otherwise writes to the existing namespace will fail and reads will silently miss. The namespace is{" "}
+												<em>not</em> recreated automatically; either use a fresh namespace or drop the existing class/index in your vector
+												store before saving.
 											</div>
 										)}
 
@@ -408,11 +402,7 @@ export default function CachingView() {
 																.map((provider) => (
 																	<SelectItem key={provider.name} value={provider.name}>
 																		<div className="flex items-center gap-2">
-																			<RenderProviderIcon
-																				provider={provider.name as ProviderIconType}
-																				size="sm"
-																				className="h-4 w-4"
-																			/>
+																			<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
 																			<span>{getProviderLabel(provider.name)}</span>
 																		</div>
 																	</SelectItem>
@@ -435,8 +425,8 @@ export default function CachingView() {
 												</div>
 											</div>
 											<p className="text-muted-foreground text-xs">
-												API keys are inherited from the embedding provider&apos;s main configuration, you don&apos;t need to
-												add them again here.
+												API keys are inherited from the embedding provider&apos;s main configuration, you don&apos;t need to add them again
+												here.
 											</p>
 											<div className="space-y-2">
 												<Label htmlFor="dimension">Dimension</Label>
@@ -445,9 +435,7 @@ export default function CachingView() {
 													data-testid="caching-dimension-input"
 													type="number"
 													min="2"
-													value={
-														cacheConfig.dimension === undefined || Number.isNaN(cacheConfig.dimension) ? "" : cacheConfig.dimension
-													}
+													value={cacheConfig.dimension === undefined || Number.isNaN(cacheConfig.dimension) ? "" : cacheConfig.dimension}
 													onChange={(e) => {
 														const value = e.target.value;
 														if (value === "") {
@@ -461,9 +449,9 @@ export default function CachingView() {
 													}}
 												/>
 												<p className="text-muted-foreground text-xs">
-													Vector size produced by the embedding model. Must match the model exactly (e.g. <code>1536</code>{" "}
-													for OpenAI <code>text-embedding-3-small</code>, <code>3072</code> for{" "}
-													<code>text-embedding-3-large</code>, <code>768</code> for many Cohere/Voyage models).
+													Vector size produced by the embedding model. Must match the model exactly (e.g. <code>1536</code> for OpenAI{" "}
+													<code>text-embedding-3-small</code>, <code>3072</code> for <code>text-embedding-3-large</code>, <code>768</code>{" "}
+													for many Cohere/Voyage models).
 												</p>
 											</div>
 										</div>
@@ -508,9 +496,7 @@ export default function CachingView() {
 													min="0"
 													max="1"
 													step="0.01"
-													value={
-														cacheConfig.threshold === undefined || Number.isNaN(cacheConfig.threshold) ? "" : cacheConfig.threshold
-													}
+													value={cacheConfig.threshold === undefined || Number.isNaN(cacheConfig.threshold) ? "" : cacheConfig.threshold}
 													onChange={(e) => {
 														const value = e.target.value;
 														if (value === "") {
@@ -524,8 +510,7 @@ export default function CachingView() {
 													}}
 												/>
 												<p className="text-muted-foreground text-xs">
-													Minimum cosine similarity for a semantic hit. Override per-request via{" "}
-													<b>x-bf-cache-threshold</b>.
+													Minimum cosine similarity for a semantic hit. Override per-request via <b>x-bf-cache-threshold</b>.
 												</p>
 											</div>
 										)}
@@ -547,9 +532,9 @@ export default function CachingView() {
 												onChange={(e) => updateLocal({ vector_store_namespace: e.target.value })}
 											/>
 											<p className="text-muted-foreground text-xs">
-												Bucket/index name where cache entries live. Leave blank to use the default (
-												<code>BifrostLocalCachePlugin</code>). Changing this points the plugin at a different (possibly empty)
-												bucket. Old entries are not deleted, they just stop being queried.
+												Bucket/index name where cache entries live. Leave blank to use the default (<code>BifrostLocalCachePlugin</code>).
+												Changing this points the plugin at a different (possibly empty) bucket. Old entries are not deleted, they just stop
+												being queried.
 											</p>
 										</div>
 										<div className="space-y-2">
@@ -563,9 +548,8 @@ export default function CachingView() {
 												onChange={(e) => updateLocal({ default_cache_key: e.target.value })}
 											/>
 											<p className="text-muted-foreground text-xs">
-												Fallback partition key used when a request doesn&apos;t set <b>x-bf-cache-key</b>. Cache keys isolate
-												entries: same key ↔ shared cache pool. Leave blank to <b>disable caching</b> for any request that
-												doesn&apos;t send the header.
+												Fallback partition key used when a request doesn&apos;t set <b>x-bf-cache-key</b>. Cache keys isolate entries: same
+												key ↔ shared cache pool. Leave blank to <b>disable caching</b> for any request that doesn&apos;t send the header.
 											</p>
 										</div>
 									</div>
@@ -602,8 +586,8 @@ export default function CachingView() {
 												}}
 											/>
 											<p className="text-muted-foreground text-xs">
-												Skip caching for conversations with more than this many messages. Long histories rarely match exactly
-												and inflate the cache without paying off.
+												Skip caching for conversations with more than this many messages. Long histories rarely match exactly and inflate
+												the cache without paying off.
 											</p>
 										</div>
 									</div>
