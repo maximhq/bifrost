@@ -71,6 +71,7 @@ function MCPTabImpl({
 				testId="chart-mcp-volume"
 				totalLabel="Total"
 				total={mcpVolumeTotal !== null ? <NumberFlow value={mcpVolumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+				totalTooltip={mcpVolumeTotal !== null ? mcpVolumeTotal.toLocaleString("en-US") : undefined}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						<span className="flex items-center gap-1">
@@ -105,6 +106,11 @@ function MCPTabImpl({
 						<NumberFlow value={mcpCostTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
 					) : undefined
 				}
+				totalTooltip={
+					mcpCostTotal !== null
+						? mcpCostTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+						: undefined
+				}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						<span className="flex items-center gap-1">
@@ -113,7 +119,9 @@ function MCPTabImpl({
 						</span>
 					</div>
 				}
-				controls={<ChartTypeToggle chartType={mcpCostChartType} onToggle={onMcpCostChartToggle} data-testid="dashboard-mcp-cost-chart-toggle" />}
+				controls={
+					<ChartTypeToggle chartType={mcpCostChartType} onToggle={onMcpCostChartToggle} data-testid="dashboard-mcp-cost-chart-toggle" />
+				}
 			>
 				<MCPCostChart data={mcpCostData} chartType={mcpCostChartType} startTime={startTime} endTime={endTime} />
 			</ChartCard>
@@ -125,6 +133,7 @@ function MCPTabImpl({
 				testId="chart-mcp-top-tools"
 				totalLabel="Total"
 				total={mcpTopToolsTotal !== null ? <NumberFlow value={mcpTopToolsTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+				totalTooltip={mcpTopToolsTotal !== null ? mcpTopToolsTotal.toLocaleString("en-US") : undefined}
 			>
 				<MCPTopToolsChart data={mcpTopToolsData} />
 			</ChartCard>

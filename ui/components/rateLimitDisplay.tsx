@@ -2,7 +2,7 @@ import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { cn } from "@/lib/utils";
-import { formatCompactNumber } from "@/lib/utils/governance";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 
 interface RateLimitShape {
 	token_max_limit?: number | null;

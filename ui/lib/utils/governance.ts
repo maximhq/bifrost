@@ -24,23 +24,10 @@ export function parseResetPeriod(duration: string): string {
 	return `${timeValue} ${unitName}`;
 }
 
+import { formatCompactNumber } from "./numbers";
+
 export function formatCurrency(dollars: number) {
 	return `$${dollars.toFixed(2)}`;
-}
-
-/**
- * Formats a number compactly (e.g. 10000 → "10K", 1500000 → "1.5M").
- * Uses Intl.NumberFormat so boundary values promote correctly (999,950 → "1M", not "1000K")
- * and trailing zeros are dropped (10,000 → "10K", not "10.0K").
- */
-const compactNumberFormatter = new Intl.NumberFormat(undefined, {
-	notation: "compact",
-	maximumFractionDigits: 1,
-});
-
-export function formatCompactNumber(n: number): string {
-	if (Math.abs(n) >= 1_000) return compactNumberFormatter.format(n);
-	return n.toLocaleString();
 }
 
 const shortDurationLabels: Record<string, string> = {

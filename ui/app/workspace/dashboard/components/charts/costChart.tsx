@@ -1,4 +1,5 @@
 import type { CostHistogramResponse } from "@/lib/types/logs";
+import { formatCurrencyNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
@@ -136,7 +137,7 @@ function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: C
 							tickLine={false}
 							axisLine={false}
 							width={50}
-							tickFormatter={(v) => formatCost(v)}
+							tickFormatter={(v) => formatCurrencyNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
@@ -172,7 +173,7 @@ function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: C
 							tickLine={false}
 							axisLine={false}
 							width={50}
-							tickFormatter={(v) => formatCost(v)}
+							tickFormatter={(v) => formatCurrencyNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
