@@ -2729,6 +2729,11 @@ func GetBudgetTokensFromReasoningEffort(
 
 	budget := minBudgetTokens + int(ratio*float64(maxTokens-minBudgetTokens))
 
+	// Both Anthropic and Bedrock require budget_tokens < max_tokens (strict).
+	if budget >= maxTokens {
+		budget = maxTokens - 1
+	}
+
 	return budget, nil
 }
 
