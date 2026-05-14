@@ -184,59 +184,71 @@ Guardrail Rules are custom policies that define when and how content validation 
 </Tab>
 <Tab title="API">
 
+The HTTP API uses camelCase field names (`celExpression`, `applyTo`, `samplingRate`, `selectedGuardrailProfiles`). Profiles are referenced as `"<provider-type>:<config-id>"` strings (for example, `"regex:1"`, `"patronus-ai:6"`).
+
 **Create a Guardrail Rule:**
 ```bash
-curl -X POST http://localhost:8080/api/enterprise/guardrails/rules \
+curl -X POST http://localhost:8080/api/guardrails/rules \
   -H "Content-Type: application/json" \
   -d '{
-    "id": 1,
     "name": "Block PII in Prompts",
     "description": "Prevent PII from being sent to LLM providers",
     "enabled": true,
-    "cel_expression": "request.messages.exists(m, m.role == \"user\")",
-    "apply_to": "input",
-    "sampling_rate": 100,
+    "celExpression": "request.messages.exists(m, m.role == \"user\")",
+    "applyTo": "input",
+    "samplingRate": 100,
     "timeout": 5000,
-    "provider_config_ids": [1, 2]
+    "selectedGuardrailProfiles": ["regex:1", "bedrock:2"]
   }'
 ```
 
 **List All Rules:**
 ```bash
-curl -X GET http://localhost:8080/api/enterprise/guardrails/rules \
+curl -X GET http://localhost:8080/api/guardrails/rules \
   -H "Content-Type: application/json"
 
 # Response
 {
+  "count": 1,
+  "limit": 1,
+  "offset": 0,
   "rules": [
     {
       "id": 1,
       "name": "Block PII in Prompts",
       "description": "Prevent PII from being sent to LLM providers",
       "enabled": true,
-      "cel_expression": "request.messages.exists(m, m.role == \"user\")",
-      "apply_to": "input",
-      "sampling_rate": 100,
+      "celExpression": "request.messages.exists(m, m.role == \"user\")",
+      "applyTo": "input",
+      "samplingRate": 100,
       "timeout": 5000,
-      "provider_config_ids": [1, 2]
+      "selectedGuardrailProfiles": ["regex:1", "bedrock:2"]
     }
   ]
 }
 ```
 
 **Update a Rule:**
+
+`PUT` revalidates against the full rule schema. Send the complete rule body (same shape as `POST`), not a patch.
 ```bash
-curl -X PUT http://localhost:8080/api/enterprise/guardrails/rules/1 \
+curl -X PUT http://localhost:8080/api/guardrails/rules/1 \
   -H "Content-Type: application/json" \
   -d '{
+    "name": "Block PII in Prompts",
+    "description": "Prevent PII from being sent to LLM providers",
     "enabled": false,
-    "sampling_rate": 50
+    "celExpression": "request.messages.exists(m, m.role == \"user\")",
+    "applyTo": "input",
+    "samplingRate": 50,
+    "timeout": 5000,
+    "selectedGuardrailProfiles": ["regex:1", "bedrock:2"]
   }'
 ```
 
 **Delete a Rule:**
 ```bash
-curl -X DELETE http://localhost:8080/api/enterprise/guardrails/rules/1
+curl -X DELETE http://localhost:8080/api/guardrails/rules/1
 ```
 
 </Tab>
@@ -411,14 +423,14 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Tab>
 <Tab title="API">
 
+Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `bedrock`, `azure`, `grayswan`, or `patronus-ai`. The API assigns the configuration ID after creation.
+
 **Create a Profile:**
 ```bash
-curl -X POST http://localhost:8080/api/enterprise/guardrails/providers \
+curl -X POST http://localhost:8080/api/guardrails/bedrock \
   -H "Content-Type: application/json" \
   -d '{
-    "id": 1,
-    "provider_name": "bedrock",
-    "policy_name": "PII Detection Profile",
+    "name": "PII Detection Profile",
     "enabled": true,
     "config": {
       "access_key": "env.AWS_ACCESS_KEY_ID",
@@ -430,42 +442,46 @@ curl -X POST http://localhost:8080/api/enterprise/guardrails/providers \
   }'
 ```
 
-**List All Profiles:**
+**List All Profiles (grouped by provider):**
 ```bash
-curl -X GET http://localhost:8080/api/enterprise/guardrails/providers \
+curl -X GET http://localhost:8080/api/guardrails \
   -H "Content-Type: application/json"
 
 # Response
-{
-  "providers": [
-    {
-      "id": 1,
-      "provider_name": "bedrock",
-      "policy_name": "PII Detection Profile",
-      "enabled": true
-    },
-    {
-      "id": 2,
-      "provider_name": "azure",
-      "policy_name": "Content Safety Profile",
-      "enabled": true
-    }
-  ]
-}
+[
+  {
+    "name": "regex",
+    "configs": [
+      { "id": 1, "name": "PII Detection", "enabled": true, "patterns": [...] }
+    ]
+  },
+  {
+    "name": "bedrock",
+    "configs": [
+      { "id": 2, "name": "PII Detection Profile", "enabled": true, "guardrail_arn": "...", "region": "us-east-1" }
+    ]
+  }
+]
 ```
+
+To list only a single provider's profiles, hit the provider path directly: `GET /api/guardrails/bedrock`.
 
 **Update a Profile:**
 ```bash
-curl -X PUT http://localhost:8080/api/enterprise/guardrails/providers/1 \
+curl -X PUT http://localhost:8080/api/guardrails/bedrock \
   -H "Content-Type: application/json" \
   -d '{
+    "id": 1,
+    "name": "PII Detection Profile",
     "enabled": false
   }'
 ```
 
 **Delete a Profile:**
 ```bash
-curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
+curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
+  -H "Content-Type: application/json" \
+  -d '{"id": 1}'
 ```
 
 </Tab>
@@ -541,11 +557,23 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
         {
           "id": 6,
           "provider_name": "patronus-ai",
-          "policy_name": "Hallucination Detection",
+          "policy_name": "Patronus Quality Checks",
           "enabled": true,
           "config": {
             "api_key": "env.PATRONUS_API_KEY",
-            "api_endpoint": "https://api.patronus.ai/v1"
+            "base_url": "https://api.patronus.ai",
+            "evaluators": [
+              {
+                "evaluator": "pii",
+                "explain_strategy": "on-fail"
+              },
+              {
+                "evaluator": "judge",
+                "criteria": "patronus:is-concise",
+                "explain_strategy": "on-fail"
+              }
+            ],
+            "capture": "none"
           }
         }
       ]
@@ -615,10 +643,18 @@ guardrails_config:
           professional_tone: "Ensure responses maintain a professional tone"
     - id: 6
       provider_name: "patronus-ai"
-      policy_name: "Hallucination Detection"
+      policy_name: "Patronus Quality Checks"
       enabled: true
       config:
-        api_endpoint: "https://api.patronus.ai/v1"
+        api_key: "env.PATRONUS_API_KEY"
+        base_url: "https://api.patronus.ai"
+        evaluators:
+          - evaluator: "pii"
+            explain_strategy: "on-fail"
+          - evaluator: "judge"
+            criteria: "patronus:is-concise"
+            explain_strategy: "on-fail"
+        capture: "none"
 ```
 
 </Tab>
