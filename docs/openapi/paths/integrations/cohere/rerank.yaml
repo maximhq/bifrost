@@ -1,0 +1,86 @@
+# Cohere Integration - Rerank Endpoint
+
+rerank:
+  post:
+    operationId: cohereRerank
+    summary: Rerank documents (Cohere format)
+    description: |
+      Reranks a list of documents against a query using Cohere's v2 Rerank
+      API. The request body matches Cohere's native format.
+    tags:
+    - Cohere Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - model
+            - query
+            - documents
+            properties:
+              model:
+                type: string
+                description: Cohere rerank model identifier (e.g. `rerank-english-v3.0`).
+              query:
+                type: string
+                description: Query string to rank documents against.
+              documents:
+                type: array
+                description: Documents to rerank. Strings or objects with a `text` field.
+                items:
+                  oneOf:
+                  - type: string
+                  - type: object
+                    required:
+                    - text
+                    properties:
+                      text:
+                        type: string
+                    additionalProperties: true
+              top_n:
+                type: integer
+                description: Return only the top N reranked results.
+              return_documents:
+                type: boolean
+                description: Include the original document text in the response.
+              max_tokens_per_doc:
+                type: integer
+                description: Truncate each document to this token limit before ranking.
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      index:
+                        type: integer
+                      relevance_score:
+                        type: number
+                      document:
+                        type: object
+                        additionalProperties: true
+                meta:
+                  type: object
+                  additionalProperties: true
+              additionalProperties: true
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

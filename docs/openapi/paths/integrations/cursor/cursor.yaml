@@ -1,0 +1,634 @@
+# Cursor IDE Integration
+#
+# The /cursor/* prefix re-exposes OpenAI list-models, Anthropic, GenAI,
+# Bedrock and Cohere routes for use by Cursor's hybrid client. The
+# /cursor/v1/chat/completions endpoint is special: it parses requests in
+# the OpenAI Responses API format (Cursor's hybrid payload) and converts
+# responses back to chat-completions shape.
+
+chat-completions:
+  post:
+    operationId: cursorChatCompletions
+    summary: Cursor hybrid chat completions
+    description: |
+      Accepts Cursor's hybrid chat-completions payload (which is structurally
+      a Responses API request with `input` blocks) and returns a chat-
+      completions-shaped response (`choices` + `delta` chunks for streams).
+      Routes the request through the Responses pipeline internally.
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+models:
+  get:
+    operationId: cursorListModels
+    summary: List models (Cursor)
+    description: Lists available models, returning the OpenAI `/v1/models` shape.
+    tags:
+    - Cursor Integration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+# ---- Anthropic-compatible (mounted under /cursor) ----
+anthropic-messages:
+  post:
+    operationId: cursorAnthropicMessages
+    summary: Anthropic messages (Cursor mount)
+    description: Cursor mount of `POST /anthropic/v1/messages`. Same request/response shape and streaming behaviour.
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicMessageRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicMessageResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicStreamEvent'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+anthropic-messages-wildcard:
+  post:
+    operationId: cursorAnthropicMessagesWildcard
+    summary: Anthropic messages — wildcard (Cursor mount)
+    description: |
+      Cursor mount of the Anthropic messages wildcard (`POST /anthropic/v1/messages/{path}`).
+      Routes extended Anthropic messages endpoints (e.g. batches, count tokens)
+      through Cursor.
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: path
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicMessageRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicMessageResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+anthropic-complete:
+  post:
+    operationId: cursorAnthropicComplete
+    summary: Anthropic complete (Cursor mount)
+    description: Cursor mount of the legacy Anthropic `POST /v1/complete` endpoint.
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/text.yaml#/AnthropicTextRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/text.yaml#/AnthropicTextResponse'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+anthropic-count-tokens:
+  post:
+    operationId: cursorAnthropicCountTokens
+    summary: Anthropic count tokens (Cursor mount)
+    description: Cursor mount of `POST /anthropic/v1/messages/count_tokens`.
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicMessageRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+# ---- GenAI-compatible (mounted under /cursor) ----
+genai-model-action:
+  post:
+    operationId: cursorGeminiModelAction
+    summary: Gemini model action (Cursor mount)
+    description: |
+      Cursor mount of Gemini's wildcard generate-content/embed/count-tokens/
+      predict endpoints. The `model` path parameter includes the action
+      suffix (e.g. `gemini-pro:generateContent`).
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model name optionally followed by an action suffix.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+genai-models:
+  get:
+    operationId: cursorGeminiListModels
+    summary: Gemini list models (Cursor mount)
+    description: Cursor mount of `GET /genai/v1beta/models`.
+    tags:
+    - Cursor Integration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+genai-video-operation:
+  get:
+    operationId: cursorGeminiRetrieveVideoOperation
+    summary: Gemini video operation polling (Cursor mount)
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: operation_id
+      in: path
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+# ---- Vertex Rank (mounted under /cursor) ----
+genai-rank:
+  post:
+    operationId: cursorVertexRank
+    summary: Vertex rank (Cursor mount)
+    description: Cursor mount of `POST /genai/v1/rank` — Vertex AI ranking.
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+# ---- Bedrock-compatible (mounted under /cursor) ----
+bedrock-converse:
+  post:
+    operationId: cursorBedrockConverse
+    summary: Bedrock converse (Cursor mount)
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockConverseRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockConverseResponse'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+bedrock-converse-stream:
+  post:
+    operationId: cursorBedrockConverseStream
+    summary: Bedrock converse stream (Cursor mount)
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockConverseRequest'
+    responses:
+      '200':
+        description: AWS event stream of converse chunks.
+        content:
+          application/vnd.amazon.eventstream:
+            schema:
+              type: string
+              format: binary
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+bedrock-invoke:
+  post:
+    operationId: cursorBedrockInvoke
+    summary: Bedrock invoke (Cursor mount)
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: Bedrock invoke response (raw model output).
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+bedrock-invoke-stream:
+  post:
+    operationId: cursorBedrockInvokeStream
+    summary: Bedrock invoke-with-response-stream (Cursor mount)
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: AWS event stream of invoke chunks.
+        content:
+          application/vnd.amazon.eventstream:
+            schema:
+              type: string
+              format: binary
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+bedrock-rerank:
+  post:
+    operationId: cursorBedrockRerank
+    summary: Bedrock rerank (Cursor mount)
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+bedrock-count-tokens:
+  post:
+    operationId: cursorBedrockCountTokens
+    summary: Bedrock count tokens (Cursor mount)
+    tags:
+    - Cursor Integration
+    parameters:
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              input:
+                type: object
+                properties:
+                  converse:
+                    type: object
+                    additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inputTokens:
+                  type: integer
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+# ---- Cohere-compatible (mounted under /cursor) ----
+cohere-chat:
+  post:
+    operationId: cursorCohereChat
+    summary: Cohere chat (Cursor mount)
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+cohere-embed:
+  post:
+    operationId: cursorCohereEmbed
+    summary: Cohere embed (Cursor mount)
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+cohere-rerank:
+  post:
+    operationId: cursorCohereRerank
+    summary: Cohere rerank (Cursor mount)
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+cohere-tokenize:
+  post:
+    operationId: cursorCohereTokenize
+    summary: Cohere tokenize (Cursor mount)
+    tags:
+    - Cursor Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
