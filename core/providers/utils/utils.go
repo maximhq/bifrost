@@ -2054,6 +2054,10 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 				if err := closer.Close(); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
+			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+				if err := wce.CloseWithError(ctx.Err()); err != nil {
+					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
+				}
 			}
 		case <-done:
 			// If context was also cancelled (race between done and ctx.Done),
@@ -2061,6 +2065,10 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 			if ctx.Err() != nil {
 				if closer, ok := bodyStream.(io.Closer); ok {
 					if err := closer.Close(); err != nil {
+						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
+					}
+				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
 				}
@@ -2102,6 +2110,23 @@ func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
 	return DefaultStreamIdleTimeout
 }
 
+// streamCloserWithError is implemented by fasthttp's streaming body reader.
+// Calling CloseWithError with a non-nil error closes the underlying TCP
+// connection, interrupting any blocked Read.
+type streamCloserWithError interface {
+	CloseWithError(err error) error
+}
+
+// closeBodyStream closes bodyStream using whatever interface it supports:
+// io.Closer for net/http responses, streamCloserWithError for fasthttp.
+func closeBodyStream(bodyStream io.Reader, err error) {
+	if closer, ok := bodyStream.(io.Closer); ok {
+		closer.Close()
+	} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+		wce.CloseWithError(err)
+	}
+}
+
 // idleTimeoutReader wraps an io.Reader and closes the underlying body stream
 // if no data arrives within the configured timeout. This unblocks any pending
 // Read() call on the wrapped reader.
@@ -2111,12 +2136,16 @@ type idleTimeoutReader struct {
 	timeout    time.Duration
 	timer      *time.Timer
 	once       sync.Once
+	fired      atomic.Bool // set true when the idle timer fires
 }
 
 // NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
 // no data for the given timeout duration, bodyStream is closed to unblock the read.
-// bodyStream must implement io.Closer for the timeout to take effect; if it does not,
-// the wrapper still functions but cannot force-close the stream.
+// Supports both io.Closer and fasthttp's CloseWithError interface — the latter
+// closes the underlying TCP connection when called with a non-nil error, which is
+// required to interrupt a blocked Read on fasthttp streaming responses.
+// When the timer fires, any subsequent error from Read is translated to
+// ErrStreamIdleTimeout so callers do not need per-handler error checks.
 // Returns the wrapped reader and a cleanup function that MUST be called (via defer)
 // when streaming is complete, to stop the timer and prevent premature closure.
 func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration) (io.Reader, func()) {
@@ -2130,9 +2159,8 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	}
 	r.timer = time.AfterFunc(timeout, func() {
 		r.once.Do(func() {
-			if closer, ok := r.bodyStream.(io.Closer); ok {
-				closer.Close()
-			}
+			r.fired.Store(true)
+			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
 		})
 	})
 	return r, func() { r.timer.Stop() }
@@ -2143,8 +2171,15 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
+	if err != nil && err != io.EOF && r.fired.Load() {
+		return n, ErrStreamIdleTimeout
+	}
 	return n, err
 }
+
+// ErrStreamIdleTimeout is returned when no data is received within the configured
+// stream_idle_timeout_in_seconds window.
+var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured window")
 
 // HandleStreamCancellation should be called when a streaming goroutine exits
 // due to context cancellation. It ensures proper cleanup by:
@@ -2376,7 +2411,7 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 func ReleaseStreamingResponse(resp *fasthttp.Response) {
 	defer func() {
 		if r := recover(); r != nil {
-			getLogger().Error("recovered panic in ReleaseStreamingResponse: %v", r)
+			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
 		// Always release the response to prevent leaks, even after a panic
 		fasthttp.ReleaseResponse(resp)
