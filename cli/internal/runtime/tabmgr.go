@@ -320,7 +320,12 @@ func (tm *TabManager) createTab(ctx context.Context, spec LaunchSpec) (*Tab, err
 	tab.vt = vt10x.New(
 		vt10x.WithWriter(ptmx),
 		vt10x.WithSize(int(cols), int(contentRows)),
-		vt10x.WithOnScrollUp(tab.sb.push),
+		vt10x.WithOnScrollUp(func(rows [][]vt10x.Glyph, altScreen bool) {
+			added := tab.sb.push(rows, altScreen)
+			if added > 0 {
+				tm.onScrollbackGrow(tab, added)
+			}
+		}),
 	)
 	tab.cursorVisible.Store(true)
 	tm.nextID++
@@ -545,6 +550,37 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 				continue
 			}
 
+			// Mouse events must run before the scroll-mode catch-all so
+			// wheel notches reach handleWheelEvent instead of being
+			// swallowed by handleScrollKey as an unknown CSI sequence.
+			if ev, ok := parseMouseEvent(token); ok {
+				if tm.handleTabBarMouseEvent(ev) {
+					if tm.isScrollMode() {
+						tm.exitScrollMode()
+					}
+					continue
+				}
+				if ev.wheel && (tm.isScrollMode() || tm.hostOwnsMouse()) {
+					if tm.handleWheelEvent(ev) {
+						continue
+					}
+				}
+				if tm.isCommandMode() {
+					continue
+				}
+				if tm.isScrollMode() {
+					// Non-wheel mouse activity while browsing scrollback
+					// shouldn't reach the harness or jump the view.
+					continue
+				}
+				if tm.hostOwnsMouse() {
+					// Host enabled mouse capture for tab-bar/wheel use,
+					// but the harness never asked for it — don't forward
+					// stray click/motion bytes it isn't equipped to parse.
+					continue
+				}
+			}
+
 			if tm.isScrollMode() {
 				tm.handleScrollKey(token)
 				continue
@@ -577,15 +613,6 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 				}
 				tm.cycleTab()
 				continue
-			}
-
-			if ev, ok := parseMouseEvent(token); ok {
-				if tm.handleTabBarMouseEvent(ev) {
-					continue
-				}
-				if tm.isCommandMode() {
-					continue
-				}
 			}
 
 			if tm.isCommandMode() {
@@ -1076,6 +1103,60 @@ func (tm *TabManager) isScrollMode() bool {
 	return tm.scrollMode
 }
 
+// hostOwnsMouse reports whether the active harness has *not* requested
+// mouse reporting. When it hasn't, the host is free to consume mouse
+// events (e.g. wheel-up to enter scrollback) without breaking the
+// harness's interactive mouse handling.
+func (tm *TabManager) hostOwnsMouse() bool {
+	tm.mu.Lock()
+	if tm.activeIdx >= len(tm.tabs) {
+		tm.mu.Unlock()
+		return true
+	}
+	tab := tm.tabs[tm.activeIdx]
+	tm.mu.Unlock()
+	if tab == nil || tab.vt == nil {
+		return true
+	}
+	tab.vt.Lock()
+	mode := tab.vt.Mode()
+	tab.vt.Unlock()
+	return mode&vt10x.ModeMouseMask == 0
+}
+
+// wheelLinesPerNotch is how many lines a single wheel notch scrolls in
+// scrollback. Matches common defaults across terminal emulators.
+const wheelLinesPerNotch = 3
+
+// handleWheelEvent maps wheel-up/wheel-down to scroll-offset changes.
+// Returns true if the event was consumed by host-side scrolling and
+// should not be forwarded to the harness PTY.
+func (tm *TabManager) handleWheelEvent(ev mouseEvent) bool {
+	if !ev.wheel || !ev.press {
+		// Wheel-release events under SGR encoding are noise to us.
+		return ev.wheel
+	}
+
+	switch ev.button {
+	case 0: // wheel up
+		if !tm.isScrollMode() {
+			tm.enterScrollMode()
+		}
+		tm.adjustScrollOffset(wheelLinesPerNotch)
+		return true
+	case 1: // wheel down
+		if tm.isScrollMode() {
+			tm.adjustScrollOffset(-wheelLinesPerNotch)
+			return true
+		}
+		// Not scrolling and host owns the wheel — swallow rather than
+		// forwarding, so the harness doesn't see phantom mouse traffic
+		// it never asked for.
+		return true
+	}
+	return false
+}
+
 // enterScrollMode freezes the active tab's view at the current frame and
 // switches input handling into scrollback browsing. Caller should not
 // already hold tm.mu.
@@ -1099,6 +1180,30 @@ func (tm *TabManager) exitScrollMode() {
 	tm.scrollOffset = 0
 	tm.needsRender = true
 	tm.mu.Unlock()
+}
+
+// onScrollbackGrow is invoked by the vt10x scroll-up callback after rows
+// have been appended to a tab's scrollback. When the user is currently
+// browsing that tab in scroll mode, we bump scrollOffset by the same
+// amount so the visible window stays anchored on the same content rows
+// instead of drifting upward as new evictions push the stream forward.
+// Called with neither tm.mu nor the vt10x lock held by us — vt10x holds
+// its own lock when invoking the callback, so we must not call back into
+// vt10x from here.
+func (tm *TabManager) onScrollbackGrow(tab *Tab, added int) {
+	if added <= 0 {
+		return
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if !tm.scrollMode || tm.activeIdx >= len(tm.tabs) || tm.tabs[tm.activeIdx] != tab {
+		return
+	}
+	tm.scrollOffset += added
+	if sbLen := tab.sb.length(); tm.scrollOffset > sbLen {
+		tm.scrollOffset = sbLen
+	}
+	tm.needsRender = true
 }
 
 // adjustScrollOffset shifts the scrollback view by delta lines (positive =
@@ -1972,8 +2077,13 @@ func (tm *TabManager) renderFrame() {
 		cursor.X, cursor.Y, vtCursorVisible, tab.cursorVisible.Load(),
 		tab.cursorSavedValid.Load(), tab.cursorSavedX.Load(), tab.cursorSavedY.Load(),
 		curX, curY, showCursor)
-	if tm.isCommandMode() && vtMode&vt10x.ModeMouseMask == 0 {
-		vtMode |= vt10x.ModeMouseX10
+	if vtMode&vt10x.ModeMouseMask == 0 {
+		// Harness hasn't asked for mouse reporting, so the host owns the
+		// mouse. Enable SGR-encoded button reporting so we can capture
+		// tab-bar clicks and wheel events (for scrollback) from the real
+		// terminal — without that, mouse escapes never reach bifrost at
+		// all and host-side wheel scrolling is impossible.
+		vtMode |= vt10x.ModeMouseButton | vt10x.ModeMouseSgr
 	}
 
 	tabBar := tm.buildTabBarString()
