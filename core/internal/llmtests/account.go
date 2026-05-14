@@ -178,6 +178,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.VLLM,
 		schemas.Runway,
 		schemas.Fireworks,
+		schemas.SaladCloud,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -494,6 +495,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.SaladCloud:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.SALAD_CLOUD_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(false),
 			},
 		}, nil
 	case schemas.Ollama:
@@ -843,6 +853,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Fireworks:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.SaladCloud:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
@@ -1291,6 +1314,40 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false,
 			SpeechSynthesis:       false,
 			PromptCaching:         false,
+		},
+	},
+	{
+		Provider:       schemas.SaladCloud,
+		ChatModel:      "qwen3.6-35b-a3b",
+		VisionModel:    "qwen3.6-35b-a3b",
+		ReasoningModel: "qwen3.6-35b-a3b",
+		Scenarios: TestScenarios{
+			TextCompletion:             false,
+			TextCompletionStream:       false,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   true,
+			ImageBase64:                false,
+			MultipleImages:             false,
+			FileBase64:                 false,
+			FileURL:                    false,
+			CompleteEnd2End:            false,
+			Embedding:                  false,
+			ListModels:                 true,
+			Reasoning:                  true,
+			Transcription:              false,
+			SpeechSynthesis:            false,
+			StructuredOutputs:          false,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.SaladCloud, Model: "qwen3.6-27b"},
 		},
 	},
 	{

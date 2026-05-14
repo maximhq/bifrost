@@ -1,0 +1,184 @@
+---
+title: "SaladCloud"
+description: "SaladCloud AI Gateway integration guide - OpenAI-compatible chat completions with multimodal support, tool calling, and streaming"
+icon: "s"
+---
+
+## Overview
+
+SaladCloud AI Gateway is a managed LLM API powered by SaladCloud's distributed GPU network, offering direct access to open-source models through a single OpenAI-compatible endpoint with no infrastructure to manage. Bifrost delegates chat and streaming to the OpenAI implementation. Key features:
+
+- **OpenAI-compatible** - Standard `/v1/chat/completions` request and response format
+- **Multimodal** - models accept image inputs via URL or base64 data URL
+- **Streaming** - Server-Sent Events with delta-based updates
+- **Tool calling** - Complete function definition and execution
+- **Model listing** - Standard `/v1/models` endpoint
+- **90% cost savings** vs traditional cloud providers
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | Bifrost chat-completion fallback |
+| Image Input (URL) | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): These return `UnsupportedOperationError`. SaladCloud AI Gateway currently supports chat completions, streaming, image inputs, and model listing.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+SaladCloud supports all standard OpenAI chat completion parameters. For the full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+## Example
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "saladcloud/qwen3.6-35b-a3b",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.SaladCloud,
+    Model:    "qwen3.6-35b-a3b",
+    Input: []schemas.ChatMessage{
+        {Role: "user", Content: &schemas.ChatMessageContent{ChatMessageContentStr: bifrost.Ptr("Hello!")}},
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Image Inputs
+
+Qwen models on SaladCloud are multimodal and accept OpenAI-compatible `image_url` content blocks with remote URLs or base64 data URLs.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "saladcloud/qwen3.6-35b-a3b",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+      ]
+    }]
+  }'
+```
+
+<Note>
+Prefer remote image URLs for large images. SaladCloud accepts smaller base64 data URLs, but the upstream gateway returned `503` for Bifrost's shared 1.16 MB base64 PNG fixture, so Bifrost does not enable that base64 fixture for SaladCloud.
+</Note>
+
+---
+
+# 2. Configuration
+
+Bifrost's default base URL is `https://ai.salad.cloud`. Request handlers append `/v1/chat/completions` and `/v1/models` automatically. If you configure `https://ai.salad.cloud/v1`, Bifrost normalizes the trailing `/v1`.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Model Providers** → **Configurations** → **SaladCloud**
+2. Click **Add Key**
+3. Set **API Key** to your SaladCloud API key
+4. Set **Models** to `*` or specific model IDs like `qwen3.6-35b-a3b`
+5. Save the provider configuration
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "provider": "saladcloud",
+    "keys": [
+      {
+        "name": "saladcloud-key-1",
+        "value": "env.SALAD_CLOUD_API_KEY",
+        "models": ["*"],
+        "weight": 1.0
+      }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "saladcloud": {
+      "keys": [
+        {
+          "name": "saladcloud-key-1",
+          "value": "env.SALAD_CLOUD_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 3. Getting Access
+
+To get your API key, visit the [SaladCloud portal](https://portal.salad.com/api-key) or check the [SaladCloud AI Gateway docs](https://docs.salad.com/ai-gateway).
+
+---
+
+# 4. Available Models
+
+All models have a **262,144 token context window** and support tool calling and streaming. SaladCloud pricing is significantly lower than traditional cloud providers - see the [SaladCloud pricing page](https://docs.salad.com/ai-gateway/reference/pricing) for current rates.
+
+| Model | Architecture | Best For |
+|-------|-------------|----------|
+| `qwen3.6-35b-a3b` | MoE (~3.5B active) | Agentic tasks, complex reasoning, coding |
+| `qwen3.6-27b` | Dense | Balanced capability and speed |
+| `qwen3.5-9b` | Dense | Fast responses, high-volume, simple tasks |
+| `gemma-4-26b-a4b-instruct` | MoE | Cost-effective general use |
+
+<Note>
+All Qwen models (`qwen3.6-35b-a3b`, `qwen3.6-27b`, `qwen3.5-9b`) are multimodal and support image URL and smaller base64 data URL inputs. For the full and up-to-date model catalog, see the [SaladCloud AI Gateway docs](https://docs.salad.com/ai-gateway/reference/models).
+</Note>
+
+### Choosing a Model
+
+| Use Case | Recommended Model |
+|----------|------------------|
+| Agentic coding, complex reasoning | `qwen3.6-35b-a3b` |
+| General chat / assistant | `qwen3.6-27b` |
+| Fast responses, high volume | `qwen3.5-9b` |
+| Cost-optimized general use | `gemma-4-26b-a4b-instruct` |

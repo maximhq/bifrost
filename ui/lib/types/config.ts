@@ -7,7 +7,7 @@ import { EnvVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate" | "fireworks";
+export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate" | "fireworks" | "saladcloud";
 
 // Branded type for custom provider names to prevent collision with known providers
 export type CustomProviderName = string & { readonly __brand: "CustomProviderName" };
