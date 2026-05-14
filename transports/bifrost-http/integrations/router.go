@@ -709,7 +709,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				if len(rawBody) > 0 {
 					if err := sonic.Unmarshal(rawBody, req); err != nil {
 						cancel()
-						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
+						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, fmt.Sprintf("request body incompatible with %s schema: %v", config.Type, err), fasthttp.StatusBadRequest))
 						return
 					}
 				}

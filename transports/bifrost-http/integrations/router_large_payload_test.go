@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,6 +92,43 @@ func TestCreateHandler_UsesRequestParserWhenNotInLargePayloadMode(t *testing.T) 
 	handler(ctx)
 
 	assert.Equal(t, 1, parserCalls)
+}
+
+func TestCreateHandler_GenAIUnmarshalErrorReturnsBadRequest(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+
+	route := RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   "/v1beta/models/{model:*}",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ResponsesRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &gemini.GeminiGenerationRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			return nil, errors.New("unmarshal error should stop before conversion")
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetBodyString(`{"tools":[{"functionDeclarations":[{"name":"lookup","parameters":{"type":"OBJECT","maxItems":1}}]}]}`)
+	ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+
+	handler := router.createHandler(route)
+	handler(ctx)
+
+	body := string(ctx.Response.Body())
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, body, "request body incompatible with genai schema")
+	assert.Contains(t, body, "maxItems")
 }
 
 // ============================================================================
