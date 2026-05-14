@@ -3281,6 +3281,12 @@
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
         },
+        "type": {
+          "type": "string",
+          "enum": ["mesh", "broker"],
+          "default": "mesh",
+          "description": "Clustering mode. 'mesh' (default) is peer-to-peer via memberlist gossip. 'broker' routes all cluster traffic through a central broker process, for platforms without peer-to-peer connectivity (e.g. Cloud Run)."
+        },
         "region": {
           "type": "string",
           "description": "Region label for cluster deployment (runtime default: unknown)"
@@ -3426,6 +3432,32 @@
             }
           },
           "required": ["type"],
+          "additionalProperties": false
+        },
+        "broker": {
+          "type": "object",
+          "description": "Broker settings, used when type is 'broker'",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "host:port of the broker that nodes dial"
+            },
+            "tls": {
+              "type": "boolean",
+              "description": "Whether to dial the broker over TLS"
+            },
+            "auth_token": {
+              "type": "string",
+              "description": "Optional shared secret sent on connect"
+            },
+            "listen_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port the broker process serves on (default: 50051)"
+            }
+          },
+          "required": ["address"],
           "additionalProperties": false
         }
       },
