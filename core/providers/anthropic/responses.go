@@ -2738,9 +2738,8 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	bifrostResp.Model = response.Model
 
-	// Preserve stop reason from Anthropic response
 	if response.StopReason != "" {
-		bifrostResp.StopReason = schemas.Ptr(string(response.StopReason))
+		bifrostResp.StopReason = schemas.Ptr(ConvertAnthropicFinishReasonToBifrost(response.StopReason))
 	}
 
 	return bifrostResp

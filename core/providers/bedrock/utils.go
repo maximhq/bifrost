@@ -40,14 +40,21 @@ var (
 	multiSpaceRegex  = regexp.MustCompile(`\s{2,}`)
 
 	// bedrockFinishReasonToBifrost maps Bedrock Converse API stop reasons to Bifrost format.
-	// Bedrock has additional stop reasons beyond Anthropic (guardrail_intervened, content_filtered).
+	// Unmappable reasons (e.g. guardrail_intervened) are passed through as-is.
 	bedrockFinishReasonToBifrost = map[string]string{
-		"end_turn":             "stop",
-		"max_tokens":           "length",
-		"stop_sequence":        "stop",
-		"tool_use":             "tool_calls",
-		"guardrail_intervened": "content_filter",
-		"content_filtered":     "content_filter",
+		"end_turn":         "stop",
+		"max_tokens":       "length",
+		"stop_sequence":    "stop",
+		"tool_use":         "tool_calls",
+		"content_filtered": "content_filter",
+	}
+
+	// bifrostToBedrockStopReason is the reverse of bedrockFinishReasonToBifrost.
+	bifrostToBedrockStopReason = map[string]string{
+		"stop":           "end_turn",
+		"length":         "max_tokens",
+		"tool_calls":     "tool_use",
+		"content_filter": "content_filtered",
 	}
 )
 
@@ -56,7 +63,15 @@ func convertBedrockStopReason(stopReason string) string {
 	if reason, ok := bedrockFinishReasonToBifrost[stopReason]; ok {
 		return reason
 	}
-	return "stop"
+	return stopReason
+}
+
+// convertBifrostToBedrockStopReason converts a Bifrost stop reason back to Bedrock format.
+func convertBifrostToBedrockStopReason(bifrostReason string) string {
+	if reason, ok := bifrostToBedrockStopReason[bifrostReason]; ok {
+		return reason
+	}
+	return bifrostReason
 }
 
 // normalizeBedrockFilename normalizes a filename to meet Bedrock's requirements:
