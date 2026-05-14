@@ -355,8 +355,15 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		return nil, nil
 	}
 
-	// If no body, check if large payload mode is active for read-only governance
+	// If no body, check if the request carries a model via query params (e.g. realtime
+	// WebSocket upgrades: GET /v1/realtime?model=... or Azure preview ?deployment=...)
+	// or if large payload mode is active.
+	// For query-param-based models we build a synthetic payload so routing rules and VK
+	// load-balancing can rewrite provider/model, then propagate changes back to the query.
 	if len(req.Body) == 0 {
+		if modelParam := realtimeModelQueryParam(req); modelParam != "" {
+			return p.governRealtimeQueryParam(ctx, req, virtualKeyValue, hasRoutingRules)
+		}
 		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 		if !isLargePayload {
 			return nil, nil
@@ -569,6 +576,93 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 	}
 
 	// No body serialization — large payload body streams through unchanged
+	return nil, nil
+}
+
+// realtimeModelQueryParam returns the query parameter used as the realtime model selector.
+// Azure preview realtime uses `deployment`, while GA/OpenAI-compatible paths use `model`.
+func realtimeModelQueryParam(req *schemas.HTTPRequest) string {
+	if req == nil || req.Query == nil {
+		return ""
+	}
+	if modelParam := req.Query["model"]; modelParam != "" {
+		return modelParam
+	}
+	return req.Query["deployment"]
+}
+
+// governRealtimeQueryParam handles governance for bodyless realtime requests
+// (e.g. WebSocket upgrade GET /v1/realtime?model=... or Azure preview
+// /realtime?deployment=...) where the model lives in a query parameter instead
+// of the JSON body. We build a synthetic payload so routing rules and VK
+// load-balancing can evaluate normally, then propagate any model rewrite back
+// to the original query param for the downstream handler to pick up.
+func (p *GovernancePlugin) governRealtimeQueryParam(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, virtualKeyValue *string, hasRoutingRules bool) (*schemas.HTTPResponse, error) {
+	modelQueryKey := "model"
+	modelParam := req.Query[modelQueryKey]
+	if modelParam == "" {
+		modelQueryKey = "deployment"
+		modelParam = req.Query[modelQueryKey]
+	}
+	if modelParam == "" {
+		return nil, nil
+	}
+
+	payload := map[string]any{
+		"model": modelParam,
+	}
+	originalModel := modelParam
+
+	// Process virtual key if provided
+	var virtualKey *configstoreTables.TableVirtualKey
+	if virtualKeyValue != nil {
+		vk, ok := p.store.GetVirtualKey(ctx, *virtualKeyValue)
+		if !ok || vk == nil || !vk.IsActiveValue() {
+			return nil, nil
+		}
+		virtualKey = vk
+	}
+
+	// Attaching team and customer based on the virtual key
+	if virtualKey != nil {
+		if virtualKey.TeamID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
+		}
+		if virtualKey.Team != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
+		}
+		if virtualKey.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
+		}
+		if virtualKey.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
+		}
+	}
+
+	// Apply routing rules
+	if hasRoutingRules {
+		var err error
+		payload, _, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Process virtual key: load balance provider
+	if virtualKey != nil {
+		var err error
+		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Propagate model changes back to the original query param so the downstream
+	// realtime handler sees the routed/load-balanced model.
+	if newModel, ok := payload["model"].(string); ok && newModel != originalModel {
+		req.Query[modelQueryKey] = newModel
+	}
+
 	return nil, nil
 }
 

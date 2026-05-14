@@ -752,6 +752,8 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 	set("provider_session_id", schemas.BifrostContextKeyRealtimeProviderSessionID)
 	set("realtime_source", schemas.BifrostContextKeyRealtimeSource)
 	set("realtime_event_type", schemas.BifrostContextKeyRealtimeEventType)
+	set("realtime_transport", schemas.BifrostContextKeyRealtimeTransport)
+	set("realtime_voice", schemas.BifrostContextKeyRealtimeVoice)
 	if bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID) != "" {
 		if metadata == nil {
 			metadata = make(map[string]interface{})

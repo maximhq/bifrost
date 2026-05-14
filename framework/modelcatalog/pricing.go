@@ -322,7 +322,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 
 	// Route to the appropriate compute function
 	switch requestType {
-	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest:
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest:
 		return computeTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
 		return computeEmbeddingCost(pricing, input.usage, input.tier)
@@ -457,6 +457,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 	if u.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
+			AudioTokens:     u.OutputTokensDetails.AudioTokens,
 		}
 		if u.OutputTokensDetails.NumSearchQueries != nil {
 			usage.CompletionTokensDetails.NumSearchQueries = u.OutputTokensDetails.NumSearchQueries
@@ -561,13 +562,43 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 
 	outputCost := float64(completionTokens) * outputRate
 
+	// Audio token cost: when token details include audio tokens, price them
+	// at the dedicated audio rate and subtract from the text token costs above.
+	// Realtime and audio-enabled chat models report audio tokens in details.
+	audioCost := 0.0
+	inputAudioTokens := 0
+	outputAudioTokens := 0
+	if usage.PromptTokensDetails != nil {
+		inputAudioTokens = usage.PromptTokensDetails.AudioTokens
+	}
+	if usage.CompletionTokensDetails != nil {
+		outputAudioTokens = usage.CompletionTokensDetails.AudioTokens
+	}
+	if inputAudioTokens < 0 {
+		inputAudioTokens = 0
+	} else if inputAudioTokens > promptTokens {
+		inputAudioTokens = promptTokens
+	}
+	if outputAudioTokens < 0 {
+		outputAudioTokens = 0
+	} else if outputAudioTokens > completionTokens {
+		outputAudioTokens = completionTokens
+	}
+	if inputAudioTokens > 0 && pricing.InputCostPerAudioToken != nil {
+		// Subtract audio tokens charged at text rate, add at audio rate.
+		audioCost += float64(inputAudioTokens) * (*pricing.InputCostPerAudioToken - inputRate)
+	}
+	if outputAudioTokens > 0 && pricing.OutputCostPerAudioToken != nil {
+		audioCost += float64(outputAudioTokens) * (*pricing.OutputCostPerAudioToken - outputRate)
+	}
+
 	// Search query cost
 	searchCost := 0.0
 	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
 		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
 	}
 
-	return inputCost + outputCost + searchCost
+	return inputCost + outputCost + audioCost + searchCost
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).
