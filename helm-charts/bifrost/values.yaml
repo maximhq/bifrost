@@ -648,6 +648,7 @@ bifrost:
       #   apply_to: "input"
       #   sampling_rate: 100
       #   timeout: 1000
+      #   max_turns_to_send: 0
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
