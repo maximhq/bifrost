@@ -1,5 +1,6 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { TokenHistogramResponse } from "@/lib/types/logs";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Info } from "lucide-react";
 import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
@@ -11,12 +12,6 @@ interface ExternalCacheTokenMeterChartProps {
 }
 
 const METER_COLORS = { cached: "#06b6d4", input: "#3b82f6" };
-
-const formatTokenCount = (count: number): string => {
-	if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
-	if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
-	return count.toLocaleString();
-};
 
 function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
@@ -101,11 +96,11 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 						<div className="flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.cached }} />
-								<span className="text-primary">Cached: {formatTokenCount(totalCachedRead)}</span>
+								<span className="text-primary">Cached: {formatCompactNumber(totalCachedRead)}</span>
 							</span>
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.input }} />
-								<span className="text-muted-foreground">Input: {formatTokenCount(totalPromptTokens)}</span>
+								<span className="text-muted-foreground">Input: {formatCompactNumber(totalPromptTokens)}</span>
 							</span>
 						</div>
 					</div>

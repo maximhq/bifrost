@@ -1,6 +1,4 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
-import NumberFlow from "@number-flow/react";
 import type {
 	CostHistogramResponse,
 	LatencyHistogramResponse,
@@ -9,6 +7,8 @@ import type {
 	ModelHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
+import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
+import NumberFlow from "@number-flow/react";
 import { memo, useMemo } from "react";
 import { CHART_COLORS, CHART_HEADER_LEGEND_CLASS, LATENCY_COLORS, getModelColor } from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
@@ -159,6 +159,7 @@ function OverviewTabImpl({
 					testId="chart-log-volume"
 					totalLabel="Total"
 					total={volumeTotal !== null ? <NumberFlow value={volumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+					totalTooltip={volumeTotal !== null ? volumeTotal.toLocaleString("en-US") : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							<span className="flex items-center gap-1">
@@ -171,7 +172,9 @@ function OverviewTabImpl({
 							</span>
 						</div>
 					}
-					controls={<ChartTypeToggle chartType={volumeChartType} onToggle={onVolumeChartToggle} data-testid="dashboard-volume-chart-toggle" />}
+					controls={
+						<ChartTypeToggle chartType={volumeChartType} onToggle={onVolumeChartToggle} data-testid="dashboard-volume-chart-toggle" />
+					}
 				>
 					<LogVolumeChart data={histogramData} chartType={volumeChartType} startTime={startTime} endTime={endTime} />
 				</ChartCard>
@@ -183,6 +186,7 @@ function OverviewTabImpl({
 					testId="chart-token-usage"
 					totalLabel="Total"
 					total={tokenTotal !== null ? <NumberFlow value={tokenTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+					totalTooltip={tokenTotal !== null ? tokenTotal.toLocaleString("en-US") : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							<span className="flex items-center gap-1">
@@ -224,6 +228,11 @@ function OverviewTabImpl({
 						costTotal !== null ? (
 							<NumberFlow value={costTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
 						) : undefined
+					}
+					totalTooltip={
+						costTotal !== null
+							? costTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+							: undefined
 					}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
@@ -300,6 +309,7 @@ function OverviewTabImpl({
 					testId="chart-model-usage"
 					totalLabel="Total"
 					total={modelUsageTotal !== null ? <NumberFlow value={modelUsageTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+					totalTooltip={modelUsageTotal !== null ? modelUsageTotal.toLocaleString("en-US") : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							{usageModel === "all" ? (
@@ -380,6 +390,7 @@ function OverviewTabImpl({
 							<NumberFlow value={latencyAvg} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 						) : undefined
 					}
+					totalTooltip={latencyAvg !== null ? `${latencyAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined}
 					legend={
 						<div className={CHART_HEADER_LEGEND_CLASS}>
 							<span className="flex items-center gap-1">
@@ -401,11 +412,7 @@ function OverviewTabImpl({
 						</div>
 					}
 					controls={
-						<ChartTypeToggle
-							chartType={latencyChartType}
-							onToggle={onLatencyChartToggle}
-							data-testid="dashboard-latency-chart-toggle"
-						/>
+						<ChartTypeToggle chartType={latencyChartType} onToggle={onLatencyChartToggle} data-testid="dashboard-latency-chart-toggle" />
 					}
 				>
 					<LatencyChart data={latencyData} chartType={latencyChartType} startTime={startTime} endTime={endTime} />

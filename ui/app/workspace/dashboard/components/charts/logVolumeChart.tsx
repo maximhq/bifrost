@@ -1,7 +1,8 @@
 import type { LogsHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens } from "../../utils/chartUtils";
+import { formatCompactNumber } from "@/lib/utils/numbers";
+import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -98,7 +99,7 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 							tickLine={false}
 							axisLine={false}
 							width={44}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -140,7 +141,7 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 							tickLine={false}
 							axisLine={false}
 							width={44}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>

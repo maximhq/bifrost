@@ -3,8 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import ProviderIcons, { type ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ModelHistogramResponse, ModelRankingEntry, ModelRankingsResponse } from "@/lib/types/logs";
-import { formatCompactNumber as formatNumber } from "@/lib/utils/governance";
-import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
+import { COMPACT_NUMBER_FORMAT, formatCompactNumber as formatNumber } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
@@ -233,6 +232,7 @@ function TopModelsChart({
 			className="z-[1] h-full"
 			totalLabel="Total"
 			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}
 		>
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (
