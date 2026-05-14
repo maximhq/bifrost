@@ -100,6 +100,8 @@ tags:
     description: Container management operations
   - name: Async Jobs
     description: Asynchronous job submission and retrieval endpoints
+  - name: Realtime
+    description: Realtime WebSocket and WebRTC endpoints
   # Provider Integrations
   - name: OpenAI Integration
     description: OpenAI-compatible API endpoints (/openai/*)
@@ -246,6 +248,16 @@ paths:
   /v1/async/ocr/{job_id}:
     $ref: './paths/inference/ocr.yaml#/async-ocr-job'
 
+  # ==================== Realtime API ====================
+  /v1/realtime:
+    $ref: './paths/inference/realtime.yaml#/realtime'
+  /v1/realtime/calls:
+    $ref: './paths/inference/realtime.yaml#/realtime-calls'
+  /v1/realtime/client_secrets:
+    $ref: './paths/inference/realtime.yaml#/realtime-client-secrets'
+  /v1/realtime/sessions:
+    $ref: './paths/inference/realtime.yaml#/realtime-sessions'
+
   # ==================== OpenAI Integration ====================
   # Chat Completions
   /openai/v1/chat/completions:
@@ -323,10 +335,32 @@ paths:
   /openai/v1/containers/{container_id}/files/{file_id}/content:
     $ref: './paths/integrations/openai/containers.yaml#/container-files-content'
 
+  # Videos API
+  /openai/v1/videos:
+    $ref: './paths/integrations/openai/videos.yaml#/videos'
+  /openai/v1/videos/{video_id}:
+    $ref: './paths/integrations/openai/videos.yaml#/videos-by-id'
+  /openai/v1/videos/{video_id}/content:
+    $ref: './paths/integrations/openai/videos.yaml#/videos-content'
+  /openai/v1/videos/{video_id}/remix:
+    $ref: './paths/integrations/openai/videos.yaml#/videos-remix'
+
+  # Realtime / WebSocket / WebRTC (OpenAI-prefixed aliases)
+  /openai/v1/realtime:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime'
+  /openai/v1/realtime/calls:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime-calls'
+  /openai/v1/realtime/client_secrets:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime-client-secrets'
+  /openai/v1/realtime/sessions:
+    $ref: './paths/integrations/openai/realtime.yaml#/realtime-sessions'
+
   # ==================== Anthropic Integration ====================
   # Messages API
   /anthropic/v1/messages:
     $ref: './paths/integrations/anthropic/messages.yaml#/messages'
+  /anthropic/v1/messages/{path}:
+    $ref: './paths/integrations/anthropic/messages.yaml#/messages-wildcard'
 
   # Legacy Complete API
   /anthropic/v1/complete:
@@ -383,6 +417,26 @@ paths:
   /genai/v1beta/files/{file_id}:
     $ref: './paths/integrations/genai/files.yaml#/files-by-id'
 
+  # Batches
+  /genai/v1beta/batches:
+    $ref: './paths/integrations/genai/batches.yaml#/batches'
+  /genai/v1beta/batches/{batch_id}:
+    $ref: './paths/integrations/genai/batches.yaml#/batches-by-id'
+
+  # Cached Contents
+  /genai/v1beta/cachedContents:
+    $ref: './paths/integrations/genai/cached-contents.yaml#/cached-contents'
+  /genai/v1beta/cachedContents/{cached_id}:
+    $ref: './paths/integrations/genai/cached-contents.yaml#/cached-contents-by-id'
+
+  # Rank (Vertex AI)
+  /genai/v1/rank:
+    $ref: './paths/integrations/genai/rank.yaml#/rank'
+
+  # Long-running video operation polling
+  /genai/v1beta/models/{model}/operations/{operation_id}:
+    $ref: './paths/integrations/genai/video-operations.yaml#/video-operations'
+
   # ==================== Bedrock Integration ====================
   # Converse API
   /bedrock/model/{modelId}/converse:
@@ -396,13 +450,25 @@ paths:
   /bedrock/model/{modelId}/invoke-with-response-stream:
     $ref: './paths/integrations/bedrock/invoke.yaml#/invoke-stream'
 
+  # Count Tokens API
+  /bedrock/model/{modelId}/count-tokens:
+    $ref: './paths/integrations/bedrock/count-tokens.yaml#/count-tokens'
+
   # Batch API
+  /bedrock/model-invocation-job:
+    $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-create'
   /bedrock/model-invocation-jobs:
-    $ref: './paths/integrations/bedrock/batch.yaml#/batch-jobs'
-  /bedrock/model-invocation-jobs/{jobIdentifier}:
+    $ref: './paths/integrations/bedrock/batch.yaml#/batch-jobs-list'
+  /bedrock/model-invocation-job/{job_arn}:
     $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-by-id'
-  /bedrock/model-invocation-jobs/{jobIdentifier}/stop:
+  /bedrock/model-invocation-job/{job_arn}/stop:
     $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-cancel'
+
+  # S3-compatible file storage (boto3 client compatible)
+  /bedrock/files/{bucket}:
+    $ref: './paths/integrations/bedrock/s3.yaml#/s3-bucket'
+  /bedrock/files/{bucket}/{key}:
+    $ref: './paths/integrations/bedrock/s3.yaml#/s3-object'
 
   # ==================== Cohere Integration ====================
   # Chat (v2)
@@ -413,9 +479,68 @@ paths:
   /cohere/v2/embed:
     $ref: './paths/integrations/cohere/embed.yaml#/embed'
 
+  # Rerank (v2)
+  /cohere/v2/rerank:
+    $ref: './paths/integrations/cohere/rerank.yaml#/rerank'
+
   # Tokenize (v1)
   /cohere/v1/tokenize:
     $ref: './paths/integrations/cohere/tokenize.yaml#/tokenize'
+
+  # ==================== Cursor IDE Integration ====================
+  # Hybrid chat completions (parses Responses payload, returns chat-completions shape)
+  /cursor/v1/chat/completions:
+    $ref: './paths/integrations/cursor/cursor.yaml#/chat-completions'
+
+  # Models (OpenAI shape)
+  /cursor/v1/models:
+    $ref: './paths/integrations/cursor/cursor.yaml#/models'
+
+  # Anthropic-compatible mounts
+  /cursor/v1/complete:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-complete'
+  /cursor/v1/messages:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-messages'
+  /cursor/v1/messages/{path}:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-messages-wildcard'
+  /cursor/v1/messages/count_tokens:
+    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-count-tokens'
+
+  # Gemini-compatible mounts
+  /cursor/v1beta/models:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-models'
+  /cursor/v1beta/models/{model}:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-model-action'
+  /cursor/v1beta/models/{model}/operations/{operation_id}:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-video-operation'
+
+  # Gemini Rank (Vertex)
+  /cursor/v1/rank:
+    $ref: './paths/integrations/cursor/cursor.yaml#/genai-rank'
+
+  # Bedrock-compatible mounts
+  /cursor/model/{modelId}/converse:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-converse'
+  /cursor/model/{modelId}/converse-stream:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-converse-stream'
+  /cursor/model/{modelId}/invoke:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-invoke'
+  /cursor/model/{modelId}/invoke-with-response-stream:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-invoke-stream'
+  /cursor/rerank:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-rerank'
+  /cursor/model/{modelId}/count-tokens:
+    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-count-tokens'
+
+  # Cohere-compatible mounts
+  /cursor/v2/chat:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-chat'
+  /cursor/v2/embed:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-embed'
+  /cursor/v2/rerank:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-rerank'
+  /cursor/v1/tokenize:
+    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-tokenize'
 
   # ==================== LiteLLM Integration ====================
   # OpenAI-compatible
@@ -624,6 +749,8 @@ paths:
   # Plugins
   /api/plugins:
     $ref: './paths/management/plugins.yaml#/plugins'
+  /api/plugins/builtins:
+    $ref: './paths/management/plugins.yaml#/plugins-builtins'
   /api/plugins/{name}:
     $ref: './paths/management/plugins.yaml#/~1plugins~1{name}'
 
@@ -730,6 +857,10 @@ paths:
     $ref: './paths/management/logging.yaml#/logs'
   /api/logs/{id}:
     $ref: './paths/management/logging.yaml#/logs-by-id'
+  /api/logs/sessions/{session_id}:
+    $ref: './paths/management/logging.yaml#/logs-sessions-by-id'
+  /api/logs/sessions/{session_id}/summary:
+    $ref: './paths/management/logging.yaml#/logs-sessions-summary-by-id'
   /api/logs/stats:
     $ref: './paths/management/logging.yaml#/logs-stats'
   /api/logs/histogram:
@@ -748,10 +879,18 @@ paths:
     $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-provider'
   /api/logs/histogram/latency/by-provider:
     $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-provider'
+  /api/logs/histogram/cost/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-cost-by-dimension'
+  /api/logs/histogram/tokens/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-dimension'
+  /api/logs/histogram/latency/by-dimension:
+    $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-dimension'
   /api/logs/dropped:
     $ref: './paths/management/logging.yaml#/logs-dropped'
   /api/logs/filterdata:
     $ref: './paths/management/logging.yaml#/logs-filterdata'
+  /api/logs/rankings:
+    $ref: './paths/management/logging.yaml#/logs-rankings'
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
 
@@ -764,6 +903,12 @@ paths:
     $ref: './paths/management/logging.yaml#/mcp-logs-stats'
   /api/mcp-logs/filterdata:
     $ref: './paths/management/logging.yaml#/mcp-logs-filterdata'
+  /api/mcp-logs/histogram:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram'
+  /api/mcp-logs/histogram/cost:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-cost'
+  /api/mcp-logs/histogram/top-tools:
+    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-top-tools'
 
   # Prompt Repository
   /api/prompt-repo/folders:
