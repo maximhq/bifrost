@@ -158,7 +158,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										key={key.id}
 										data-testid={`key-row-${key.name}`}
 										className="text-sm transition-colors hover:bg-white"
-										onClick={() => { }}
+										onClick={() => {}}
 									>
 										<TableCell className="overflow-hidden">
 											<div className="flex min-w-0 items-center space-x-2">
@@ -264,7 +264,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										</TableCell>
 										<TableCell className="text-right">
 											<div className="flex items-center justify-end space-x-2">
-												{hasUpdateProviderAccess || hasDeleteProviderAccess ?
+												{hasUpdateProviderAccess || hasDeleteProviderAccess ? (
 													<DropdownMenu>
 														<DropdownMenuTrigger asChild>
 															<Button onClick={(e) => e.stopPropagation()} variant="ghost">
@@ -292,8 +292,8 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																Delete
 															</DropdownMenuItem>
 														</DropdownMenuContent>
-													</DropdownMenu> : null
-												}
+													</DropdownMenu>
+												) : null}
 											</div>
 										</TableCell>
 									</TableRow>

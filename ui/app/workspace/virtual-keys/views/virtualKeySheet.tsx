@@ -211,11 +211,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -555,9 +555,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 								<Alert variant="info">
 									<Users className="h-4 w-4" />
 									<AlertDescription>
-										Creating this virtual key under team{" "}
-										<span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>
-										. Team assignment is pre-set — all other fields are editable.
+										Creating this virtual key under team <span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>. Team
+										assignment is pre-set — all other fields are editable.
 									</AlertDescription>
 								</Alert>
 							)}
@@ -808,7 +807,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																								? "No models (deny all)"
 																								: config.provider
 																									? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] ||
-																									ModelPlaceholders.default
+																										ModelPlaceholders.default
 																									: ModelPlaceholders.default
 																					}
 																					className="min-h-10 max-w-[500px] min-w-[200px]"
@@ -846,16 +845,16 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																	const selectedProviderKeys = hasWildcard
 																		? [allKeyOptions[0]]
 																		: providerKeys
-																			.filter((key) => configKeyIds.includes(key.key_id))
-																			.map((key) => ({
-																				label: key.name,
-																				value: key.key_id,
-																				description:
-																					key.models == null || key.models.includes("*")
-																						? "All models"
-																						: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																				provider: key.provider,
-																			}));
+																				.filter((key) => configKeyIds.includes(key.key_id))
+																				.map((key) => ({
+																					label: key.name,
+																					value: key.key_id,
+																					description:
+																						key.models == null || key.models.includes("*")
+																							? "All models"
+																							: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+																					provider: key.provider,
+																				}));
 
 																	return (
 																		<div className="mx-0.5 space-y-2">
@@ -955,9 +954,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																	lines={
 																		config.budgets && config.budgets.length > 0
 																			? config.budgets.map((b) => ({
-																				max_limit: b.max_limit,
-																				reset_duration: b.reset_duration || "1M",
-																			}))
+																					max_limit: b.max_limit,
+																					reset_duration: b.reset_duration || "1M",
+																				}))
 																			: []
 																	}
 																	onChange={(lines) => {
@@ -1308,8 +1307,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 											<AlertDialogHeader>
 												<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
 												<AlertDialogDescription>
-													This key is currently assigned to another team. Reassigning it will move budget tracking to this
-													team — future requests through this key will count against this team’s budget, not the previous one.
+													This key is currently assigned to another team. Reassigning it will move budget tracking to this team — future
+													requests through this key will count against this team’s budget, not the previous one.
 												</AlertDialogDescription>
 											</AlertDialogHeader>
 											<AlertDialogFooter>

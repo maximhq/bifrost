@@ -59,12 +59,17 @@ const shortDurationLabels: Record<string, string> = {
  * Formats rate limit into compact display lines.
  * e.g. ["10K tokens/hr", "100 req/hr"]
  */
-export function formatRateLimitLines(rateLimits: {
-	token_max_limit?: number | null;
-	token_reset_duration?: string | null;
-	request_max_limit?: number | null;
-	request_reset_duration?: string | null;
-} | null | undefined): string[] {
+export function formatRateLimitLines(
+	rateLimits:
+		| {
+				token_max_limit?: number | null;
+				token_reset_duration?: string | null;
+				request_max_limit?: number | null;
+				request_reset_duration?: string | null;
+		  }
+		| null
+		| undefined,
+): string[] {
 	if (!rateLimits) return [];
 	const lines: string[] = [];
 	if (rateLimits.token_max_limit != null) {

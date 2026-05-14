@@ -11,12 +11,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -188,7 +183,8 @@ export default function MCPClientsTable({
 					<AlertDialogHeader>
 						<AlertDialogTitle>Remove MCP Server</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to remove MCP server {clientToDelete?.config.name}? You will need to reconnect the server to continue using it.
+							Are you sure you want to remove MCP server {clientToDelete?.config.name}? You will need to reconnect the server to continue
+							using it.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -210,7 +206,13 @@ export default function MCPClientsTable({
 					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
 					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
 				</div>
-				<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess} data-testid="create-mcp-client-btn" aria-label="New MCP Server" className="gap-2">
+				<Button
+					onClick={handleCreate}
+					disabled={!hasCreateMCPClientAccess}
+					data-testid="create-mcp-client-btn"
+					aria-label="New MCP Server"
+					className="gap-2"
+				>
 					<Plus className="h-4 w-4" />
 					<span className="hidden sm:inline">New MCP Server</span>
 				</Button>
@@ -310,9 +312,7 @@ export default function MCPClientsTable({
 											<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 										</TableCell>
 										<TableCell>
-											<Badge variant={c.config.disabled ? "secondary" : "default"}>
-												{c.config.disabled ? "Disabled" : "Enabled"}
-											</Badge>
+											<Badge variant={c.config.disabled ? "secondary" : "default"}>{c.config.disabled ? "Disabled" : "Enabled"}</Badge>
 										</TableCell>
 										<TableCell
 											className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}

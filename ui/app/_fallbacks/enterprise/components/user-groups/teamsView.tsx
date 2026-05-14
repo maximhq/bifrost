@@ -105,7 +105,9 @@ export function TeamsView() {
 				onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
 				selectedTeamId={urlState.selected_team || null}
 				onTeamAdd={() => setUrlState({ selected_team: "new" })}
-				onTeamSelect={(team) => { setUrlState({ selected_team: team?.id ?? null }) }}
+				onTeamSelect={(team) => {
+					setUrlState({ selected_team: team?.id ?? null });
+				}}
 				onDialogClose={() => setUrlState({ selected_team: null })}
 			/>
 		</div>

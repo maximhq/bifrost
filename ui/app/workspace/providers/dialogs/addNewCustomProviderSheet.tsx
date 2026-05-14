@@ -227,16 +227,11 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							disabled={!hasProviderCreateAccess}
 						/>
 					</div>
-					<div className="w-full ml-auto flex flex-row gap-2 bg-card sticky bottom-0 border-t px-8 py-4">
+					<div className="bg-card sticky bottom-0 ml-auto flex w-full flex-row gap-2 border-t px-8 py-4">
 						<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
 							Cancel
 						</Button>
-						<Button
-							type="submit"
-							isLoading={isAddingProvider}
-							disabled={!hasProviderCreateAccess}
-							data-testid="custom-provider-save-btn"
-						>
+						<Button type="submit" isLoading={isAddingProvider} disabled={!hasProviderCreateAccess} data-testid="custom-provider-save-btn">
 							Add
 						</Button>
 					</div>
