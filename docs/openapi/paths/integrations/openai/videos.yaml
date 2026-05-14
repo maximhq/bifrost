@@ -1,0 +1,240 @@
+# OpenAI - Videos API
+#
+# Path aliases (registered for each operation):
+#   /v1/videos*, /videos*, /openai/videos*
+# Only the canonical /openai/v1/videos* surface is documented here; the other
+# prefixes are router conveniences that share the same handler.
+
+videos:
+  post:
+    operationId: openaiCreateVideo
+    summary: Create a video generation
+    description: |
+      Submits a video generation job using OpenAI's Videos API.
+      The request is multipart/form-data and may include reference images.
+    tags:
+    - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required:
+            - prompt
+            - model
+            properties:
+              model:
+                type: string
+                description: Video model identifier (e.g. `sora-1.0`).
+              prompt:
+                type: string
+                description: Natural-language description of the requested video.
+              size:
+                type: string
+                description: Output resolution (e.g. `1024x1024`).
+              seconds:
+                type: integer
+                description: Target duration in seconds.
+              input_reference:
+                type: string
+                format: binary
+                description: Optional reference image used to seed generation.
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              description: OpenAI video generation job payload.
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  get:
+    operationId: openaiListVideos
+    summary: List video generations
+    description: Lists previously submitted video generation jobs.
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+    - name: after
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: order
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [asc, desc]
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              description: OpenAI video list payload.
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+videos-by-id:
+  get:
+    operationId: openaiRetrieveVideo
+    summary: Retrieve a video generation
+    description: Returns metadata for a previously submitted video generation job.
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Video not found
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  delete:
+    operationId: openaiDeleteVideo
+    summary: Delete a video generation
+    description: Deletes a previously generated video.
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Video not found
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+videos-content:
+  get:
+    operationId: openaiDownloadVideo
+    summary: Download generated video content
+    description: Streams the binary video bytes for a completed generation job.
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Raw video bytes
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+          video/mp4:
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Video not found
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+videos-remix:
+  post:
+    operationId: openaiRemixVideo
+    summary: Remix an existing video
+    description: Creates a new generation by remixing a prior video with new prompt parameters.
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+            description: OpenAI video-remix request payload.
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
