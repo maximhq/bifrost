@@ -10,11 +10,14 @@ import (
 
 // OpenAIBatchRequest represents the request body for creating a batch.
 type OpenAIBatchRequest struct {
-	InputFileID        string                     `json:"input_file_id"`
+	InputFileID        *string                    `json:"input_file_id,omitempty"`
 	Endpoint           string                     `json:"endpoint"`
 	CompletionWindow   string                     `json:"completion_window"`
 	Metadata           map[string]string          `json:"metadata,omitempty"`
 	OutputExpiresAfter *schemas.BatchExpiresAfter `json:"output_expires_after,omitempty"`
+
+	InputBlob    *string                    `json:"input_blob,omitempty"` // azure blob storage
+	OutputFolder *schemas.BatchOutputFolder `json:"output_folder,omitempty"`
 }
 
 // OpenAIBatchResponse represents an OpenAI batch response.

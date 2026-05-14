@@ -1,4 +1,5 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { memo } from "react";
 import type { ProviderCostHistogramResponse, ProviderLatencyHistogramResponse, ProviderTokenHistogramResponse } from "@/lib/types/logs";
 import {
 	CHART_COLORS,
@@ -57,7 +58,7 @@ export interface ProviderUsageTabProps {
 	onProviderLatencyProviderChange: (provider: string) => void;
 }
 
-export function ProviderUsageTab({
+function ProviderUsageTabImpl({
 	providerCostData,
 	providerTokenData,
 	providerLatencyData,
@@ -343,3 +344,4 @@ export function ProviderUsageTab({
 		</div>
 	);
 }
+export const ProviderUsageTab = memo(ProviderUsageTabImpl);

@@ -281,10 +281,11 @@ type ResponsesTextConfig struct {
 }
 
 type ResponsesTextConfigFormat struct {
-	Type       string                               `json:"type"`             // "text" | "json_schema" | "json_object"
-	Name       *string                              `json:"name,omitempty"`   // Name of the format
-	JSONSchema *ResponsesTextConfigFormatJSONSchema `json:"schema,omitempty"` // when type == "json_schema"
-	Strict     *bool                                `json:"strict,omitempty"`
+	Type        string                               `json:"type"`                  // "text" | "json_schema" | "json_object"
+	Name        *string                              `json:"name,omitempty"`        // Name of the format
+	Description *string                              `json:"description,omitempty"` // Description of the schema
+	JSONSchema  *ResponsesTextConfigFormatJSONSchema `json:"schema,omitempty"`      // when type == "json_schema"
+	Strict      *bool                                `json:"strict,omitempty"`
 }
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
@@ -330,6 +331,227 @@ type ResponsesTextConfigFormatJSONSchema struct {
 	Nullable         *bool       `json:"nullable,omitempty"`         // Nullable indicator (OpenAPI 3.0 style)
 	Enum             []string    `json:"enum,omitempty"`             // Enum values
 	PropertyOrdering []string    `json:"propertyOrdering,omitempty"` // Ordering of properties, specific to Gemini
+}
+
+// JSONSchemaFromMap builds a ResponsesTextConfigFormatJSONSchema from a raw interface{}
+func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	s := &ResponsesTextConfigFormatJSONSchema{}
+	if t, ok := m["type"].(string); ok {
+		s.Type = Ptr(t)
+	}
+	if props, ok := m["properties"].(map[string]interface{}); ok {
+		p := map[string]any(props)
+		s.Properties = &p
+	}
+	if req, ok := m["required"].([]interface{}); ok {
+		strs := make([]string, 0, len(req))
+		for _, r := range req {
+			if str, ok := r.(string); ok {
+				strs = append(strs, str)
+			}
+		}
+		s.Required = strs
+	} else if req, ok := m["required"].([]string); ok {
+		s.Required = req
+	}
+	if desc, ok := m["description"].(string); ok {
+		s.Description = Ptr(desc)
+	}
+	if title, ok := m["title"].(string); ok {
+		s.Title = Ptr(title)
+	}
+	if ref, ok := m["$ref"].(string); ok {
+		s.Ref = Ptr(ref)
+	}
+	if defs, ok := m["$defs"].(map[string]interface{}); ok {
+		d := map[string]any(defs)
+		s.Defs = &d
+	}
+	if defs, ok := m["definitions"].(map[string]interface{}); ok {
+		d := map[string]any(defs)
+		s.Definitions = &d
+	}
+	if items, ok := m["items"].(map[string]interface{}); ok {
+		it := map[string]any(items)
+		s.Items = &it
+	}
+	if b, ok := m["additionalProperties"].(bool); ok {
+		s.AdditionalProperties = &AdditionalPropertiesStruct{AdditionalPropertiesBool: Ptr(b)}
+	} else if ap, ok := m["additionalProperties"].(map[string]interface{}); ok {
+		s.AdditionalProperties = &AdditionalPropertiesStruct{AdditionalPropertiesMap: OrderedMapFromMap(ap)}
+	}
+	if f, ok := m["format"].(string); ok {
+		s.Format = Ptr(f)
+	}
+	if p, ok := m["pattern"].(string); ok {
+		s.Pattern = Ptr(p)
+	}
+	if enums, ok := m["enum"].([]interface{}); ok {
+		strs := make([]string, 0, len(enums))
+		for _, e := range enums {
+			if str, ok := e.(string); ok {
+				strs = append(strs, str)
+			}
+		}
+		s.Enum = strs
+	}
+	if n, ok := m["nullable"].(bool); ok {
+		s.Nullable = Ptr(n)
+	}
+	if extractSliceOfMaps := func(key string) []map[string]any {
+		raw, ok := m[key].([]interface{})
+		if !ok {
+			return nil
+		}
+		out := make([]map[string]any, 0, len(raw))
+		for _, item := range raw {
+			if mp, ok := item.(map[string]interface{}); ok {
+				out = append(out, mp)
+			}
+		}
+		return out
+	}; true {
+		if ao := extractSliceOfMaps("anyOf"); len(ao) > 0 {
+			s.AnyOf = ao
+		}
+		if oo := extractSliceOfMaps("oneOf"); len(oo) > 0 {
+			s.OneOf = oo
+		}
+		if ao := extractSliceOfMaps("allOf"); len(ao) > 0 {
+			s.AllOf = ao
+		}
+	}
+
+	if n, ok := m["minItems"].(float64); ok {
+		x := int64(n)
+		s.MinItems = Ptr(x)
+	}
+	if n, ok := m["maxItems"].(float64); ok {
+		x := int64(n)
+		s.MaxItems = Ptr(x)
+	}
+	if n, ok := m["minimum"].(float64); ok {
+		s.Minimum = Ptr(n)
+	}
+	if n, ok := m["maximum"].(float64); ok {
+		s.Maximum = Ptr(n)
+	}
+	if n, ok := m["minLength"].(float64); ok {
+		x := int64(n)
+		s.MinLength = Ptr(x)
+	}
+	if n, ok := m["maxLength"].(float64); ok {
+		x := int64(n)
+		s.MaxLength = Ptr(x)
+	}
+	if d, ok := m["default"]; ok {
+		s.Default = d
+	}
+	if po, ok := m["propertyOrdering"].([]interface{}); ok {
+		strs := make([]string, 0, len(po))
+		for _, v := range po {
+			if str, ok := v.(string); ok {
+				strs = append(strs, str)
+			}
+		}
+		s.PropertyOrdering = strs
+	}
+	return s
+}
+
+// ToMap reconstructs the raw schema map from a ResponsesTextConfigFormatJSONSchema.
+func (s *ResponsesTextConfigFormatJSONSchema) ToMap() interface{} {
+	if s == nil {
+		return nil
+	}
+	if s.Schema != nil {
+		return *s.Schema
+	}
+	m := make(map[string]interface{})
+	if s.Type != nil {
+		m["type"] = *s.Type
+	}
+	if s.Properties != nil {
+		m["properties"] = *s.Properties
+	}
+	if len(s.Required) > 0 {
+		m["required"] = s.Required
+	}
+	if s.Description != nil {
+		m["description"] = *s.Description
+	}
+	if s.Title != nil {
+		m["title"] = *s.Title
+	}
+	if s.Ref != nil {
+		m["$ref"] = *s.Ref
+	}
+	if s.Defs != nil {
+		m["$defs"] = *s.Defs
+	}
+	if s.Definitions != nil {
+		m["definitions"] = *s.Definitions
+	}
+	if s.Items != nil {
+		m["items"] = *s.Items
+	}
+	if s.AdditionalProperties != nil {
+		if s.AdditionalProperties.AdditionalPropertiesBool != nil {
+			m["additionalProperties"] = *s.AdditionalProperties.AdditionalPropertiesBool
+		} else if s.AdditionalProperties.AdditionalPropertiesMap != nil {
+			m["additionalProperties"] = s.AdditionalProperties.AdditionalPropertiesMap
+		}
+	}
+	if s.Format != nil {
+		m["format"] = *s.Format
+	}
+	if s.Pattern != nil {
+		m["pattern"] = *s.Pattern
+	}
+	if len(s.Enum) > 0 {
+		m["enum"] = s.Enum
+	}
+	if s.Nullable != nil {
+		m["nullable"] = *s.Nullable
+	}
+	if s.Default != nil {
+		m["default"] = s.Default
+	}
+	if len(s.AnyOf) > 0 {
+		m["anyOf"] = s.AnyOf
+	}
+	if len(s.OneOf) > 0 {
+		m["oneOf"] = s.OneOf
+	}
+	if len(s.AllOf) > 0 {
+		m["allOf"] = s.AllOf
+	}
+	if s.MinItems != nil {
+		m["minItems"] = *s.MinItems
+	}
+	if s.MaxItems != nil {
+		m["maxItems"] = *s.MaxItems
+	}
+	if s.Minimum != nil {
+		m["minimum"] = *s.Minimum
+	}
+	if s.Maximum != nil {
+		m["maximum"] = *s.Maximum
+	}
+	if s.MinLength != nil {
+		m["minLength"] = *s.MinLength
+	}
+	if s.MaxLength != nil {
+		m["maxLength"] = *s.MaxLength
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 type ResponsesResponseConversation struct {
@@ -743,8 +965,8 @@ type ResponsesOutputMessageContentRefusal struct {
 }
 
 type ResponsesToolMessage struct {
-	CallID    *string                           `json:"call_id,omitempty"` // Common call ID for tool calls and outputs
-	Name      *string                           `json:"name,omitempty"`    // Common name field for tool calls
+	CallID    *string                           `json:"call_id,omitempty"`   // Common call ID for tool calls and outputs
+	Name      *string                           `json:"name,omitempty"`      // Common name field for tool calls
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`

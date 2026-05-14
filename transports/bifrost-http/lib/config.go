@@ -710,7 +710,9 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	}
 }
 
-// loadClientConfig loads and merges client config from file with store using hash-based reconciliation
+// loadClientConfig loads and merges client config from file with store using hash-based reconciliation.
+// The hash covers both the client section and mcp.tool_manager_config so that UI changes to either
+// survive restarts when the file is unchanged.
 func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	var clientConfig *configstore.ClientConfig
 	var err error
@@ -720,6 +722,13 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			logger.Warn("failed to get client config from store: %v", err)
 		}
 	}
+
+	// toolManagerFromFile returns the mcp.tool_manager_config section of the file, or nil.
+	var toolManagerFromFile *schemas.MCPToolManagerConfig
+	if configData.MCP != nil {
+		toolManagerFromFile = configData.MCP.ToolManagerConfig
+	}
+
 	// Case 1: No config in DB - use file config (or defaults)
 	if clientConfig == nil {
 		logger.Debug("client config not found in store, using config file")
@@ -727,8 +736,8 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			sanitizeMCPExternalOAuthURLs(configData.Client)
 			config.ClientConfig = configData.Client
 			applyClientConfigDefaults(config.ClientConfig)
-			// Generate hash for the file config
-			fileHash, hashErr := configData.Client.GenerateClientConfigHash()
+			applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
+			fileHash, hashErr := configData.Client.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
 			if hashErr != nil {
 				logger.Warn("failed to generate client config hash: %v", hashErr)
 			} else {
@@ -736,8 +745,8 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			}
 		} else {
 			config.ClientConfig = new(DefaultClientConfig)
-			// Generate hash for default config
-			defaultHash, hashErr := config.ClientConfig.GenerateClientConfigHash()
+			applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
+			defaultHash, hashErr := config.ClientConfig.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
 			if hashErr != nil {
 				logger.Warn("failed to generate default client config hash: %v", hashErr)
 			} else {
@@ -760,30 +769,71 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		logger.Debug("no client config in file, using DB config")
 		return
 	}
-	// Case 2b: Both DB and file config exist - use hash-based reconciliation
-	fileHash, hashErr := configData.Client.GenerateClientConfigHash()
+	// Case 2b: Both DB and file config exist - use hash-based reconciliation.
+	// The hash covers both the client section and mcp.tool_manager_config so a change
+	// in either section triggers a file-wins sync.
+	fileHash, hashErr := configData.Client.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
 	if hashErr != nil {
 		logger.Warn("failed to generate client config hash from file: %v", hashErr)
 		return
 	}
-	if clientConfig.ConfigHash != fileHash {
-		// Hash mismatch - config.json was changed, sync from file
+	if clientConfig.ConfigHash == fileHash {
+		// Hash matches - keep DB config (preserves UI changes to both client and tool manager settings)
+		logger.Debug("client config hash matches, keeping DB config")
+	} else if baseHash, baseErr := configData.Client.GenerateClientConfigHash(); baseErr == nil &&
+		clientConfig.ConfigHash == baseHash && toolManagerFromFile != nil {
+		// Legacy hash match (pre-upgrade): the stored hash covers only the client section and
+		// matches the file, meaning the client section is unchanged. Only apply the tool manager
+		// settings from the file so that client-section UI changes survive the upgrade.
+		logger.Info("upgrading config hash to include mcp.tool_manager_config; applying tool manager settings from file, client config preserved from DB")
+		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
+		config.ClientConfig.ConfigHash = fileHash
+		if config.ConfigStore != nil {
+			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+				logger.Warn("failed to update client config: %v", err)
+			}
+		}
+	} else {
+		// Full hash mismatch - file changed, sync from file (file takes precedence)
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
 		sanitizeMCPExternalOAuthURLs(configData.Client)
 		config.ClientConfig = configData.Client
 		config.ClientConfig.ConfigHash = fileHash
 		applyClientConfigDefaults(config.ClientConfig)
-		// Update store with file config
+		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store from file")
 			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
 				logger.Warn("failed to update client config: %v", err)
 			}
 		}
-	} else {
-		// Hash matches - keep DB config (preserves UI changes)
-		logger.Debug("client config hash matches, keeping DB config")
 	}
+}
+
+// applyToolManagerToClientConfig copies tool manager settings from the file into ClientConfig.
+// Only called when the file has changed (hash mismatch) or on first startup.
+// Zero/empty file values reset the field to its default so users can remove a setting
+// from the file and have it revert to the default rather than being silently preserved.
+func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MCPToolManagerConfig) {
+	if tm == nil {
+		return
+	}
+	if tm.MaxAgentDepth > 0 {
+		cc.MCPAgentDepth = tm.MaxAgentDepth
+	} else {
+		cc.MCPAgentDepth = DefaultClientConfig.MCPAgentDepth
+	}
+	if d := tm.ToolExecutionTimeout.D(); d > 0 {
+		cc.MCPToolExecutionTimeout = int(math.Ceil(d.Seconds()))
+	} else {
+		cc.MCPToolExecutionTimeout = DefaultClientConfig.MCPToolExecutionTimeout
+	}
+	if tm.CodeModeBindingLevel != "" {
+		cc.MCPCodeModeBindingLevel = string(tm.CodeModeBindingLevel)
+	} else {
+		cc.MCPCodeModeBindingLevel = DefaultClientConfig.MCPCodeModeBindingLevel
+	}
+	cc.MCPDisableAutoToolInject = tm.DisableAutoToolInject
 }
 
 // loadProviders loads and merges providers from file with store using hash reconciliation
@@ -1195,33 +1245,24 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 		return
 	}
 
-	changed := false
-	if mcpCfg.ToolManagerConfig != nil {
-		if mcpCfg.ToolManagerConfig.MaxAgentDepth > 0 && config.ClientConfig.MCPAgentDepth != mcpCfg.ToolManagerConfig.MaxAgentDepth {
-			config.ClientConfig.MCPAgentDepth = mcpCfg.ToolManagerConfig.MaxAgentDepth
-			changed = true
-		}
-		if d := mcpCfg.ToolManagerConfig.ToolExecutionTimeout.D(); d > 0 {
-			// Ceiling-round to whole seconds: any sub-second value (e.g. 500ms) becomes 1s
-			// rather than being truncated to 0 and silently treated as "unset".
-			toolTimeoutSec := int(math.Ceil(d.Seconds()))
-			if config.ClientConfig.MCPToolExecutionTimeout != toolTimeoutSec {
-				config.ClientConfig.MCPToolExecutionTimeout = toolTimeoutSec
-				changed = true
-			}
-		}
-		if mcpCfg.ToolManagerConfig.CodeModeBindingLevel != "" {
-			codeModeLevel := string(mcpCfg.ToolManagerConfig.CodeModeBindingLevel)
-			if config.ClientConfig.MCPCodeModeBindingLevel != codeModeLevel {
-				config.ClientConfig.MCPCodeModeBindingLevel = codeModeLevel
-				changed = true
-			}
-		}
-		if config.ClientConfig.MCPDisableAutoToolInject != mcpCfg.ToolManagerConfig.DisableAutoToolInject {
-			config.ClientConfig.MCPDisableAutoToolInject = mcpCfg.ToolManagerConfig.DisableAutoToolInject
-			changed = true
-		}
+	// Backfill MCPConfig.ToolManagerConfig from ClientConfig so bifrost.Init always receives
+	// the authoritative values (which may be DB values preserved by hash reconciliation in
+	// loadClientConfig, or file values applied there on hash mismatch).
+	// Allocate if absent so bifrost.Init never falls back to hardcoded defaults.
+	if mcpCfg.ToolManagerConfig == nil {
+		mcpCfg.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
 	}
+	mcpCfg.ToolManagerConfig.MaxAgentDepth = config.ClientConfig.MCPAgentDepth
+	mcpCfg.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(
+		time.Duration(config.ClientConfig.MCPToolExecutionTimeout) * time.Second,
+	)
+	mcpCfg.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(
+		config.ClientConfig.MCPCodeModeBindingLevel,
+	)
+	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
+
+	// ToolSyncInterval lives only in MCPConfig (not a ClientConfig field), so reconcile separately.
+	changed := false
 	if mcpCfg.ToolSyncInterval == 0 {
 		if config.ClientConfig.MCPToolSyncInterval != 0 {
 			config.ClientConfig.MCPToolSyncInterval = 0

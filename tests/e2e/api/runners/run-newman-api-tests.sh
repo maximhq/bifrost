@@ -28,7 +28,7 @@ echo ""
 # Check if Newman is installed
 if ! command -v newman &> /dev/null; then
     echo -e "${RED}Error: Newman is not installed${NC}"
-    echo "Install it with: npm install -g newman"
+    echo "Install it with: npm install -g newman newman-reporter-htmlextra"
     exit 1
 fi
 
@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --html)
-            REPORTERS="${REPORTERS},html"
+            REPORTERS="${REPORTERS},htmlextra"
             shift
             ;;
         --json)
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --all-reports)
-            REPORTERS="cli,html,json"
+            REPORTERS="cli,htmlextra,json"
             shift
             ;;
         --bail)
@@ -100,7 +100,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --verbose           Show detailed output (enabled by default)"
             echo "  --no-verbose        Disable verbose output"
-            echo "  --html              Generate HTML report"
+            echo "  --html              Generate HTML report using newman-reporter-htmlextra"
             echo "  --json              Generate JSON report"
             echo "  --all-reports       Generate all report types"
             echo "  --bail              Stop on first failure"
@@ -127,6 +127,30 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if { [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-0}" = "1" ]; } && [[ "$REPORTERS" != *"htmlextra"* ]]; then
+    REPORTERS="${REPORTERS},htmlextra"
+fi
+
+# Make globally-installed npm packages (e.g. newman-reporter-htmlextra from
+# `npm install -g`) visible to Node's module resolver. Node 20+ no longer falls
+# back to the global npm prefix automatically, so without this NODE_PATH addition
+# the require.resolve check below fails even when the package is installed.
+if NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null)" && [ -n "$NPM_GLOBAL_ROOT" ]; then
+    export NODE_PATH="$NPM_GLOBAL_ROOT${NODE_PATH:+:$NODE_PATH}"
+fi
+
+# Validate optional reporters are resolvable before invoking newman so we fail
+# fast with a clear message instead of a cryptic mid-run newman error. node's
+# require.resolve uses the same module-resolution path newman uses (including
+# the NODE_PATH set above for the global npm root and below for newman-reporter-dbverify).
+if [[ "$REPORTERS" == *"htmlextra"* ]]; then
+    if ! node -e 'require.resolve("newman-reporter-htmlextra")' >/dev/null 2>&1; then
+        echo -e "${RED}Error: newman-reporter-htmlextra is not installed${NC}"
+        echo "Install it with: npm install -g newman-reporter-htmlextra"
+        exit 1
+    fi
+fi
 
 echo -e "Configuration:"
 echo -e "  Collection: ${YELLOW}$COLLECTION${NC}"
@@ -244,8 +268,10 @@ if [ -n "$PLUGIN_PATH_ABS" ]; then
     cmd+=(--env-var "plugin_path=$PLUGIN_PATH_ABS")
 fi
 
-if [[ "$REPORTERS" == *"html"* ]]; then
-    cmd+=(--reporter-html-export "$REPORT_DIR/report.html")
+if [[ "$REPORTERS" == *"htmlextra"* ]]; then
+    cmd+=(--reporter-htmlextra-export "$REPORT_DIR/report.html")
+    cmd+=(--reporter-htmlextra-title "Bifrost API Management & Health")
+    cmd+=(--reporter-htmlextra-darkTheme)
 fi
 
 if [[ "$REPORTERS" == *"json"* ]]; then
@@ -283,10 +309,13 @@ else
     echo -e "${RED}✗ Some tests failed${NC}"
 fi
 
-if [[ "$REPORTERS" == *"html"* ]] || [[ "$REPORTERS" == *"json"* ]]; then
+if [[ "$REPORTERS" == *"htmlextra"* ]] || [[ "$REPORTERS" == *"json"* ]]; then
     echo ""
     echo -e "Reports saved to: ${YELLOW}$REPORT_DIR${NC}"
     ls -lh "$REPORT_DIR" 2>/dev/null | tail -n +2
+fi
+if [[ "$REPORTERS" == *"htmlextra"* ]]; then
+    echo -e "HTML report: ${YELLOW}$REPORT_DIR/report.html${NC}"
 fi
 echo -e "Log saved to: ${YELLOW}$LOG_FILE${NC}"
 

@@ -1780,9 +1780,20 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
 							// Opus 4.6+: adaptive thinking + output_config.effort
 							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+							thinkingConfig := map[string]any{
 								"type": "adaptive",
-							})
+							}
+							// default to "summarized" for Opus 4.7+ where omitting is the provider default.
+							if bifrostReq.Params.Reasoning.Summary != nil {
+								if *bifrostReq.Params.Reasoning.Summary == "none" {
+									thinkingConfig["display"] = "omitted"
+								} else {
+									thinkingConfig["display"] = "summarized"
+								}
+							} else if anthropic.IsOpus47(bifrostReq.Model) {
+								thinkingConfig["display"] = "summarized"
+							}
+							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 							setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 						} else {
 							// Opus 4.5 and older Anthropic models: budget_tokens thinking
@@ -1803,8 +1814,6 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							})
 						}
 					} else {
-						// Non-Anthropic, non-Nova models: budget_tokens only
-						minBudgetTokens := MinimumReasoningMaxTokens
 						modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 						defaultMaxTokens := modelDefaultMaxTokens
 						if inferenceConfig.MaxTokens != nil {
@@ -1812,11 +1821,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						} else {
 							inferenceConfig.MaxTokens = schemas.Ptr(modelDefaultMaxTokens)
 						}
-						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, minBudgetTokens, defaultMaxTokens)
+						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, defaultMaxTokens)
 						if err != nil {
 							return nil, err
 						}
-						bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type":          "enabled",
 							"budget_tokens": budgetTokens,
 						})
@@ -1831,7 +1840,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							"type": "disabled",
 						})
 					} else {
-						bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",
 						})
 					}
@@ -2493,6 +2502,17 @@ func (m *ToolCallStateManager) HasPendingResults() bool {
 // Uses a state machine to properly track and manage tool call lifecycles.
 // The ctx is propagated to URL fetches inside content blocks.
 func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessages []schemas.ResponsesMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
+	// If only a single system message is present, convert it user message (since openai allows it)
+	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		msg := bifrostMessages[0]
+		msg.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
+		if bedrockMsg := convertBifrostMessageToBedrockMessage(ctx, &msg); bedrockMsg != nil {
+			if len(bedrockMsg.Content) > 0 {
+				return []BedrockMessage{*bedrockMsg}, nil, nil
+			}
+		}
+	}
+
 	var bedrockMessages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 	var pendingReasoningContentBlocks []BedrockContentBlock
@@ -2826,7 +2846,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			}
 
 			// Convert regular message
-			if role == schemas.ResponsesInputMessageRoleSystem {
+			if role == schemas.ResponsesInputMessageRoleSystem || role == schemas.ResponsesInputMessageRoleDeveloper {
 				// Convert to system message
 				systemMsgs := convertBifrostMessageToBedrockSystemMessages(&msg)
 				systemMessages = append(systemMessages, systemMsgs...)
@@ -3081,7 +3101,6 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					Signature: block.ReasoningContent.ReasoningText.Signature,
 				})
 			}
-
 		} else if block.ToolUse != nil {
 			// Tool use content
 			// Create copies of the values to avoid range loop variable capture

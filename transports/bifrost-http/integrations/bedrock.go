@@ -1179,7 +1179,7 @@ func s3ListObjectsV2PostCallback(ctx *fasthttp.RequestCtx, req interface{}, resp
 }
 
 // bedrockPreCallback returns a pre-callback that extracts model ID and handles direct authentication
-func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+func bedrockPreCallback(_ lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Extract modelId from path parameter
 		modelIDVal := ctx.UserValue("modelId")

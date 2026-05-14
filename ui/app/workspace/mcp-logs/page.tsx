@@ -24,7 +24,7 @@ export default function MCPLogsPage() {
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
-	const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete);
+	const hasDeleteAccess = useRbac(RbacResource.MCPLogs, RbacOperation.Delete);
 
 	const [deleteLogs] = useDeleteMCPLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)

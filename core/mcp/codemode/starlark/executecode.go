@@ -467,21 +467,14 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		ChatAssistantMessageToolCall: &toolCallReq,
 	}
 
-	// Check if plugin pipeline is available
-	if s.pluginPipelineProvider == nil {
-		// Should never happen, but just in case
-		s.logger.Warn("%s Plugin pipeline provider is nil", codemcp.CodeModeLogPrefix)
-		return nil, fmt.Errorf("plugin pipeline provider is nil")
-	}
-
 	// Get plugin pipeline and run hooks
-	pipeline := s.pluginPipelineProvider()
+	pipeline := s.clientManager.GetPluginPipeline()
 	if pipeline == nil {
 		// Should never happen, but just in case
 		s.logger.Warn("%s Plugin pipeline is nil", codemcp.CodeModeLogPrefix)
 		return nil, fmt.Errorf("plugin pipeline is nil")
 	}
-	defer s.releasePluginPipeline(pipeline)
+	defer s.clientManager.ReleasePluginPipeline(pipeline)
 
 	// Run PreMCPHooks
 	preReq, shortCircuit, preCount := pipeline.RunMCPPreHooks(nestedCtx, mcpRequest)

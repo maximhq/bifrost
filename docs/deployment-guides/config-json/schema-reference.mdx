@@ -70,7 +70,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `prometheus_labels` | array | `[]` | Custom labels for all Prometheus metrics |
 | `compat` | object | - | SDK compatibility shims (`should_drop_params`, `convert_text_to_chat`, etc.) |
 | `mcp_agent_depth` | integer | `10` | Max tool-call recursion depth |
-| `mcp_tool_execution_timeout` | integer | `30` | Per-tool execution timeout in seconds |
+| `mcp_tool_execution_timeout` | integer or string | `30` | Per-tool execution timeout in seconds (integer = seconds, string = Go duration like "30s", "2m") |
 | `mcp_tool_sync_interval` | integer | `10` | Tool sync interval in minutes (`0` = disabled) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | Disable automatic MCP tool injection |
 | `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |

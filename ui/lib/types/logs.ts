@@ -85,6 +85,7 @@ export interface Model {
 	id: string;
 	canonical_slug?: string;
 	name?: string;
+	normalized_name?: string;
 	alias?: string;
 	created?: number;
 	context_length?: number;

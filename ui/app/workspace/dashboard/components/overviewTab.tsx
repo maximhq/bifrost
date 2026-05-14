@@ -1,4 +1,5 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { memo } from "react";
 import type {
 	CostHistogramResponse,
 	LatencyHistogramResponse,
@@ -75,7 +76,7 @@ export interface OverviewTabProps {
 	onUsageModelChange: (model: string) => void;
 }
 
-export function OverviewTab({
+function OverviewTabImpl({
 	histogramData,
 	tokenData,
 	costData,
@@ -366,3 +367,4 @@ export function OverviewTab({
 		</>
 	);
 }
+export const OverviewTab = memo(OverviewTabImpl);

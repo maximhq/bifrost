@@ -27,7 +27,7 @@ type GlobalProxyConfig struct {
 	Username      string                  `json:"username,omitempty"`        // Optional authentication username
 	Password      string                  `json:"password,omitempty"`        // Optional authentication password
 	NoProxy       string                  `json:"no_proxy,omitempty"`        // Comma-separated list of hosts to bypass proxy
-	Timeout       int                     `json:"timeout,omitempty"`         // Connection timeout in seconds
+	Timeout       int                     `json:"timeout"`                   // Connection timeout in seconds
 	SkipTLSVerify bool                    `json:"skip_tls_verify,omitempty"` // Skip TLS certificate verification
 	// Entity enablement flags
 	EnableForSCIM      bool `json:"enable_for_scim"`      // Enable proxy for SCIM requests (enterprise only)

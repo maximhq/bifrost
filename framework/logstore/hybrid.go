@@ -246,7 +246,7 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	ClearPayloadFiltered(dbEntry, excluded)
 
 	if _, hasInputHistoryExclusion := excluded["input_history"]; !hasInputHistoryExclusion {
-		dbEntry.InputHistory = lastUserMessage
+		dbEntry.InputHistory = sanitizeJSONForJSONB(lastUserMessage)
 	}
 }
 

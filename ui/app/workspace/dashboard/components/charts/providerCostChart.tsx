@@ -1,7 +1,16 @@
 import type { ProviderCostHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatCost, formatFullTimestamp, formatTimestamp, getModelColor } from "../../utils/chartUtils";
+import {
+	formatCost,
+	formatFullTimestamp,
+	formatTimestamp,
+	getModelColor,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	pickTopSeries,
+} from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -13,7 +22,7 @@ interface ProviderCostChartProps {
 	selectedProvider: string;
 }
 
-function CustomTooltip({ active, payload, selectedProvider, providers }: any) {
+function CustomTooltip({ active, payload, selectedProvider, displayProviders }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -25,14 +34,20 @@ function CustomTooltip({ active, payload, selectedProvider, providers }: any) {
 			<div className="space-y-1 text-sm">
 				{selectedProvider === "all" ? (
 					<>
-						{providers.map((provider: string, idx: number) => {
-							const cost = data.by_provider?.[provider] || 0;
+						{displayProviders.map((provider: string, idx: number) => {
+							const isOther = provider === OTHER_SERIES_KEY;
+							const cost = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : (data.by_provider?.[provider] || 0);
 							if (cost === 0) return null;
 							return (
 								<div key={provider} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
-										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{provider}</span>
+										<span
+											className="h-2 w-2 rounded-full"
+											style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
+										/>
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
+											{isOther ? OTHER_SERIES_LABEL : provider}
+										</span>
 									</span>
 									<span className="font-medium">{formatCost(cost)}</span>
 								</div>
@@ -57,13 +72,22 @@ function CustomTooltip({ active, payload, selectedProvider, providers }: any) {
 	);
 }
 
-export function ProviderCostChart({ data, chartType, startTime, endTime, selectedProvider }: ProviderCostChartProps) {
+function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderCostChartProps) {
 	const { chartData, displayProviders } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], displayProviders: [] };
 		}
 
-		const providers = selectedProvider === "all" ? data.providers : [selectedProvider];
+		let providers: string[];
+		let hasOther = false;
+		if (selectedProvider === "all") {
+			const top = pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p] ?? 0);
+			hasOther = top.length < data.providers.length;
+			providers = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+		} else {
+			providers = [selectedProvider];
+		}
+		const topSet = new Set(providers);
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {
@@ -71,8 +95,16 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 				index,
 				formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
 			};
+			if (hasOther && bucket.by_provider) {
+				let otherSum = 0;
+				for (const provider of data.providers) {
+					if (!topSet.has(provider)) otherSum += bucket.by_provider[provider] ?? 0;
+				}
+				item[OTHER_SERIES_KEY] = otherSum;
+			}
 			providers.forEach((provider, idx) => {
-				item[`provider_${idx}`] = bucket.by_provider?.[provider] || 0;
+				item[`provider_${idx}`] =
+					provider === OTHER_SERIES_KEY ? (item[OTHER_SERIES_KEY] ?? 0) : (bucket.by_provider?.[provider] ?? 0);
 			});
 			return item;
 		});
@@ -115,7 +147,7 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 							allowDataOverflow={false}
 						/>
 						<Tooltip
-							content={<CustomTooltip selectedProvider={selectedProvider} providers={data.providers} />}
+							content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />}
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
 						{displayProviders.map((provider, idx) => (
@@ -124,7 +156,7 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 								key={provider}
 								dataKey={`provider_${idx}`}
 								stackId="cost"
-								fill={getModelColor(idx)}
+								fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
 								fillOpacity={0.9}
 								barSize={30}
 								radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
@@ -153,22 +185,29 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedProvider={selectedProvider} providers={data.providers} />} />
-						{displayProviders.map((provider, idx) => (
-							<Area
-								isAnimationActive={false}
-								key={provider}
-								type="monotone"
-								dataKey={`provider_${idx}`}
-								stackId="1"
-								stroke={getModelColor(idx)}
-								fill={getModelColor(idx)}
-								fillOpacity={0.7}
-							/>
-						))}
+						<Tooltip
+							content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />}
+						/>
+						{displayProviders.map((provider, idx) => {
+							const color = provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
+							return (
+								<Area
+									isAnimationActive={false}
+									key={provider}
+									type="monotone"
+									dataKey={`provider_${idx}`}
+									stackId="1"
+									stroke={color}
+									fill={color}
+									fillOpacity={0.7}
+								/>
+							);
+						})}
 					</AreaChart>
 				)}
 			</ResponsiveContainer>
 		</ChartErrorBoundary>
 	);
 }
+
+export const ProviderCostChart = memo(ProviderCostChartImpl);

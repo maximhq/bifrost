@@ -139,6 +139,28 @@ func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) 
 	}
 }
 
+// GetSpanHandleByID retrieves a span handle for the given trace and span ID.
+// If spanID is nil, it returns a handle for the trace's root span.
+func (t *Tracer) GetSpanHandleByID(traceID string, spanID *string) schemas.SpanHandle {
+	if traceID == "" {
+		return nil
+	}
+	trace := t.store.GetTrace(traceID)
+	if trace == nil {
+		return nil
+	}
+	if spanID == nil {
+		if trace.RootSpan == nil {
+			return nil
+		}
+		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID}
+	}
+	if *spanID == "" || trace.GetSpan(*spanID) == nil {
+		return nil
+	}
+	return &spanHandle{traceID: traceID, spanID: *spanID}
+}
+
 // AddEvent adds a timestamped event to the span identified by the handle.
 func (t *Tracer) AddEvent(handle schemas.SpanHandle, name string, attrs map[string]any) {
 	h, ok := handle.(*spanHandle)

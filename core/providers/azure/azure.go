@@ -2188,9 +2188,10 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 		inputFileID = uploadResp.ID
 	}
 
+
 	// Validate that we have a file ID (either provided or uploaded)
-	if inputFileID == "" {
-		return nil, providerUtils.NewBifrostOperationError("either input_file_id or requests array is required for Azure batch API", nil)
+	if inputFileID == "" && request.InputBlob == nil {
+		return nil, providerUtils.NewBifrostOperationError("either input_file_id, input_blob, or requests array is required for Azure batch API", nil)
 	}
 
 	// Get API version
@@ -2224,10 +2225,21 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 
 	// Build request body
 	openAIReq := &openai.OpenAIBatchRequest{
-		InputFileID:      inputFileID,
 		Endpoint:         string(request.Endpoint),
 		CompletionWindow: request.CompletionWindow,
 		Metadata:         request.Metadata,
+	}
+
+	// Azure requires either input_file_id OR (input_blob + output_folder), not both.
+	if inputFileID != "" {
+		openAIReq.InputFileID = schemas.Ptr(inputFileID)
+	} else {
+		if request.InputBlob != nil {
+			openAIReq.InputBlob = request.InputBlob
+		}
+		if request.OutputFolder != nil {
+			openAIReq.OutputFolder = request.OutputFolder
+		}
 	}
 
 	// Set default completion window if not provided
@@ -2250,7 +2262,7 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)

@@ -42660,6 +42660,10 @@
           "name": {
             "type": "string"
           },
+          "normalized_name": {
+            "type": "string",
+            "description": "Human-readable name derived from the Bifrost datasheet base model (e.g. \"Claude Sonnet 4.5\"). Only present when the model has a matching entry in the Bifrost pricing catalog."
+          },
           "deployment": {
             "type": "string"
           },

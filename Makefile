@@ -1482,29 +1482,41 @@ test-cli: install-gotestsum ## Run CLI tests
 		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
 		-- ./...
 
-run-cli-harness-test: ## Run the Claude Code + Codex E2E harness (non-interactive, multi-turn JSON streams). Live mirror on by default. Usage: make run-cli-harness-test [CLI=claude|codex] [PROVIDER=openai|anthropic|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [QUIET=1]
+run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Live mirror on by default. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \
 	BASE_URL_VAL="$${BASE_URL:-$(BASE_URL)}"; BASE_URL_VAL="$${BASE_URL_VAL:-http://localhost:8080}"; \
+	PARALLEL_VAL="$${PARALLEL:-$(PARALLEL)}"; PARALLEL_VAL="$${PARALLEL_VAL:-4}"; \
 	$(ECHO) "$(CYAN)  Bifrost:  $$BASE_URL_VAL$(NC)"; \
+	$(ECHO) "$(CYAN)  Parallel: $$PARALLEL_VAL$(NC)"; \
+	if [ -n "$(PROVIDER)" ]; then \
+		case "$(PROVIDER)" in openai|anthropic|azure|gemini|bedrock|vertex) ;; \
+			*) $(ECHO) "$(RED)Error: invalid PROVIDER=$(PROVIDER). Use one of: openai, anthropic, azure, gemini, bedrock, vertex$(NC)"; exit 1 ;; \
+		esac; \
+		$(ECHO) "$(CYAN)  Provider: $(PROVIDER)$(NC)"; \
+	fi; \
 	if ! curl -s -o /dev/null -w "%{http_code}" "$$BASE_URL_VAL/api/providers" | grep -qE '^[2-4]'; then \
 		$(ECHO) "$(RED)Error: Bifrost not reachable at $$BASE_URL_VAL$(NC)"; \
 		$(ECHO) "$(YELLOW)Start Bifrost first (e.g. make dev) or pass BASE_URL=...$(NC)"; \
 		exit 1; \
 	fi; \
-	for bin in claude codex; do \
+	for bin in claude codex opencode; do \
 		if [ "$(CLI)" = "" ] || [ "$(CLI)" = "$$bin" ]; then \
 			if ! command -v $$bin >/dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Warning: $$bin not on PATH; matrix cells for $$bin will fail.$(NC)"; \
-				$(ECHO) "$(YELLOW)  Install: npm i -g $$( [ $$bin = claude ] && echo @anthropic-ai/claude-code || echo @openai/codex )$(NC)"; \
+				$(ECHO) "$(YELLOW)  Install: npm i -g $$( [ $$bin = claude ] && echo @anthropic-ai/claude-code || { [ $$bin = codex ] && echo @openai/codex || echo opencode-ai; } )$(NC)"; \
 			fi; \
 		fi; \
 	done; \
-	RUN_PARTS="TestCLIs"; \
-	if [ -n "$(CLI)" ]; then RUN_PARTS="$$RUN_PARTS/$(CLI)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
-	if [ -n "$(PROVIDER)" ]; then RUN_PARTS="$$RUN_PARTS/$(PROVIDER)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
-	RUN_PARTS="$$RUN_PARTS/[^/]+"; \
-	if [ -n "$(SCENARIO)" ]; then RUN_PARTS="$$RUN_PARTS/$(SCENARIO)"; fi; \
+	if [ -n "$(TESTCASE)" ]; then \
+		RUN_PARTS="$(TESTCASE)"; \
+	else \
+		RUN_PARTS="TestCLIs"; \
+		if [ -n "$(CLI)" ]; then RUN_PARTS="$$RUN_PARTS/$(CLI)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
+		if [ -n "$(PROVIDER)" ]; then RUN_PARTS="$$RUN_PARTS/$(PROVIDER)"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
+		if [ -n "$(MODEL)" ]; then RUN_PARTS="$$RUN_PARTS/[^/]*$(MODEL)[^/]*"; else RUN_PARTS="$$RUN_PARTS/[^/]+"; fi; \
+		if [ -n "$(SCENARIO)" ]; then RUN_PARTS="$$RUN_PARTS/$(SCENARIO)"; fi; \
+	fi; \
 	$(ECHO) "$(CYAN)  Filter:   $$RUN_PARTS$(NC)"; \
 	if [ -n "$(MODEL)" ]; then $(ECHO) "$(CYAN)  Model:    $(MODEL) (substring filter)$(NC)"; fi; \
 	cd tests/e2e/clis && \
@@ -1515,6 +1527,7 @@ run-cli-harness-test: ## Run the Claude Code + Codex E2E harness (non-interactiv
 		GOWORK=off go test \
 			-count=1 \
 			-timeout=$${TIMEOUT:-$(if $(TIMEOUT),$(TIMEOUT),60m)} \
+			-parallel="$$PARALLEL_VAL" \
 			-run "^$$RUN_PARTS$$" \
 			$(if $(QUIET),,-v) \
 			./...
@@ -1524,10 +1537,11 @@ install-newman: ## Install newman + htmlextra reporter if not already installed
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra...$(NC)" && npm install -g newman-reporter-htmlextra)
 	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
-run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<keyword>" (matches request name/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Per-provider parallelism is ON by default (~3-4× speedup); set PARALLEL=0 for sequential. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<keyword>" (matches request name/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. INCLUDE_SKIP=1 to run [SKIP]-tagged criss-cross cells for known-unsupported provider+modality pairs. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PARALLEL=0] [PROVIDER=anthropic] [FEATURE="web search"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [INCLUDE_SKIP=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
-		printf '%s\n\n' "Runs the 339-request Postman collection through newman, with optional filtering."; \
+		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
+		printf '%s\n\n' "Includes §8 Criss-Cross: endpoint-shape × model-provider × modality matrix (chat, streaming, embeddings, audio, image gen, tools, vision, JSON, reasoning)."; \
 		printf '%s\n' "$(YELLOW)PARAMETERS$(NC)"; \
 		printf '  %-18s %s\n' "HELP=1"          "Print this help and exit (no Bifrost or network activity)."; \
 		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: openai, anthropic, bedrock, gemini, vertex, azure, passthrough."; \
@@ -1543,23 +1557,32 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "VIEWER_PORT=N"   "Port for the interactive HTML viewer (default: 8090). Ignored if CI=1."; \
 		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only."; \
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
+		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
+		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
-		printf '  %s\n' "make run-provider-harness-test                       # full 339-request sweep"; \
-		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only"; \
+		printf '  %s\n' "make run-provider-harness-test                       # full sweep, 6 providers concurrently (default ~3-4× speedup)"; \
+		printf '  %s\n' "make run-provider-harness-test PARALLEL=0            # sequential mode (ordered output, htmlextra report)"; \
+		printf '  %s\n' "make run-provider-harness-test FOLDER=\"8. Criss-Cross\"  # criss-cross matrix only (endpoint × provider × modality)"; \
+		printf '  %s\n' "make run-provider-harness-test FOLDER=\"8.2 Text Chat (streaming)\"  # criss-cross streaming sub-folder"; \
+		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only (includes bedrock-model cells across §8)"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"  # all providers, web-search entries"; \
+		printf '  %s\n' "make run-provider-harness-test INCLUDE_SKIP=1        # also run [SKIP] cells (capability-gap matrix)"; \
 		printf '  %s\n' "make run-provider-harness-test RERUN_FAILED=1        # triage iteration loop"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=anthropic RERUN_FAILED=1   # anthropic failures only"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=passthrough  # passthrough sweep (incl. Bedrock SigV4)"; \
 		printf '  %s\n' "make run-provider-harness-test CI=1 USE_INFISICAL=1  # CI run with Infisical secrets"; \
 		printf '\n%s\n' "$(YELLOW)ARTIFACTS$(NC)"; \
 		printf '  %-30s %s\n' "tmp/newman-report.json"      "Machine-readable run report (used by RERUN_FAILED and the analyzer)."; \
-		printf '  %-30s %s\n' "tmp/newman-report.html"      "htmlextra report (rich HTML)."; \
 		printf '  %-30s %s\n' "tmp/newman-cli.log"          "Captured newman CLI output (stdout+stderr)."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
+		printf '  %-30s %s\n' "tmp/newman-report-<p>.json" "Per-provider newman report (parallel mode only)."; \
+		printf '  %-30s %s\n' "tmp/newman-cli-<p>.log"     "Per-provider newman stdout/stderr (parallel mode only)."; \
+		printf '  %-30s %s\n' "tmp/parallel-status"        "Per-provider pass/fail summary (parallel mode only)."; \
+		printf '  %-30s %s\n' "tmp/newman-report.html"     "htmlextra report (sequential mode only — PARALLEL=0)."; \
 		printf '\n'; \
 		exit 0; \
 	fi
@@ -1633,17 +1656,90 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	fi; \
 	$(ECHO) "$(YELLOW)Running newman against $$BASE_URL_VAL using $$COLLECTION_FILE...$(NC)"; \
 	set -o pipefail; \
-	$(USE_NODE); newman run "$$COLLECTION_FILE" \
-		--env-var "baseUrl=$$BASE_URL_VAL" \
-		$(if $(INCLUDE_PREVIEW),--env-var "include_preview=1",) \
-		$(if $(ENV_FILE),--environment $(ENV_FILE),) \
-		$(if $(FOLDER),--folder "$(FOLDER)",) \
-		--reporters cli,json,htmlextra \
-		--reporter-json-export tmp/newman-report.json \
-		--reporter-htmlextra-export tmp/newman-report.html \
-		--reporter-htmlextra-title "Bifrost Provider Harness" \
-		--reporter-htmlextra-darkTheme 2>&1 | tee tmp/newman-cli.log; \
-	NEWMAN_EXIT=$$?; \
+	$(USE_NODE); \
+	PARALLEL_VAL="$(or $(PARALLEL),1)"; \
+	if [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
+		$(ECHO) "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough). Set PARALLEL=0 to disable.$(NC)"; \
+		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status; \
+		: > tmp/parallel-pids; \
+		: > tmp/parallel-status; \
+		PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough"; \
+		if [ -n "$(PROVIDER)" ]; then PROVIDERS="$(PROVIDER)"; fi; \
+		LAUNCHED=0; \
+		for p in $$PROVIDERS; do \
+			if ! node tests/e2e/api/runners/filter-collection.mjs \
+				--source "$$COLLECTION_FILE" \
+				--out "tmp/harness-filtered-$$p.json" \
+				--provider "$$p" \
+				$(if $(FEATURE),--feature "$(FEATURE)",) > /dev/null 2>&1; then \
+				$(ECHO) "$(YELLOW)[$$p] filter produced no items - skipping$(NC)"; \
+				continue; \
+			fi; \
+			( \
+				newman run "tmp/harness-filtered-$$p.json" \
+					--env-var "baseUrl=$$BASE_URL_VAL" \
+					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+					$(if $(FOLDER),--folder "$(FOLDER)",) \
+					--reporters cli,json \
+					--reporter-json-export "tmp/newman-report-$$p.json" 2>&1 | sed "s/^/[$$p] /" \
+			) > "tmp/newman-cli-$$p.log" 2>&1 & \
+			BG_PID=$$!; \
+			LAUNCHED=$$((LAUNCHED+1)); \
+			echo "$$BG_PID:$$p" >> tmp/parallel-pids; \
+			$(ECHO) "$(GREEN)[$$p] launched (pid $$BG_PID)$(NC)"; \
+		done; \
+		if [ "$$LAUNCHED" -eq 0 ]; then \
+			$(ECHO) "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
+			exit 1; \
+		fi; \
+		PFAILED=0; \
+		while read pidp; do \
+			pid="$${pidp%%:*}"; \
+			p="$${pidp#*:}"; \
+			if wait "$$pid"; then \
+				echo "$$p:pass" >> tmp/parallel-status; \
+				$(ECHO) "$(GREEN)[$$p] passed$(NC)"; \
+			else \
+				echo "$$p:fail" >> tmp/parallel-status; \
+				$(ECHO) "$(RED)[$$p] failed$(NC)"; \
+				PFAILED=$$((PFAILED+1)); \
+			fi; \
+			tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; \
+		done < tmp/parallel-pids; \
+		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
+		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
+			jq -s '{collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]?], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
+		else \
+			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
+		fi; \
+		$(ECHO) "$(CYAN)Parallel summary:$(NC)"; \
+		while read sp; do \
+			pname="$${sp%%:*}"; \
+			pstat="$${sp#*:}"; \
+			if [ "$$pstat" = "pass" ]; then \
+				$(ECHO) "  $(GREEN)✓ $$pname$(NC)"; \
+			else \
+				$(ECHO) "  $(RED)✗ $$pname$(NC)"; \
+			fi; \
+		done < tmp/parallel-status; \
+		NEWMAN_EXIT=$$PFAILED; \
+	else \
+		newman run "$$COLLECTION_FILE" \
+			--env-var "baseUrl=$$BASE_URL_VAL" \
+			$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+			$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+			$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
+			--reporters cli,json,htmlextra \
+			--reporter-json-export tmp/newman-report.json \
+			--reporter-htmlextra-export tmp/newman-report.html \
+			--reporter-htmlextra-title "Bifrost Provider Harness" \
+			--reporter-htmlextra-darkTheme 2>&1 | tee tmp/newman-cli.log; \
+		NEWMAN_EXIT=$$?; \
+	fi; \
 	$(ECHO) "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
 	$(ECHO) "$(CYAN)Analyzing failures...$(NC)"; \
 	$(USE_NODE); node tests/e2e/api/runners/analyze-failures.mjs \

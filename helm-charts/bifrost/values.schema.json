@@ -541,10 +541,9 @@
               "type": "object",
               "properties": {
                 "toolExecutionTimeout": {
-                  "type": "integer",
-                  "description": "Tool execution timeout in seconds",
-                  "minimum": 1,
-                  "default": 30
+                  "type": ["integer", "string"],
+                  "description": "Tool execution timeout. Integer = seconds (e.g. 30), string = Go duration (e.g. \"30s\", \"2m\"). Prefer the string form.",
+                  "default": "30s"
                 },
                 "maxAgentDepth": {
                   "type": "integer",
@@ -2418,6 +2417,11 @@
               "type": "integer",
               "minimum": 2
             },
+            "matviewRefreshInterval": {
+              "type": "string",
+              "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
+              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+            },
             "objectStorageExcludeFields": {
               "type": "array",
               "items": {
@@ -3140,7 +3144,7 @@
               "description": "Azure API version"
             }
           },
-          "required": ["endpoint", "api_version"],
+          "required": ["endpoint"],
           "additionalProperties": false
         },
         "vertex_key_config": {

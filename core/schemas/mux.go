@@ -983,6 +983,40 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 			}
 		}
 
+		if cr.Params.ResponseFormat != nil {
+			if rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{}); ok {
+				if fmtType, ok := rfMap["type"].(string); ok {
+					if brr.Params.Text == nil {
+						brr.Params.Text = &ResponsesTextConfig{}
+					}
+					format := &ResponsesTextConfigFormat{Type: fmtType}
+					validFormat := true
+					if fmtType == "json_schema" {
+						jsObj, ok := rfMap["json_schema"].(map[string]interface{})
+						if !ok {
+							validFormat = false
+						} else {
+							if name, ok := jsObj["name"].(string); ok {
+								format.Name = &name
+							}
+							if desc, ok := jsObj["description"].(string); ok {
+								format.Description = &desc
+							}
+							if strict, ok := jsObj["strict"].(bool); ok {
+								format.Strict = &strict
+							}
+							if schema, ok := jsObj["schema"]; ok {
+								format.JSONSchema = JSONSchemaFromMap(schema)
+							}
+						}
+					}
+					if validFormat {
+						brr.Params.Text.Format = format
+					}
+				}
+			}
+		}
+
 		// Handle Verbosity
 		if cr.Params.Verbosity != nil {
 			if brr.Params.Text == nil {
@@ -1055,6 +1089,29 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 				Effort:    brr.Params.Reasoning.Effort,
 				MaxTokens: brr.Params.Reasoning.MaxTokens,
 			}
+		}
+
+		if brr.Params.Text != nil && brr.Params.Text.Format != nil {
+			f := brr.Params.Text.Format
+			rfMap := map[string]interface{}{"type": f.Type}
+			if f.Type == "json_schema" {
+				jsObj := map[string]interface{}{}
+				if f.Name != nil {
+					jsObj["name"] = *f.Name
+				}
+				if f.Description != nil {
+					jsObj["description"] = *f.Description
+				}
+				if f.Strict != nil {
+					jsObj["strict"] = *f.Strict
+				}
+				if schemaMap := f.JSONSchema.ToMap(); schemaMap != nil {
+					jsObj["schema"] = schemaMap
+				}
+				rfMap["json_schema"] = jsObj
+			}
+			var rf interface{} = rfMap
+			bcr.Params.ResponseFormat = &rf
 		}
 
 		// Handle Verbosity from Text config
