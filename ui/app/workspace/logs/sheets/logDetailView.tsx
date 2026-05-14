@@ -1,4 +1,5 @@
-import { formatCost, formatLatency, formatTokens } from "@/app/workspace/dashboard/utils/chartUtils";
+import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -764,14 +765,14 @@ export function LogDetailView({
 						mono
 						value={
 							log.token_usage
-								? `${formatTokens(log.token_usage.prompt_tokens ?? 0)} / ${formatTokens(log.token_usage.completion_tokens ?? 0)}`
+								? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
 								: "—"
 						}
 						sub={
 							log.token_usage
-								? `total ${formatTokens(log.token_usage.total_tokens ?? 0)}${
+								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
 										log.token_usage.completion_tokens_details?.reasoning_tokens
-											? ` · reasoning ${formatTokens(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+											? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
 											: ""
 									}`
 								: "—"

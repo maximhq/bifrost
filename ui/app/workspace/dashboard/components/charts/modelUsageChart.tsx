@@ -1,11 +1,11 @@
 import type { ModelHistogramResponse } from "@/lib/types/logs";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
 	CHART_COLORS,
 	formatFullTimestamp,
 	formatTimestamp,
-	formatTokens,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
@@ -163,7 +163,7 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tickLine={false}
 							axisLine={false}
 							width={44}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -222,7 +222,7 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tickLine={false}
 							axisLine={false}
 							width={44}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>

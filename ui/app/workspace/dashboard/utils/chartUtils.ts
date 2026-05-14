@@ -30,21 +30,13 @@ export function formatFullTimestamp(timestamp: string): string {
 
 // Format cost values
 export function formatCost(cost: number): string {
+	if (cost === 0) {
+		return `$0`;
+	}
 	if (cost < 0.01) {
 		return `$${cost.toFixed(4)}`;
 	}
 	return `$${cost.toFixed(2)}`;
-}
-
-// Format token values
-export function formatTokens(tokens: number): string {
-	if (tokens >= 1000000) {
-		return `${(tokens / 1000000).toFixed(1)}M`;
-	}
-	if (tokens >= 1000) {
-		return `${(tokens / 1000).toFixed(1)}K`;
-	}
-	return tokens.toLocaleString();
 }
 
 // Color palette for models. Length governs TOP_SERIES_LIMIT (top-N rollup cap),

@@ -1,4 +1,5 @@
-import { formatCost, formatLatency, formatTokens } from "@/app/workspace/dashboard/utils/chartUtils";
+import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
@@ -295,7 +296,7 @@ export const createColumns = (
 				return (
 					<div className="flex flex-col items-start gap-0.5 pl-4 leading-tight">
 						<div className="flex items-center gap-2">
-							<span className="font-mono text-[12px] tabular-nums">{formatTokens(total)}</span>
+							<span className="font-mono text-[12px] tabular-nums">{formatCompactNumber(total)}</span>
 							{hasSplit && (
 								<div className="flex h-1.5 w-[64px] overflow-hidden rounded-sm">
 									<div className="bg-blue-400" style={{ width: `${inPct}%` }} />
@@ -305,9 +306,9 @@ export const createColumns = (
 						</div>
 						{hasSplit && (
 							<div className="text-muted-foreground font-mono text-[10.5px] tabular-nums">
-								<span className="text-blue-500">{formatTokens(prompt)}</span>
+								<span className="text-blue-500">{formatCompactNumber(prompt)}</span>
 								<span> / </span>
-								<span className="text-violet-500">{formatTokens(completion)}</span>
+								<span className="text-violet-500">{formatCompactNumber(completion)}</span>
 							</div>
 						)}
 					</div>
