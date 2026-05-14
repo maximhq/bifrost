@@ -96,7 +96,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 p-0">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6 pb-6">
 				<div className="flex flex-col gap-4">
 					<FormField
 						control={form.control}
