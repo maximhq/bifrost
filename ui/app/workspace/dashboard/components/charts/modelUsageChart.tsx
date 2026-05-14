@@ -5,6 +5,7 @@ import {
 	CHART_COLORS,
 	formatFullTimestamp,
 	formatTimestamp,
+	formatTokens,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
@@ -161,8 +162,8 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={formatTokens}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -220,8 +221,8 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={formatTokens}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>

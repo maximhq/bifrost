@@ -1,7 +1,7 @@
 import type { LogsHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
+import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -97,8 +97,8 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={56}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={formatTokens}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -139,8 +139,8 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={56}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={formatTokens}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
