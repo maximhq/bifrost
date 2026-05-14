@@ -1,4 +1,5 @@
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -8,19 +9,24 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
-import { getErrorMessage, useDeleteVirtualKeyMutation, useLazyGetVirtualKeysQuery } from "@/lib/store";
+import { getErrorMessage, useDeleteVirtualKeyMutation, useLazyGetVirtualKeysQuery, useUpdateVirtualKeyMutation } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
@@ -37,6 +43,7 @@ import {
 	Eye,
 	EyeOff,
 	Loader2,
+	MoreHorizontal,
 	Plus,
 	Search,
 	ShieldCheck,
@@ -113,96 +120,110 @@ function VKRateLimitCell({ vk }: { vk: VirtualKey }) {
 	return <RateLimitDisplay rateLimits={displayRateLimit} />;
 }
 
-// Status badge derives exhaustion from the same AP-backed source as the budget/rate-limit cells
-// so managed keys don't show "Active" next to an exhausted-looking bar.
-function VKStatusBadge({ vk }: { vk: VirtualKey }) {
-	const { isExhausted } = useVirtualKeyUsage(vk);
-	return (
-		<Badge variant={vk.is_active ? (isExhausted ? "destructive" : "default") : "secondary"}>
-			{vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}
-		</Badge>
-	);
-}
-
-// Per-row delete button. Calls useVirtualKeyUsage (same cached query as the budget/
-// rate-limit cells — RTK dedupes) to detect managed-by-AP VKs and swap the normal
-// delete AlertDialog for a disabled button + tooltip so users aren't lured into a
-// confirm-then-403 loop.
-function VKDeleteButton({
+function VKActiveSwitch({
 	vk,
-	hasDeleteAccess,
-	isDeleting,
-	onDelete,
+	hasUpdateAccess,
+	onToggle,
 }: {
 	vk: VirtualKey;
-	hasDeleteAccess: boolean;
-	isDeleting: boolean;
-	onDelete: (vkId: string) => void;
+	hasUpdateAccess: boolean;
+	onToggle: (vk: VirtualKey, checked: boolean) => Promise<void>;
 }) {
 	const { isManagedByProfile } = useVirtualKeyUsage(vk);
 
-	if (isManagedByProfile) {
-		return (
-			<TooltipProvider>
-				<Tooltip delayDuration={300}>
-					<TooltipTrigger asChild>
-						<span className="inline-block cursor-not-allowed">
-							<Button
-								variant="ghost"
-								size="sm"
-								className="text-destructive border-destructive/30"
-								disabled
-								data-testid={`vk-delete-btn-${vk.name}`}
-							>
-								<Trash2 className="h-4 w-4" />
-							</Button>
-						</span>
-					</TooltipTrigger>
-					<TooltipContent side="top" className="max-w-[260px]">
-						<p className="text-xs">
-							This virtual key is managed by an access profile and can&apos;t be deleted here. Detach the profile from the user or delete it
-							from the access profile settings.
-						</p>
-					</TooltipContent>
-				</Tooltip>
-			</TooltipProvider>
-		);
-	}
+	return (
+		<Switch
+			checked={vk.is_active}
+			disabled={!hasUpdateAccess || isManagedByProfile}
+			aria-label={`${vk.is_active ? "Disable" : "Enable"} virtual key ${vk.name}`}
+			data-testid={`vk-active-switch-${vk.name}`}
+			title={isManagedByProfile ? "This virtual key is managed by an access profile." : undefined}
+			onAsyncCheckedChange={(checked) => onToggle(vk, checked)}
+		/>
+	);
+}
+
+function VKActionsMenu({
+	vk,
+	hasUpdateAccess,
+	hasDeleteAccess,
+	isDeleting,
+	onEdit,
+	onDelete,
+}: {
+	vk: VirtualKey;
+	hasUpdateAccess: boolean;
+	hasDeleteAccess: boolean;
+	isDeleting: boolean;
+	onEdit: (vk: VirtualKey) => void;
+	onDelete: (vkId: string) => void;
+}) {
+	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	return (
-		<AlertDialog>
-			<AlertDialogTrigger asChild>
-				<Button
-					variant="ghost"
-					size="sm"
-					className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
-					onClick={(e) => e.stopPropagation()}
-					disabled={!hasDeleteAccess}
-					data-testid={`vk-delete-btn-${vk.name}`}
-				>
-					<Trash2 className="h-4 w-4" />
-				</Button>
-			</AlertDialogTrigger>
-			<AlertDialogContent>
-				<AlertDialogHeader>
-					<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
-					<AlertDialogDescription>
-						Are you sure you want to delete &quot;{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}&quot;? This action cannot be undone.
-					</AlertDialogDescription>
-				</AlertDialogHeader>
-				<AlertDialogFooter>
-					<AlertDialogCancel data-testid={`vk-delete-cancel-${vk.name}`}>Cancel</AlertDialogCancel>
-					<AlertDialogAction
-						onClick={() => onDelete(vk.id)}
-						disabled={isDeleting}
-						className="bg-destructive hover:bg-destructive/90"
-						data-testid={`vk-delete-confirm-${vk.name}`}
+		<>
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Virtual key actions" data-testid={`vk-actions-btn-${vk.name}`}>
+						<MoreHorizontal className="h-4 w-4" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end">
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={!hasUpdateAccess}
+						data-testid={`vk-edit-btn-${vk.name}`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onEdit(vk);
+						}}
 					>
-						{isDeleting ? "Deleting..." : "Delete"}
-					</AlertDialogAction>
-				</AlertDialogFooter>
-			</AlertDialogContent>
-		</AlertDialog>
+						<Edit className="h-4 w-4" />
+						Edit
+					</DropdownMenuItem>
+					<DropdownMenuItem
+						variant="destructive"
+						className="cursor-pointer"
+						disabled={!hasDeleteAccess || isManagedByProfile}
+						data-testid={`vk-delete-btn-${vk.name}`}
+						title={
+							isManagedByProfile
+								? "This virtual key is managed by an access profile and can't be deleted here."
+								: undefined
+						}
+						onSelect={(e) => {
+							e.preventDefault();
+							setDeleteOpen(true);
+						}}
+					>
+						<Trash2 className="h-4 w-4" />
+						Delete
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
+						<AlertDialogDescription>
+							Are you sure you want to delete &quot;{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}&quot;? This action cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel data-testid={`vk-delete-cancel-${vk.name}`}>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => onDelete(vk.id)}
+							disabled={isDeleting}
+							className="bg-destructive hover:bg-destructive/90"
+							data-testid={`vk-delete-confirm-${vk.name}`}
+						>
+							{isDeleting ? "Deleting..." : "Delete"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
 	);
 }
 
@@ -270,6 +291,7 @@ export default function VirtualKeysTable({
 	const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete);
 
 	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation();
+	const [updateVirtualKey] = useUpdateVirtualKeyMutation();
 
 	const handleDelete = async (vkId: string) => {
 		try {
@@ -280,13 +302,22 @@ export default function VirtualKeysTable({
 		}
 	};
 
+	const handleToggleActive = async (vk: VirtualKey, checked: boolean) => {
+		try {
+			await updateVirtualKey({ vkId: vk.id, data: { is_active: checked } }).unwrap();
+			toast.success(`Virtual key ${checked ? "enabled" : "disabled"}`);
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+			throw error;
+		}
+	};
+
 	const handleAddVirtualKey = () => {
 		setEditingVirtualKeyId(null);
 		setShowVirtualKeySheet(true);
 	};
 
-	const handleEditVirtualKey = (vk: VirtualKey, e: React.MouseEvent) => {
-		e.stopPropagation(); // Prevent row click
+	const handleEditVirtualKey = (vk: VirtualKey) => {
 		setEditingVirtualKeyId(vk.id);
 		setShowVirtualKeySheet(true);
 	};
@@ -563,7 +594,7 @@ export default function VirtualKeysTable({
 				</div>
 
 				<div className="rounded-sm border">
-					<Table className="table-fixed w-full" data-testid="vk-table">
+					<Table className="table-fixed min-w-[1480px] w-full" data-testid="vk-table">
 						<TableHeader>
 							<TableRow>
 								<TableHead className="w-[250px]">
@@ -578,7 +609,7 @@ export default function VirtualKeysTable({
 								<TableHead className="w-[120px]">
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
-								<TableHead className="w-[110px] text-right"></TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -596,7 +627,7 @@ export default function VirtualKeysTable({
 										<TableRow
 											key={vk.id}
 											data-testid={`vk-row-${vk.name}`}
-											className="hover:bg-muted/50 cursor-pointer transition-colors"
+											className="group hover:bg-muted/50 cursor-pointer transition-colors"
 											onClick={() => handleRowClick(vk)}
 										>
 											<TableCell className="max-w-[200px]">
@@ -642,22 +673,21 @@ export default function VirtualKeysTable({
 											<TableCell>
 												<VKRateLimitCell vk={vk} />
 											</TableCell>
-											<TableCell>
-												<VKStatusBadge vk={vk} />
+											<TableCell onClick={(e) => e.stopPropagation()}>
+												<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
 											</TableCell>
-											<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-												<div className="flex items-center justify-end gap-2">
-													<Button
-														variant="ghost"
-														size="sm"
-														onClick={(e) => handleEditVirtualKey(vk, e)}
-														disabled={!hasUpdateAccess}
-														data-testid={`vk-edit-btn-${vk.name}`}
-													>
-														<Edit className="h-4 w-4" />
-													</Button>
-													<VKDeleteButton vk={vk} hasDeleteAccess={hasDeleteAccess} isDeleting={isDeleting} onDelete={handleDelete} />
-												</div>
+											<TableCell
+												className={`bg-white group-hover:bg-muted sticky right-0 z-10 text-right dark:bg-card dark:group-hover:bg-muted ${PIN_SHADOW_RIGHT}`}
+												onClick={(e) => e.stopPropagation()}
+											>
+												<VKActionsMenu
+													vk={vk}
+													hasUpdateAccess={hasUpdateAccess}
+													hasDeleteAccess={hasDeleteAccess}
+													isDeleting={isDeleting}
+													onEdit={handleEditVirtualKey}
+													onDelete={handleDelete}
+												/>
 											</TableCell>
 										</TableRow>
 									);
