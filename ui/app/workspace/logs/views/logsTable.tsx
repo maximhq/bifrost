@@ -59,7 +59,7 @@ export function LogsDataTable({
 	const tableContainerRef = useRef<HTMLDivElement>(null);
 	const calculatedPageSize = useTablePageSize(tableContainerRef);
 
-	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
+	const fixedColumnIds = useMemo(() => new Set<string>(["actions"]), []);
 
 	// Measure actual header cell widths for pixel-perfect pin offsets
 	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
