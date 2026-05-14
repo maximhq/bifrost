@@ -1682,6 +1682,19 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 			}
 		}
+
+		// Trim trailing whitespace from the last assistant message text blocks
+		// (only for Anthropic models which use text-based prefill)
+		lastMsgIndex := len(bedrockReq.Messages) - 1
+		if schemas.IsAnthropicModel(bifrostReq.Model) && lastMsgIndex >= 0 && bedrockReq.Messages[lastMsgIndex].Role == BedrockMessageRoleAssistant {
+			blocks := bedrockReq.Messages[lastMsgIndex].Content
+			for j := len(blocks) - 1; j >= 0; j-- {
+				if blocks[j].Text != nil {
+					bedrockReq.Messages[lastMsgIndex].Content[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+					break
+				}
+			}
+		}
 	}
 
 	var responsesStructuredOutputTool *BedrockTool
