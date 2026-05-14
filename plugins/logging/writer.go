@@ -217,6 +217,20 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	p.pendingLogsToInject.Range(func(key, value any) bool {
 		if pending, ok := value.(*pendingInjectEntries); ok {
 			if pending.createdAt.Before(cutoff) {
+				// Count the entries we're about to drop so operators can
+				// see them in /api/logs/dropped instead of having to infer
+				// the loss from "row count doesn't match request count".
+				// This path fires when an observability plugin's Inject()
+				// is never invoked for a trace (e.g. the tracing middleware
+				// is bypassed, or the trace completer is set up but never
+				// called) — silent until now.
+				pending.mu.Lock()
+				n := len(pending.entries)
+				pending.mu.Unlock()
+				if n > 0 {
+					p.droppedRequests.Add(int64(n))
+					p.logger.Warn("dropping %d pending log entries for trace %v after TTL — Inject() was never called (entries will not be written to the log store)", n, key)
+				}
 				p.pendingLogsToInject.Delete(key)
 			}
 		}
