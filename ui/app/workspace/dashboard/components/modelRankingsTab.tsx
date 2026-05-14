@@ -4,6 +4,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import ProviderIcons, { type ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ModelHistogramResponse, ModelRankingEntry, ModelRankingsResponse } from "@/lib/types/logs";
 import { formatCompactNumber as formatNumber } from "@/lib/utils/governance";
+import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
+import NumberFlow from "@number-flow/react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -193,6 +195,17 @@ function TopModelsChart({
 		return { chartData: processed, displayModels: models };
 	}, [modelData]);
 
+	const grandTotal = useMemo(() => {
+		if (!modelData?.buckets) return null;
+		let sum = 0;
+		const models = modelData.models || [];
+		for (const b of modelData.buckets) {
+			if (!b.by_model) continue;
+			for (const m of models) sum += b.by_model[m]?.total ?? 0;
+		}
+		return sum;
+	}, [modelData]);
+
 	// Compute totals per model for the ranked legend (aggregate across providers)
 	const modelTotals = useMemo(() => {
 		if (!rankingsData?.rankings) return [];
@@ -213,7 +226,14 @@ function TopModelsChart({
 	}, [rankingsData, displayModels]);
 
 	return (
-		<ChartCard title="Top Models" loading={loadingModels} testId="dashboard-rankings-top-models" className="z-[1] h-full">
+		<ChartCard
+			title="Top Models"
+			loading={loadingModels}
+			testId="dashboard-rankings-top-models"
+			className="z-[1] h-full"
+			totalLabel="Total"
+			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+		>
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
