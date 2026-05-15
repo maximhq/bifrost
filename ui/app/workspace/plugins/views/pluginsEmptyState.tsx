@@ -1,15 +1,16 @@
 import { Button } from "@/components/ui/button";
-import { Puzzle } from "lucide-react";
-import { ArrowUpRight } from "lucide-react";
+import { Activity, ArrowUpRight, Puzzle } from "lucide-react";
 
 const CUSTOM_PLUGINS_DOCS_URL = "https://docs.getbifrost.ai/plugins";
 
 interface PluginsEmptyStateProps {
 	onCreateClick: () => void;
 	canCreate?: boolean;
+	onConfigureTracingClick?: () => void;
+	canConfigureTracing?: boolean;
 }
 
-export function PluginsEmptyState({ onCreateClick, canCreate = true }: PluginsEmptyStateProps) {
+export function PluginsEmptyState({ onCreateClick, canCreate = true, onConfigureTracingClick, canConfigureTracing = true }: PluginsEmptyStateProps) {
 	return (
 		<div
 			className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
@@ -34,6 +35,18 @@ export function PluginsEmptyState({ onCreateClick, canCreate = true }: PluginsEm
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
+					{onConfigureTracingClick && (
+						<Button
+							variant="outline"
+							aria-label="Configure plugin tracing"
+							data-testid="plugins-button-configure-tracing"
+							onClick={onConfigureTracingClick}
+							disabled={!canConfigureTracing}
+						>
+							<Activity className="h-4 w-4" />
+							Configure Plugin Tracing
+						</Button>
+					)}
 					<Button
 						aria-label="Create your first plugin"
 						data-testid="plugins-button-install-new"

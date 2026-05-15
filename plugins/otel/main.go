@@ -44,6 +44,21 @@ const ProtocolHTTP Protocol = "http"
 // ProtocolGRPC is the second protocol
 const ProtocolGRPC Protocol = "grpc"
 
+// PluginSpanFilterMode controls whether the plugins list is an allowlist or denylist.
+type PluginSpanFilterMode string
+
+const (
+	PluginSpanFilterModeInclude PluginSpanFilterMode = "include"
+	PluginSpanFilterModeExclude PluginSpanFilterMode = "exclude"
+)
+
+// PluginSpanFilter configures which plugin spans are exported to the OTEL collector.
+// Mode "include" exports only the listed plugins; mode "exclude" exports everything except them.
+type PluginSpanFilter struct {
+	Mode    PluginSpanFilterMode `json:"mode"`
+	Plugins []string             `json:"plugins"`
+}
+
 type Config struct {
 	ServiceName  string            `json:"service_name"`
 	CollectorURL string            `json:"collector_url"`
@@ -57,6 +72,10 @@ type Config struct {
 	MetricsEnabled      bool   `json:"metrics_enabled"`
 	MetricsEndpoint     string `json:"metrics_endpoint"`
 	MetricsPushInterval int    `json:"metrics_push_interval"` // in seconds, default 15
+
+	// PluginSpanFilter is the DB-stored fallback when otel_plugin_span_filter is absent in config.json.
+	// The top-level config.json field takes precedence and is passed via Init's pluginSpanFilter param.
+	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
 }
 
 // UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
@@ -105,6 +124,8 @@ type OtelPlugin struct {
 
 	// Metrics push support
 	metricsExporter *MetricsExporter
+
+	pluginSpanFilter *PluginSpanFilter
 }
 
 // Init function for the OTEL plugin
@@ -127,6 +148,14 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 					return nil, fmt.Errorf("environment variable %s not found", newValue)
 				}
 			}
+		}
+	}
+	if config.PluginSpanFilter != nil {
+		switch config.PluginSpanFilter.Mode {
+		case PluginSpanFilterModeInclude, PluginSpanFilterModeExclude:
+		default:
+			return nil, fmt.Errorf("plugin_span_filter.mode %q is invalid: must be %q or %q",
+				config.PluginSpanFilter.Mode, PluginSpanFilterModeInclude, PluginSpanFilterModeExclude)
 		}
 	}
 	if config.ServiceName == "" {
@@ -169,6 +198,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
 		instanceAttrs:             instanceAttrs,
+		pluginSpanFilter: config.PluginSpanFilter,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
@@ -273,6 +303,14 @@ func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
 	}
 	if otelConfig.Protocol == "" {
 		return nil, fmt.Errorf("protocol is required")
+	}
+	if otelConfig.PluginSpanFilter != nil {
+		switch otelConfig.PluginSpanFilter.Mode {
+		case PluginSpanFilterModeInclude, PluginSpanFilterModeExclude:
+		default:
+			return nil, fmt.Errorf("plugin_span_filter.mode %q is invalid: must be %q or %q",
+				otelConfig.PluginSpanFilter.Mode, PluginSpanFilterModeInclude, PluginSpanFilterModeExclude)
+		}
 	}
 	return &otelConfig, nil
 }
