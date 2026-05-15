@@ -1119,6 +1119,8 @@ func HandleOpenAIChatCompletionStreaming(
 		var modelName string
 		var created int
 		forwardedTerminalFinishReason := false
+		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
+		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1181,6 +1183,31 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 
 			if isResponsesToChatCompletionsFallback {
+				// Accumulate usage across chunks; attached to final event below.
+				if response.Usage != nil {
+					if response.Usage.PromptTokens > usage.PromptTokens {
+						usage.PromptTokens = response.Usage.PromptTokens
+					}
+					if response.Usage.CompletionTokens > usage.CompletionTokens {
+						usage.CompletionTokens = response.Usage.CompletionTokens
+					}
+					if response.Usage.TotalTokens > usage.TotalTokens {
+						usage.TotalTokens = response.Usage.TotalTokens
+					}
+					if calculatedTotal := usage.PromptTokens + usage.CompletionTokens; calculatedTotal > usage.TotalTokens {
+						usage.TotalTokens = calculatedTotal
+					}
+					if response.Usage.PromptTokensDetails != nil {
+						usage.PromptTokensDetails = response.Usage.PromptTokensDetails
+					}
+					if response.Usage.CompletionTokensDetails != nil {
+						usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
+					}
+					if response.Usage.Cost != nil {
+						usage.Cost = response.Usage.Cost
+					}
+				}
+
 				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
 				for _, response := range spreadResponses {
 					if response.Type == schemas.ResponsesStreamResponseTypeError {
@@ -1212,14 +1239,9 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-						// Set raw request if enabled
-						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
-						}
-						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-						return
+						// Defer sending until stream end so usage can be attached.
+						pendingFinalEvent = response
+						continue
 					}
 
 					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
@@ -1321,7 +1343,19 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 		}
 
-		if !isResponsesToChatCompletionsFallback {
+		if isResponsesToChatCompletionsFallback {
+			if pendingFinalEvent != nil {
+				if pendingFinalEvent.Response != nil && pendingFinalEvent.Response.Usage == nil {
+					pendingFinalEvent.Response.Usage = usage.ToResponsesResponseUsage()
+				}
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&pendingFinalEvent.ExtraFields, jsonBody)
+				}
+				pendingFinalEvent.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingFinalEvent, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+		} else {
 			finalFinishReason := finishReason
 			if forwardedTerminalFinishReason {
 				finalFinishReason = nil
