@@ -51,6 +51,11 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.OutputIndex = &copyOutputIndex
 	}
 
+	if original.SummaryIndex != nil {
+		copySummaryIndex := *original.SummaryIndex
+		copy.SummaryIndex = &copySummaryIndex
+	}
+
 	if original.Item != nil {
 		copyItem := deepCopyResponsesMessage(*original.Item)
 		copy.Item = &copyItem
@@ -74,6 +79,16 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 	if original.Delta != nil {
 		copyDelta := *original.Delta
 		copy.Delta = &copyDelta
+	}
+
+	if original.Signature != nil {
+		copySignature := *original.Signature
+		copy.Signature = &copySignature
+	}
+
+	if original.Obfuscation != nil {
+		copyObfuscation := *original.Obfuscation
+		copy.Obfuscation = &copyObfuscation
 	}
 
 	// Deep copy LogProbs slice if present
@@ -171,6 +186,16 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	if original.Type != nil {
 		copyType := *original.Type
 		copy.Type = &copyType
+	}
+
+	if original.Status != nil {
+		copyStatus := *original.Status
+		copy.Status = &copyStatus
+	}
+
+	if original.Phase != nil {
+		copyPhase := *original.Phase
+		copy.Phase = &copyPhase
 	}
 
 	if original.Role != nil {
