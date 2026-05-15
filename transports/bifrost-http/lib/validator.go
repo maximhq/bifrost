@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -18,6 +19,8 @@ const (
 	DefaultSchemaURL = "https://www.getbifrost.ai/schema"
 	SchemaURLEnvVar  = "BIFROST_SCHEMA_URL"
 )
+
+const schemaFetchTimeout = 10 * time.Second
 
 // localSchemaCandidates lists paths (relative to CWD) where config.schema.json may be found
 // when running from a source checkout. Checked in order before falling back to the remote URL.
@@ -58,11 +61,19 @@ func ValidateConfigSchema(data []byte, schemaOverride ...[]byte) error {
 		// This avoids validating against a potentially stale remote schema.
 		configSchemaJSONBytes = localSchema
 	} else {
-		configSchemaJSON, err := http.Get(getSchemaURL())
+		req, err := http.NewRequest(http.MethodGet, getSchemaURL(), nil)
+		if err != nil {
+			return fmt.Errorf("failed to create config schema request: %w", err)
+		}
+		httpClient := &http.Client{Timeout: schemaFetchTimeout}
+		configSchemaJSON, err := httpClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("failed to get config schema: %w", err)
 		}
 		defer configSchemaJSON.Body.Close()
+		if configSchemaJSON.StatusCode < http.StatusOK || configSchemaJSON.StatusCode >= http.StatusMultipleChoices {
+			return fmt.Errorf("failed to get config schema: unexpected status %s", configSchemaJSON.Status)
+		}
 		var readErr error
 		configSchemaJSONBytes, readErr = io.ReadAll(configSchemaJSON.Body)
 		if readErr != nil {

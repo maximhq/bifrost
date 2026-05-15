@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -21,9 +22,9 @@ func TestDefaultURLWithEnv(t *testing.T) {
 }
 
 func TestLoadModelParametersFromURLUsesConfiguredURL(t *testing.T) {
-	requested := false
+	var requested atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requested = true
+		requested.Store(true)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"test-model": map[string]any{
 				"max_output_tokens": 4096,
@@ -41,7 +42,7 @@ func TestLoadModelParametersFromURLUsesConfiguredURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected model parameters load to succeed, got %v", err)
 	}
-	if !requested {
+	if !requested.Load() {
 		t.Fatal("expected configured URL to be requested")
 	}
 	if _, ok := params["test-model"]; !ok {

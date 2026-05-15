@@ -16216,7 +16216,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 
 	t.Run("fallback default pricing url uses env override", func(t *testing.T) {
 		envURL := "https://env-default.example.com/pricing.json"
-		t.Setenv("BIFROST_PRICING_URL", envURL)
+		t.Setenv(modelcatalog.PricingURLEnvVar, envURL)
 
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
 		require.False(t, needsDBUpdate)

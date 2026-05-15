@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -29,9 +30,9 @@ func TestValidateConfigSchemaUsesSchemaURLEnv(t *testing.T) {
 		localSchemaCandidates = originalLocalSchemaCandidates
 	})
 
-	requested := false
+	var requested atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requested = true
+		requested.Store(true)
 		_, _ = w.Write(loadLocalSchema(t))
 	}))
 	defer server.Close()
@@ -41,7 +42,7 @@ func TestValidateConfigSchemaUsesSchemaURLEnv(t *testing.T) {
 	if err := ValidateConfigSchema([]byte(`{}`)); err != nil {
 		t.Fatalf("expected validation to succeed with schema URL env, got %v", err)
 	}
-	if !requested {
+	if !requested.Load() {
 		t.Fatal("expected schema URL env endpoint to be requested")
 	}
 }

@@ -2875,7 +2875,7 @@ func ResolveFrameworkPricingConfig(
 	fileConfig *framework.FrameworkConfig,
 ) (*configstoreTables.TableFrameworkConfig, *modelcatalog.Config, bool) {
 	defaultPricingURL := modelcatalog.DefaultPricingURL
-	if value := strings.TrimSpace(os.Getenv("BIFROST_PRICING_URL")); value != "" {
+	if value := strings.TrimSpace(os.Getenv(modelcatalog.PricingURLEnvVar)); value != "" {
 		defaultPricingURL = value
 	}
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
