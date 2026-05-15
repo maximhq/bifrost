@@ -593,7 +593,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -627,11 +627,11 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 
 			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
 			if readErr != nil {
+				// If context was cancelled/timed out, let defer handle it
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					// If context was cancelled/timed out, let defer handle it
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn("Error reading stream: %v", readErr)
 					enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -932,7 +932,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -966,11 +966,11 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 
 			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
 			if readErr != nil {
+				// If context was cancelled/timed out, let defer handle it
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					// If context was cancelled/timed out, let defer handle it
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn("Error reading stream: %v", readErr)
 					enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1273,7 +1273,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	// Make the streaming request
 	streamErr := provider.streamingClient.Do(req, resp)
 	if streamErr != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(streamErr, context.Canceled) {
 			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1295,7 +1295,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		body := resp.Body()
 		return nil, providerUtils.EnrichError(ctx, parseReplicateError(body, resp.StatusCode()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -1326,7 +1326,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -1376,10 +1376,10 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn("Error reading stream: %v", readErr)
 					bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr)
@@ -1906,7 +1906,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -1943,10 +1943,10 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 
 			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn(fmt.Sprintf("Error reading SSE stream: %v", readErr))
 					enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -2312,7 +2312,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
@@ -2349,10 +2349,10 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 
 			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if errors.Is(readErr, context.Canceled) {
-						return
-					}
 					enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("stream read error", readErr), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger, postHookSpanFinalizer)
