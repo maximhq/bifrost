@@ -1771,7 +1771,7 @@ jobs:
             production.cloudflare.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
-            registry.access.redhat.com:443
+            *.redhat.com:443
             *.quay.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
@@ -1862,7 +1862,7 @@ jobs:
             production.cloudflare.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
-            registry.access.redhat.com:443
+            *.redhat.com:443
             *.quay.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
