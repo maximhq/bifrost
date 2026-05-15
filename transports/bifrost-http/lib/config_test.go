@@ -374,6 +374,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -18186,4 +18187,56 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	require.Len(t, anthropicCfg.Keys, 1)
 	require.Empty(t, anthropicCfg.Keys[0].Models,
 		"v2 semantics: empty models must NOT be normalised")
+}
+
+// =============================================================================
+// OtelPluginSpanFilter seeding tests
+// =============================================================================
+
+// TestLoadPlugins_OtelPluginSpanFilterPassthrough verifies that plugin_span_filter
+// set directly inside the OTEL plugin config (the standard config.json location)
+// is preserved unchanged through loadPlugins — no special handling needed.
+func TestLoadPlugins_OtelPluginSpanFilterPassthrough(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	otelCfg := map[string]any{
+		"collector_url": "localhost:4317",
+		"trace_type":    "genai_extension",
+		"protocol":      "grpc",
+		"plugin_span_filter": map[string]any{
+			"mode":    "exclude",
+			"plugins": []any{"logging", "compat"},
+		},
+	}
+	configData := &ConfigData{
+		Plugins: []*schemas.PluginConfig{
+			{Name: otelPlugin.PluginName, Enabled: true, Config: otelCfg},
+		},
+	}
+
+	cfg := &Config{}
+	loadPlugins(ctx, cfg, configData)
+
+	var found *schemas.PluginConfig
+	for _, pc := range cfg.PluginConfigs {
+		if pc.Name == otelPlugin.PluginName {
+			found = pc
+			break
+		}
+	}
+	require.NotNil(t, found, "OTEL plugin should be present in PluginConfigs after loadPlugins")
+
+	pluginCfg, ok := found.Config.(map[string]any)
+	require.True(t, ok, "OTEL plugin Config should be map[string]any")
+
+	raw, ok := pluginCfg["plugin_span_filter"]
+	require.True(t, ok, "plugin_span_filter should be preserved in OTEL plugin config")
+
+	filterMap, ok := raw.(map[string]any)
+	require.True(t, ok, "plugin_span_filter should be a map")
+	require.Equal(t, "exclude", filterMap["mode"])
+	plugins, ok := filterMap["plugins"].([]any)
+	require.True(t, ok, "plugin_span_filter.plugins should be an array")
+	require.ElementsMatch(t, []any{"logging", "compat"}, plugins)
 }

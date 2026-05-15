@@ -3,6 +3,7 @@ package otel
 import (
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -69,11 +70,81 @@ func hexToBytes(hexStr string, length int) []byte {
 	return bytes
 }
 
+// shouldExportSpan reports whether a span should be included in the export.
+// Non-plugin spans are always exported. Plugin spans are checked against pluginSpanFilter.
+func (p *OtelPlugin) shouldExportSpan(span *schemas.Span) bool {
+	if span.Kind != schemas.SpanKindPlugin || p.pluginSpanFilter == nil {
+		return true
+	}
+	// Span names follow the pattern "plugin.<name>.prehook" / "plugin.<name>.posthook".
+	parts := strings.SplitN(span.Name, ".", 3)
+	if len(parts) < 2 {
+		return true
+	}
+	pluginName := parts[1]
+
+	inList := slices.Contains(p.pluginSpanFilter.Plugins, pluginName)
+
+	if p.pluginSpanFilter.Mode == PluginSpanFilterModeInclude {
+		return inList
+	}
+	return !inList // exclude mode
+}
+
+// buildReparentMap returns a map of filteredSpanID → effective ancestor spanID for all
+// spans that will be skipped. When plugin spans are chained (each span's parent is the
+// previous plugin's span), removing a span from the middle would leave its children with
+// a dangling parent ID. The map lets us rewrite those parent IDs to the nearest exported
+// ancestor, handling consecutive filtered spans in a chain.
+func (p *OtelPlugin) buildReparentMap(spans []*schemas.Span) map[string]string {
+	if p.pluginSpanFilter == nil {
+		return nil
+	}
+	// First pass: record direct parent ID for every filtered span.
+	filtered := make(map[string]string) // spanID -> parentID
+	for _, span := range spans {
+		if !p.shouldExportSpan(span) {
+			filtered[span.SpanID] = span.ParentID
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	// Second pass: resolve chains so each filtered span maps to its first exported ancestor.
+	// Cap the walk at len(filtered) to break out of any cycle caused by malformed span data.
+	maxHops := len(filtered)
+	for spanID := range filtered {
+		parentID := filtered[spanID]
+		for range maxHops {
+			grandParentID, isFiltered := filtered[parentID]
+			if !isFiltered {
+				break
+			}
+			parentID = grandParentID
+		}
+		filtered[spanID] = parentID
+	}
+	return filtered
+}
+
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan
 func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceSpan {
+	reparent := p.buildReparentMap(trace.Spans)
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
+		if !p.shouldExportSpan(span) {
+			continue
+		}
 		otelSpan := p.convertSpanToOTELSpan(trace.TraceID, span)
+		// If the span's direct parent was filtered, rewrite its parent ID to the
+		// nearest exported ancestor so the hierarchy stays connected.
+		if effectiveParent, ok := reparent[span.ParentID]; ok {
+			if effectiveParent == "" {
+				otelSpan.ParentSpanId = nil
+			} else {
+				otelSpan.ParentSpanId = hexToBytes(effectiveParent, 8)
+			}
+		}
 		if span == trace.RootSpan {
 			if requestID := trace.GetRequestID(); requestID != "" {
 				otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrRequestID, requestID))
