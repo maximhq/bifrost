@@ -1381,6 +1381,14 @@ func HandleOpenAIChatCompletionStreaming(
 
 // Responses performs a responses request to the OpenAI API.
 func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if provider.shouldFallbackResponsesToChat(schemas.ResponsesRequest, schemas.ChatCompletionRequest) {
+		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		if err != nil {
+			return nil, err
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
+	}
+
 	// Check if chat completion is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
@@ -1544,6 +1552,11 @@ func HandleOpenAIResponsesRequest(
 
 // ResponsesStream performs a streaming responses request to the OpenAI API.
 func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if provider.shouldFallbackResponsesToChat(schemas.ResponsesStreamRequest, schemas.ChatCompletionStreamRequest) {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	}
+
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
@@ -2015,6 +2028,17 @@ func HandleOpenAIEmbeddingRequest(
 	}
 
 	return response, nil
+}
+
+// shouldFallbackResponsesToChat reports whether a Responses call should be
+// transparently translated into Chat Completions. This applies when a custom
+// provider disables the Responses operation but still allows Chat Completions.
+func (provider *OpenAIProvider) shouldFallbackResponsesToChat(responsesOp, chatOp schemas.RequestType) bool {
+	cfg := provider.customProviderConfig
+	if cfg == nil || cfg.AllowedRequests == nil {
+		return false
+	}
+	return !cfg.IsOperationAllowed(responsesOp) && cfg.IsOperationAllowed(chatOp)
 }
 
 // Speech handles non-streaming speech synthesis requests.
