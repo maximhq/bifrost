@@ -1,3 +1,7 @@
+import { formatCompactNumber } from "./numbers";
+
+export { formatCompactNumber };
+
 /**
  * Parses a duration string (e.g., "1m", "5m", "1h", "1d", "1w", "1M") into human readable format
  */
@@ -23,8 +27,6 @@ export function parseResetPeriod(duration: string): string {
 	const unitName = timeValue === 1 ? unit.singular : unit.plural;
 	return `${timeValue} ${unitName}`;
 }
-
-import { formatCompactNumber } from "./numbers";
 
 export function formatCurrency(dollars: number) {
 	return `$${dollars.toFixed(2)}`;
