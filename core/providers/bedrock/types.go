@@ -11,10 +11,14 @@ import (
 // DefaultBedrockRegion is the default region for Bedrock
 const DefaultBedrockRegion = "us-east-1"
 
-// bedrockSigningService is the SigV4 service name used when signing all Bedrock
-// API requests. AWS requires "bedrock" as the credential scope service for both
-// bedrock-runtime and bedrock-agent-runtime endpoints.
+// bedrockSigningService is the SigV4 service name for the standard Bedrock endpoints
+// (bedrock-runtime, bedrock-agent-runtime).
 const bedrockSigningService = "bedrock"
+
+// bedrockMantleSigningService is the SigV4 service name for the Bedrock Mantle endpoint
+// (bedrock-mantle.{region}.api.aws). AWS requires a distinct service name in the
+// credential scope; using "bedrock" will cause signature verification failures.
+const bedrockMantleSigningService = "bedrock-mantle"
 
 const MinimumReasoningMaxTokens = 1
 const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
