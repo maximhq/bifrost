@@ -175,3 +175,7 @@ ui/app/routeTree.gen.ts
 .next
 
 .infisical
+
+# e2e test artifacts
+examples/mcps/auth-demo-server/auth-demo-server
+examples/mcps/oauth-demo-server/oauth-demo-server

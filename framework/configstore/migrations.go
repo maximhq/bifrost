@@ -7587,11 +7587,11 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 			// promotes the team to calendar-aligned so behavior is preserved across upgrade.
 			if mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
 				if err := tx.Exec(`
-					UPDATE governance_teams t
+					UPDATE governance_teams
 					SET calendar_aligned = TRUE
 					WHERE EXISTS (
 						SELECT 1 FROM governance_budgets b
-						WHERE b.team_id = t.id AND b.calendar_aligned = TRUE
+						WHERE b.team_id = governance_teams.id AND b.calendar_aligned = TRUE
 					)
 				`).Error; err != nil {
 					return fmt.Errorf("failed to backfill team calendar_aligned from budgets: %w", err)
@@ -7599,9 +7599,9 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 			}
 			if mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
 				if err := tx.Exec(`
-					UPDATE governance_teams t
+					UPDATE governance_teams
 					SET calendar_aligned = TRUE
-					WHERE t.rate_limit_id IN (
+					WHERE rate_limit_id IN (
 						SELECT id FROM governance_rate_limits WHERE calendar_aligned = TRUE
 					)
 				`).Error; err != nil {
