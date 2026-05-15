@@ -157,6 +157,10 @@ type Plugin struct {
 	cleanupWg sync.WaitGroup
 	// stopCh is closed by Cleanup to signal the background reaper loops to exit.
 	stopCh chan struct{}
+	// cleanupOnce guards Cleanup so close(stopCh) doesn't panic if the harness
+	// invokes Cleanup more than once (e.g. plugin registered against multiple
+	// interface caches).
+	cleanupOnce sync.Once
 }
 
 // Plugin constants
@@ -714,15 +718,16 @@ func (plugin *Plugin) WaitForPendingOperations() {
 // the namespace — useful for ephemeral test environments. The default is to
 // leave entries in place so they can serve subsequent process restarts.
 func (plugin *Plugin) Cleanup() error {
-	close(plugin.stopCh)
-	plugin.writersWg.Wait()
-	plugin.cleanupWg.Wait()
+	plugin.cleanupOnce.Do(func() {
+		close(plugin.stopCh)
+		plugin.writersWg.Wait()
+		plugin.cleanupWg.Wait()
 
-	// Final sweep: the periodic reaper only fires once per streamCleanupInterval,
-	// so any abandoned accumulator added in the window between the last tick
-	// and stopCh is still in memory. This call evicts those before we return.
-	plugin.cleanupOldStreamAccumulators()
-
+		// Final sweep: the periodic reaper only fires once per streamCleanupInterval,
+		// so any abandoned accumulator added in the window between the last tick
+		// and stopCh is still in memory. This call evicts those before we return.
+		plugin.cleanupOldStreamAccumulators()
+	})
 	return nil
 }
 
