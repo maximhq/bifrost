@@ -3,8 +3,10 @@ package handlers
 import (
 	"bytes"
 	"mime/multipart"
+	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -75,6 +77,28 @@ func TestPrepareChatCompletionRequest_StringFallbacksRemainSupported(t *testing.
 	}
 }
 
+func TestPrepareChatCompletionRequest_TrimmedStringFallbacksRemainSupported(t *testing.T) {
+	ctx := newChatRequestCtx(`{
+		"model": "openai/gpt-4o-mini",
+		"messages": [{"role": "user", "content": "hello"}],
+		"fallbacks": ["  bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0  "]
+	}`)
+
+	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected whitespace-trimmed fallback to parse successfully, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Provider != "bedrock" {
+		t.Fatalf("expected fallback provider bedrock, got %s", bifrostReq.Fallbacks[0].Provider)
+	}
+	if bifrostReq.Fallbacks[0].Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", bifrostReq.Fallbacks[0].Model)
+	}
+}
+
 func TestPrepareChatCompletionRequest_AcceptsMultipleFallbacks(t *testing.T) {
 	ctx := newChatRequestCtx(`{
 		"model": "openai/gpt-4o-mini",
@@ -100,10 +124,7 @@ func TestPrepareChatCompletionRequest_AcceptsMultipleFallbacks(t *testing.T) {
 	}
 }
 
-func TestPrepareChatCompletionRequest_LenientlyIgnoresInvalidFallbackObject(t *testing.T) {
-	// Backward-compatibility contract: prior to per-fallback params support,
-	// malformed fallback entries were silently dropped. Lenient validation
-	// keeps that behaviour so existing clients aren't suddenly broken.
+func TestPrepareChatCompletionRequest_RejectsInvalidFallbackObject(t *testing.T) {
 	ctx := newChatRequestCtx(`{
 		"model": "openai/gpt-4o-mini",
 		"messages": [{"role": "user", "content": "hello"}],
@@ -112,22 +133,16 @@ func TestPrepareChatCompletionRequest_LenientlyIgnoresInvalidFallbackObject(t *t
 		]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
-	if err != nil {
-		t.Fatalf("expected lenient mode to accept request and drop the invalid fallback, got error: %v", err)
+	_, _, err := prepareChatCompletionRequest(ctx, nil)
+	if err == nil {
+		t.Fatal("expected invalid fallback object to fail")
 	}
-	if bifrostReq == nil {
-		t.Fatal("expected bifrost request, got nil")
-	}
-	if len(bifrostReq.Fallbacks) != 0 {
-		t.Fatalf("expected invalid fallback to be dropped, got %d fallbacks", len(bifrostReq.Fallbacks))
+	if !strings.Contains(err.Error(), schemas.InvalidFallbackEntryError) {
+		t.Fatalf("expected invalid fallback error, got %v", err)
 	}
 }
 
-func TestPrepareChatCompletionRequest_DropsOnlyInvalidEntriesInMixedBatch(t *testing.T) {
-	// Mixed batches must keep valid entries while silently dropping malformed
-	// ones — anything else would be a hidden DoS vector for clients that
-	// occasionally typo a fallback model.
+func TestPrepareChatCompletionRequest_RejectsMixedBatchWithInvalidFallback(t *testing.T) {
 	ctx := newChatRequestCtx(`{
 		"model": "openai/gpt-4o-mini",
 		"messages": [{"role": "user", "content": "hello"}],
@@ -138,21 +153,12 @@ func TestPrepareChatCompletionRequest_DropsOnlyInvalidEntriesInMixedBatch(t *tes
 		]
 	}`)
 
-	_, bifrostReq, err := prepareChatCompletionRequest(ctx, nil)
-	if err != nil {
-		t.Fatalf("expected lenient mode to accept mixed batch, got error: %v", err)
+	_, _, err := prepareChatCompletionRequest(ctx, nil)
+	if err == nil {
+		t.Fatal("expected mixed fallback batch with invalid entry to fail")
 	}
-	if len(bifrostReq.Fallbacks) != 2 {
-		t.Fatalf("expected 2 valid fallbacks (invalid dropped), got %d", len(bifrostReq.Fallbacks))
-	}
-	if bifrostReq.Fallbacks[0].Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
-		t.Fatalf("unexpected first fallback: %+v", bifrostReq.Fallbacks[0])
-	}
-	if bifrostReq.Fallbacks[1].Provider != "openai" {
-		t.Fatalf("unexpected second fallback provider: %s", bifrostReq.Fallbacks[1].Provider)
-	}
-	if bifrostReq.Fallbacks[1].Params["reasoning_effort"] != "low" {
-		t.Fatalf("expected params on second fallback to be preserved, got %#v", bifrostReq.Fallbacks[1].Params)
+	if !strings.Contains(err.Error(), schemas.InvalidFallbackEntryError) {
+		t.Fatalf("expected invalid fallback error, got %v", err)
 	}
 }
 
@@ -196,12 +202,6 @@ func TestPrepareChatCompletionRequest_DuplicateFallbacksArePreserved(t *testing.
 		t.Fatalf("duplicates were merged: %#v", bifrostReq.Fallbacks)
 	}
 }
-
-// invalidFallbackEntryError is intentionally still referenced here to keep the
-// constant usage expectation in the test surface — even though we no longer
-// expect validation to surface it on the happy path. If a future refactor
-// removes the constant, this reference will catch it at compile time.
-var _ = invalidFallbackEntryError
 
 func buildMultipartImageRequestCtx(t *testing.T, uri string, fields map[string]string) *fasthttp.RequestCtx {
 	t.Helper()
@@ -321,19 +321,19 @@ func TestPrepareImageVariationRequest_StringFallbacksRemainSupported(t *testing.
 	}
 }
 
-func TestPrepareImageEditRequest_LenientlyIgnoresInvalidJSONFallbackObject(t *testing.T) {
+func TestPrepareImageEditRequest_RejectsInvalidJSONFallbackObject(t *testing.T) {
 	ctx := buildMultipartImageRequestCtx(t, "/v1/images/edits", map[string]string{
 		"model":     "openai/gpt-image-1",
 		"prompt":    "edit this",
 		"fallbacks": `[{"model":"bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0"}]`,
 	})
 
-	_, bifrostReq, err := prepareImageEditRequest(ctx, nil)
-	if err != nil {
-		t.Fatalf("expected lenient mode to accept multipart with invalid fallback, got error: %v", err)
+	_, _, err := prepareImageEditRequest(ctx, nil)
+	if err == nil {
+		t.Fatal("expected invalid multipart fallback object to fail")
 	}
-	if len(bifrostReq.Fallbacks) != 0 {
-		t.Fatalf("expected invalid multipart fallback to be dropped, got %d", len(bifrostReq.Fallbacks))
+	if !strings.Contains(err.Error(), schemas.InvalidFallbackEntryError) {
+		t.Fatalf("expected invalid fallback error, got %v", err)
 	}
 }
 

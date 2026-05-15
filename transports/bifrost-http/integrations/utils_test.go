@@ -397,6 +397,29 @@ func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
 		assert.Equal(t, "us.anthropic.claude-3-5-sonnet-20241022-v2:0", bifrostReq.ChatRequest.Fallbacks[0].Model)
 	})
 
+	t.Run("whitespace-trimmed string fallbacks remain supported", func(t *testing.T) {
+		type reqWithStringFallbacks struct {
+			Fallbacks []string `json:"fallbacks"`
+		}
+
+		router := newTestGenericRouter()
+		bifrostReq := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+			},
+		}
+
+		err := router.extractAndParseFallbacks(reqWithStringFallbacks{
+			Fallbacks: []string{"  bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0  "},
+		}, bifrostReq)
+		require.NoError(t, err)
+		require.Len(t, bifrostReq.ChatRequest.Fallbacks, 1)
+		assert.Equal(t, schemas.Bedrock, bifrostReq.ChatRequest.Fallbacks[0].Provider)
+		assert.Equal(t, "us.anthropic.claude-3-5-sonnet-20241022-v2:0", bifrostReq.ChatRequest.Fallbacks[0].Model)
+	})
+
 	t.Run("object fallbacks preserve params", func(t *testing.T) {
 		type reqWithObjectFallbacks struct {
 			Fallbacks []schemas.Fallback `json:"fallbacks"`
@@ -437,11 +460,7 @@ func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
 		assert.Nil(t, bifrostReq.ChatRequest.Fallbacks[1].Params)
 	})
 
-	t.Run("invalid fallback object is dropped (lenient default)", func(t *testing.T) {
-		// Lenient default mirrors the legacy behaviour: malformed entries are
-		// silently skipped rather than rejecting the whole request. This is
-		// the contract integration clients (OpenAI/Anthropic SDKs) relied on
-		// before per-fallback params landed.
+	t.Run("invalid fallback object is rejected", func(t *testing.T) {
 		type reqWithInvalidObjectFallback struct {
 			Fallbacks []schemas.Fallback `json:"fallbacks"`
 		}
@@ -458,11 +477,11 @@ func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
 		err := router.extractAndParseFallbacks(reqWithInvalidObjectFallback{
 			Fallbacks: []schemas.Fallback{{Provider: schemas.Bedrock}},
 		}, bifrostReq)
-		require.NoError(t, err)
-		assert.Nil(t, bifrostReq.ChatRequest.Fallbacks)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), schemas.InvalidFallbackEntryError)
 	})
 
-	t.Run("invalid fallback string is dropped (lenient default)", func(t *testing.T) {
+	t.Run("invalid fallback string is rejected", func(t *testing.T) {
 		type reqWithInvalidStringFallback struct {
 			Fallbacks []string `json:"fallbacks"`
 		}
@@ -479,11 +498,11 @@ func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
 		err := router.extractAndParseFallbacks(reqWithInvalidStringFallback{
 			Fallbacks: []string{"openai/"},
 		}, bifrostReq)
-		require.NoError(t, err)
-		assert.Nil(t, bifrostReq.ChatRequest.Fallbacks)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), schemas.InvalidFallbackEntryError)
 	})
 
-	t.Run("mixed valid and invalid fallbacks keeps valid entries", func(t *testing.T) {
+	t.Run("mixed valid and invalid fallbacks is rejected", func(t *testing.T) {
 		type reqWithMixedFallbacks struct {
 			Fallbacks []schemas.Fallback `json:"fallbacks"`
 		}
@@ -504,11 +523,8 @@ func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
 				{Provider: schemas.OpenAI, Model: "gpt-4.1-mini", Params: map[string]any{"x": 1}},
 			},
 		}, bifrostReq)
-		require.NoError(t, err)
-		require.Len(t, bifrostReq.ChatRequest.Fallbacks, 2)
-		assert.Equal(t, schemas.Bedrock, bifrostReq.ChatRequest.Fallbacks[0].Provider)
-		assert.Equal(t, schemas.OpenAI, bifrostReq.ChatRequest.Fallbacks[1].Provider)
-		assert.Equal(t, 1, bifrostReq.ChatRequest.Fallbacks[1].Params["x"])
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), schemas.InvalidFallbackEntryError)
 	})
 
 	t.Run("empty fallback array is a no-op", func(t *testing.T) {

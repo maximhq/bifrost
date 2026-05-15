@@ -92,10 +92,7 @@ func prepareRequest[T baseRequest](ctx *fasthttp.RequestCtx, config *lib.Config,
 	if err != nil {
 		return nil, nil, err
 	}
-	fallbacks, err := parseFallbacks((*req).getFallbacks())
-	if err != nil {
-		return nil, nil, err
-	}
+	fallbacks := (*req).getFallbacks()
 	var extraParams map[string]any
 	if knownFields != nil {
 		ep, epErr := extractExtraParams(ctx.PostBody(), knownFields)
@@ -365,27 +362,16 @@ type BifrostParams struct {
 
 type FallbacksInput []schemas.Fallback
 
-// invalidFallbackEntryError is preserved for tests and existing callers that
-// match on the legacy error string. The canonical definition lives in
-// schemas.InvalidFallbackEntryError so all transports validate consistently.
-const invalidFallbackEntryError = schemas.InvalidFallbackEntryError
-
 // fallbackValidationMode controls the validation policy applied to incoming
-// HTTP fallback payloads. Bifrost historically dropped malformed fallback
-// entries silently — we preserve that contract by defaulting to lenient mode
-// so the transition to typed/object fallbacks is non-breaking. Strict mode is
-// reserved for opt-in callers (e.g. config validators) and is plumbed through
-// the shared schemas helpers so behaviour stays identical across packages.
-const fallbackValidationMode = schemas.FallbackValidationLenient
+// HTTP fallback payloads. Invalid fallback entries at the public HTTP boundary
+// are rejected so callers do not mistakenly believe a malformed fallback was
+// configured and used.
+const fallbackValidationMode = schemas.FallbackValidationStrict
 
 func (f *FallbacksInput) UnmarshalJSON(data []byte) error {
 	// Try the legacy ["provider/model"] string form first.
 	var fallbackStrings []string
 	if err := sonic.Unmarshal(data, &fallbackStrings); err == nil {
-		// Note: logger is not available inside UnmarshalJSON — dropped entries
-		// are logged upstream via fallbackStringsToInput / parseMultipartFallbacks
-		// where a logger is in scope. JSON-body callers get the same visibility
-		// via the handler-level logger passed in those paths.
 		parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode, logger)
 		if err != nil {
 			return err
@@ -641,21 +627,6 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
-}
-
-// parseFallbacks returns the normalised fallback slice. Entries are already
-// validated and normalised by FallbacksInput.UnmarshalJSON (or by
-// parseMultipartFallbacks for multipart routes), so this is intentionally a
-// passthrough — re-running validation here would either produce noise or, in
-// strict mode, double-report the same error. Returning an error remains in the
-// signature so future strict-mode wiring stays a one-line change.
-func parseFallbacks(rawFallbacks FallbacksInput) ([]schemas.Fallback, error) {
-	if len(rawFallbacks) == 0 {
-		return nil, nil
-	}
-	out := make([]schemas.Fallback, len(rawFallbacks))
-	copy(out, rawFallbacks)
-	return out, nil
 }
 
 func effectiveStream(bodyStream *bool) bool {
@@ -1500,11 +1471,7 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 			return nil, false, parseErr
 		}
 
-		fallbacks, parseFallbackErr := parseFallbacks(parsedFallbacks)
-		if parseFallbackErr != nil {
-			return nil, false, parseFallbackErr
-		}
-		bifrostTranscriptionReq.Fallbacks = fallbacks
+		bifrostTranscriptionReq.Fallbacks = parsedFallbacks
 	}
 	return bifrostTranscriptionReq, stream, nil
 }
@@ -2154,16 +2121,12 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		stream := streamValues[0] == "true"
 		req.Stream = &stream
 	}
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		return nil, nil, err
-	}
 	bifrostReq := &schemas.BifrostImageEditRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
 		Input:     req.ImageEditInput,
 		Params:    req.ImageEditParameters,
-		Fallbacks: fallbacks,
+		Fallbacks: req.Fallbacks,
 	}
 	return &req, bifrostReq, nil
 }
@@ -2293,16 +2256,12 @@ func prepareImageVariationRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		fallbacks, err := parseFallbacks(rawFallbacks)
-		if err != nil {
-			return nil, err
-		}
 		return &schemas.BifrostImageVariationRequest{
 			Provider:       schemas.ModelProvider(provider),
 			Model:          modelName,
 			Input:          variationInput,
 			Params:         variationParams,
-			Fallbacks:      fallbacks,
+			Fallbacks:      rawFallbacks,
 			RawRequestBody: rawBody,
 		}, nil
 	}
@@ -2361,12 +2320,6 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-
 	if req.VideoGenerationInput == nil || req.Prompt == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
 		return
@@ -2388,7 +2341,7 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		Model:     modelName,
 		Input:     req.VideoGenerationInput,
 		Params:    req.VideoGenerationParameters,
-		Fallbacks: fallbacks,
+		Fallbacks: req.Fallbacks,
 	}
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)

@@ -19,16 +19,10 @@ import (
 
 var bifrostContextKeyProvider = schemas.BifrostContextKey("provider")
 
-// invalidFallbackEntryError is preserved as a package-local alias so existing
-// tests that match on the legacy string keep working. The canonical definition
-// now lives in the schemas package and is used by all transports.
-const invalidFallbackEntryError = schemas.InvalidFallbackEntryError
-
 // fallbackValidationMode controls fallback validation policy for the
-// integration router. Lenient mirrors the legacy behaviour where malformed
-// entries were dropped silently, preserving backward compatibility for
-// integration clients (OpenAI/Anthropic SDKs etc.).
-const fallbackValidationMode = schemas.FallbackValidationLenient
+// integration router. Malformed fallback entries on SDK-compatible HTTP
+// routes are rejected instead of being silently dropped.
+const fallbackValidationMode = schemas.FallbackValidationStrict
 
 var availableIntegrations = []string{
 	"openai",
@@ -448,11 +442,11 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 			// mode: lenient logs and drops malformed entries; strict rejects.
 			fallbacks := make([]schemas.Fallback, 0, fallbacksField.Len())
 			for i := 0; i < fallbacksField.Len(); i++ {
-				fallbackStr := fallbacksField.Index(i).String()
+				fallbackStr := strings.TrimSpace(fallbacksField.Index(i).String())
 				provider, model := schemas.ParseModelString(fallbackStr, defaultProvider)
 				if provider == "" || model == "" {
 					if fallbackValidationMode == schemas.FallbackValidationStrict {
-						return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+						return nil, fmt.Errorf("%s (index %d)", schemas.InvalidFallbackEntryError, i)
 					}
 					g.logger.Warn("dropping invalid fallback string at index %d: %q", i, fallbackStr)
 					continue
@@ -469,7 +463,7 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 				fallback, ok := fallbacksField.Index(i).Interface().(schemas.Fallback)
 				if !ok {
 					if fallbackValidationMode == schemas.FallbackValidationStrict {
-						return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+						return nil, fmt.Errorf("%s (index %d)", schemas.InvalidFallbackEntryError, i)
 					}
 					g.logger.Warn("dropping non-Fallback element at index %d in fallbacks slice", i)
 					continue
@@ -480,12 +474,12 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 		}
 	case reflect.String:
 		// Single string case - treat as one fallback
-		provider, model := schemas.ParseModelString(fallbacksField.String(), defaultProvider)
+		provider, model := schemas.ParseModelString(strings.TrimSpace(fallbacksField.String()), defaultProvider)
 		if provider != "" && model != "" {
 			return []schemas.Fallback{{Provider: provider, Model: model}}, nil
 		}
 		if fallbackValidationMode == schemas.FallbackValidationStrict {
-			return nil, fmt.Errorf("%s (index 0)", invalidFallbackEntryError)
+			return nil, fmt.Errorf("%s (index 0)", schemas.InvalidFallbackEntryError)
 		}
 		return nil, nil
 	}
