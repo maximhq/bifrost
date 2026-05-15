@@ -260,6 +260,28 @@ func TestPrepareImageEditRequest_AcceptsObjectFallbacks(t *testing.T) {
 	}
 }
 
+func TestPrepareImageEditRequest_AcceptsSingleObjectFallback(t *testing.T) {
+	ctx := buildMultipartImageRequestCtx(t, "/v1/images/edits", map[string]string{
+		"model":     "openai/gpt-image-1",
+		"prompt":    "edit this",
+		"fallbacks": `{"provider":"bedrock","model":"us.anthropic.claude-3-5-sonnet-20241022-v2:0","params":{"reasoning_effort":"high"}}`,
+	})
+
+	_, bifrostReq, err := prepareImageEditRequest(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected multipart single object fallback to parse successfully, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Provider != "bedrock" {
+		t.Fatalf("expected fallback provider bedrock, got %s", bifrostReq.Fallbacks[0].Provider)
+	}
+	if bifrostReq.Fallbacks[0].Params["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", bifrostReq.Fallbacks[0].Params["reasoning_effort"])
+	}
+}
+
 func TestPrepareImageEditRequest_StringFallbacksRemainSupported(t *testing.T) {
 	ctx := buildMultipartImageRequestCtx(t, "/v1/images/edits", map[string]string{
 		"model":     "openai/gpt-image-1",
@@ -300,6 +322,27 @@ func TestPrepareImageVariationRequest_AcceptsObjectFallbacks(t *testing.T) {
 	}
 	if bifrostReq.Fallbacks[0].Params["thinking_budget"] != float64(2048) {
 		t.Fatalf("expected fallback thinking_budget=2048, got %#v", bifrostReq.Fallbacks[0].Params["thinking_budget"])
+	}
+}
+
+func TestPrepareImageVariationRequest_AcceptsSingleObjectFallback(t *testing.T) {
+	ctx := buildMultipartImageRequestCtx(t, "/v1/images/variations", map[string]string{
+		"model":     "openai/gpt-image-1",
+		"fallbacks": `{"provider":"bedrock","model":"us.anthropic.claude-3-5-sonnet-20241022-v2:0","params":{"reasoning_effort":"high"}}`,
+	})
+
+	bifrostReq, err := prepareImageVariationRequest(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected multipart single object fallback to parse successfully, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Provider != "bedrock" {
+		t.Fatalf("expected fallback provider bedrock, got %s", bifrostReq.Fallbacks[0].Provider)
+	}
+	if bifrostReq.Fallbacks[0].Params["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", bifrostReq.Fallbacks[0].Params["reasoning_effort"])
 	}
 }
 
@@ -393,6 +436,27 @@ func TestPrepareTranscriptionRequest_AcceptsObjectFallbacks(t *testing.T) {
 	}
 	if bifrostReq.Fallbacks[0].Params["thinking_budget"] != float64(2048) {
 		t.Fatalf("expected fallback thinking_budget=2048, got %#v", bifrostReq.Fallbacks[0].Params["thinking_budget"])
+	}
+}
+
+func TestPrepareTranscriptionRequest_AcceptsSingleObjectFallback(t *testing.T) {
+	ctx := buildMultipartTranscriptionRequestCtx(t, map[string]string{
+		"model":     "openai/gpt-4o-transcribe",
+		"fallbacks": `{"provider":"bedrock","model":"us.anthropic.claude-3-5-sonnet-20241022-v2:0","params":{"reasoning_effort":"high"}}`,
+	})
+
+	bifrostReq, _, err := prepareTranscriptionRequest(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected multipart single object transcription fallback to parse successfully, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Provider != "bedrock" {
+		t.Fatalf("expected fallback provider bedrock, got %s", bifrostReq.Fallbacks[0].Provider)
+	}
+	if bifrostReq.Fallbacks[0].Params["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", bifrostReq.Fallbacks[0].Params["reasoning_effort"])
 	}
 }
 

@@ -723,7 +723,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				// Use default JSON parsing
 				rawBody = ctx.Request.Body()
 				if len(rawBody) > 0 {
-					if err := parseJSONRequestBody(rawBody, req); err != nil {
+				if err := parseJSONRequestBody(rawBody, req); err != nil {
 						ctx.SetConnectionClose()
 						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, "Invalid JSON", fasthttp.StatusBadRequest))
 						return
@@ -912,7 +912,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		// Extract and parse fallbacks from the request if present
-		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
+		if err := g.extractAndParseFallbacks(req, bifrostReq, rawBody); err != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}

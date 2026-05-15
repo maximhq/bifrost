@@ -4427,6 +4427,7 @@ type fallbackParamsTypeConstraint interface {
 		*schemas.ResponsesParameters |
 		*schemas.EmbeddingParameters |
 		*schemas.RerankParameters |
+		*schemas.OCRParameters |
 		*schemas.SpeechParameters |
 		*schemas.TranscriptionParameters |
 		*schemas.ImageGenerationParameters |
@@ -4457,10 +4458,10 @@ type fallbackParamsTypeConstraint interface {
 //     Future work could isolate fallback params into a separate namespace to
 //     eliminate this risk entirely.
 //
-// Deterministic ordering is required because downstream prompt-caching behavior
-// can be sensitive to serialized JSON key order. Base keys are copied in sorted
-// order first, then fallback keys are applied in sorted order and override base
-// values when keys overlap.
+// Base keys are copied first, then fallback keys are applied and override base
+// values when keys overlap. The sorted key walks only make the merge procedure
+// stable for debugging; Go maps do not preserve insertion order, so callers must
+// not rely on this helper for deterministic JSON/map ordering.
 func mergeFallbackParams(base map[string]interface{}, fallback map[string]any) map[string]interface{} {
 	if len(base) == 0 && len(fallback) == 0 {
 		return nil
@@ -4536,6 +4537,10 @@ func applyFallbackParams[T fallbackParamsTypeConstraint](params T, fallbackParam
 		next := cloneOrZero(p)
 		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
 		return any(next).(T)
+	case *schemas.OCRParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
 	case *schemas.SpeechParameters:
 		next := cloneOrZero(p)
 		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
@@ -4578,6 +4583,8 @@ func extraParamsFromRequest(req *schemas.BifrostRequest) map[string]interface{} 
 		return req.EmbeddingRequest.Params.ExtraParams
 	case req.RerankRequest != nil && req.RerankRequest.Params != nil:
 		return req.RerankRequest.Params.ExtraParams
+	case req.OCRRequest != nil && req.OCRRequest.Params != nil:
+		return req.OCRRequest.Params.ExtraParams
 	case req.SpeechRequest != nil && req.SpeechRequest.Params != nil:
 		return req.SpeechRequest.Params.ExtraParams
 	case req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil:
@@ -4689,6 +4696,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.OCRRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.OCRRequest = &tmp
 	}
 

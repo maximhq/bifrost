@@ -647,7 +647,7 @@ func fallbackStringsToInput(fallbackStrings []string) (FallbacksInput, error) {
 func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
 	if len(values) == 1 {
 		trimmed := strings.TrimSpace(values[0])
-		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+		if strings.HasPrefix(trimmed, "[") {
 			var parsed FallbacksInput
 			// Defer to FallbacksInput.UnmarshalJSON so JSON-encoded multipart
 			// fallbacks share the exact same lenient/strict semantics as the
@@ -657,6 +657,17 @@ func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
 				return nil, err
 			}
 			return parsed, nil
+		}
+		if strings.HasPrefix(trimmed, "{") {
+			var fallback schemas.Fallback
+			if err := sonic.Unmarshal([]byte(trimmed), &fallback); err != nil {
+				return nil, err
+			}
+			parsed, err := schemas.NormalizeFallbacks([]schemas.Fallback{fallback}, fallbackValidationMode, logger)
+			if err != nil {
+				return nil, err
+			}
+			return FallbacksInput(parsed), nil
 		}
 	}
 

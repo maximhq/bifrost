@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -61,6 +62,39 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 			Error:   err,
 		},
 	}
+}
+
+func stripJSONField(body []byte, field string) ([]byte, bool, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, false, err
+	}
+	if _, ok := envelope[field]; !ok {
+		return nil, false, nil
+	}
+	delete(envelope, field)
+	stripped, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, false, err
+	}
+	return stripped, true, nil
+}
+
+func parseDefaultJSONRequest(body []byte, req interface{}) error {
+	if err := sonic.Unmarshal(body, req); err != nil {
+		// Some real provider-compatible request structs still model fallbacks as
+		// []string for provider SDK parity. Object-form fallbacks are Bifrost
+		// metadata, so strip that field for request parsing and let the router
+		// parse it from the original raw body under strict validation.
+		stripped, ok, stripErr := stripJSONField(body, "fallbacks")
+		if stripErr != nil || !ok {
+			return err
+		}
+		if retryErr := sonic.Unmarshal(stripped, req); retryErr != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // safeGetRequestType safely obtains the request type from a BifrostStreamChunk chunk.
@@ -341,13 +375,23 @@ func (g *GenericRouter) streamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx
 }
 
 // extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
-func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
+func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest, rawBodies ...[]byte) error {
 	provider, _, _ := bifrostReq.GetRequestFields()
 
 	// Check if the request has a fallbacks field ([]string or []schemas.Fallback)
 	fallbacks, err := g.extractFallbacksFromRequest(req, provider)
 	if err != nil {
 		return fmt.Errorf("failed to extract fallbacks: %w", err)
+	}
+	if len(fallbacks) == 0 && len(rawBodies) > 0 && len(rawBodies[0]) > 0 {
+		var found bool
+		fallbacks, found, err = g.extractFallbacksFromRawJSON(rawBodies[0], provider)
+		if err != nil {
+			return fmt.Errorf("failed to extract fallbacks: %w", err)
+		}
+		if !found {
+			return nil
+		}
 	}
 
 	if len(fallbacks) == 0 {
@@ -396,6 +440,65 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 	return nil
 }
 
+func (g *GenericRouter) fallbackStringsToFallbacksWithDefault(fallbackStrings []string, defaultProvider schemas.ModelProvider) ([]schemas.Fallback, error) {
+	if len(fallbackStrings) == 0 {
+		return nil, nil
+	}
+
+	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
+	for i, raw := range fallbackStrings {
+		fallbackStr := strings.TrimSpace(raw)
+		provider, model := schemas.ParseModelString(fallbackStr, defaultProvider)
+		if provider == "" || model == "" {
+			if fallbackValidationMode == schemas.FallbackValidationStrict {
+				return nil, fmt.Errorf("%s (index %d)", schemas.InvalidFallbackEntryError, i)
+			}
+			g.logger.Warn("dropping invalid fallback string at index %d: %q", i, fallbackStr)
+			continue
+		}
+		fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
+	}
+	return fallbacks, nil
+}
+
+func (g *GenericRouter) extractFallbacksFromRawJSON(body []byte, defaultProvider schemas.ModelProvider) ([]schemas.Fallback, bool, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, false, nil
+	}
+	rawFallbacks, ok := envelope["fallbacks"]
+	if !ok {
+		return nil, false, nil
+	}
+
+	trimmed := bytes.TrimSpace(rawFallbacks)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil, true, nil
+	}
+
+	switch trimmed[0] {
+	case '[':
+		var fallbackStrings []string
+		if err := sonic.Unmarshal(trimmed, &fallbackStrings); err == nil {
+			fallbacks, parseErr := g.fallbackStringsToFallbacksWithDefault(fallbackStrings, defaultProvider)
+			return fallbacks, true, parseErr
+		}
+		var fallbackObjects []schemas.Fallback
+		if err := sonic.Unmarshal(trimmed, &fallbackObjects); err == nil {
+			fallbacks, parseErr := schemas.NormalizeFallbacks(fallbackObjects, fallbackValidationMode, g.logger)
+			return fallbacks, true, parseErr
+		}
+	case '"':
+		var fallbackString string
+		if err := sonic.Unmarshal(trimmed, &fallbackString); err == nil {
+			fallbacks, parseErr := g.fallbackStringsToFallbacksWithDefault([]string{fallbackString}, defaultProvider)
+			return fallbacks, true, parseErr
+		}
+	}
+
+	return nil, true, fmt.Errorf("invalid fallbacks format: expected string, array of strings, or array of fallback objects")
+}
+
 // extractFallbacksFromRequest uses reflection to extract fallbacks field from any request type
 func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProvider schemas.ModelProvider) ([]schemas.Fallback, error) {
 	if req == nil {
@@ -412,6 +515,10 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 		return nil, nil // Not a struct, no fallbacks
 	}
 
+	// Real SDK-compatible request structs use an exported Fallbacks field.
+	// Looking it up explicitly keeps fallback extraction active for those
+	// structs; the JSON-tag fallback below covers integrations that expose the
+	// wire field under a different Go name.
 	fallbacksField := reqValue.FieldByName("Fallbacks")
 	if !fallbacksField.IsValid() {
 		// Some integrations may expose the field under a different Go name, so
@@ -440,20 +547,11 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProv
 			// intentionally different from the HTTP transport, which has no
 			// implicit provider. We still honour the configured validation
 			// mode: lenient logs and drops malformed entries; strict rejects.
-			fallbacks := make([]schemas.Fallback, 0, fallbacksField.Len())
+			fallbackStrings := make([]string, 0, fallbacksField.Len())
 			for i := 0; i < fallbacksField.Len(); i++ {
-				fallbackStr := strings.TrimSpace(fallbacksField.Index(i).String())
-				provider, model := schemas.ParseModelString(fallbackStr, defaultProvider)
-				if provider == "" || model == "" {
-					if fallbackValidationMode == schemas.FallbackValidationStrict {
-						return nil, fmt.Errorf("%s (index %d)", schemas.InvalidFallbackEntryError, i)
-					}
-					g.logger.Warn("dropping invalid fallback string at index %d: %q", i, fallbackStr)
-					continue
-				}
-				fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
+				fallbackStrings = append(fallbackStrings, fallbacksField.Index(i).String())
 			}
-			return fallbacks, nil
+			return g.fallbackStringsToFallbacksWithDefault(fallbackStrings, defaultProvider)
 		}
 
 		fallbackType := reflect.TypeOf(schemas.Fallback{})

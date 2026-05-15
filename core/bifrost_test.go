@@ -1167,6 +1167,118 @@ func TestPrepareFallbackRequest_ImageVariationParamsPropagation(t *testing.T) {
 	}
 }
 
+func TestPrepareFallbackRequest_OCRParamsPropagation(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.Mistral, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	docURL := "https://example.com/doc.pdf"
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.OCRRequest,
+		OCRRequest: &schemas.BifrostOCRRequest{
+			Provider: schemas.Mistral,
+			Model:    "mistral-ocr-latest",
+			Document: schemas.OCRDocument{
+				Type:        schemas.OCRDocumentTypeDocumentURL,
+				DocumentURL: &docURL,
+			},
+			Params: &schemas.OCRParameters{
+				ExtraParams: map[string]interface{}{
+					"base_param":  "keep-me",
+					"image_limit": 1,
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"image_limit":      4,
+			"reasoning_effort": "high",
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.OCRRequest == nil || fallbackReq.OCRRequest.Params == nil {
+		t.Fatal("expected fallback OCR request with params")
+	}
+	if fallbackReq.OCRRequest.Provider != schemas.Bedrock {
+		t.Fatalf("expected fallback provider %s, got %s", schemas.Bedrock, fallbackReq.OCRRequest.Provider)
+	}
+	if fallbackReq.OCRRequest.Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", fallbackReq.OCRRequest.Model)
+	}
+
+	extra := fallbackReq.OCRRequest.Params.ExtraParams
+	if extra["image_limit"] != 4 {
+		t.Fatalf("expected image_limit override to 4, got %#v", extra["image_limit"])
+	}
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param to be preserved, got %#v", extra["base_param"])
+	}
+
+	if primaryReq.OCRRequest.Params.ExtraParams["image_limit"] != 1 {
+		t.Fatalf("expected primary OCR params to remain unchanged, got %#v", primaryReq.OCRRequest.Params.ExtraParams["image_limit"])
+	}
+	if _, exists := primaryReq.OCRRequest.Params.ExtraParams["reasoning_effort"]; exists {
+		t.Fatal("expected primary OCR params to not receive fallback-only reasoning_effort")
+	}
+}
+
+func TestPrepareFallbackRequest_CountTokensParamsPropagation(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.CountTokensRequest,
+		CountTokensRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params: &schemas.ResponsesParameters{
+				ExtraParams: map[string]interface{}{
+					"base_param":       "keep-me",
+					"reasoning_effort": "low",
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+			"thinking_budget":  1024,
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.CountTokensRequest == nil || fallbackReq.CountTokensRequest.Params == nil {
+		t.Fatal("expected fallback count tokens request with params")
+	}
+	extra := fallbackReq.CountTokensRequest.Params.ExtraParams
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort override to high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["thinking_budget"] != 1024 {
+		t.Fatalf("expected thinking_budget=1024, got %#v", extra["thinking_budget"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param to be preserved, got %#v", extra["base_param"])
+	}
+	if primaryReq.CountTokensRequest.Params.ExtraParams["reasoning_effort"] != "low" {
+		t.Fatalf("expected primary count tokens params to remain unchanged, got %#v", primaryReq.CountTokensRequest.Params.ExtraParams["reasoning_effort"])
+	}
+}
+
 // Test selectKeyFromProviderForModel with session stickiness
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()

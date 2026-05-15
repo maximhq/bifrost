@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -420,6 +421,29 @@ func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
 		assert.Equal(t, "us.anthropic.claude-3-5-sonnet-20241022-v2:0", bifrostReq.ChatRequest.Fallbacks[0].Model)
 	})
 
+	t.Run("bare model string fallback uses default provider", func(t *testing.T) {
+		type reqWithStringFallbacks struct {
+			Fallbacks []string `json:"fallbacks"`
+		}
+
+		router := newTestGenericRouter()
+		bifrostReq := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+			},
+		}
+
+		err := router.extractAndParseFallbacks(reqWithStringFallbacks{
+			Fallbacks: []string{"gpt-4.1-mini"},
+		}, bifrostReq)
+		require.NoError(t, err)
+		require.Len(t, bifrostReq.ChatRequest.Fallbacks, 1)
+		assert.Equal(t, schemas.OpenAI, bifrostReq.ChatRequest.Fallbacks[0].Provider)
+		assert.Equal(t, "gpt-4.1-mini", bifrostReq.ChatRequest.Fallbacks[0].Model)
+	})
+
 	t.Run("object fallbacks preserve params", func(t *testing.T) {
 		type reqWithObjectFallbacks struct {
 			Fallbacks []schemas.Fallback `json:"fallbacks"`
@@ -547,6 +571,39 @@ func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, bifrostReq.ChatRequest.Fallbacks)
 	})
+}
+
+func TestExtractAndParseFallbacks_RealOpenAIChatRequestObjectFallbacks(t *testing.T) {
+	rawBody := []byte(`{
+		"model": "gpt-4o-mini",
+		"messages": [{"role": "user", "content": "hello"}],
+		"fallbacks": [
+			{
+				"provider": "bedrock",
+				"model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+				"params": {"reasoning_effort": "high"}
+			}
+		]
+	}`)
+
+	req := &openai.OpenAIChatRequest{}
+	require.NoError(t, parseDefaultJSONRequest(rawBody, req))
+
+	router := newTestGenericRouter()
+	bifrostReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+		},
+	}
+
+	err := router.extractAndParseFallbacks(req, bifrostReq, rawBody)
+	require.NoError(t, err)
+	require.Len(t, bifrostReq.ChatRequest.Fallbacks, 1)
+	assert.Equal(t, schemas.Bedrock, bifrostReq.ChatRequest.Fallbacks[0].Provider)
+	assert.Equal(t, "us.anthropic.claude-3-5-sonnet-20241022-v2:0", bifrostReq.ChatRequest.Fallbacks[0].Model)
+	assert.Equal(t, "high", bifrostReq.ChatRequest.Fallbacks[0].Params["reasoning_effort"])
 }
 
 // TestNormalizeFallbacks_StrictMode locks in the strict-mode contract used by
