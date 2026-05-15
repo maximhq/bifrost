@@ -1263,6 +1263,10 @@ func IsNovaModel(model string) bool {
 	return strings.Contains(model, "nova")
 }
 
+func IsNova2Model(model string) bool {
+	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
