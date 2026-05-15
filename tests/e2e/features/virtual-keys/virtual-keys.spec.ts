@@ -104,9 +104,9 @@ test.describe('Virtual Keys', () => {
   })
 
   test.describe('Virtual Key with Budget', () => {
-    test('should create virtual key with small budget', async ({ virtualKeysPage }) => {
-      const vkData = createVirtualKeyWithBudget(SAMPLE_BUDGETS.small, {
-        name: `Small Budget VK ${Date.now()}`,
+    test('should create virtual key with daily budget', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithBudget([SAMPLE_BUDGETS.daily], {
+        name: `Daily Budget VK ${Date.now()}`,
       })
 
       createdVKs.push(vkData.name)
@@ -118,14 +118,14 @@ test.describe('Virtual Keys', () => {
       // Verify budget was saved correctly
       await virtualKeysPage.viewVirtualKey(vkData.name)
       await virtualKeysPage.waitForSheetAnimation()
-      const budgetInput = virtualKeysPage.page.locator('#budgetMaxLimit')
-      await expect(budgetInput).toHaveValue(String(SAMPLE_BUDGETS.small.maxLimit))
+      const amountInput = virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')
+      await expect(amountInput).toHaveValue(String(SAMPLE_BUDGETS.daily.maxLimit))
       await virtualKeysPage.closeSheet()
     })
 
-    test('should create virtual key with medium budget', async ({ virtualKeysPage }) => {
-      const vkData = createVirtualKeyWithBudget(SAMPLE_BUDGETS.medium, {
-        name: `Medium Budget VK ${Date.now()}`,
+    test('should create virtual key with every-minute budget', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithBudget([SAMPLE_BUDGETS.everyMinute], {
+        name: `Minute Budget VK ${Date.now()}`,
       })
 
       createdVKs.push(vkData.name)
@@ -133,18 +133,32 @@ test.describe('Virtual Keys', () => {
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+
+      // Verify budget was saved correctly
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const amountInput = virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')
+      await expect(amountInput).toHaveValue(String(SAMPLE_BUDGETS.everyMinute.maxLimit))
+      await virtualKeysPage.closeSheet()
     })
 
-    test('should create virtual key with daily budget', async ({ virtualKeysPage }) => {
-      const vkData = createVirtualKeyWithBudget(SAMPLE_BUDGETS.daily, {
-        name: `Daily Budget VK ${Date.now()}`,
-      })
+    test('should create virtual key with multiple budgets', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithBudget(
+        [SAMPLE_BUDGETS.daily, SAMPLE_BUDGETS.everyMinute],
+        { name: `Multi Budget VK ${Date.now()}` }
+      )
 
       createdVKs.push(vkData.name)
       await virtualKeysPage.createVirtualKey(vkData)
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      await expect(virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')).toHaveValue(String(SAMPLE_BUDGETS.daily.maxLimit))
+      await expect(virtualKeysPage.page.getByTestId('vk-budget-lines-amount-1')).toHaveValue(String(SAMPLE_BUDGETS.everyMinute.maxLimit))
+      await virtualKeysPage.closeSheet()
     })
   })
 
@@ -213,7 +227,7 @@ test.describe('Virtual Keys', () => {
         name: `Full Config VK ${Date.now()}`,
         description: 'Virtual key with all configurations',
         isActive: true,
-        budget: SAMPLE_BUDGETS.medium,
+        budgets: [SAMPLE_BUDGETS.medium],
         rateLimit: SAMPLE_RATE_LIMITS.moderate,
       })
 
@@ -455,8 +469,9 @@ test.describe('Form Validation', () => {
     // Fill name (required field)
     await virtualKeysPage.nameInput.fill(`Valid Budget Test ${Date.now()}`)
 
-    // Fill budget
-    const budgetInput = virtualKeysPage.page.locator('#budgetMaxLimit')
+    // Add a budget line and fill amount
+    await virtualKeysPage.page.getByTestId('vk-budget-lines-add-btn').click()
+    const budgetInput = virtualKeysPage.page.getByTestId('vk-budget-lines-amount-0')
     await expect(budgetInput).toBeVisible({ timeout: 5000 })
     await budgetInput.fill('100')
 
@@ -539,7 +554,7 @@ test.describe('Provider Management', () => {
     const vkName = `Provider Budget VK ${Date.now()}`
     const vkData = createVirtualKeyWithProvider('openai', {
       name: vkName,
-      budget: SAMPLE_BUDGETS.small,
+      budgets: [SAMPLE_BUDGETS.small],
     })
 
     providerVKs.push(vkName)
@@ -547,7 +562,7 @@ test.describe('Provider Management', () => {
 
     // Edit the virtual key
     await virtualKeysPage.editVirtualKey(vkName, {
-      budget: SAMPLE_BUDGETS.large,
+      budgets: [SAMPLE_BUDGETS.large],
     })
 
     // Verify it still exists
