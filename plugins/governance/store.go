@@ -1373,9 +1373,17 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 		if !ok || budget == nil {
 			return true
 		}
+		// Find if the budget is calendar aligned on the virtualkey attached to this budget
+		calendarAligned := false
+		if budget.VirtualKeyID != nil {
+			virtualKey, ok := gs.virtualKeys.Load(*budget.VirtualKeyID)
+			if ok {
+				calendarAligned = virtualKey.(*configstoreTables.TableVirtualKey).CalendarAligned
+			}
+		}
 		var shouldReset bool
 		var newLastReset time.Time
-		if budget.CalendarAligned {
+		if calendarAligned {
 			currentPeriodStart := configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
 			if currentPeriodStart.After(budget.LastReset) {
 				shouldReset = true
