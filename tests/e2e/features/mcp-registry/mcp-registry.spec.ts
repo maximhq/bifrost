@@ -2,6 +2,9 @@ import { expect, test } from '../../core/fixtures/base.fixture'
 import {
     createCodeModeClientData,
     createHTTPClientData,
+    createHeadersAuthClientData,
+    createOAuthClientData,
+    createPerUserOAuthClientData,
     createSSEClientData,
     createSTDIOClientData
 } from './mcp-registry.data'
@@ -309,20 +312,6 @@ test.describe('MCP Registry', () => {
   })
 
   test.describe('Form Validation', () => {
-    test('should require name for client', async ({ mcpRegistryPage }) => {
-      await mcpRegistryPage.createBtn.click()
-      await expect(mcpRegistryPage.sheet).toBeVisible()
-
-      // Clear name field (should be empty by default)
-      await mcpRegistryPage.nameInput.clear()
-
-      // Save button should be disabled when name is empty
-      const saveBtn = mcpRegistryPage.saveBtn
-      await expect(saveBtn).toBeDisabled()
-
-      await mcpRegistryPage.cancelCreation()
-    })
-
     test('should validate name format', async ({ mcpRegistryPage }) => {
       await mcpRegistryPage.createBtn.click()
       await expect(mcpRegistryPage.sheet).toBeVisible()
@@ -333,9 +322,11 @@ test.describe('MCP Registry', () => {
       // Fill connection URL to satisfy other validation
       await mcpRegistryPage.connectionUrlInput.fill('http://localhost:3001')
 
-      // Save button should be disabled due to validation error
-      const saveBtn = mcpRegistryPage.saveBtn
-      await expect(saveBtn).toBeDisabled()
+      // Complex forms keep the action enabled and show exact inline errors on submit.
+      await mcpRegistryPage.saveBtn.click()
+      await expect(
+        mcpRegistryPage.page.getByText('Server name can only contain letters, numbers, and underscores')
+      ).toBeVisible()
 
       await mcpRegistryPage.cancelCreation()
     })
@@ -347,11 +338,135 @@ test.describe('MCP Registry', () => {
       // Fill valid name
       await mcpRegistryPage.nameInput.fill(`valid_name_${Date.now()}`)
 
-      // Leave connection URL empty - save should be disabled
-      const saveBtn = mcpRegistryPage.saveBtn
-      await expect(saveBtn).toBeDisabled()
+      // Leave connection URL empty, submit, and assert the highlighted requirement.
+      await mcpRegistryPage.saveBtn.click()
+      await expect(mcpRegistryPage.page.getByText('Connection URL is required')).toBeVisible()
 
       await mcpRegistryPage.cancelCreation()
+    })
+  })
+
+  test.describe('MCP Header Authentication', () => {
+    test('should display header fields when headers auth type is selected', async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.createBtn.click()
+      await expect(mcpRegistryPage.sheet).toBeVisible()
+
+      await mcpRegistryPage.selectAuthType('headers')
+
+      const headersTable = mcpRegistryPage.page.locator('[data-testid="mcp-headers-table"]')
+      await expect(headersTable).toBeVisible()
+
+      await mcpRegistryPage.cancelCreation()
+    })
+
+    test('should create MCP client with header auth and connect to auth-demo-server', async ({ mcpRegistryPage }) => {
+      const clientData = createHeadersAuthClientData()
+      createdClients.push(clientData.name)
+
+      const created = await mcpRegistryPage.createClient(clientData)
+      expect(created).toBe(true)
+
+      const exists = await mcpRegistryPage.clientExists(clientData.name)
+      expect(exists).toBe(true)
+
+      // Server requires X-API-Key — should connect and expose tools (public_info, secret_data)
+      await mcpRegistryPage.viewClientDetails(clientData.name)
+      const toolsCount = await mcpRegistryPage.getToolsCount()
+      expect(toolsCount).toBeGreaterThanOrEqual(2)
+
+      await mcpRegistryPage.closeDetailSheet()
+    })
+  })
+
+  test.describe('MCP OAuth 2.0', () => {
+    test('should display OAuth fields when OAuth 2.0 auth type is selected', async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.createBtn.click()
+      await expect(mcpRegistryPage.sheet).toBeVisible()
+
+      await mcpRegistryPage.selectAuthType('oauth')
+
+      // All fields are optional — auto-discovered from server metadata
+      await expect(mcpRegistryPage.oauthClientIdInput).toBeVisible()
+      await expect(mcpRegistryPage.oauthClientSecretInput).toBeVisible()
+      await expect(mcpRegistryPage.oauthAuthorizeUrlInput).toBeVisible()
+      await expect(mcpRegistryPage.oauthTokenUrlInput).toBeVisible()
+
+      await mcpRegistryPage.cancelCreation()
+    })
+
+    test('should create OAuth 2.0 client and complete authorization flow', async ({ mcpRegistryPage }) => {
+      const clientData = createOAuthClientData()
+      createdClients.push(clientData.name)
+
+      const created = await mcpRegistryPage.createClient(clientData)
+      expect(created).toBe(true)
+
+      // OAuth Authorization dialog appears — click "Open Authorization Window"
+      const openWindowBtn = mcpRegistryPage.page.locator('[data-testid="oauth-open-window-btn"]')
+      await expect(openWindowBtn).toBeVisible({ timeout: 10000 })
+
+      const [popup] = await Promise.all([
+        mcpRegistryPage.page.waitForEvent('popup'),
+        openWindowBtn.click(),
+      ])
+
+      // Complete login in popup (oauth-demo-server login form)
+      await popup.waitForLoadState()
+      await popup.locator('#user').fill('demo-user')
+      await popup.getByRole('button', { name: /Sign in/i }).click()
+
+      // Popup redirects to Bifrost callback then closes
+      await popup.waitForEvent('close', { timeout: 15000 }).catch(() => {})
+
+      // Client should now be connected and visible in table
+      const exists = await mcpRegistryPage.clientExists(clientData.name)
+      expect(exists).toBe(true)
+    })
+  })
+
+  test.describe('MCP Per-User OAuth 2.0', () => {
+    test('should display OAuth fields when Per-User OAuth 2.0 auth type is selected', async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.createBtn.click()
+      await expect(mcpRegistryPage.sheet).toBeVisible()
+
+      await mcpRegistryPage.selectAuthType('per_user_oauth')
+
+      await expect(mcpRegistryPage.oauthClientIdInput).toBeVisible()
+      await expect(mcpRegistryPage.oauthClientSecretInput).toBeVisible()
+      await expect(mcpRegistryPage.oauthAuthorizeUrlInput).toBeVisible()
+      await expect(mcpRegistryPage.oauthTokenUrlInput).toBeVisible()
+
+      await mcpRegistryPage.cancelCreation()
+    })
+
+    test('should create Per-User OAuth 2.0 client and complete authorization flow', async ({ mcpRegistryPage }) => {
+      const clientData = createPerUserOAuthClientData()
+      createdClients.push(clientData.name)
+
+      const created = await mcpRegistryPage.createClient(clientData)
+      expect(created).toBe(true)
+
+      // "Test OAuth Configuration" dialog appears. Per-user OAuth opens the
+      // authorization popup directly from this confirmation click.
+      const confirmBtn = mcpRegistryPage.page.locator('[data-testid="per-user-oauth-confirm"]')
+      await expect(confirmBtn).toBeVisible({ timeout: 10000 })
+
+      const [popup] = await Promise.all([
+        mcpRegistryPage.page.waitForEvent('popup'),
+        confirmBtn.click(),
+      ])
+
+      // Complete login in popup (oauth-demo-server login form)
+      await popup.waitForLoadState()
+      await popup.locator('#user').fill('demo-user')
+      await popup.getByRole('button', { name: /Sign in/i }).click()
+
+      // Popup redirects to Bifrost callback then closes
+      await popup.waitForEvent('close', { timeout: 15000 }).catch(() => {})
+
+      // Client should be visible in table
+      const exists = await mcpRegistryPage.clientExists(clientData.name)
+      expect(exists).toBe(true)
     })
   })
 })
