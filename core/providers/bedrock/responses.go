@@ -844,17 +844,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 
 	case chunk.StopReason != nil:
 		// Stop reason - track it for the final response
-		var stopReason string
-		switch *chunk.StopReason {
-		case "tool_use":
-			stopReason = "tool_calls"
-		case "end_turn":
-			stopReason = "stop"
-		case "max_tokens":
-			stopReason = "length"
-		default:
-			stopReason = *chunk.StopReason
-		}
+		stopReason := convertBedrockStopReason(*chunk.StopReason)
 		state.StopReason = &stopReason
 		// Items should be closed explicitly when content blocks end
 		return nil, nil, false
@@ -2137,6 +2127,11 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 		bifrostResp.ServiceTier = &response.ServiceTier.Type
 	}
 
+	if response.StopReason != "" {
+		stopReason := convertBedrockStopReason(response.StopReason)
+		bifrostResp.StopReason = &stopReason
+	}
+
 	return bifrostResp, nil
 }
 
@@ -2183,10 +2178,11 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 
 	bedrockResp.Output.Message = message
 
-	// Find stop reason from incomplete details or derive from response
-	// Priority: IncompleteDetails > tool_use detection > end_turn
+	// Derive stop reason: StopReason > IncompleteDetails > tool_use detection > end_turn
 	stopReason := "end_turn"
-	if bifrostResp.IncompleteDetails != nil {
+	if bifrostResp.StopReason != nil {
+		stopReason = convertBifrostToBedrockStopReason(*bifrostResp.StopReason)
+	} else if bifrostResp.IncompleteDetails != nil {
 		stopReason = bifrostResp.IncompleteDetails.Reason
 	} else if hasToolUse {
 		stopReason = "tool_use"

@@ -4069,9 +4069,9 @@ func TestBedrockStopReasonMapping(t *testing.T) {
 		{"MaxTokens", "max_tokens", "length"},
 		{"StopSequence", "stop_sequence", "stop"},
 		{"ToolUse", "tool_use", "tool_calls"},
-		{"GuardrailIntervened", "guardrail_intervened", "content_filter"},
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
 		{"ContentFiltered", "content_filtered", "content_filter"},
-		{"UnknownReason", "some_unknown_reason", "stop"},
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"}, // no clean mapping — passes through
 	}
 
 	for _, tt := range tests {
@@ -4100,6 +4100,116 @@ func TestBedrockStopReasonMapping(t *testing.T) {
 			require.NotNil(t, bifrostResp.Choices[0].FinishReason)
 			assert.Equal(t, tt.expectedBifrost, *bifrostResp.Choices[0].FinishReason,
 				"Bedrock stop reason %q should map to %q", tt.bedrockStopReason, tt.expectedBifrost)
+		})
+	}
+}
+
+// TestBedrockStopReasonMappingResponsesPath tests stop reason normalisation for
+// the Responses API path (BedrockConverseResponse.ToBifrostResponsesResponse).
+func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		bedrockReason   string
+		expectedBifrost string
+	}{
+		{"EndTurn", "end_turn", "stop"},
+		{"MaxTokens", "max_tokens", "length"},
+		{"StopSequence", "stop_sequence", "stop"},
+		{"ToolUse", "tool_use", "tool_calls"},
+		{"ContentFiltered", "content_filtered", "content_filter"},
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"},         // no clean mapping — passes through
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &bedrock.BedrockConverseResponse{
+				StopReason: tt.bedrockReason,
+				Output: &bedrock.BedrockConverseOutput{
+					Message: &bedrock.BedrockMessage{
+						Role: bedrock.BedrockMessageRoleAssistant,
+						Content: []bedrock.BedrockContentBlock{
+							{Text: schemas.Ptr("Response text")},
+						},
+					},
+				},
+			}
+
+			bifrostResp, err := response.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp)
+			require.NotNil(t, bifrostResp.StopReason, "StopReason should be set")
+			assert.Equal(t, tt.expectedBifrost, *bifrostResp.StopReason,
+				"Bedrock stop reason %q should map to %q in responses path", tt.bedrockReason, tt.expectedBifrost)
+		})
+	}
+}
+
+// TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
+// (BifrostResponsesResponse.StopReason → BedrockConverseResponse.StopReason).
+func TestBifrostToBedrockStopReasonReverseMapping(t *testing.T) {
+	t.Parallel()
+
+	textOutput := []schemas.ResponsesMessage{
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		stopReason     *string
+		incompleteDetails *schemas.ResponsesResponseIncompleteDetails
+		expectedBedrock string
+	}{
+		{"Stop", schemas.Ptr("stop"), nil, "end_turn"},
+		{"Length", schemas.Ptr("length"), nil, "max_tokens"},
+		{"ToolCalls", schemas.Ptr("tool_calls"), nil, "tool_use"},
+		{"ContentFilter", schemas.Ptr("content_filter"), nil, "content_filtered"},
+		{"GuardrailIntervened", schemas.Ptr("guardrail_intervened"), nil, "guardrail_intervened"}, // passes through
+		{"UnknownPassthrough", schemas.Ptr("some_unknown_reason"), nil, "some_unknown_reason"},    // passes through
+		{
+			// StopReason takes priority over IncompleteDetails
+			name:            "StopReasonOverridesIncompleteDetails",
+			stopReason:      schemas.Ptr("stop"),
+			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
+			expectedBedrock: "end_turn",
+		},
+		{
+			// IncompleteDetails is used when StopReason is nil
+			name:            "IncompleteDetailsFallback",
+			stopReason:      nil,
+			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
+			expectedBedrock: "max_tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &schemas.BifrostResponsesResponse{
+				Output:            textOutput,
+				StopReason:        tt.stopReason,
+				IncompleteDetails: tt.incompleteDetails,
+			}
+
+			actual, err := bedrock.ToBedrockConverseResponse(input)
+			require.NoError(t, err)
+			require.NotNil(t, actual)
+			assert.Equal(t, tt.expectedBedrock, actual.StopReason,
+				"Bifrost stop reason %v should reverse-map to Bedrock %q", tt.stopReason, tt.expectedBedrock)
 		})
 	}
 }
