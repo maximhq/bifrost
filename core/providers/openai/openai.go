@@ -1347,7 +1347,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 		if isResponsesToChatCompletionsFallback {
 			if pendingFinalEvent != nil {
-				if usageSeen && pendingFinalEvent.Response != nil && pendingFinalEvent.Response.Usage == nil {
+				if usageSeen && pendingFinalEvent.Response != nil {
 					pendingFinalEvent.Response.Usage = usage.ToResponsesResponseUsage()
 				}
 				if sendBackRawRequest {
