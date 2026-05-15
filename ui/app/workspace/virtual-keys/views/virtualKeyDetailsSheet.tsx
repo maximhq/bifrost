@@ -9,6 +9,7 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
+import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import { calculateUsagePercentage, formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
 import { formatDistanceToNow } from "date-fns";
 import { Lock, Users } from "lucide-react";
@@ -224,7 +225,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																	<div className="text-muted-foreground flex items-center justify-between text-xs">
 																		<span>
 																			Resets {parseResetPeriod(b.reset_duration)}
-																			{virtualKey.calendar_aligned && " (calendar)"}
+																			{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
 																		</span>
 																		{b.last_reset ? (
 																			<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
@@ -253,7 +254,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																		format={(n) => n.toLocaleString()}
 																	/>
 																	<div className="text-muted-foreground flex items-center justify-between text-xs">
-																		<span>Resets {parseResetPeriod(config.rate_limit.token_reset_duration || "")}</span>
+																		<span>
+																				Resets {parseResetPeriod(config.rate_limit.token_reset_duration || "")}
+																				{virtualKey.calendar_aligned &&
+																					supportsCalendarAlignment(config.rate_limit.token_reset_duration || "") &&
+																					" (calendar)"}
+																			</span>
 																		{config.rate_limit.token_last_reset ? (
 																			<span>
 																				Last reset {formatDistanceToNow(new Date(config.rate_limit.token_last_reset), { addSuffix: true })}
@@ -273,7 +279,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																		format={(n) => n.toLocaleString()}
 																	/>
 																	<div className="text-muted-foreground flex items-center justify-between text-xs">
-																		<span>Resets {parseResetPeriod(config.rate_limit.request_reset_duration || "")}</span>
+																		<span>
+																				Resets {parseResetPeriod(config.rate_limit.request_reset_duration || "")}
+																				{virtualKey.calendar_aligned &&
+																					supportsCalendarAlignment(config.rate_limit.request_reset_duration || "") &&
+																					" (calendar)"}
+																			</span>
 																		{config.rate_limit.request_last_reset ? (
 																			<span>
 																				Last reset{" "}
@@ -365,7 +376,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 										<div className="text-muted-foreground flex items-center justify-between text-xs">
 											<span>
 												Resets {parseResetPeriod(b.reset_duration)}
-												{virtualKey.calendar_aligned && " (calendar)"}
+												{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
 											</span>
 											{b.last_reset ? <span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span> : null}
 										</div>
@@ -398,7 +409,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 											format={(n) => n.toLocaleString()}
 										/>
 										<div className="text-muted-foreground flex items-center justify-between text-xs">
-											<span>Resets {parseResetPeriod(displayRateLimit.token_reset_duration || "")}</span>
+											<span>
+												Resets {parseResetPeriod(displayRateLimit.token_reset_duration || "")}
+												{virtualKey.calendar_aligned &&
+													supportsCalendarAlignment(displayRateLimit.token_reset_duration || "") &&
+													" (calendar)"}
+											</span>
 											{displayRateLimit.token_last_reset ? (
 												<span>Last reset {formatDistanceToNow(new Date(displayRateLimit.token_last_reset), { addSuffix: true })}</span>
 											) : null}
@@ -416,7 +432,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 											format={(n) => n.toLocaleString()}
 										/>
 										<div className="text-muted-foreground flex items-center justify-between text-xs">
-											<span>Resets {parseResetPeriod(displayRateLimit.request_reset_duration || "")}</span>
+											<span>
+												Resets {parseResetPeriod(displayRateLimit.request_reset_duration || "")}
+												{virtualKey.calendar_aligned &&
+													supportsCalendarAlignment(displayRateLimit.request_reset_duration || "") &&
+													" (calendar)"}
+											</span>
 											{displayRateLimit.request_last_reset ? (
 												<span>Last reset {formatDistanceToNow(new Date(displayRateLimit.request_last_reset), { addSuffix: true })}</span>
 											) : null}

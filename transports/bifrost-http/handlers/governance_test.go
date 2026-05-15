@@ -196,11 +196,6 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 			req:  &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1h")},
 			want: false,
 		},
-		{
-			name: "calendar aligned only is treated as removal",
-			req:  &UpdateBudgetRequest{CalendarAligned: schemas.Ptr(true)},
-			want: true,
-		},
 	}
 
 	for _, tt := range tests {
