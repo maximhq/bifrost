@@ -89,7 +89,7 @@ func handleOpenAILargePayloadPassthrough(
 	// Error responses are always small — materialize stream body for error parsing
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		parsedErr := ParseOpenAIError(resp)
+		parsedErr := ParseOpenAIError(nil, resp)
 		fasthttp.ReleaseResponse(resp)
 		return nil, parsedErr, true
 	}

@@ -255,7 +255,7 @@ func TestHandleProviderAPIErrorWithHTML(t *testing.T) {
 			resp.SetBody(tt.body)
 
 			var errorResp map[string]interface{}
-			bifrostErr := HandleProviderAPIError(resp, &errorResp)
+			bifrostErr := HandleProviderAPIError(nil, resp, &errorResp)
 
 			if bifrostErr == nil {
 				t.Errorf("HandleProviderAPIError() returned nil error")

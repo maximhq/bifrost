@@ -402,7 +402,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, latency, providerResponseHeaders, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, latency, providerResponseHeaders, parseBedrockHTTPError(jsonData, resp.StatusCode, resp.Header, body)
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -492,7 +492,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, parseBedrockHTTPError(jsonData, resp.StatusCode, resp.Header, body)
 	}
 
 	return resp, nil
@@ -751,7 +751,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody)
+		return nil, parseBedrockHTTPError(nil, resp.StatusCode, resp.Header, responseBody)
 	}
 
 	// Parse Bedrock-specific response
@@ -2910,7 +2910,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, providerUtils.EnrichError(ctx, parseBedrockHTTPError(resp.StatusCode, resp.Header, body), jsonData, body, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseBedrockHTTPError(jsonData, resp.StatusCode, resp.Header, body), jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	var bedrockResp BedrockBatchJobResponse
@@ -3035,7 +3035,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, parseBedrockHTTPError(nil, resp.StatusCode, resp.Header, body)
 	}
 
 	var bedrockResp BedrockBatchJobListResponse
@@ -3217,7 +3217,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			lastErr = parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+			lastErr = parseBedrockHTTPError(nil, resp.StatusCode, resp.Header, body)
 			continue
 		}
 
@@ -3352,7 +3352,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			lastErr = parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+			lastErr = parseBedrockHTTPError(nil, resp.StatusCode, resp.Header, body)
 			continue
 		}
 

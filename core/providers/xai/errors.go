@@ -15,10 +15,10 @@ type XAIErrorResponse struct {
 // ParseXAIError parses xAI-specific error responses.
 // xAI returns errors in format: {"code": "...", "error": "..."}
 // Unlike OpenAI which uses: {"error": {"message": "...", "type": "...", "code": "..."}}
-func ParseXAIError(resp *fasthttp.Response) *schemas.BifrostError {
+func ParseXAIError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	// Try to parse xAI error format
 	var xaiErr XAIErrorResponse
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &xaiErr)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, resp, &xaiErr)
 
 	if bifrostErr == nil {
 		return nil

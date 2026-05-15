@@ -135,7 +135,7 @@ func listenToReplicateStreamURL(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, nil, parseReplicateError(resp.Body(), resp.StatusCode())
+		return nil, nil, parseReplicateError(nil, resp.Body(), resp.StatusCode())
 	}
 
 	return resp.BodyStream(), resp, nil

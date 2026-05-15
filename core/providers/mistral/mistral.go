@@ -104,7 +104,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := ParseMistralError(resp)
+		bifrostErr := ParseMistralError(nil, resp)
 		return nil, bifrostErr
 	}
 
@@ -319,7 +319,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, ParseMistralError(resp)
+		return nil, ParseMistralError(nil, resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -450,7 +450,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, ParseMistralError(resp)
+		return nil, ParseMistralError(nil, resp)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -666,7 +666,7 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, ParseMistralError(resp)
+		return nil, ParseMistralError(requestBody, resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)

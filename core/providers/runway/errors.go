@@ -9,10 +9,10 @@ import (
 )
 
 // parseRunwayError parses Runway API error responses and converts them to BifrostError.
-func parseRunwayError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseRunwayError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	// Parse as RunwayAPIError
 	var errorResp RunwayAPIError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, resp, &errorResp)
 
 	// Set error message if available
 	if errorResp.Error != "" {

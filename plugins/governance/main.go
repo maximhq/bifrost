@@ -1178,8 +1178,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		} else {
 			// VK was provided but does not exist in the store — reject regardless of mandatory setting
 			return nil, &schemas.BifrostError{
-				Type:       bifrost.Ptr("virtual_key_not_found"),
-				StatusCode: bifrost.Ptr(401),
+				Type:       new("virtual_key_not_found"),
+				StatusCode: new(401),
 				Error: &schemas.ErrorField{
 					Message: "virtual key not found. The provided virtual key does not exist or has been revoked.",
 				},

@@ -152,7 +152,7 @@ func createPrediction(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
-		return nil, nil, latency, providerResponseHeaders, parseReplicateError(resp.Body(), resp.StatusCode())
+		return nil, nil, latency, providerResponseHeaders, parseReplicateError(jsonBody, resp.Body(), resp.StatusCode())
 	}
 
 	// Parse response
@@ -207,7 +207,7 @@ func getPrediction(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
-		return nil, nil, providerResponseHeaders, parseReplicateError(resp.Body(), resp.StatusCode())
+		return nil, nil, providerResponseHeaders, parseReplicateError(nil, resp.Body(), resp.StatusCode())
 	}
 
 	// Parse response
@@ -335,7 +335,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			errorResponse := parseReplicateError(resp.Body(), resp.StatusCode())
+			errorResponse := parseReplicateError(nil, resp.Body(), resp.StatusCode())
 			fasthttp.ReleaseResponse(resp)
 			return nil, errorResponse
 		}
@@ -1297,7 +1297,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		body := resp.Body()
-		return nil, providerUtils.EnrichError(ctx, parseReplicateError(body, resp.StatusCode()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseReplicateError(jsonData, body, resp.StatusCode()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -2618,7 +2618,7 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, providerUtils.EnrichError(
 			ctx,
-			parseReplicateError(resp.Body(), resp.StatusCode()),
+			parseReplicateError(nil, resp.Body(), resp.StatusCode()),
 			nil,
 			nil,
 			provider.sendBackRawRequest,
@@ -2892,7 +2892,7 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseReplicateError(resp.Body(), resp.StatusCode())
+		return nil, parseReplicateError(nil, resp.Body(), resp.StatusCode())
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2981,7 +2981,7 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseReplicateError(resp.Body(), resp.StatusCode())
+		return nil, parseReplicateError(nil, resp.Body(), resp.StatusCode())
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -3081,7 +3081,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
+			lastErr = parseReplicateError(nil, resp.Body(), resp.StatusCode())
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -3175,7 +3175,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
+			lastErr = parseReplicateError(nil, resp.Body(), resp.StatusCode())
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue

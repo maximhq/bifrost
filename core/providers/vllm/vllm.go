@@ -322,7 +322,7 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 	statusCode := resp.StatusCode()
 	if statusCode != fasthttp.StatusOK {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, nil, nil, rawErrBody, statusCode, latency, openai.ParseOpenAIError(resp)
+		return nil, nil, nil, rawErrBody, statusCode, latency, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -512,7 +512,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		// Check for HTTP errors
 		if resp.StatusCode() != fasthttp.StatusOK {
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-			return nil, openai.ParseOpenAIError(resp)
+			return nil, openai.ParseOpenAIError(nil, resp)
 		}
 
 		// Large payload streaming passthrough — pipe raw upstream SSE to client

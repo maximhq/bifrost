@@ -257,7 +257,7 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, providerResponseHeaders, parseHuggingFaceImageError(resp)
+		return nil, latency, providerResponseHeaders, parseHuggingFaceImageError(nil, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -315,7 +315,7 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 
 			if resp.StatusCode() != fasthttp.StatusOK {
 				var errorResp HuggingFaceHubError
-				bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+				bifrostErr := providerUtils.HandleProviderAPIError(nil, resp, &errorResp)
 				if bifrostErr.Error == nil {
 					bifrostErr.Error = &schemas.ErrorField{}
 				}
@@ -1087,7 +1087,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseHuggingFaceImageError(resp), jsonBody, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		return nil, providerUtils.EnrichError(ctx, parseHuggingFaceImageError(jsonBody, resp), jsonBody, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -1466,7 +1466,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseHuggingFaceImageError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseHuggingFaceImageError(jsonBody, resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client

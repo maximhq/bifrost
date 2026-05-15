@@ -1215,8 +1215,13 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 // HTML detection only runs if JSON parsing fails to avoid expensive regex operations
 // on responses that are almost certainly valid JSON. errorResp must be a pointer to
 // the target struct for unmarshaling.
-func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+func HandleProviderAPIError(requestBody []byte, resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
+
+	var rawRequest interface{}
+	if len(requestBody) > 0 {
+		rawRequest = CompactRawJSON(requestBody)
+	}
 
 	// Decode body
 	decodedBody, err := CheckAndDecodeBody(resp)
@@ -1238,6 +1243,7 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 				Message: err.Error(),
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawRequest:  rawRequest,
 				RawResponse: rawErrorResponse,
 			},
 		}
@@ -1277,6 +1283,7 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 				Message: errorMessage,
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawRequest:  rawRequest,
 				RawResponse: rawErrorResponse,
 			},
 		}
@@ -1290,6 +1297,7 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 			StatusCode:     &statusCode,
 			Error:          &schemas.ErrorField{},
 			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawRequest:  rawRequest,
 				RawResponse: rawErrorResponse,
 			},
 		}
@@ -1305,6 +1313,7 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 				Error:   errors.New(string(decodedBody)),
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawRequest:  rawRequest,
 				RawResponse: rawErrorResponse,
 			},
 		}
@@ -1319,6 +1328,7 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 			Message: message,
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
+			RawRequest:  rawRequest,
 			RawResponse: rawErrorResponse,
 		},
 	}
@@ -1338,17 +1348,20 @@ func EnrichError(
 		return bifrostErr
 	}
 
-	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
-		// Store as json.RawMessage to preserve exact JSON bytes (including key ordering).
-		// Compact to remove insignificant whitespace that would break SSE framing.
-		bifrostErr.ExtraFields.RawRequest = compactRawJSON(requestBody)
+	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		if len(requestBody) > 0 {
+			// Store as json.RawMessage to preserve exact JSON bytes (including key ordering).
+			// Compact to remove insignificant whitespace that would break SSE framing.
+			bifrostErr.ExtraFields.RawRequest = CompactRawJSON(requestBody)
+		}
+		// else: preserve any RawRequest already set by the parser (e.g., HandleProviderAPIError)
 	} else {
 		bifrostErr.ExtraFields.RawRequest = nil
 	}
 
 	if ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
 		if len(responseBody) > 0 {
-			bifrostErr.ExtraFields.RawResponse = compactRawJSON(responseBody)
+			bifrostErr.ExtraFields.RawResponse = CompactRawJSON(responseBody)
 		}
 	} else {
 		bifrostErr.ExtraFields.RawResponse = nil
@@ -1383,11 +1396,11 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 		// Previously this used sonic.Unmarshal into interface{} which created map[string]interface{}
 		// and destroyed key ordering in tool schemas and other order-sensitive structures.
 		// Compact to remove insignificant whitespace that would break SSE framing.
-		rawRequest = compactRawJSON(requestBody)
+		rawRequest = CompactRawJSON(requestBody)
 	}
 
 	if sendBackRawResponse {
-		rawResponse = compactRawJSON(responseBody)
+		rawResponse = CompactRawJSON(responseBody)
 	}
 
 	// Unmarshal the structured response
@@ -1420,10 +1433,14 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	return nil, nil, nil
 }
 
-// compactRawJSON removes insignificant whitespace from JSON bytes, returning a
+// CompactRawJSON removes insignificant whitespace from JSON bytes, returning a
 // json.RawMessage safe for SSE streaming (no literal newlines). Falls back to
 // the original bytes if compaction fails (e.g., invalid JSON).
-func compactRawJSON(data []byte) json.RawMessage {
+// Returns nil if data is empty.
+func CompactRawJSON(data []byte) json.RawMessage {
+	if len(data) == 0 {
+		return nil
+	}
 	var buf bytes.Buffer
 	if err := schemas.Compact(&buf, data); err == nil {
 		return json.RawMessage(buf.Bytes())
@@ -1437,7 +1454,7 @@ func compactRawJSON(data []byte) json.RawMessage {
 // literal newlines from breaking SSE data-line framing during streaming.
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
 	if len(jsonBody) > 0 {
-		extraFields.RawRequest = compactRawJSON(jsonBody)
+		extraFields.RawRequest = CompactRawJSON(jsonBody)
 	}
 }
 
@@ -2219,7 +2236,7 @@ func HandleStreamCancellation(
 	}
 
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
-		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+		cancelErr.ExtraFields.RawRequest = CompactRawJSON(jsonBody)
 	}
 
 	// Send through PostHook chain - this updates the log to "error" status
@@ -2258,7 +2275,7 @@ func HandleStreamTimeout(
 	}
 
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
-		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+		timeoutErr.ExtraFields.RawRequest = CompactRawJSON(jsonBody)
 	}
 
 	// Send through PostHook chain - this updates the log to "error" status

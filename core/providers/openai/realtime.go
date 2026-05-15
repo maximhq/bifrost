@@ -245,7 +245,7 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return nil, ParseOpenAIError(resp)
+		return nil, ParseOpenAIError(normalizedBody, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)

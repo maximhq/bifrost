@@ -210,7 +210,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(jsonData, resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Decode response body
@@ -281,7 +281,7 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(nil, resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Decode response body
@@ -426,7 +426,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 
 	// Handle error response - Runway returns 204 No Content on success
 	if resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(nil, resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Build response - Runway returns empty body on 204

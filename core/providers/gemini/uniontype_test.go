@@ -149,7 +149,8 @@ func TestConvertBifrostToolsToGemini_UnionTypeProperty(t *testing.T) {
 	var chatTool schemas.ChatTool
 	require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
 
-	geminiTools := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool})
+	geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool})
+	require.NoError(t, err)
 	require.Len(t, geminiTools, 1)
 	require.Len(t, geminiTools[0].FunctionDeclarations, 1)
 
@@ -321,7 +322,8 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 			var chatTool schemas.ChatTool
 			require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
 
-			geminiTools := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool})
+			geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool})
+			require.NoError(t, err)
 			require.Len(t, geminiTools, 1)
 
 			// Serialize to the exact bytes that would be sent to Vertex

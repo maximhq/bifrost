@@ -19,9 +19,9 @@ type MistralErrorResponse struct {
 }
 
 // ParseMistralError parses Mistral-specific error responses.
-func ParseMistralError(resp *fasthttp.Response) *schemas.BifrostError {
+func ParseMistralError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp MistralErrorResponse
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, resp, &errorResp)
 	if bifrostErr == nil {
 		return nil
 	}

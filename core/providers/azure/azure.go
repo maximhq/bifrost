@@ -297,7 +297,7 @@ func (provider *AzureProvider) completeRequest(
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return rawErrBody, latency, providerResponseHeaders, openai.ParseOpenAIError(resp)
+		return rawErrBody, latency, providerResponseHeaders, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -355,7 +355,7 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1037,7 +1037,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(jsonBody, resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -1545,7 +1545,7 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1719,7 +1719,7 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1813,7 +1813,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -1918,7 +1918,7 @@ func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2011,7 +2011,7 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2132,7 +2132,7 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2271,7 +2271,7 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(jsonData, resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2363,7 +2363,7 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -2461,7 +2461,7 @@ func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys [
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2555,7 +2555,7 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2882,7 +2882,7 @@ func (provider *AzureProvider) ContainerCreate(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2979,7 +2979,7 @@ func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, ke
 			continue
 		}
 		if resp.StatusCode() >= 400 {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -3086,7 +3086,7 @@ func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys
 			continue
 		}
 		if resp.StatusCode() >= 400 {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -3187,7 +3187,7 @@ func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, 
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() >= 400 {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3295,7 +3295,7 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() >= 400 {
-		return nil, openai.ParseOpenAIError(resp)
+		return nil, openai.ParseOpenAIError(nil, resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3391,7 +3391,7 @@ func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext
 			continue
 		}
 		if resp.StatusCode() >= 400 {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -3496,7 +3496,7 @@ func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext,
 			continue
 		}
 		if resp.StatusCode() >= 400 {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue
@@ -3586,7 +3586,7 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 			continue
 		}
 		if resp.StatusCode() >= 400 {
-			lastErr = openai.ParseOpenAIError(resp)
+			lastErr = openai.ParseOpenAIError(nil, resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			continue

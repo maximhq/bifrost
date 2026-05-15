@@ -36,10 +36,10 @@ func ToGeminiError(bifrostErr *schemas.BifrostError) *GeminiGenerationError {
 }
 
 // parseGeminiError parses Gemini error responses
-func parseGeminiError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseGeminiError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	// Try to parse as []GeminiGenerationError
 	var errorResps []GeminiGenerationError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResps)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, resp, &errorResps)
 	if len(errorResps) > 0 {
 		var message string
 		var firstError *GeminiGenerationErrorStruct
@@ -67,7 +67,7 @@ func parseGeminiError(resp *fasthttp.Response) *schemas.BifrostError {
 
 	// Try to parse as GeminiGenerationError
 	var errorResp GeminiGenerationError
-	bifrostErr = providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr = providerUtils.HandleProviderAPIError(requestBody, resp, &errorResp)
 	if errorResp.Error != nil {
 		if bifrostErr.Error == nil {
 			bifrostErr.Error = &schemas.ErrorField{}

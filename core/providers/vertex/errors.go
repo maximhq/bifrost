@@ -10,13 +10,19 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseVertexError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	var openAIErr schemas.BifrostError
 	var vertexErr []VertexError
+
+	var rawRequest interface{}
+	if len(requestBody) > 0 {
+		rawRequest = providerUtils.CompactRawJSON(requestBody)
+	}
 
 	decodedBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		bifrostErr.ExtraFields.RawRequest = rawRequest
 		return bifrostErr
 	}
 
@@ -28,6 +34,9 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 			StatusCode:     schemas.Ptr(resp.StatusCode()),
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderResponseEmpty,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawRequest: rawRequest,
 			},
 		}
 		return bifrostErr
@@ -43,6 +52,7 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 				Error:   errors.New(string(decodedBody)),
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawRequest:  rawRequest,
 				RawResponse: string(decodedBody),
 			},
 		}
@@ -55,6 +65,7 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 		if err := sonic.Unmarshal(decodedBody, &rawResponse); err != nil {
 			rawResponse = string(decodedBody)
 		}
+		bifrostErr.ExtraFields.RawRequest = rawRequest
 		bifrostErr.ExtraFields.RawResponse = rawResponse
 		return bifrostErr
 	}

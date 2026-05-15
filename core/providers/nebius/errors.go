@@ -9,9 +9,9 @@ import (
 )
 
 // parseNebiusImageError parses Nebius error responses
-func parseNebiusImageError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseNebiusImageError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	var nebiusErr NebiusError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &nebiusErr)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, resp, &nebiusErr)
 
 	if bifrostErr.Error == nil {
 		bifrostErr.Error = &schemas.ErrorField{}

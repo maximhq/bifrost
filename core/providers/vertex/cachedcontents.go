@@ -178,7 +178,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseVertexCachedContentError(resp)
+		return nil, parseVertexCachedContentError(jsonBody, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -250,7 +250,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, parseVertexCachedContentError(nil, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -323,7 +323,7 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, parseVertexCachedContentError(nil, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -427,7 +427,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, parseVertexCachedContentError(jsonBody, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -512,7 +512,7 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, parseVertexCachedContentError(nil, resp)
 	}
 
 	return &schemas.BifrostCachedContentDeleteResponse{
@@ -542,13 +542,22 @@ func (provider *VertexProvider) CachedContentDelete(ctx *schemas.BifrostContext,
 }
 
 // parseVertexCachedContentError parses a Vertex API error response into a BifrostError.
-func parseVertexCachedContentError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseVertexCachedContentError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	respBody := resp.Body()
 	statusCode := resp.StatusCode()
 
+	var rawRequest interface{}
+	if len(requestBody) > 0 {
+		rawRequest = providerUtils.CompactRawJSON(requestBody)
+	}
+
+	var bifrostErr *schemas.BifrostError
 	var errorResp VertexError
 	if err := sonic.Unmarshal(respBody, &errorResp); err == nil && errorResp.Error.Message != "" {
-		return providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil)
+		bifrostErr = providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil)
+	} else {
+		bifrostErr = providerUtils.NewProviderAPIError(string(respBody), nil, statusCode, nil, nil)
 	}
-	return providerUtils.NewProviderAPIError(string(respBody), nil, statusCode, nil, nil)
+	bifrostErr.ExtraFields.RawRequest = rawRequest
+	return bifrostErr
 }

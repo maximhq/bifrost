@@ -10,9 +10,9 @@ import (
 )
 
 // parseHuggingFaceImageError parses HuggingFace error responses
-func parseHuggingFaceImageError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseHuggingFaceImageError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp HuggingFaceResponseError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, resp, &errorResp)
 
 	if strings.TrimSpace(errorResp.Type) != "" {
 		typeCopy := errorResp.Type

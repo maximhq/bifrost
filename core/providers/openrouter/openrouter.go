@@ -98,12 +98,12 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	// Check for auth errors (401, 403)
 	statusCode := resp.StatusCode()
 	if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
-		return openai.ParseOpenAIError(resp)
+		return openai.ParseOpenAIError(nil, resp)
 	}
 
 	// Any 4xx/5xx error indicates the key might be invalid
 	if statusCode >= 400 {
-		return openai.ParseOpenAIError(resp)
+		return openai.ParseOpenAIError(nil, resp)
 	}
 
 	return nil
@@ -159,7 +159,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 			// Continue with empty response; allowed models will be backfilled below.
 			modelsFetched = false
 		} else {
-			bifrostErr := openai.ParseOpenAIError(resp)
+			bifrostErr := openai.ParseOpenAIError(nil, resp)
 			return nil, bifrostErr
 		}
 	}

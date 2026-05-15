@@ -285,7 +285,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, nil, parseGeminiError(resp)
+		return nil, nil, parseGeminiError(nil, resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)

@@ -9,9 +9,9 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseElevenlabsError(requestBody []byte, resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp ElevenlabsError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, resp, &errorResp)
 	if errorResp.Detail != nil {
 		var message string
 		// Handle validation errors (array format)
@@ -56,15 +56,13 @@ func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
 			}
 
 			if message != "" {
-				result := &schemas.BifrostError{
-					IsBifrostError: false,
-					StatusCode:     schemas.Ptr(resp.StatusCode()),
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(errorType),
-						Message: message,
-					},
+				bifrostErr.IsBifrostError = false
+				bifrostErr.StatusCode = schemas.Ptr(resp.StatusCode())
+				bifrostErr.Error = &schemas.ErrorField{
+					Type:    schemas.Ptr(errorType),
+					Message: message,
 				}
-				return result
+				return bifrostErr
 			}
 		}
 

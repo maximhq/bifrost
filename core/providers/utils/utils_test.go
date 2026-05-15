@@ -116,7 +116,7 @@ func TestHandleProviderAPIError_RawResponseIncluded(t *testing.T) {
 			resp.SetBody(tt.body)
 
 			var errorResp map[string]interface{}
-			bifrostErr := HandleProviderAPIError(resp, &errorResp)
+			bifrostErr := HandleProviderAPIError(nil, resp, &errorResp)
 
 			if bifrostErr == nil {
 				t.Fatal("HandleProviderAPIError() returned nil")
@@ -311,7 +311,7 @@ func TestProviderErrorFlow_EndToEnd(t *testing.T) {
 
 	// Step 1: Parse the error (like ParseOpenAIError does)
 	var errorResp map[string]interface{}
-	bifrostErr := HandleProviderAPIError(resp, &errorResp)
+	bifrostErr := HandleProviderAPIError(nil, resp, &errorResp)
 
 	if bifrostErr == nil {
 		t.Fatal("HandleProviderAPIError returned nil")
@@ -406,7 +406,7 @@ func TestHandleProviderAPIError_AllPathsSetRawResponse(t *testing.T) {
 			tc.setupResp(resp)
 
 			var errorResp map[string]interface{}
-			bifrostErr := HandleProviderAPIError(resp, &errorResp)
+			bifrostErr := HandleProviderAPIError(nil, resp, &errorResp)
 
 			if bifrostErr == nil {
 				t.Fatalf("%s: HandleProviderAPIError returned nil", tc.name)
@@ -418,6 +418,143 @@ func TestHandleProviderAPIError_AllPathsSetRawResponse(t *testing.T) {
 				t.Logf("✓ %s [%s]: RawResponse is set", tc.name, tc.errorType)
 			}
 		})
+	}
+}
+
+// TestHandleProviderAPIError_AllPathsSetRawRequest mirrors the RawResponse coverage:
+// every return branch of HandleProviderAPIError must populate RawRequest from requestBody.
+// This is the load-bearing guarantee that lets EnrichError safely preserve RawRequest
+// when its caller can't supply requestBody directly.
+func TestHandleProviderAPIError_AllPathsSetRawRequest(t *testing.T) {
+	requestBody := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)
+
+	testCases := []struct {
+		name       string
+		statusCode int
+		body       []byte
+		setupResp  func(*fasthttp.Response)
+	}{
+		{
+			name:       "Path 1: Decode error",
+			statusCode: 500,
+			body:       []byte{0xFF, 0xFE, 0xFD},
+			setupResp: func(r *fasthttp.Response) {
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set("Content-Encoding", "gzip")
+			},
+		},
+		{
+			name:       "Path 2: Empty response",
+			statusCode: 502,
+			body:       []byte("   "),
+			setupResp: func(r *fasthttp.Response) {
+				r.Header.Set("Content-Type", "application/json")
+			},
+		},
+		{
+			name:       "Path 3: Valid JSON",
+			statusCode: 400,
+			body:       []byte(`{"error":{"message":"Bad request"}}`),
+			setupResp: func(r *fasthttp.Response) {
+				r.Header.Set("Content-Type", "application/json")
+			},
+		},
+		{
+			name:       "Path 4: HTML response",
+			statusCode: 503,
+			body:       []byte(`<!DOCTYPE html><html><body>Service Error</body></html>`),
+			setupResp: func(r *fasthttp.Response) {
+				r.Header.Set("Content-Type", "text/html")
+			},
+		},
+		{
+			name:       "Path 5: Unparseable non-HTML",
+			statusCode: 500,
+			body:       []byte(`plain text not JSON`),
+			setupResp: func(r *fasthttp.Response) {
+				r.Header.Set("Content-Type", "text/plain")
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &fasthttp.Response{}
+			resp.SetStatusCode(tc.statusCode)
+			resp.SetBody(tc.body)
+			tc.setupResp(resp)
+
+			var errorResp map[string]interface{}
+			bifrostErr := HandleProviderAPIError(requestBody, resp, &errorResp)
+
+			if bifrostErr == nil {
+				t.Fatalf("%s: HandleProviderAPIError returned nil", tc.name)
+			}
+			if bifrostErr.ExtraFields.RawRequest == nil {
+				t.Errorf("%s: RawRequest is nil - asymmetric population vs RawResponse", tc.name)
+			}
+		})
+	}
+}
+
+// TestHandleProviderAPIError_NilRequestBody_LeavesRawRequestNil confirms the
+// parser doesn't fabricate a RawRequest when the caller has nothing to supply.
+func TestHandleProviderAPIError_NilRequestBody_LeavesRawRequestNil(t *testing.T) {
+	resp := &fasthttp.Response{}
+	resp.SetStatusCode(400)
+	resp.Header.Set("Content-Type", "application/json")
+	resp.SetBody([]byte(`{"error":{"message":"bad"}}`))
+
+	var errorResp map[string]interface{}
+	bifrostErr := HandleProviderAPIError(nil, resp, &errorResp)
+
+	if bifrostErr == nil {
+		t.Fatal("HandleProviderAPIError returned nil")
+	}
+	if bifrostErr.ExtraFields.RawRequest != nil {
+		t.Errorf("RawRequest should be nil when requestBody is nil, got %v", bifrostErr.ExtraFields.RawRequest)
+	}
+}
+
+// TestEnrichError_PreservesRawRequestWhenBodyEmpty exercises the new symmetric
+// "preserve when no new value" semantics on the RawRequest branch. With the old
+// behavior, EnrichError unconditionally cleared RawRequest in its else-branch
+// even when the parser had already populated it.
+func TestEnrichError_PreservesRawRequestWhenBodyEmpty(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Simulate what HandleProviderAPIError would have pre-populated.
+	preExisting := json.RawMessage(`{"pre":"populated"}`)
+	bifrostErr := &schemas.BifrostError{
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RawRequest: preExisting,
+		},
+	}
+
+	// EnrichError called with requestBody=nil but flag=true should NOT wipe
+	// the parser-set value.
+	out := EnrichError(ctx, bifrostErr, nil, nil, true, true)
+	if out.ExtraFields.RawRequest == nil {
+		t.Fatal("EnrichError wiped parser-set RawRequest when requestBody was empty")
+	}
+}
+
+// TestEnrichError_FlagOffClearsRawRequest confirms the gating is still respected:
+// when the user disables raw-request capture, EnrichError must clear a value the
+// parser optimistically set.
+func TestEnrichError_FlagOffClearsRawRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	preExisting := json.RawMessage(`{"pre":"populated"}`)
+	bifrostErr := &schemas.BifrostError{
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RawRequest: preExisting,
+		},
+	}
+
+	out := EnrichError(ctx, bifrostErr, []byte(`{"a":1}`), nil, false, true)
+	if out.ExtraFields.RawRequest != nil {
+		t.Errorf("EnrichError should clear RawRequest when capture flag is off, got %v", out.ExtraFields.RawRequest)
 	}
 }
 

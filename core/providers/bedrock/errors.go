@@ -8,7 +8,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func parseBedrockHTTPError(statusCode int, headers http.Header, body []byte) *schemas.BifrostError {
+func parseBedrockHTTPError(requestBody []byte, statusCode int, headers http.Header, body []byte) *schemas.BifrostError {
 	fastResp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(fastResp)
 
@@ -21,7 +21,7 @@ func parseBedrockHTTPError(statusCode int, headers http.Header, body []byte) *sc
 	fastResp.SetBody(body)
 
 	var errorResp BedrockError
-	bifrostErr := providerUtils.HandleProviderAPIError(fastResp, &errorResp)
+	bifrostErr := providerUtils.HandleProviderAPIError(requestBody, fastResp, &errorResp)
 	if errorResp.Message != "" {
 		if bifrostErr.Error == nil {
 			bifrostErr.Error = &schemas.ErrorField{}

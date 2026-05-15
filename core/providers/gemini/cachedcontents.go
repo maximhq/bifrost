@@ -249,7 +249,7 @@ func (provider *GeminiProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, parseGeminiError(jsonBody, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -313,7 +313,7 @@ func (provider *GeminiProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, parseGeminiError(nil, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -382,7 +382,7 @@ func (provider *GeminiProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, parseGeminiError(nil, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -482,7 +482,7 @@ func (provider *GeminiProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, parseGeminiError(jsonBody, resp)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -563,7 +563,7 @@ func (provider *GeminiProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, parseGeminiError(nil, resp)
 	}
 
 	return &schemas.BifrostCachedContentDeleteResponse{
