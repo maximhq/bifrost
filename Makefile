@@ -1659,7 +1659,7 @@ install-newman: ## Install newman + htmlextra reporter if not already installed
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra...$(NC)" && npm install -g newman-reporter-htmlextra)
 	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
-run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
 		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
@@ -1682,10 +1682,11 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
+		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
-		printf '  %s\n' "make run-provider-harness-test                       # full 339-request sweep"; \
+		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"                       # all providers, web-search entries"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"cross-cut,structured output\"      # AND of substrings"; \
@@ -1698,11 +1699,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/newman-cli.log"          "Captured newman CLI output (stdout+stderr)."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/newman-report-<p>.json" "Per-provider newman report (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/newman-cli-<p>.log"     "Per-provider newman stdout/stderr (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/parallel-status"        "Per-provider pass/fail summary (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/newman-report.html"     "htmlextra report (sequential mode only — PARALLEL=0)."; \
+		printf '  %-30s %s\n' "tmp/stream-cancel-report.json" "Server-side stream cancellation probe report."; \
 		printf '\n'; \
 		exit 0; \
 	fi
@@ -1787,13 +1790,17 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			exit 1; \
 		fi; \
 	fi; \
-	COLLECTION_FILE="tests/e2e/api/collections/provider-harness.json"; \
+	$(ECHO) "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
+	$(USE_NODE); node tests/e2e/api/runners/augment-provider-harness.mjs \
+		--source tests/e2e/api/collections/provider-harness.json \
+		--out tmp/harness-augmented.json || { $(ECHO) "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
+	COLLECTION_FILE="tmp/harness-augmented.json"; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$PICKED_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$PICKED_FEATURES"; fi; \
 	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ]; then \
 		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), feature-any=$$PICKED_FEATURES, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
-			--source tests/e2e/api/collections/provider-harness.json \
+			--source "$$COLLECTION_FILE" \
 			--out tmp/harness-filtered.json \
 			$(if $(PROVIDER),--provider $(PROVIDER),) \
 			$(if $(FEATURE),--feature "$(FEATURE)",) \
@@ -1935,6 +1942,17 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 	fi; \
 	$(ECHO) "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
+	STREAM_CANCEL_EXIT=0; \
+	if [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
+		$(ECHO) "$(CYAN)Running stream cancellation probes...$(NC)"; \
+		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
+			--base-url "$$BASE_URL_VAL" \
+			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
+			--out tmp/stream-cancel-report.json 2>&1 | tee tmp/stream-cancel-cli.log; \
+		STREAM_CANCEL_EXIT=$$?; \
+	else \
+		$(ECHO) "$(YELLOW)Skipping stream cancellation probes (SKIP_STREAM_CANCEL/RERUN_FAILED/FOLDER filter).$(NC)"; \
+	fi; \
 	$(ECHO) "$(CYAN)Analyzing failures...$(NC)"; \
 	$(USE_NODE); node tests/e2e/api/runners/analyze-failures.mjs \
 		--report tmp/newman-report.json \
@@ -1958,4 +1976,5 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(ECHO) "$(GREEN)Viewer closed.$(NC)"; \
 		fi; \
 	fi; \
-	exit $$NEWMAN_EXIT
+	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \
+	exit $$STREAM_CANCEL_EXIT
