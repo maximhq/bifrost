@@ -111,16 +111,26 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+// BuiltinPluginNames is the canonical list of built-in plugin names.
+// It is the single source of truth — update here when adding or removing a built-in plugin.
+var builtinPluginNames = []string{
+	telemetry.PluginName,
+	prompts.PluginName,
+	logging.PluginName,
+	governance.PluginName,
+	otel.PluginName,
+	semanticcache.PluginName,
+	compat.PluginName,
+	maxim.PluginName,
+}
+
+func GetBuiltinPluginNames() []string {
+	return slices.Clone(builtinPluginNames)
+}
+
 // IsBuiltinPlugin checks if a plugin is a built-in plugin
 func IsBuiltinPlugin(name string) bool {
-	return name == telemetry.PluginName ||
-		name == prompts.PluginName ||
-		name == logging.PluginName ||
-		name == governance.PluginName ||
-		name == compat.PluginName ||
-		name == maxim.PluginName ||
-		name == semanticcache.PluginName ||
-		name == otel.PluginName
+	return slices.Contains(builtinPluginNames, name)
 }
 
 // pluginOrderInfo stores ordering metadata for a plugin.

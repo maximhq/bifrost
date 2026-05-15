@@ -2,11 +2,12 @@ import { Button } from "@/components/ui/button";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ListOrdered, PlusIcon, Puzzle } from "lucide-react";
+import { Activity, ListOrdered, PlusIcon, Puzzle } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AddNewPluginSheet from "./sheets/addNewPluginSheet";
 import PluginSequenceSheet from "./sheets/pluginSequenceSheet";
+import PluginTracingSheet from "./sheets/pluginTracingSheet";
 import { PluginsEmptyState } from "./views/pluginsEmptyState";
 import PluginsView from "./views/pluginsView";
 
@@ -20,6 +21,7 @@ export default function PluginsPage() {
 	const customPlugins = useMemo(() => plugins?.filter((plugin) => plugin.isCustom), [plugins]);
 	const [isSheetOpen, setIsSheetOpen] = useState(false);
 	const [isSequenceSheetOpen, setIsSequenceSheetOpen] = useState(false);
+	const [isTracingSheetOpen, setIsTracingSheetOpen] = useState(false);
 
 	const handleAddNew = () => {
 		setIsSheetOpen(true);
@@ -49,7 +51,12 @@ export default function PluginsPage() {
 	if (customPlugins?.length === 0 && !isLoading) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
-				<PluginsEmptyState onCreateClick={handleAddNew} canCreate={hasCreatePluginAccess} />
+				<PluginsEmptyState
+					onCreateClick={handleAddNew}
+					canCreate={hasCreatePluginAccess}
+					onConfigureTracingClick={() => setIsTracingSheetOpen(true)}
+					canConfigureTracing={hasUpdatePluginAccess}
+				/>
 				<AddNewPluginSheet
 					open={isSheetOpen}
 					onClose={handleCloseSheet}
@@ -57,6 +64,7 @@ export default function PluginsPage() {
 						setSelectedPluginId(pluginName);
 					}}
 				/>
+				<PluginTracingSheet open={isTracingSheetOpen} onClose={() => setIsTracingSheetOpen(false)} />
 			</div>
 		);
 	}
@@ -125,6 +133,17 @@ export default function PluginsPage() {
 										<div className="text-xs">Edit Plugin Sequence</div>
 									</Button>
 								)}
+								<Button
+									variant="outline"
+									size="sm"
+									className="w-full justify-start"
+									disabled={!hasUpdatePluginAccess}
+									onClick={() => setIsTracingSheetOpen(true)}
+									data-testid="plugins-tracing-button"
+								>
+									<Activity className="h-4 w-4" />
+									<div className="text-xs">Configure Plugin Tracing</div>
+								</Button>
 							</div>
 						</div>
 					</div>
@@ -146,6 +165,7 @@ export default function PluginsPage() {
 				}}
 			/>
 			<PluginSequenceSheet open={isSequenceSheetOpen} onClose={() => setIsSequenceSheetOpen(false)} plugins={plugins ?? []} />
+			<PluginTracingSheet open={isTracingSheetOpen} onClose={() => setIsTracingSheetOpen(false)} />
 		</div>
 	);
 }
