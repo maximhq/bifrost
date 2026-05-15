@@ -1194,8 +1194,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 		p.cfgMutex.RUnlock()
 		return nil, &schemas.BifrostError{
-			Type:       bifrost.Ptr("virtual_key_required"),
-			StatusCode: bifrost.Ptr(401),
+			Type:       new("virtual_key_required"),
+			StatusCode: new(401),
 			Error: &schemas.ErrorField{
 				Message: message,
 			},
@@ -1317,8 +1317,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionVirtualKeyNotFound, DecisionVirtualKeyBlocked, DecisionModelBlocked, DecisionProviderBlocked:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(403),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(403),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1326,8 +1326,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionRateLimited, DecisionTokenLimited, DecisionRequestLimited:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(429),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(429),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1335,8 +1335,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionBudgetExceeded:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(402),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(402),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1344,8 +1344,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionMCPToolBlocked:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(403),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(403),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1354,7 +1354,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	default:
 		// Fallback to deny for unknown decisions
 		return result, &schemas.BifrostError{
-			Type: bifrost.Ptr(string(result.Decision)),
+			Type: new(string(result.Decision)),
 			Error: &schemas.ErrorField{
 				Message: "Governance decision error",
 			},

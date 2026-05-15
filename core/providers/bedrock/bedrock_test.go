@@ -2376,34 +2376,20 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
-	require.NotNil(t, bedrockReq.AdditionalModelRequestFields, "expected additional model request fields for anthropic responses structured output")
 
-	outputConfigRaw, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic responses structured output")
-
-	outputConfig, ok := schemas.SafeExtractOrderedMap(outputConfigRaw)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	formatMap, ok := schemas.SafeExtractOrderedMap(formatRaw)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-
-	formatType, ok := formatMap.Get("type")
-	require.True(t, ok, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-
-	schemaRaw, ok := formatMap.Get("schema")
-	require.True(t, ok, "expected output_config.format.schema")
-	schemaMap, ok := schemas.SafeExtractOrderedMap(schemaRaw)
-	require.True(t, ok, "expected output_config.format.schema to remain ordered")
-	require.NotNil(t, schemaMap)
-
-	if bedrockReq.ToolConfig != nil {
-		assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic responses structured output")
-		assert.Empty(t, bedrockReq.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic responses structured output")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// (rejected by Opus 4.7) onto the synthetic bf_so_* tool path used by all
+	// Bedrock models. The test now asserts the synthetic tool reached
+	// toolConfig.tools.
+	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range bedrockReq.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
 	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
@@ -3312,22 +3298,17 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
-	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
-
-	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-	formatType, hasType := format.Get("type")
-	require.True(t, hasType, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-	_, hasSchema := format.Get("schema")
-	assert.True(t, hasSchema, "expected output_config.format.schema")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// onto the synthetic bf_so_* tool path used by all Bedrock models.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
+	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
 
 	// reasoning should still be preserved for anthropic
 	thinkingRaw, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
@@ -3335,12 +3316,6 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	thinking, ok := thinkingRaw.(map[string]any)
 	require.True(t, ok, "expected thinking to be a map")
 	assert.Equal(t, "enabled", thinking["type"])
-
-	// structured output should NOT force tool choice on Bedrock anthropic
-	if result.ToolConfig != nil {
-		assert.Nil(t, result.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic structured output")
-		assert.Empty(t, result.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic structured output")
-	}
 }
 
 func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
@@ -3385,26 +3360,19 @@ func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
-	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
-
-	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-
-	formatType, ok := format.Get("type")
-	require.True(t, ok, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-
-	schemaRaw, ok := format.Get("schema")
-	require.True(t, ok, "expected output_config.format.schema")
-	_, ok = schemaRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// onto the synthetic bf_so_* tool path. Test asserts the synthetic tool path
+	// accepts OrderedMap-shaped response_format input without dropping the schema.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	var syntheticTool *bedrock.BedrockTool
+	for i, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			syntheticTool = &result.ToolConfig.Tools[i]
+			break
+		}
+	}
+	require.NotNil(t, syntheticTool, "expected synthetic bf_so_* tool for structured output")
+	require.NotEmpty(t, syntheticTool.ToolSpec.InputSchema.JSON, "expected synthetic tool schema bytes")
 }
 
 // betaListContains reports whether the OrderedMap's anthropic_beta entry
@@ -3677,23 +3645,27 @@ func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *test
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
+	// Structured output is routed through the synthetic bf_so_* tool path on all
+	// Bedrock models (see PR #3184 and utils.go:1172). Native output_config.format
+	// is intentionally not written for any Bedrock model, so the merge test
+	// asserts the synthetic tool reached toolConfig.tools instead.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
+	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
+
+	// Incoming additionalModelRequestFieldPaths.output_config key must be merged
+	// into AdditionalModelRequestFields.output_config even though the structured
+	// output path no longer writes output_config.format itself.
 	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config to exist after merge")
+	require.True(t, hasOutputConfig, "expected output_config to exist from user-provided fields")
 	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
 	require.True(t, ok, "expected output_config to be an ordered map")
-
-	// Existing structured output format must be preserved.
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format to be preserved")
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-	formatType, hasType := format.Get("type")
-	require.True(t, hasType, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-	_, hasSchema := format.Get("schema")
-	assert.True(t, hasSchema, "expected output_config.format.schema")
-
-	// Incoming additionalModelRequestFieldPaths.output_config key must be merged.
 	foo, hasFoo := outputConfig.Get("foo")
 	require.True(t, hasFoo, "expected output_config.foo to be preserved")
 	assert.Equal(t, "bar", foo)
