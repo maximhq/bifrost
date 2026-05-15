@@ -392,7 +392,7 @@
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -448,7 +448,7 @@
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -524,6 +524,11 @@
               "claims": {
                 "type": "object",
                 "description": "Team claims data"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               },
               "virtual_key_count": {
                 "type": "integer",
@@ -3889,6 +3894,11 @@
         "reset_duration": {
           "type": "string",
           "description": "Reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id", "max_limit", "reset_duration"],
@@ -3916,6 +3926,11 @@
         "request_reset_duration": {
           "type": "string",
           "description": "Request reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id"],
@@ -3953,6 +3968,11 @@
         },
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
+          "default": false
         },
         "provider_configs": {
           "type": "array",
