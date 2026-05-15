@@ -1121,6 +1121,7 @@ func HandleOpenAIChatCompletionStreaming(
 		forwardedTerminalFinishReason := false
 		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
+		usageSeen := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1185,6 +1186,7 @@ func HandleOpenAIChatCompletionStreaming(
 			if isResponsesToChatCompletionsFallback {
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
+					usageSeen = true
 					if response.Usage.PromptTokens > usage.PromptTokens {
 						usage.PromptTokens = response.Usage.PromptTokens
 					}
@@ -1345,7 +1347,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 		if isResponsesToChatCompletionsFallback {
 			if pendingFinalEvent != nil {
-				if pendingFinalEvent.Response != nil && pendingFinalEvent.Response.Usage == nil {
+				if usageSeen && pendingFinalEvent.Response != nil && pendingFinalEvent.Response.Usage == nil {
 					pendingFinalEvent.Response.Usage = usage.ToResponsesResponseUsage()
 				}
 				if sendBackRawRequest {
