@@ -1,6 +1,7 @@
 .env
 .vscode
 .DS_Store
+.tool-versions
 *_creds*
 **/venv/
 **/__pycache__/**
