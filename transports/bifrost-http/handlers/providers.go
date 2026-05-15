@@ -60,19 +60,21 @@ const (
 
 // ProviderResponse represents the response for provider operations
 type ProviderResponse struct {
-	Name                     schemas.ModelProvider            `json:"name"`
-	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
-	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                     // Proxy configuration
-	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
-	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
-	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
-	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
-	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
-	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
-	Description              string                           `json:"description,omitempty"`            // Error/status description
-	ConfigHash               string                           `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+	Name                        schemas.ModelProvider            `json:"name"`
+	NetworkConfig               schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
+	ConcurrencyAndBufferSize    schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
+	ProxyConfig                 *schemas.ProxyConfig             `json:"proxy_config"`                     // Proxy configuration
+	SendBackRawRequest          bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
+	SendBackRawResponse         bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
+	StoreRawRequestResponse     bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
+	StoreInboundRequest         bool                             `json:"store_inbound_request"`            // Capture inbound HTTP request for internal logging only
+	StoreInternalBifrostRequest bool                             `json:"store_internal_bifrost_request"`   // Capture converted Bifrost request for internal logging only
+	CustomProviderConfig        *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
+	OpenAIConfig                *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
+	ProviderStatus              ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
+	Status                      string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
+	Description                 string                           `json:"description,omitempty"`            // Error/status description
+	ConfigHash                  string                           `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -88,26 +90,30 @@ type ErrorResponse struct {
 }
 
 type providerCreatePayload struct {
-	Provider                 schemas.ModelProvider             `json:"provider"`
-	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`
-	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"`
-	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`
-	SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`
-	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
-	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
-	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	Provider                    schemas.ModelProvider             `json:"provider"`
+	NetworkConfig               *schemas.NetworkConfig            `json:"network_config,omitempty"`
+	ConcurrencyAndBufferSize    *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"`
+	ProxyConfig                 *schemas.ProxyConfig              `json:"proxy_config,omitempty"`
+	SendBackRawRequest          *bool                             `json:"send_back_raw_request,omitempty"`
+	SendBackRawResponse         *bool                             `json:"send_back_raw_response,omitempty"`
+	StoreRawRequestResponse     *bool                             `json:"store_raw_request_response,omitempty"`
+	StoreInboundRequest         *bool                             `json:"store_inbound_request,omitempty"`
+	StoreInternalBifrostRequest *bool                             `json:"store_internal_bifrost_request,omitempty"`
+	CustomProviderConfig        *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	OpenAIConfig                *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 }
 
 type providerUpdatePayload struct {
-	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
-	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`
-	SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`
-	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
-	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
-	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	NetworkConfig               schemas.NetworkConfig            `json:"network_config"`
+	ConcurrencyAndBufferSize    schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
+	ProxyConfig                 *schemas.ProxyConfig             `json:"proxy_config,omitempty"`
+	SendBackRawRequest          *bool                            `json:"send_back_raw_request,omitempty"`
+	SendBackRawResponse         *bool                            `json:"send_back_raw_response,omitempty"`
+	StoreRawRequestResponse     *bool                            `json:"store_raw_request_response,omitempty"`
+	StoreInboundRequest         *bool                            `json:"store_inbound_request,omitempty"`
+	StoreInternalBifrostRequest *bool                            `json:"store_internal_bifrost_request,omitempty"`
+	CustomProviderConfig        *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
+	OpenAIConfig                *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 }
 
 // RegisterRoutes registers all provider management routes
@@ -285,14 +291,16 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 
 	// Construct ProviderConfig from individual fields
 	config := configstore.ProviderConfig{
-		NetworkConfig:            payload.NetworkConfig,
-		ProxyConfig:              payload.ProxyConfig,
-		ConcurrencyAndBufferSize: payload.ConcurrencyAndBufferSize,
-		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
-		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
-		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
-		CustomProviderConfig:     payload.CustomProviderConfig,
-		OpenAIConfig:             payload.OpenAIConfig,
+		NetworkConfig:               payload.NetworkConfig,
+		ProxyConfig:                 payload.ProxyConfig,
+		ConcurrencyAndBufferSize:    payload.ConcurrencyAndBufferSize,
+		SendBackRawRequest:          payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
+		SendBackRawResponse:         payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
+		StoreRawRequestResponse:     payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
+		StoreInboundRequest:         payload.StoreInboundRequest != nil && *payload.StoreInboundRequest,
+		StoreInternalBifrostRequest: payload.StoreInternalBifrostRequest != nil && *payload.StoreInternalBifrostRequest,
+		CustomProviderConfig:        payload.CustomProviderConfig,
+		OpenAIConfig:                payload.OpenAIConfig,
 	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
@@ -328,15 +336,18 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, err)
 		// Fall back to the raw config (no keys)
 		response := h.getProviderResponseFromConfig(payload.Provider, configstore.ProviderConfig{
-			NetworkConfig:            config.NetworkConfig,
-			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
-			ProxyConfig:              config.ProxyConfig,
-			SendBackRawRequest:       config.SendBackRawRequest,
-			SendBackRawResponse:      config.SendBackRawResponse,
-			StoreRawRequestResponse:  config.StoreRawRequestResponse,
-			CustomProviderConfig:     config.CustomProviderConfig,
-			Status:                   config.Status,
-			Description:              config.Description,
+			NetworkConfig:               config.NetworkConfig,
+			ConcurrencyAndBufferSize:    config.ConcurrencyAndBufferSize,
+			ProxyConfig:                 config.ProxyConfig,
+			SendBackRawRequest:          config.SendBackRawRequest,
+			SendBackRawResponse:         config.SendBackRawResponse,
+			StoreRawRequestResponse:     config.StoreRawRequestResponse,
+			StoreInboundRequest:         config.StoreInboundRequest,
+			StoreInternalBifrostRequest: config.StoreInternalBifrostRequest,
+			CustomProviderConfig:        config.CustomProviderConfig,
+			OpenAIConfig:                config.OpenAIConfig,
+			Status:                      config.Status,
+			Description:                 config.Description,
 		}, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
@@ -399,15 +410,19 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	// Construct ProviderConfig from individual fields (keys are managed separately via /keys endpoints)
 	config := configstore.ProviderConfig{
-		Keys:                     oldConfigRaw.Keys,
-		NetworkConfig:            oldConfigRaw.NetworkConfig,
-		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
-		ProxyConfig:              oldConfigRaw.ProxyConfig,
-		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
-		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
-		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
-		Status:                   oldConfigRaw.Status,
-		Description:              oldConfigRaw.Description,
+		Keys:                        oldConfigRaw.Keys,
+		NetworkConfig:               oldConfigRaw.NetworkConfig,
+		ConcurrencyAndBufferSize:    oldConfigRaw.ConcurrencyAndBufferSize,
+		ProxyConfig:                 oldConfigRaw.ProxyConfig,
+		CustomProviderConfig:        oldConfigRaw.CustomProviderConfig,
+		OpenAIConfig:                oldConfigRaw.OpenAIConfig,
+		SendBackRawRequest:          oldConfigRaw.SendBackRawRequest,
+		SendBackRawResponse:         oldConfigRaw.SendBackRawResponse,
+		StoreRawRequestResponse:     oldConfigRaw.StoreRawRequestResponse,
+		StoreInboundRequest:         oldConfigRaw.StoreInboundRequest,
+		StoreInternalBifrostRequest: oldConfigRaw.StoreInternalBifrostRequest,
+		Status:                      oldConfigRaw.Status,
+		Description:                 oldConfigRaw.Description,
 	}
 
 	if payload.ConcurrencyAndBufferSize.Concurrency == 0 {
@@ -476,6 +491,12 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if payload.StoreRawRequestResponse != nil {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
+	if payload.StoreInboundRequest != nil {
+		config.StoreInboundRequest = *payload.StoreInboundRequest
+	}
+	if payload.StoreInternalBifrostRequest != nil {
+		config.StoreInternalBifrostRequest = *payload.StoreInternalBifrostRequest
+	}
 
 	// Add provider to store if it doesn't exist (upsert behavior)
 	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
@@ -525,15 +546,18 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to get redacted config for provider %s: %v", provider, err)
 		// Fall back to sanitized config (no keys)
 		response := h.getProviderResponseFromConfig(provider, configstore.ProviderConfig{
-			NetworkConfig:            config.NetworkConfig,
-			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
-			ProxyConfig:              config.ProxyConfig,
-			SendBackRawRequest:       config.SendBackRawRequest,
-			SendBackRawResponse:      config.SendBackRawResponse,
-			StoreRawRequestResponse:  config.StoreRawRequestResponse,
-			CustomProviderConfig:     config.CustomProviderConfig,
-			Status:                   config.Status,
-			Description:              config.Description,
+			NetworkConfig:               config.NetworkConfig,
+			ConcurrencyAndBufferSize:    config.ConcurrencyAndBufferSize,
+			ProxyConfig:                 config.ProxyConfig,
+			SendBackRawRequest:          config.SendBackRawRequest,
+			SendBackRawResponse:         config.SendBackRawResponse,
+			StoreRawRequestResponse:     config.StoreRawRequestResponse,
+			StoreInboundRequest:         config.StoreInboundRequest,
+			StoreInternalBifrostRequest: config.StoreInternalBifrostRequest,
+			CustomProviderConfig:        config.CustomProviderConfig,
+			OpenAIConfig:                config.OpenAIConfig,
+			Status:                      config.Status,
+			Description:                 config.Description,
 		}, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
@@ -1133,19 +1157,21 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 	}
 
 	return ProviderResponse{
-		Name:                     provider,
-		NetworkConfig:            *config.NetworkConfig,
-		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
-		ProxyConfig:              config.ProxyConfig,
-		SendBackRawRequest:       config.SendBackRawRequest,
-		SendBackRawResponse:      config.SendBackRawResponse,
-		StoreRawRequestResponse:  config.StoreRawRequestResponse,
-		CustomProviderConfig:     config.CustomProviderConfig,
-		OpenAIConfig:             config.OpenAIConfig,
-		ProviderStatus:           status,
-		Status:                   config.Status,
-		Description:              config.Description,
-		ConfigHash:               config.ConfigHash,
+		Name:                        provider,
+		NetworkConfig:               *config.NetworkConfig,
+		ConcurrencyAndBufferSize:    *config.ConcurrencyAndBufferSize,
+		ProxyConfig:                 config.ProxyConfig,
+		SendBackRawRequest:          config.SendBackRawRequest,
+		SendBackRawResponse:         config.SendBackRawResponse,
+		StoreRawRequestResponse:     config.StoreRawRequestResponse,
+		StoreInboundRequest:         config.StoreInboundRequest,
+		StoreInternalBifrostRequest: config.StoreInternalBifrostRequest,
+		CustomProviderConfig:        config.CustomProviderConfig,
+		OpenAIConfig:                config.OpenAIConfig,
+		ProviderStatus:              status,
+		Status:                      config.Status,
+		Description:                 config.Description,
+		ConfigHash:                  config.ConfigHash,
 	}
 }
 

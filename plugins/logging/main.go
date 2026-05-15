@@ -106,6 +106,18 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+func applyNativeRequestSnapshotsToEntry(ctx *schemas.BifrostContext, entry *logstore.Log, pending *PendingLogData, contentLoggingEnabled bool) {
+	if ctx == nil || entry == nil || pending == nil || pending.InitialData == nil || !contentLoggingEnabled {
+		return
+	}
+	if shouldStoreInbound, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreInboundRequestInLogs).(bool); shouldStoreInbound {
+		entry.InboundRequest = pending.InitialData.InboundRequest
+	}
+	if shouldStoreInternal, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreInternalBifrostRequestInLogs).(bool); shouldStoreInternal {
+		entry.InternalBifrostRequest = pending.InitialData.InternalBifrostRequest
+	}
+}
+
 // sanitizeErrorForLogging returns a shallow copy of err with ExtraFields.RawRequest and
 // RawResponse cleared when raw-byte persistence is disabled, preventing raw bytes from
 // leaking into entry.ErrorDetails via JSON serialization.
@@ -254,6 +266,8 @@ type InitialLogData struct {
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
+	InboundRequest         string
+	InternalBifrostRequest string
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -506,7 +520,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		initialData.Object = "realtime.turn"
 	}
 
-	if p.contentLoggingEnabled(ctx) {
+	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
+	if contentLoggingEnabled {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
 		initialData.InputHistory = inputHistory
 		initialData.ResponsesInputHistory = responsesInputHistory
@@ -639,6 +654,23 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				if strings.Contains(ct, "application/json") {
 					initialData.PassthroughRequestBody = string(req.PassthroughRequest.Body)
 				}
+			}
+		}
+	}
+
+	if contentLoggingEnabled {
+		shouldStoreInbound, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreInboundRequestInLogs).(bool)
+		shouldStoreInternal, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreInternalBifrostRequestInLogs).(bool)
+		if shouldStoreInbound {
+			if inboundRequest, ok := ctx.Value(schemas.BifrostContextKeyInboundRequestJSON).(string); ok {
+				initialData.InboundRequest = inboundRequest
+			}
+		}
+		if shouldStoreInternal {
+			if data, err := sonic.Marshal(req); err == nil {
+				initialData.InternalBifrostRequest = string(data)
+			} else {
+				p.logger.Warn("failed to marshal internal Bifrost request for logging: %v", err)
 			}
 		}
 	}
@@ -842,6 +874,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	applyNativeRequestSnapshotsToEntry(ctx, entry, pending, contentLoggingEnabled)
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.

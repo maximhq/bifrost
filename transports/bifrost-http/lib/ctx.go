@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -130,6 +131,8 @@ func ParseSessionIDFromBaggage(header string) string {
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
+//   - x-bf-store-inbound-request: capture the inbound HTTP request for logging only
+//   - x-bf-store-internal-bifrost-request: capture the converted Bifrost request for logging only
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -153,11 +156,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
 	allowPerRequestStorageOverride := false
 	allowPerRequestRawOverride := false
+	captureInboundRequests := false
 	if store != nil {
 		matcher = store.GetHeaderMatcher()
 		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
 		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
 		allowPerRequestRawOverride = store.ShouldAllowPerRequestRawOverride()
+		captureInboundRequests = store.ShouldCaptureInboundRequests()
 	}
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
@@ -501,6 +506,18 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		if keyStr == "x-bf-store-inbound-request" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyStoreInboundRequest, b)
+			}
+			return true
+		}
+		if keyStr == "x-bf-store-internal-bifrost-request" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyStoreInternalBifrostRequest, b)
+			}
+			return true
+		}
 		if keyStr == "x-bf-disable-content-logging" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, b)
@@ -618,7 +635,24 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
+	if shouldCaptureInboundRequestJSON(bifrostCtx, captureInboundRequests, allowPerRequestStorageOverride) {
+		if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyInboundRequestJSON).(string); ok {
+			return bifrostCtx, cancel
+		}
+		if snapshot := CaptureInboundRequestJSON(ctx); snapshot != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyInboundRequestJSON, snapshot)
+		}
+	}
 	return bifrostCtx, cancel
+}
+
+func shouldCaptureInboundRequestJSON(ctx *schemas.BifrostContext, captureInboundRequests bool, allowPerRequestStorageOverride bool) bool {
+	if allowPerRequestStorageOverride {
+		if override, ok := ctx.Value(schemas.BifrostContextKeyStoreInboundRequest).(bool); ok {
+			return override
+		}
+	}
+	return captureInboundRequests
 }
 
 // ValidateBaseURL checks that a URL is parseable with both scheme and host —
@@ -662,6 +696,83 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 		return ""
 	}
 	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+type InboundHTTPRequestLog struct {
+	Method     string            `json:"method"`
+	Path       string            `json:"path"`
+	Headers    map[string]string `json:"headers"`
+	Query      map[string]string `json:"query"`
+	Body       any               `json:"body"`
+	PathParams map[string]string `json:"path_params"`
+}
+
+// CaptureInboundRequestJSON creates a JSON snapshot of the current inbound HTTP
+// request using the same serializable shape exposed to HTTP transport plugins.
+// Unlike schemas.HTTPRequest, UTF-8 bodies are emitted as strings so log details
+// are directly readable instead of JSON's default base64 encoding for []byte.
+func CaptureInboundRequestJSON(ctx *fasthttp.RequestCtx) string {
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = string(ctx.Method())
+	req.Path = string(ctx.Path())
+
+	for key, value := range ctx.Request.Header.All() {
+		req.Headers[string(key)] = string(value)
+	}
+	for key, value := range ctx.Request.URI().QueryArgs().All() {
+		req.Query[string(key)] = string(value)
+	}
+	ctx.VisitUserValuesAll(func(key, value any) {
+		keyStr, keyIsString := key.(string)
+		valueStr, valueIsString := value.(string)
+		if !keyIsString || !valueIsString {
+			return
+		}
+		if strings.HasPrefix(keyStr, "bifrost-") ||
+			keyStr == "BifrostContextKeyRequestID" ||
+			keyStr == "trace_id" ||
+			keyStr == "span_id" {
+			return
+		}
+		req.PathParams[keyStr] = valueStr
+	})
+
+	body := ctx.Request.Body()
+	omitBody := false
+	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
+		if int64(len(body)) > threshold {
+			req.Body = []byte("[request body omitted: exceeds large payload threshold]")
+			omitBody = true
+		}
+	}
+	if !omitBody {
+		if len(body) > 0 {
+			req.Body = make([]byte, len(body))
+			copy(req.Body, body)
+		}
+	}
+
+	logReq := InboundHTTPRequestLog{
+		Method:     req.Method,
+		Path:       req.Path,
+		Headers:    req.Headers,
+		Query:      req.Query,
+		PathParams: req.PathParams,
+	}
+	if req.Body != nil {
+		if utf8.Valid(req.Body) {
+			logReq.Body = string(req.Body)
+		} else {
+			logReq.Body = req.Body
+		}
+	}
+
+	data, err := json.Marshal(logReq)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.

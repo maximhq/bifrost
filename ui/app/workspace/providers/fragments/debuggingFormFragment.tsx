@@ -30,11 +30,15 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			store_inbound_request: provider.store_inbound_request ?? false,
+			store_internal_bifrost_request: provider.store_internal_bifrost_request ?? false,
 		},
 	});
 	const sendBackRawRequest = form.watch("send_back_raw_request");
 	const sendBackRawResponse = form.watch("send_back_raw_response");
 	const storeRawRequestResponse = form.watch("store_raw_request_response");
+	const storeInboundRequest = form.watch("store_inbound_request");
+	const storeInternalBifrostRequest = form.watch("store_internal_bifrost_request");
 
 	useEffect(() => {
 		dispatch(setProviderFormDirtyState(form.formState.isDirty));
@@ -45,15 +49,26 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			store_inbound_request: provider.store_inbound_request ?? false,
+			store_internal_bifrost_request: provider.store_internal_bifrost_request ?? false,
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response]);
+	}, [
+		provider.name,
+		provider.send_back_raw_request,
+		provider.send_back_raw_response,
+		provider.store_raw_request_response,
+		provider.store_inbound_request,
+		provider.store_internal_bifrost_request,
+	]);
 
 	const onSubmit = (data: DebuggingFormSchema) => {
 		const updatedProvider = buildProviderUpdatePayload(provider, {
 			send_back_raw_request: data.send_back_raw_request,
 			send_back_raw_response: data.send_back_raw_response,
 			store_raw_request_response: data.store_raw_request_response,
+			store_inbound_request: data.store_inbound_request,
+			store_internal_bifrost_request: data.store_internal_bifrost_request,
 		});
 		updateProvider(updatedProvider)
 			.unwrap()
@@ -189,6 +204,89 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 											onCheckedChange={(checked) => {
 												field.onChange(checked);
 												form.trigger("store_raw_request_response");
+											}}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					{/* Store Inbound Request */}
+					<FormField
+						control={form.control}
+						name="store_inbound_request"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<div className="flex items-center gap-1.5">
+											<FormLabel>Store Inbound Request</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild data-testid="provider-debugging-store-inbound-request-tooltip-trigger">
+														<Info className="text-muted-foreground h-3 w-3 cursor-pointer" />
+													</TooltipTrigger>
+													<TooltipContent>
+														Override per-request with header: <code>x-bf-store-inbound-request: {String(!storeInboundRequest)}</code>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<p className="text-muted-foreground text-xs">Persist the client-facing HTTP request received by Bifrost in log records.</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-debugging-store-inbound-request-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												field.onChange(checked);
+												form.trigger("store_inbound_request");
+											}}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					{/* Store Internal Bifrost Request */}
+					<FormField
+						control={form.control}
+						name="store_internal_bifrost_request"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<div className="flex items-center gap-1.5">
+											<FormLabel>Store Internal Bifrost Request</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild data-testid="provider-debugging-store-internal-bifrost-request-tooltip-trigger">
+														<Info className="text-muted-foreground h-3 w-3 cursor-pointer" />
+													</TooltipTrigger>
+													<TooltipContent>
+														Override per-request with header:{" "}
+														<code>x-bf-store-internal-bifrost-request: {String(!storeInternalBifrostRequest)}</code>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<p className="text-muted-foreground text-xs">Persist the converted Bifrost request sent into the provider pipeline.</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-debugging-store-internal-bifrost-request-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												field.onChange(checked);
+												form.trigger("store_internal_bifrost_request");
 											}}
 										/>
 									</FormControl>

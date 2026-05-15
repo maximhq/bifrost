@@ -503,18 +503,20 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	for _, providerName := range sortedProviderNames(providers) {
 		providerConfig := providers[providerName]
 		dbProvider := tables.TableProvider{
-			Name:                     string(providerName),
-			NetworkConfig:            providerConfig.NetworkConfig,
-			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
-			ProxyConfig:              providerConfig.ProxyConfig,
-			SendBackRawRequest:       providerConfig.SendBackRawRequest,
-			SendBackRawResponse:      providerConfig.SendBackRawResponse,
-			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
-			CustomProviderConfig:     providerConfig.CustomProviderConfig,
-			OpenAIConfig:             providerConfig.OpenAIConfig,
-			ConfigHash:               providerConfig.ConfigHash,
-			Status:                   providerConfig.Status,
-			Description:              providerConfig.Description,
+			Name:                        string(providerName),
+			NetworkConfig:               providerConfig.NetworkConfig,
+			ConcurrencyAndBufferSize:    providerConfig.ConcurrencyAndBufferSize,
+			ProxyConfig:                 providerConfig.ProxyConfig,
+			SendBackRawRequest:          providerConfig.SendBackRawRequest,
+			SendBackRawResponse:         providerConfig.SendBackRawResponse,
+			StoreRawRequestResponse:     providerConfig.StoreRawRequestResponse,
+			StoreInboundRequest:         providerConfig.StoreInboundRequest,
+			StoreInternalBifrostRequest: providerConfig.StoreInternalBifrostRequest,
+			CustomProviderConfig:        providerConfig.CustomProviderConfig,
+			OpenAIConfig:                providerConfig.OpenAIConfig,
+			ConfigHash:                  providerConfig.ConfigHash,
+			Status:                      providerConfig.Status,
+			Description:                 providerConfig.Description,
 		}
 
 		// Carry over governance FKs from the existing row so UpdateAll never
@@ -738,6 +740,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
+	dbProvider.StoreInboundRequest = configCopy.StoreInboundRequest
+	dbProvider.StoreInternalBifrostRequest = configCopy.StoreInternalBifrostRequest
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.ConfigHash = configCopy.ConfigHash
@@ -901,16 +905,18 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	configCopy.ConfigHash = config.ConfigHash
 	// Create new provider
 	dbProvider := tables.TableProvider{
-		Name:                     string(provider),
-		NetworkConfig:            configCopy.NetworkConfig,
-		ConcurrencyAndBufferSize: configCopy.ConcurrencyAndBufferSize,
-		ProxyConfig:              configCopy.ProxyConfig,
-		SendBackRawRequest:       configCopy.SendBackRawRequest,
-		SendBackRawResponse:      configCopy.SendBackRawResponse,
-		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
-		CustomProviderConfig:     configCopy.CustomProviderConfig,
-		OpenAIConfig:             configCopy.OpenAIConfig,
-		ConfigHash:               configCopy.ConfigHash,
+		Name:                        string(provider),
+		NetworkConfig:               configCopy.NetworkConfig,
+		ConcurrencyAndBufferSize:    configCopy.ConcurrencyAndBufferSize,
+		ProxyConfig:                 configCopy.ProxyConfig,
+		SendBackRawRequest:          configCopy.SendBackRawRequest,
+		SendBackRawResponse:         configCopy.SendBackRawResponse,
+		StoreRawRequestResponse:     configCopy.StoreRawRequestResponse,
+		StoreInboundRequest:         configCopy.StoreInboundRequest,
+		StoreInternalBifrostRequest: configCopy.StoreInternalBifrostRequest,
+		CustomProviderConfig:        configCopy.CustomProviderConfig,
+		OpenAIConfig:                configCopy.OpenAIConfig,
+		ConfigHash:                  configCopy.ConfigHash,
 	}
 	// Create the provider
 	if err := txDB.WithContext(ctx).Create(&dbProvider).Error; err != nil {
@@ -1054,18 +1060,20 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			keys[i] = schemaKeyFromTableKey(dbKey)
 		}
 		providerConfig := ProviderConfig{
-			Keys:                     keys,
-			NetworkConfig:            dbProvider.NetworkConfig,
-			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
-			ProxyConfig:              dbProvider.ProxyConfig,
-			SendBackRawRequest:       dbProvider.SendBackRawRequest,
-			SendBackRawResponse:      dbProvider.SendBackRawResponse,
-			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
-			CustomProviderConfig:     dbProvider.CustomProviderConfig,
-			OpenAIConfig:             dbProvider.OpenAIConfig,
-			ConfigHash:               dbProvider.ConfigHash,
-			Status:                   dbProvider.Status,
-			Description:              dbProvider.Description,
+			Keys:                        keys,
+			NetworkConfig:               dbProvider.NetworkConfig,
+			ConcurrencyAndBufferSize:    dbProvider.ConcurrencyAndBufferSize,
+			ProxyConfig:                 dbProvider.ProxyConfig,
+			SendBackRawRequest:          dbProvider.SendBackRawRequest,
+			SendBackRawResponse:         dbProvider.SendBackRawResponse,
+			StoreRawRequestResponse:     dbProvider.StoreRawRequestResponse,
+			StoreInboundRequest:         dbProvider.StoreInboundRequest,
+			StoreInternalBifrostRequest: dbProvider.StoreInternalBifrostRequest,
+			CustomProviderConfig:        dbProvider.CustomProviderConfig,
+			OpenAIConfig:                dbProvider.OpenAIConfig,
+			ConfigHash:                  dbProvider.ConfigHash,
+			Status:                      dbProvider.Status,
+			Description:                 dbProvider.Description,
 		}
 		processedProviders[provider] = providerConfig
 	}
@@ -1087,18 +1095,20 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		keys[i] = schemaKeyFromTableKey(dbKey)
 	}
 	return &ProviderConfig{
-		Keys:                     keys,
-		NetworkConfig:            dbProvider.NetworkConfig,
-		ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
-		ProxyConfig:              dbProvider.ProxyConfig,
-		SendBackRawRequest:       dbProvider.SendBackRawRequest,
-		SendBackRawResponse:      dbProvider.SendBackRawResponse,
-		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
-		CustomProviderConfig:     dbProvider.CustomProviderConfig,
-		OpenAIConfig:             dbProvider.OpenAIConfig,
-		ConfigHash:               dbProvider.ConfigHash,
-		Status:                   dbProvider.Status,
-		Description:              dbProvider.Description,
+		Keys:                        keys,
+		NetworkConfig:               dbProvider.NetworkConfig,
+		ConcurrencyAndBufferSize:    dbProvider.ConcurrencyAndBufferSize,
+		ProxyConfig:                 dbProvider.ProxyConfig,
+		SendBackRawRequest:          dbProvider.SendBackRawRequest,
+		SendBackRawResponse:         dbProvider.SendBackRawResponse,
+		StoreRawRequestResponse:     dbProvider.StoreRawRequestResponse,
+		StoreInboundRequest:         dbProvider.StoreInboundRequest,
+		StoreInternalBifrostRequest: dbProvider.StoreInternalBifrostRequest,
+		CustomProviderConfig:        dbProvider.CustomProviderConfig,
+		OpenAIConfig:                dbProvider.OpenAIConfig,
+		ConfigHash:                  dbProvider.ConfigHash,
+		Status:                      dbProvider.Status,
+		Description:                 dbProvider.Description,
 	}, nil
 }
 

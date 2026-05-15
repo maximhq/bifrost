@@ -5635,6 +5635,18 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				effectiveStore = override
 			}
 		}
+		effectiveStoreInbound := config.StoreInboundRequest
+		if allowStorageOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreInboundRequest).(bool); ok {
+				effectiveStoreInbound = override
+			}
+		}
+		effectiveStoreInternalBifrost := config.StoreInternalBifrostRequest
+		if allowStorageOverride {
+			if override, ok := req.Context.Value(schemas.BifrostContextKeyStoreInternalBifrostRequest).(bool); ok {
+				effectiveStoreInternalBifrost = override
+			}
+		}
 
 		// Step 2: derive per-side capture and strip flags.
 		// Capture if we need to send the data back OR store it — independent per side.
@@ -5651,6 +5663,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		req.Context.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, dropResp)
 		// Tells the logging plugin whether to persist raw bytes in log records.
 		req.Context.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
+		req.Context.SetValue(schemas.BifrostContextKeyShouldStoreInboundRequestInLogs, effectiveStoreInbound)
+		req.Context.SetValue(schemas.BifrostContextKeyShouldStoreInternalBifrostRequestInLogs, effectiveStoreInternalBifrost)
 
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.

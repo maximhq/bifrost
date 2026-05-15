@@ -15,18 +15,20 @@ import (
 // NOTE: Any changes to the provider configuration should be reflected in the GenerateConfigHash function
 // That helps us detect changes between config file and database config
 type TableProvider struct {
-	ID                       uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name                     string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
-	NetworkConfigJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
-	ConcurrencyBufferJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
-	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
-	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
-	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
-	SendBackRawRequest       bool      `json:"send_back_raw_request"`
-	SendBackRawResponse      bool      `json:"send_back_raw_response"`
-	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
-	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
+	ID                          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name                        string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
+	NetworkConfigJSON           string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
+	ConcurrencyBufferJSON       string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
+	ProxyConfigJSON             string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
+	CustomProviderConfigJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
+	OpenAIConfigJSON            string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
+	SendBackRawRequest          bool      `json:"send_back_raw_request"`
+	SendBackRawResponse         bool      `json:"send_back_raw_response"`
+	StoreRawRequestResponse     bool      `json:"store_raw_request_response"`
+	StoreInboundRequest         bool      `json:"store_inbound_request"`
+	StoreInternalBifrostRequest bool      `json:"store_internal_bifrost_request"`
+	CreatedAt                   time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt                   time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Relationships
 	Keys []TableKey `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"keys"`

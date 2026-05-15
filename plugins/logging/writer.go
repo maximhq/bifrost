@@ -339,6 +339,8 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ListModelsOutput) +
 		len(log.TokenUsage) +
 		len(log.ErrorDetails) +
+		len(log.InboundRequest) +
+		len(log.InternalBifrostRequest) +
 		len(log.RawRequest) +
 		len(log.RawResponse) +
 		len(log.PassthroughRequestBody) +

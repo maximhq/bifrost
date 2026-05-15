@@ -556,6 +556,8 @@ export interface LogEntry {
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
+	inbound_request?: string; // Inbound HTTP request received by Bifrost
+	internal_bifrost_request?: string; // Converted internal Bifrost request
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
 	is_large_payload_request?: boolean; // true if request used large payload streaming

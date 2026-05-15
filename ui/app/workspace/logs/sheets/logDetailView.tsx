@@ -720,6 +720,8 @@ export function LogDetailView({
     (log.params as any)?.audio?.format ||
     (log.params as any)?.extra_params?.audio?.format ||
     undefined;
+  const inboundRequest = log.inbound_request;
+  const internalBifrostRequest = log.internal_bifrost_request;
   const rawRequest = log.raw_request;
   const rawResponse = log.raw_response;
   const passthroughRequestBody = log.passthrough_request_body;
@@ -2893,87 +2895,71 @@ export function LogDetailView({
           )}
         </TabsContent>
 
-        <TabsContent value="raw" className="space-y-3">
+        <TabsContent value="raw" className="space-y-6">
+          {inboundRequest && (
+            <RawJsonSection
+              caption="Inbound Request sent to Bifrost"
+              title="Inbound Request sent to Bifrost"
+              value={inboundRequest}
+            />
+          )}
+          {internalBifrostRequest && (
+            <RawJsonSection
+              caption="Internal Bifrost Request"
+              title="Internal Bifrost Request"
+              value={internalBifrostRequest}
+            />
+          )}
           {rawRequest && (
-            <>
-              <div className="text-muted-foreground text-[12px]">
-                Raw Request sent to{" "}
-                <span className="text-foreground font-medium capitalize">
-                  {log.provider}
-                </span>
-                {log.is_large_payload_request && (
-                  <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
-                    (truncated preview)
+            <RawJsonSection
+              caption={
+                <>
+                  Raw Request sent to{" "}
+                  <span className="text-foreground font-medium capitalize">
+                    {log.provider}
                   </span>
-                )}
-              </div>
-              <CollapsibleBox
-                title={
-                  log.is_large_payload_request
-                    ? "Raw Request (Truncated)"
-                    : "Raw Request"
-                }
-                onCopy={() => formatJsonSafe(rawRequest)}
-              >
-                <CodeEditor
-                  className="z-0 w-full"
-                  shouldAdjustInitialHeight={true}
-                  maxHeight={450}
-                  wrap={true}
-                  code={formatJsonSafe(rawRequest)}
-                  lang="json"
-                  readonly={true}
-                  options={{
-                    showVerticalScrollbar: true,
-                    scrollBeyondLastLine: false,
-                    lineNumbers: "off",
-                    alwaysConsumeMouseWheel: false,
-                  }}
-                />
-              </CollapsibleBox>
-            </>
+                  {log.is_large_payload_request && (
+                    <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
+                      (truncated preview)
+                    </span>
+                  )}
+                </>
+              }
+              title={
+                log.is_large_payload_request
+                  ? "Raw Request (Truncated)"
+                  : "Raw Request"
+              }
+              value={rawRequest}
+            />
           )}
           {rawResponse && log.status !== "processing" && (
-            <>
-              <div className="text-muted-foreground pt-4 text-[12px]">
-                Raw Response from{" "}
-                <span className="text-foreground font-medium capitalize">
-                  {log.provider}
-                </span>
-                {log.is_large_payload_response && (
-                  <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
-                    (truncated preview)
+            <RawJsonSection
+              caption={
+                <>
+                  Raw Response from{" "}
+                  <span className="text-foreground font-medium capitalize">
+                    {log.provider}
                   </span>
-                )}
-              </div>
-              <CollapsibleBox
-                title={
-                  log.is_large_payload_response
-                    ? "Raw Response (Truncated)"
-                    : "Raw Response"
-                }
-                onCopy={() => formatJsonSafe(rawResponse)}
-              >
-                <CodeEditor
-                  className="z-0 w-full"
-                  shouldAdjustInitialHeight={true}
-                  maxHeight={450}
-                  wrap={true}
-                  code={formatJsonSafe(rawResponse)}
-                  lang="json"
-                  readonly={true}
-                  options={{
-                    showVerticalScrollbar: true,
-                    scrollBeyondLastLine: false,
-                    lineNumbers: "off",
-                    alwaysConsumeMouseWheel: false,
-                  }}
-                />
-              </CollapsibleBox>
-            </>
+                  {log.is_large_payload_response && (
+                    <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
+                      (truncated preview)
+                    </span>
+                  )}
+                </>
+              }
+              title={
+                log.is_large_payload_response
+                  ? "Raw Response (Truncated)"
+                  : "Raw Response"
+              }
+              value={rawResponse}
+            />
           )}
           {!rawRequest &&
             !rawResponse &&
+            !inboundRequest &&
+            !internalBifrostRequest &&
             !passthroughRequestBody &&
             !passthroughResponseBody && (
               <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
@@ -3133,3 +3119,36 @@ const copyRequestBody = async (
     toast.error("Failed to copy request body");
   }
 };
+
+interface RawJsonSectionProps {
+  caption: ReactNode;
+  title: string;
+  value: string;
+}
+
+function RawJsonSection({ caption, title, value }: RawJsonSectionProps) {
+  const formattedValue = formatJsonSafe(value);
+
+  return (
+    <div className="space-y-3">
+      <div className="text-muted-foreground text-[12px]">{caption}</div>
+      <CollapsibleBox title={title} onCopy={() => formattedValue}>
+        <CodeEditor
+          className="z-0 w-full"
+          shouldAdjustInitialHeight={true}
+          maxHeight={450}
+          wrap={true}
+          code={formattedValue}
+          lang="json"
+          readonly={true}
+          options={{
+            showVerticalScrollbar: true,
+            scrollBeyondLastLine: false,
+            lineNumbers: "off",
+            alwaysConsumeMouseWheel: false,
+          }}
+        />
+      </CollapsibleBox>
+    </div>
+  );
+}
