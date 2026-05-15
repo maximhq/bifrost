@@ -210,11 +210,7 @@ type TableVirtualKey struct {
 	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
-	// Deprecated
-	// Calendar aligned is not the property of virtual key but its property of the budget and ratelimit
-	// So in the migration we will move this to the budget/ratelimit table
-	// And this won't be referred
-	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
@@ -269,11 +265,30 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterFind is a GORM hook that decrypts the virtual key value after reading from the database.
+// AfterFind is a GORM hook that decrypts the virtual key value after reading
+// from the database and propagates VK-level calendar_aligned down to owned
+// budgets / rate_limit and to each provider config's budgets / rate_limit.
+// The reset path reads the stamped value; Update*InMemory paths re-stamp on
+// every VK update.
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 	if vk.EncryptionStatus == EncryptionStatusEncrypted {
 		if err := decryptString(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
+		}
+	}
+	for i := range vk.Budgets {
+		vk.Budgets[i].IsCalendarAligned = vk.CalendarAligned
+	}
+	if vk.RateLimit != nil {
+		vk.RateLimit.IsCalendarAligned = vk.CalendarAligned
+	}
+	for i := range vk.ProviderConfigs {
+		pc := &vk.ProviderConfigs[i]
+		for j := range pc.Budgets {
+			pc.Budgets[j].IsCalendarAligned = vk.CalendarAligned
+		}
+		if pc.RateLimit != nil {
+			pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
 		}
 	}
 	return nil
