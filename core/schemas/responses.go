@@ -786,6 +786,7 @@ type ResponsesMessage struct {
 	ID     *string               `json:"id,omitempty"` // Common ID field for most item types
 	Type   *ResponsesMessageType `json:"type,omitempty"`
 	Status *string               `json:"status,omitempty"` // "in_progress" | "completed" | "incomplete" | "interpreting" | "failed"
+	Phase  *string               `json:"phase,omitempty"`  // OpenAI emits this for multi-phase message items, e.g. "final_answer"
 
 	Role    *ResponsesMessageRoleType `json:"role,omitempty"`
 	Content *ResponsesMessageContent  `json:"content,omitempty"`
@@ -2475,16 +2476,18 @@ type BifrostResponsesStreamResponse struct {
 
 	Response *BifrostResponsesResponse `json:"response,omitempty"`
 
-	OutputIndex *int              `json:"output_index,omitempty"`
-	Item        *ResponsesMessage `json:"item"`
+	OutputIndex  *int              `json:"output_index,omitempty"`
+	Item         *ResponsesMessage `json:"item"`
+	SummaryIndex *int              `json:"summary_index,omitempty"`
 
 	ContentIndex *int                          `json:"content_index,omitempty"`
 	ItemID       *string                       `json:"item_id,omitempty"`
 	Part         *ResponsesMessageContentBlock `json:"part,omitempty"`
 
-	Delta     *string                                    `json:"delta,omitempty"`
-	Signature *string                                    `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
-	LogProbs  []ResponsesOutputMessageContentTextLogProb `json:"logprobs"`
+	Delta       *string                                    `json:"delta,omitempty"`
+	Signature   *string                                    `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	Obfuscation *string                                    `json:"obfuscation,omitempty"`
+	LogProbs    []ResponsesOutputMessageContentTextLogProb `json:"logprobs"`
 
 	Text *string `json:"text,omitempty"` // Full text of the output item, comes with event "response.output_text.done"
 
@@ -2531,11 +2534,13 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	// Copy all streaming-specific fields
 	result.OutputIndex = resp.OutputIndex
 	result.Item = resp.Item
+	result.SummaryIndex = resp.SummaryIndex
 	result.ContentIndex = resp.ContentIndex
 	result.ItemID = resp.ItemID
 	result.Part = resp.Part
 	result.Delta = resp.Delta
 	result.Signature = resp.Signature
+	result.Obfuscation = resp.Obfuscation
 	result.Text = resp.Text
 	result.Refusal = resp.Refusal
 	result.Arguments = resp.Arguments
