@@ -2211,7 +2211,7 @@ func HandleStreamCancellation(
 	}
 	// Create cancellation error
 	cancelErr := &schemas.BifrostError{
-		StatusCode: schemas.Ptr(499), // Client Closed Request
+		StatusCode: new(499), // Client Closed Request
 		Error: &schemas.ErrorField{
 			Message: "Request cancelled: client disconnected",
 			Type:    schemas.Ptr(schemas.RequestCancelled),
