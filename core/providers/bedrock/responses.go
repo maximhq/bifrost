@@ -1665,7 +1665,16 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	// map bifrost messages to bedrock messages using the new conversion method
 	if bifrostReq.Input != nil {
-		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, bifrostReq.Input)
+		input := bifrostReq.Input
+		if schemas.IsAnthropicModel(bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+			trimmed := len(input)
+			for trimmed > 0 && input[trimmed-1].Role != nil && *input[trimmed-1].Role == schemas.ResponsesInputMessageRoleAssistant {
+				trimmed--
+			}
+			input = input[:trimmed]
+		}
+
+		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, input)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Responses messages: %w", err)
 		}
