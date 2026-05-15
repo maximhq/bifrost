@@ -11,10 +11,14 @@ import (
 // DefaultBedrockRegion is the default region for Bedrock
 const DefaultBedrockRegion = "us-east-1"
 
-// bedrockSigningService is the SigV4 service name used when signing all Bedrock
-// API requests. AWS requires "bedrock" as the credential scope service for both
-// bedrock-runtime and bedrock-agent-runtime endpoints.
+// bedrockSigningService is the SigV4 service name for the standard Bedrock endpoints
+// (bedrock-runtime, bedrock-agent-runtime).
 const bedrockSigningService = "bedrock"
+
+// bedrockMantleSigningService is the SigV4 service name for the Bedrock Mantle endpoint
+// (bedrock-mantle.{region}.api.aws). AWS requires a distinct service name in the
+// credential scope; using "bedrock" will cause signature verification failures.
+const bedrockMantleSigningService = "bedrock-mantle"
 
 const MinimumReasoningMaxTokens = 1
 const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
@@ -206,6 +210,9 @@ type BedrockContentBlock struct {
 
 	// Cache point for the content block
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"`
+
+	// Citations from nova_grounding — co-located with a text block in the same content block
+	CitationsContent *BedrockCitationsContent `json:"citationsContent,omitempty"`
 }
 
 type BedrockCachePointType string
@@ -245,9 +252,10 @@ type BedrockDocumentSourceData struct {
 
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
-	ToolUseID string          `json:"toolUseId"` // Required: Unique identifier for this tool use
-	Name      string          `json:"name"`      // Required: Name of the tool to use
-	Input     json.RawMessage `json:"input"`     // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
+	ToolUseID string          `json:"toolUseId"`       // Required: Unique identifier for this tool use
+	Name      string          `json:"name"`            // Required: Name of the tool to use
+	Input     json.RawMessage `json:"input"`           // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
+	Type      string          `json:"type,omitempty"`  // Optional: "server_tool_use" for Nova system tools
 }
 
 // BedrockToolResult represents the result of a tool use
@@ -255,6 +263,7 @@ type BedrockToolResult struct {
 	ToolUseID string                `json:"toolUseId"`        // Required: ID of the tool use this result corresponds to
 	Content   []BedrockContentBlock `json:"content"`          // Required: Content of the tool result
 	Status    *string               `json:"status,omitempty"` // Optional: Status of tool execution ("success" or "error")
+	Type      *string               `json:"type,omitempty"`   // Optional: result type e.g. "nova_code_interpreter_result"
 }
 
 // BedrockGuardContent represents guard content for guardrails
@@ -304,6 +313,22 @@ type BedrockToolConfig struct {
 type BedrockTool struct {
 	ToolSpec   *BedrockToolSpec   `json:"toolSpec,omitempty"`   // Tool specification
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"` // Cache point for the tool
+	SystemTool *BedrockSystemTool `json:"systemTool,omitempty"` // Nova system tool (nova_grounding, nova_code_interpreter)
+}
+
+type BedrockSystemToolType string
+
+const (
+	BedrockSystemToolNovaGrounding       BedrockSystemToolType = "nova_grounding"
+	BedrockSystemToolNovaCodeInterpreter BedrockSystemToolType = "nova_code_interpreter"
+)
+
+const BedrockNovaCodeInterpreterResultType = "nova_code_interpreter_result"
+const BedrockNovaGroundingResultType = "nova_grounding_result"
+
+// BedrockSystemTool represents a Nova-managed system tool
+type BedrockSystemTool struct {
+	Name BedrockSystemToolType `json:"name"` // "nova_grounding" | "nova_code_interpreter"
 }
 
 // BedrockToolSpec represents the specification of a tool
@@ -643,6 +668,28 @@ type BedrockContentBlockDelta struct {
 	Text             *string                      `json:"text,omitempty"`             // Text content delta
 	ReasoningContent *BedrockReasoningContentText `json:"reasoningContent,omitempty"` // Reasoning content delta
 	ToolUse          *BedrockToolUseDelta         `json:"toolUse,omitempty"`          // Tool use delta
+	Citation         *BedrockCitation             `json:"citation,omitempty"`         // nova_grounding citation delta
+}
+
+// BedrockWebCitationLocation represents the web location of a citation
+type BedrockWebCitationLocation struct {
+	URL    string `json:"url"`
+	Domain string `json:"domain"`
+}
+
+// BedrockCitationLocation represents the location of a citation (union type)
+type BedrockCitationLocation struct {
+	Web *BedrockWebCitationLocation `json:"web,omitempty"`
+}
+
+// BedrockCitation represents a single citation returned by nova_grounding
+type BedrockCitation struct {
+	Location BedrockCitationLocation `json:"location"`
+}
+
+// BedrockCitationsContent represents the citations block embedded in a text content block
+type BedrockCitationsContent struct {
+	Citations []BedrockCitation `json:"citations"`
 }
 
 // BedrockToolUseDelta represents incremental tool use content

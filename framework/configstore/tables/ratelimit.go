@@ -23,7 +23,15 @@ type TableRateLimit struct {
 	RequestCurrentUsage  int64     `gorm:"default:0" json:"request_current_usage"`                   // Current request usage
 	RequestLastReset     time.Time `gorm:"index" json:"request_last_reset"`                          // Last time request counter was reset
 
-	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
+	// Deprecated: set calendar_aligned on the parent access profile / VK / team
+	// instead. Kept for backward compatibility with older config.json files;
+	// the OSS applyV1Compat path and the enterprise access-profile reconciler
+	// promote any true value here to the owner's top-level CalendarAligned at
+	// load time.
+	CalendarAlignedInput *bool `gorm:"-" json:"calendar_aligned,omitempty"`
+
+	// Derived from the owning entity. See TableBudget.IsCalendarAligned.
+	IsCalendarAligned bool `gorm:"-" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

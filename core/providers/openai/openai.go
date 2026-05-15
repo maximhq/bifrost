@@ -490,7 +490,7 @@ func HandleOpenAITextCompletionStreaming(
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -512,7 +512,7 @@ func HandleOpenAITextCompletionStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
@@ -541,7 +541,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
@@ -580,10 +580,10 @@ func HandleOpenAITextCompletionStreaming(
 			}
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -1031,7 +1031,7 @@ func HandleOpenAIChatCompletionStreaming(
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1053,7 +1053,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
@@ -1084,7 +1084,7 @@ func HandleOpenAIChatCompletionStreaming(
 			schemas.ReleaseChatToResponsesStreamState(responsesStreamState)
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
@@ -1119,6 +1119,9 @@ func HandleOpenAIChatCompletionStreaming(
 		var modelName string
 		var created int
 		forwardedTerminalFinishReason := false
+		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
+		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
+		usageSeen := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1127,10 +1130,10 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -1181,6 +1184,32 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 
 			if isResponsesToChatCompletionsFallback {
+				// Accumulate usage across chunks; attached to final event below.
+				if response.Usage != nil {
+					usageSeen = true
+					if response.Usage.PromptTokens > usage.PromptTokens {
+						usage.PromptTokens = response.Usage.PromptTokens
+					}
+					if response.Usage.CompletionTokens > usage.CompletionTokens {
+						usage.CompletionTokens = response.Usage.CompletionTokens
+					}
+					if response.Usage.TotalTokens > usage.TotalTokens {
+						usage.TotalTokens = response.Usage.TotalTokens
+					}
+					if calculatedTotal := usage.PromptTokens + usage.CompletionTokens; calculatedTotal > usage.TotalTokens {
+						usage.TotalTokens = calculatedTotal
+					}
+					if response.Usage.PromptTokensDetails != nil {
+						usage.PromptTokensDetails = response.Usage.PromptTokensDetails
+					}
+					if response.Usage.CompletionTokensDetails != nil {
+						usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
+					}
+					if response.Usage.Cost != nil {
+						usage.Cost = response.Usage.Cost
+					}
+				}
+
 				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
 				for _, response := range spreadResponses {
 					if response.Type == schemas.ResponsesStreamResponseTypeError {
@@ -1212,14 +1241,9 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-						// Set raw request if enabled
-						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
-						}
-						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-						return
+						// Defer sending until stream end so usage can be attached.
+						pendingFinalEvent = response
+						continue
 					}
 
 					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
@@ -1321,7 +1345,19 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 		}
 
-		if !isResponsesToChatCompletionsFallback {
+		if isResponsesToChatCompletionsFallback {
+			if pendingFinalEvent != nil {
+				if usageSeen && pendingFinalEvent.Response != nil {
+					pendingFinalEvent.Response.Usage = usage.ToResponsesResponseUsage()
+				}
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&pendingFinalEvent.ExtraFields, jsonBody)
+				}
+				pendingFinalEvent.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingFinalEvent, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+		} else {
 			finalFinishReason := finishReason
 			if forwardedTerminalFinishReason {
 				finalFinishReason = nil
@@ -1636,7 +1672,7 @@ func HandleOpenAIResponsesStreaming(
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -1658,7 +1694,7 @@ func HandleOpenAIResponsesStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
@@ -1687,7 +1723,7 @@ func HandleOpenAIResponsesStreaming(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
@@ -1721,10 +1757,10 @@ func HandleOpenAIResponsesStreaming(
 			}
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -2249,7 +2285,7 @@ func HandleOpenAISpeechStreamRequest(
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -2271,7 +2307,7 @@ func HandleOpenAISpeechStreamRequest(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -2297,7 +2333,7 @@ func HandleOpenAISpeechStreamRequest(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
@@ -2333,10 +2369,10 @@ func HandleOpenAISpeechStreamRequest(
 
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -2690,7 +2726,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -2712,7 +2748,7 @@ func HandleOpenAITranscriptionStreamRequest(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, ParseOpenAIError(resp)
 	}
@@ -2738,7 +2774,7 @@ func HandleOpenAITranscriptionStreamRequest(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
@@ -2775,10 +2811,10 @@ func HandleOpenAITranscriptionStreamRequest(
 
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					if ctx.Err() != nil {
-						return
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -3128,7 +3164,7 @@ func HandleOpenAIImageGenerationStreaming(
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -3150,7 +3186,7 @@ func HandleOpenAIImageGenerationStreaming(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -3176,7 +3212,7 @@ func HandleOpenAIImageGenerationStreaming(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
@@ -3219,8 +3255,10 @@ func HandleOpenAIImageGenerationStreaming(
 
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
-					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 				}
 				break
@@ -4222,7 +4260,7 @@ func HandleOpenAIImageEditRequest(
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, bodyData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 	// Extract provider response headers early so they're available on error paths too
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -4230,7 +4268,7 @@ func HandleOpenAIImageEditRequest(
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), bodyData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	bodyBytes, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
@@ -4245,7 +4283,7 @@ func HandleOpenAIImageEditRequest(
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(bodyBytes, response, bodyData, false, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(bodyBytes, response, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -4365,7 +4403,7 @@ func HandleOpenAIImageEditStreamRequest(
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -4386,9 +4424,9 @@ func HandleOpenAIImageEditStreamRequest(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), body.Bytes(), nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -4412,7 +4450,7 @@ func HandleOpenAIImageEditStreamRequest(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
@@ -4455,6 +4493,9 @@ func HandleOpenAIImageEditStreamRequest(
 
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
 					logger.Warn(fmt.Sprintf("Error reading stream: %v", readErr))
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -4470,7 +4511,7 @@ func HandleOpenAIImageEditStreamRequest(
 				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, body.Bytes(), nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
 						return
 					}
 				}
@@ -4746,7 +4787,7 @@ func HandleOpenAIImageVariationRequest(
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, bodyData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 	// Extract provider response headers early so they're available on error paths too
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -4754,7 +4795,7 @@ func HandleOpenAIImageVariationRequest(
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), bodyData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	bodyBytes, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
@@ -4769,7 +4810,7 @@ func HandleOpenAIImageVariationRequest(
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{}
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(bodyBytes, response, bodyData, sendBackRawRequest, sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(bodyBytes, response, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -6994,7 +7035,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	startTime := time.Now()
 
 	if err := activeClient.Do(fasthttpReq, resp); err != nil {
-		providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -7016,7 +7057,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	rawBodyStream := resp.BodyStream()
 	if rawBodyStream == nil {
-		providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		return nil, providerUtils.NewBifrostOperationError(
 			"provider returned an empty stream body",
 			fmt.Errorf("provider returned an empty stream body"))
@@ -7044,7 +7085,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 			}
 			close(ch)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
@@ -7079,9 +7120,11 @@ func (provider *OpenAIProvider) PassthroughStream(
 				if ctx.Err() != nil {
 					return // let defer handle cancel/timeout
 				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(startTime).Milliseconds()
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger, postHookSpanFinalizer)
+				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					extraFields.Latency = time.Since(startTime).Milliseconds()
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger, postHookSpanFinalizer)
+				}
 				return
 			}
 		}

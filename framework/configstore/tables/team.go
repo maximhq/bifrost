@@ -32,6 +32,8 @@ type TableTeam struct {
 	Claims       *string        `gorm:"type:text" json:"-"`
 	ParsedClaims map[string]any `gorm:"-" json:"claims"`
 
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -75,7 +77,10 @@ func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterFind hook for TableTeam to deserialize JSON fields
+// AfterFind hook for TableTeam to deserialize JSON fields and propagate
+// calendar_aligned down to owned budgets / rate_limit. The reset path reads
+// the stamped value off the budget / rate_limit; the governance store's
+// Update*InMemory paths re-stamp on every team update.
 func (t *TableTeam) AfterFind(tx *gorm.DB) error {
 	if t.Profile != nil {
 		if err := json.Unmarshal([]byte(*t.Profile), &t.ParsedProfile); err != nil {
@@ -91,6 +96,12 @@ func (t *TableTeam) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(*t.Claims), &t.ParsedClaims); err != nil {
 			return err
 		}
+	}
+	for i := range t.Budgets {
+		t.Budgets[i].IsCalendarAligned = t.CalendarAligned
+	}
+	if t.RateLimit != nil {
+		t.RateLimit.IsCalendarAligned = t.CalendarAligned
 	}
 	return nil
 }

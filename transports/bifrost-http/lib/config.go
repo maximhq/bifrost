@@ -418,6 +418,48 @@ func applyV1Compat(configData *ConfigData) {
 	}
 }
 
+// promoteDeprecatedCalendarAligned lifts the legacy per-budget / per-rate-limit
+// calendar_aligned input to the owning VK or Team. Owner wins if already true;
+// otherwise OR across descendants (own budgets/rate-limit + every provider
+// config's budgets/rate-limit). Inner pointers are always cleared. Mirrors the
+// enterprise promoteDeprecatedAccessProfileCalendarAligned at the access
+// profile level. Runs on every load regardless of config version
+func promoteDeprecatedCalendarAligned(configData *ConfigData) {
+	if configData == nil || configData.Governance == nil {
+		return
+	}
+	for i := range configData.Governance.VirtualKeys {
+		vk := &configData.Governance.VirtualKeys[i]
+		promoteCalendarAligned(&vk.CalendarAligned, vk.Budgets, vk.RateLimit)
+		for j := range vk.ProviderConfigs {
+			pc := &vk.ProviderConfigs[j]
+			promoteCalendarAligned(&vk.CalendarAligned, pc.Budgets, pc.RateLimit)
+		}
+	}
+	for i := range configData.Governance.Teams {
+		team := &configData.Governance.Teams[i]
+		promoteCalendarAligned(&team.CalendarAligned, team.Budgets, team.RateLimit)
+	}
+}
+
+// promoteCalendarAligned ORs each child's legacy calendar_aligned input into
+// the owner's flag and clears the child field. Treats a nil child pointer as
+// "not set" — only explicit true contributes.
+func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
+	for i := range budgets {
+		if budgets[i].CalendarAlignedInput != nil && *budgets[i].CalendarAlignedInput {
+			*owner = true
+		}
+		budgets[i].CalendarAlignedInput = nil
+	}
+	if rateLimit != nil && rateLimit.CalendarAlignedInput != nil {
+		if *rateLimit.CalendarAlignedInput {
+			*owner = true
+		}
+		rateLimit.CalendarAlignedInput = nil
+	}
+}
+
 // LoadConfig loads initial configuration from a JSON config file into memory
 // with full preprocessing including environment variable resolution and key config parsing.
 // All processing is done upfront to ensure zero latency when retrieving data.
@@ -504,6 +546,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 		logger.Info("loading configuration from: %s", absConfigFilePath)
+		// Promote deprecated per-budget / per-rate-limit calendar_aligned to the
+		// owning VK / Team. Independent of config version — the deprecation
+		// predates the v1/v2 allow-list split.
+		promoteDeprecatedCalendarAligned(&configData)
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")

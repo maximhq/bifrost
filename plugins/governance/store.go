@@ -1373,9 +1373,10 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 		if !ok || budget == nil {
 			return true
 		}
+		calendarAligned := budget.IsCalendarAligned
 		var shouldReset bool
 		var newLastReset time.Time
-		if budget.CalendarAligned {
+		if calendarAligned {
 			currentPeriodStart := configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
 			if currentPeriodStart.After(budget.LastReset) {
 				shouldReset = true
@@ -1451,8 +1452,9 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 		if !ok || rateLimit == nil {
 			return true
 		}
-		tokenNewLastReset := resolvePeriodStart(rateLimit.TokenResetDuration, rateLimit.CalendarAligned, rateLimit.TokenLastReset)
-		requestNewLastReset := resolvePeriodStart(rateLimit.RequestResetDuration, rateLimit.CalendarAligned, rateLimit.RequestLastReset)
+		calendarAligned := rateLimit.IsCalendarAligned
+		tokenNewLastReset := resolvePeriodStart(rateLimit.TokenResetDuration, calendarAligned, rateLimit.TokenLastReset)
+		requestNewLastReset := resolvePeriodStart(rateLimit.RequestResetDuration, calendarAligned, rateLimit.RequestLastReset)
 		if tokenNewLastReset == nil && requestNewLastReset == nil {
 			return true
 		}
@@ -2257,21 +2259,26 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 
 	// Store budgets
 	for i := range vk.Budgets {
+		vk.Budgets[i].IsCalendarAligned = vk.CalendarAligned
 		gs.budgets.Store(vk.Budgets[i].ID, &vk.Budgets[i])
 	}
 
 	// Create associated rate limit if exists
 	if vk.RateLimit != nil {
+		vk.RateLimit.IsCalendarAligned = vk.CalendarAligned
 		gs.rateLimits.Store(vk.RateLimit.ID, vk.RateLimit)
 	}
 
 	// Create provider config budgets and rate limits if they exist
 	if vk.ProviderConfigs != nil {
-		for _, pc := range vk.ProviderConfigs {
-			for i := range pc.Budgets {
-				gs.budgets.Store(pc.Budgets[i].ID, &pc.Budgets[i])
+		for i := range vk.ProviderConfigs {
+			pc := &vk.ProviderConfigs[i]
+			for j := range pc.Budgets {
+				pc.Budgets[j].IsCalendarAligned = vk.CalendarAligned
+				gs.budgets.Store(pc.Budgets[j].ID, &pc.Budgets[j])
 			}
 			if pc.RateLimit != nil {
+				pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
 				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
 			}
 		}
@@ -2318,6 +2325,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 					clone.Budgets[i].LastReset = existingBudget.LastReset
 				}
 			}
+			clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
 			gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
 		}
 		// Delete removed multi-budgets
@@ -2340,6 +2348,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 				}
 			}
+			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 			// Update the rate limit in the main rateLimits sync.Map
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., after AP propagation
@@ -2385,6 +2394,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 							clone.ProviderConfigs[i].RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 						}
 					}
+					clone.ProviderConfigs[i].RateLimit.IsCalendarAligned = clone.CalendarAligned
 					gs.rateLimits.Store(clone.ProviderConfigs[i].RateLimit.ID, clone.ProviderConfigs[i].RateLimit)
 				} else {
 					// Rate limit was removed from provider config, delete it from memory if it existed
@@ -2402,6 +2412,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 							b.LastReset = existingBudget.LastReset
 						}
 					}
+					b.IsCalendarAligned = clone.CalendarAligned
 					gs.budgets.Store(b.ID, b)
 				}
 				// Delete removed multi-budgets for this provider config
@@ -2486,12 +2497,14 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 
 	// Create associated budgets if they exist
 	for i := range team.Budgets {
+		team.Budgets[i].IsCalendarAligned = team.CalendarAligned
 		b := team.Budgets[i]
 		gs.budgets.Store(b.ID, &b)
 	}
 
 	// Create associated rate limit if exists
 	if team.RateLimit != nil {
+		team.RateLimit.IsCalendarAligned = team.CalendarAligned
 		gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
 	}
 
@@ -2532,6 +2545,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 					b.LastReset = lb.LastReset
 				}
 			}
+			b.IsCalendarAligned = clone.CalendarAligned
 			gs.budgets.Store(b.ID, b)
 		}
 		for id := range existingBudgetIDs {
@@ -2552,6 +2566,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 				}
 			}
+			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
 			if existingTeam.RateLimit != nil && existingTeam.RateLimit.ID != clone.RateLimit.ID {

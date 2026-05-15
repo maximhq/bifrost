@@ -19,20 +19,24 @@ import (
 
 // BedrockResponsesStreamState tracks state during streaming conversion for responses API
 type BedrockResponsesStreamState struct {
-	ContentIndexToOutputIndex map[int]int    // Maps Bedrock contentBlockIndex to OpenAI output_index
-	ToolArgumentBuffers       map[int]string // Maps output_index to accumulated tool argument JSON
-	ItemIDs                   map[int]string // Maps output_index to item ID for stable IDs
-	ToolCallIDs               map[int]string // Maps output_index to tool call ID (callID)
-	ToolCallNames             map[int]string // Maps output_index to tool call name
-	ReasoningContentIndices   map[int]bool   // Tracks which content indices are reasoning blocks
-	CompletedOutputIndices    map[int]bool   // Tracks which output indices have been completed
-	CurrentOutputIndex        int            // Current output index counter
-	MessageID                 *string        // Message ID (generated)
-	Model                     *string        // Model name
-	StopReason                *string        // Stop reason for the message
-	CreatedAt                 int            // Timestamp for created_at consistency
-	HasEmittedCreated         bool           // Whether we've emitted response.created
-	HasEmittedInProgress      bool           // Whether we've emitted response.in_progress
+	ContentIndexToOutputIndex map[int]int                                                    // Maps Bedrock contentBlockIndex to OpenAI output_index
+	ToolArgumentBuffers       map[int]string                                                 // Maps output_index to accumulated tool argument JSON
+	ItemIDs                   map[int]string                                                 // Maps output_index to item ID for stable IDs
+	ToolCallIDs               map[int]string                                                 // Maps output_index to tool call ID (callID)
+	ToolCallNames             map[int]string                                                 // Maps output_index to tool call name
+	ReasoningContentIndices   map[int]bool                                                   // Tracks which content indices are reasoning blocks
+	CodeInterpreterIndices    map[int]bool                                                   // Tracks which output indices are nova_code_interpreter calls
+	NovaGroundingIndices      map[int]bool                                                   // Tracks which output indices are nova_grounding (web_search_call) blocks
+	NovaGroundingCitations    map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource // Collected citation sources per nova_grounding output index
+	CompletedOutputIndices    map[int]bool                                                   // Tracks which output indices have been completed
+	AnnotationIndices         map[int]int                                                    // Maps output_index to next annotation index for sequential citation numbering
+	CurrentOutputIndex        int                                                            // Current output index counter
+	MessageID                 *string                                                        // Message ID (generated)
+	Model                     *string                                                        // Model name
+	StopReason                *string                                                        // Stop reason for the message
+	CreatedAt                 int                                                            // Timestamp for created_at consistency
+	HasEmittedCreated         bool                                                           // Whether we've emitted response.created
+	HasEmittedInProgress      bool                                                           // Whether we've emitted response.in_progress
 }
 
 // bedrockResponsesStreamStatePool provides a pool for Bedrock responses stream state objects.
@@ -45,7 +49,11 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 			ToolCallIDs:               make(map[int]string),
 			ToolCallNames:             make(map[int]string),
 			ReasoningContentIndices:   make(map[int]bool),
+			CodeInterpreterIndices:    make(map[int]bool),
+			NovaGroundingIndices:      make(map[int]bool),
+			NovaGroundingCitations:    make(map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource),
 			CompletedOutputIndices:    make(map[int]bool),
+			AnnotationIndices:         make(map[int]int),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -89,10 +97,30 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	} else {
 		clear(state.ReasoningContentIndices)
 	}
+	if state.CodeInterpreterIndices == nil {
+		state.CodeInterpreterIndices = make(map[int]bool)
+	} else {
+		clear(state.CodeInterpreterIndices)
+	}
+	if state.NovaGroundingIndices == nil {
+		state.NovaGroundingIndices = make(map[int]bool)
+	} else {
+		clear(state.NovaGroundingIndices)
+	}
+	if state.NovaGroundingCitations == nil {
+		state.NovaGroundingCitations = make(map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource)
+	} else {
+		clear(state.NovaGroundingCitations)
+	}
 	if state.CompletedOutputIndices == nil {
 		state.CompletedOutputIndices = make(map[int]bool)
 	} else {
 		clear(state.CompletedOutputIndices)
+	}
+	if state.AnnotationIndices == nil {
+		state.AnnotationIndices = make(map[int]int)
+	} else {
+		clear(state.AnnotationIndices)
 	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
@@ -145,10 +173,30 @@ func (state *BedrockResponsesStreamState) flush() {
 	} else {
 		clear(state.ReasoningContentIndices)
 	}
+	if state.CodeInterpreterIndices == nil {
+		state.CodeInterpreterIndices = make(map[int]bool)
+	} else {
+		clear(state.CodeInterpreterIndices)
+	}
+	if state.NovaGroundingIndices == nil {
+		state.NovaGroundingIndices = make(map[int]bool)
+	} else {
+		clear(state.NovaGroundingIndices)
+	}
+	if state.NovaGroundingCitations == nil {
+		state.NovaGroundingCitations = make(map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource)
+	} else {
+		clear(state.NovaGroundingCitations)
+	}
 	if state.CompletedOutputIndices == nil {
 		state.CompletedOutputIndices = make(map[int]bool)
 	} else {
 		clear(state.CompletedOutputIndices)
+	}
+	if state.AnnotationIndices == nil {
+		state.AnnotationIndices = make(map[int]int)
+	} else {
+		clear(state.AnnotationIndices)
 	}
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -404,77 +452,82 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				prevItemID := state.ItemIDs[prevOutputIndex]
 				prevToolName := state.ToolCallNames[prevOutputIndex]
 				accumulatedArgs := state.ToolArgumentBuffers[prevOutputIndex]
+				statusCompleted := "completed"
 
-				// Emit content_part.done for tool call
-				emptyText := ""
-				part := &schemas.ResponsesMessageContentBlock{
-					Type: schemas.ResponsesOutputMessageContentTypeText,
-					Text: &emptyText,
-					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-					},
-				}
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   schemas.Ptr(prevContentIndex),
-					ItemID:         &prevItemID,
-					Part:           part,
-				})
-
-				// Emit function_call_arguments.done with full arguments
-				if accumulatedArgs != "" {
-					var doneItem *schemas.ResponsesMessage
-					if prevToolCallID != "" || prevToolName != "" {
-						doneItem = &schemas.ResponsesMessage{
-							ResponsesToolMessage: &schemas.ResponsesToolMessage{},
-						}
-						if prevToolCallID != "" {
-							doneItem.ResponsesToolMessage.CallID = &prevToolCallID
-						}
-						if prevToolName != "" {
-							doneItem.ResponsesToolMessage.Name = &prevToolName
-						}
+				if state.CodeInterpreterIndices[prevOutputIndex] {
+					ciEvents := emitCodeInterpreterDoneEvents(prevOutputIndex, prevContentIndex, prevItemID, prevToolCallID, accumulatedArgs, sequenceNumber+len(responses))
+					responses = append(responses, ciEvents...)
+				} else if state.NovaGroundingIndices[prevOutputIndex] {
+					citations := state.NovaGroundingCitations[prevOutputIndex]
+					wsEvents := emitNovaGroundingDoneEvents(prevOutputIndex, prevContentIndex, prevItemID, citations, accumulatedArgs, sequenceNumber+len(responses))
+					responses = append(responses, wsEvents...)
+				} else {
+					// Close a regular function_call block
+					emptyText := ""
+					part := &schemas.ResponsesMessageContentBlock{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &emptyText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						},
 					}
-
-					argsDoneResponse := &schemas.BifrostResponsesStreamResponse{
-						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+					responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(prevOutputIndex),
-						Arguments:      &accumulatedArgs,
-					}
-					if prevItemID != "" {
-						argsDoneResponse.ItemID = &prevItemID
-					}
-					if doneItem != nil {
-						argsDoneResponse.Item = doneItem
-					}
-					responses = append(responses, argsDoneResponse)
-				}
+						ContentIndex:   schemas.Ptr(prevContentIndex),
+						ItemID:         &prevItemID,
+						Part:           part,
+					})
 
-				// Emit output_item.done for tool call
-				statusCompleted := "completed"
-				toolDoneItem := &schemas.ResponsesMessage{
-					ID:     &prevItemID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-					Status: &statusCompleted,
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:    &prevToolCallID,
-						Name:      &prevToolName,
-						Arguments: &accumulatedArgs,
-					},
-				}
+					if accumulatedArgs != "" {
+						var doneItem *schemas.ResponsesMessage
+						if prevToolCallID != "" || prevToolName != "" {
+							doneItem = &schemas.ResponsesMessage{
+								ResponsesToolMessage: &schemas.ResponsesToolMessage{},
+							}
+							if prevToolCallID != "" {
+								doneItem.ResponsesToolMessage.CallID = &prevToolCallID
+							}
+							if prevToolName != "" {
+								doneItem.ResponsesToolMessage.Name = &prevToolName
+							}
+						}
+						argsDoneResponse := &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+							SequenceNumber: sequenceNumber + len(responses),
+							OutputIndex:    schemas.Ptr(prevOutputIndex),
+							Arguments:      &accumulatedArgs,
+						}
+						if prevItemID != "" {
+							argsDoneResponse.ItemID = &prevItemID
+						}
+						if doneItem != nil {
+							argsDoneResponse.Item = doneItem
+						}
+						responses = append(responses, argsDoneResponse)
+					}
 
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   schemas.Ptr(prevContentIndex),
-					ItemID:         &prevItemID,
-					Item:           toolDoneItem,
-				})
+					toolDoneItem := &schemas.ResponsesMessage{
+						ID:     &prevItemID,
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						Status: &statusCompleted,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    &prevToolCallID,
+							Name:      &prevToolName,
+							Arguments: &accumulatedArgs,
+						},
+					}
+					responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+						SequenceNumber: sequenceNumber + len(responses),
+						OutputIndex:    schemas.Ptr(prevOutputIndex),
+						ContentIndex:   schemas.Ptr(prevContentIndex),
+						ItemID:         &prevItemID,
+						Item:           toolDoneItem,
+					})
+				}
 
 				// Mark this output index as completed
 				state.CompletedOutputIndices[prevOutputIndex] = true
@@ -483,37 +536,101 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			// Create new output index for this tool use
 			outputIndex := state.CurrentOutputIndex
 			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
-			state.CurrentOutputIndex++ // Increment for next use
+			state.CurrentOutputIndex++
 
-			// Store tool use ID as item ID and call ID
 			toolUseID := chunk.Start.ToolUse.ToolUseID
 			toolName := chunk.Start.ToolUse.Name
 			state.ItemIDs[outputIndex] = toolUseID
 			state.ToolCallIDs[outputIndex] = toolUseID
 			state.ToolCallNames[outputIndex] = toolName
 
-			statusInProgress := "in_progress"
-			item := &schemas.ResponsesMessage{
-				ID:     &toolUseID,
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-				Status: &statusInProgress,
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID:    &toolUseID,
-					Name:      &toolName,
-					Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
-				},
-			}
-
-			// Initialize argument buffer for this tool call
+			// Initialize argument buffer
 			state.ToolArgumentBuffers[outputIndex] = ""
 
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   schemas.Ptr(contentBlockIndex),
-				Item:           item,
-			})
+			statusInProgress := "in_progress"
+
+			if toolName == "nova_code_interpreter" {
+				// Emit output_item.added then code_interpreter_call.in_progress
+				state.CodeInterpreterIndices[outputIndex] = true
+				item := &schemas.ResponsesMessage{
+					ID:     &toolUseID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+					Status: &statusInProgress,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{
+							ContainerID: toolUseID,
+							Outputs:     []schemas.ResponsesCodeInterpreterOutput{},
+						},
+					},
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   schemas.Ptr(contentBlockIndex),
+					Item:           item,
+				})
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeCodeInterpreterCallInProgress,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   schemas.Ptr(contentBlockIndex),
+					Item:           item,
+				})
+			} else if toolName == string(BedrockSystemToolNovaGrounding) {
+				state.NovaGroundingIndices[outputIndex] = true
+				state.NovaGroundingCitations[outputIndex] = nil
+				item := &schemas.ResponsesMessage{
+					ID:     &toolUseID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+					Status: &statusInProgress,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: &toolUseID,
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+								Type: "search",
+							},
+						},
+					},
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   schemas.Ptr(contentBlockIndex),
+					Item:           item,
+				})
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ItemID:         &toolUseID,
+				})
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ItemID:         &toolUseID,
+				})
+			} else {
+				item := &schemas.ResponsesMessage{
+					ID:     &toolUseID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					Status: &statusInProgress,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    &toolUseID,
+						Name:      &toolName,
+						Arguments: schemas.Ptr(""),
+					},
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   schemas.Ptr(contentBlockIndex),
+					Item:           item,
+				})
+			}
 
 			return responses, nil, false
 		}
@@ -705,21 +822,71 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 			}
 
+		case chunk.Delta.Citation != nil:
+			citation := chunk.Delta.Citation
+			if citation.Location.Web != nil {
+				if state.NovaGroundingIndices[outputIndex] {
+					domain := citation.Location.Web.Domain
+					state.NovaGroundingCitations[outputIndex] = append(
+						state.NovaGroundingCitations[outputIndex],
+						schemas.ResponsesWebSearchToolCallActionSearchSource{
+							Type:  "url",
+							URL:   citation.Location.Web.URL,
+							Title: &domain,
+						},
+					)
+				}
+				// Emit as url_citation annotation (covers both nova_grounding and text blocks).
+				itemID := state.ItemIDs[outputIndex]
+				annotationIndex := state.AnnotationIndices[outputIndex]
+				state.AnnotationIndices[outputIndex]++
+				annotation := &schemas.ResponsesOutputMessageContentTextAnnotation{
+					Type:  "url_citation",
+					URL:   schemas.Ptr(citation.Location.Web.URL),
+					Title: schemas.Ptr(citation.Location.Web.Domain),
+				}
+				response := &schemas.BifrostResponsesStreamResponse{
+					Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+					SequenceNumber:  sequenceNumber,
+					OutputIndex:     schemas.Ptr(outputIndex),
+					ContentIndex:    &contentBlockIndex,
+					AnnotationIndex: &annotationIndex,
+					Annotation:      annotation,
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+			}
+
 		case chunk.Delta.ToolUse != nil:
-			// Handle tool use delta - function call arguments
+			// Handle tool use delta - function call arguments or code interpreter code
 			toolUseDelta := chunk.Delta.ToolUse
 
 			if toolUseDelta.Input != "" {
-				// Accumulate argument deltas
 				state.ToolArgumentBuffers[outputIndex] += toolUseDelta.Input
 
 				itemID := state.ItemIDs[outputIndex]
-				response := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   &contentBlockIndex,
-					Delta:          &toolUseDelta.Input,
+
+				var response *schemas.BifrostResponsesStreamResponse
+				if state.CodeInterpreterIndices[outputIndex] {
+					// Each nova_code_interpreter delta is a complete JSON object {"snippet":"..."}.
+					codeDelta := providerUtils.GetJSONField([]byte(toolUseDelta.Input), "snippet").String()
+					response = &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeCodeInterpreterCallCodeDelta,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   &contentBlockIndex,
+						Delta:          &codeDelta,
+					}
+				} else {
+					response = &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   &contentBlockIndex,
+						Delta:          &toolUseDelta.Input,
+					}
 				}
 				if itemID != "" {
 					response.ItemID = &itemID
@@ -844,17 +1011,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 
 	case chunk.StopReason != nil:
 		// Stop reason - track it for the final response
-		var stopReason string
-		switch *chunk.StopReason {
-		case "tool_use":
-			stopReason = "tool_calls"
-		case "end_turn":
-			stopReason = "stop"
-		case "max_tokens":
-			stopReason = "length"
-		default:
-			stopReason = *chunk.StopReason
-		}
+		stopReason := convertBedrockStopReason(*chunk.StopReason)
 		state.StopReason = &stopReason
 		// Items should be closed explicitly when content blocks end
 		return nil, nil, false
@@ -863,9 +1020,133 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 	return nil, nil, false
 }
 
+// emitCodeInterpreterDoneEvents extracts the code from accumulated JSON args and emits
+// code_interpreter_call.code.done + code_interpreter_call.completed + output_item.done in sequence.
+func emitCodeInterpreterDoneEvents(outputIndex, contentIndex int, itemID, containerID, accumulatedArgs string, baseSequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	code := providerUtils.GetJSONField([]byte(accumulatedArgs), "snippet").String()
+	statusCompleted := "completed"
+	codeDone := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeCodeInterpreterCallCodeDone,
+		SequenceNumber: baseSequenceNumber,
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   &contentIndex,
+		ItemID:         &itemID,
+		Delta:          &code,
+	}
+	doneItem := &schemas.ResponsesMessage{
+		ID:     &itemID,
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+		Status: &statusCompleted,
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{
+				Code:        &code,
+				ContainerID: containerID,
+				Outputs:     []schemas.ResponsesCodeInterpreterOutput{},
+			},
+		},
+	}
+	completed := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeCodeInterpreterCallCompleted,
+		SequenceNumber: baseSequenceNumber + 1,
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   &contentIndex,
+		ItemID:         &itemID,
+		Item:           doneItem,
+	}
+	outputDone := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+		SequenceNumber: baseSequenceNumber + 2,
+		OutputIndex:    schemas.Ptr(outputIndex),
+		ContentIndex:   &contentIndex,
+		ItemID:         &itemID,
+		Item:           doneItem,
+	}
+	return []*schemas.BifrostResponsesStreamResponse{codeDone, completed, outputDone}
+}
+
+// emitNovaGroundingDoneEvents emits web_search_call.completed + output_item.done for a nova_grounding block.
+// accumulatedArgs holds the raw toolUse input JSON (e.g. `{"query":"..."}`) from the block's deltas.
+func emitNovaGroundingDoneEvents(outputIndex, contentIndex int, itemID string, citations []schemas.ResponsesWebSearchToolCallActionSearchSource, accumulatedArgs string, baseSequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	statusCompleted := "completed"
+	action := &schemas.ResponsesWebSearchToolCallAction{
+		Type:    "search",
+		Sources: citations,
+	}
+	// Extract the search query from the accumulated toolUse input.
+	if q := providerUtils.GetJSONField([]byte(accumulatedArgs), "query").String(); q != "" {
+		action.Query = &q
+		action.Queries = []string{q}
+	}
+	doneItem := &schemas.ResponsesMessage{
+		ID:     &itemID,
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+		Status: &statusCompleted,
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &itemID,
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesWebSearchToolCallAction: action,
+			},
+		},
+	}
+	return []*schemas.BifrostResponsesStreamResponse{
+		{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
+			SequenceNumber: baseSequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ItemID:         &itemID,
+		},
+		{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: baseSequenceNumber + 1,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   &contentIndex,
+			ItemID:         &itemID,
+			Item:           doneItem,
+		},
+	}
+}
+
 // FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
 func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
+
+	// Synthesize lifecycle events if Bedrock never sent a messageStart
+	if !state.HasEmittedCreated {
+		if state.MessageID == nil {
+			messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
+			state.MessageID = &messageID
+		}
+		createdResponse := &schemas.BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+			Usage:     usage,
+		}
+		if state.Model != nil {
+			createdResponse.Model = *state.Model
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCreated,
+			SequenceNumber: sequenceNumber + len(responses),
+			Response:       createdResponse,
+		})
+		state.HasEmittedCreated = true
+	}
+
+	if !state.HasEmittedInProgress {
+		inProgressResponse := &schemas.BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+		}
+		if state.Model != nil {
+			inProgressResponse.Model = *state.Model
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeInProgress,
+			SequenceNumber: sequenceNumber + len(responses),
+			Response:       inProgressResponse,
+		})
+		state.HasEmittedInProgress = true
+	}
 
 	// Close any open items (text items and tool calls)
 	for contentIndex, outputIndex := range state.ContentIndexToOutputIndex {
@@ -889,80 +1170,84 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		isToolCall := toolCallID != ""
 
 		if isToolCall {
-			// This is a tool call that needs to be closed
-
-			// Emit content_part.done for tool call
-			emptyText := ""
-			part := &schemas.ResponsesMessageContentBlock{
-				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
-				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-				},
-			}
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   &contentIndex,
-				ItemID:         &itemID,
-				Part:           part,
-			})
-
-			// Emit function_call_arguments.done with full arguments
 			toolName := state.ToolCallNames[outputIndex]
 			accumulatedArgs := state.ToolArgumentBuffers[outputIndex]
-			if accumulatedArgs != "" {
-				var doneItem *schemas.ResponsesMessage
-				if toolCallID != "" || toolName != "" {
-					doneItem = &schemas.ResponsesMessage{
-						ResponsesToolMessage: &schemas.ResponsesToolMessage{},
-					}
-					if toolCallID != "" {
-						doneItem.ResponsesToolMessage.CallID = &toolCallID
-					}
-					if toolName != "" {
-						doneItem.ResponsesToolMessage.Name = &toolName
-					}
-				}
+			statusCompleted := "completed"
 
-				response := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			if state.CodeInterpreterIndices[outputIndex] {
+				ciEvents := emitCodeInterpreterDoneEvents(outputIndex, contentIndex, itemID, toolCallID, accumulatedArgs, sequenceNumber+len(responses))
+				responses = append(responses, ciEvents...)
+			} else if state.NovaGroundingIndices[outputIndex] {
+				citations := state.NovaGroundingCitations[outputIndex]
+				wsEvents := emitNovaGroundingDoneEvents(outputIndex, contentIndex, itemID, citations, accumulatedArgs, sequenceNumber+len(responses))
+				responses = append(responses, wsEvents...)
+			} else {
+				// Close a regular function_call
+				emptyText := ""
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
-					Arguments:      &accumulatedArgs,
-				}
-				if itemID != "" {
-					response.ItemID = &itemID
-				}
-				if doneItem != nil {
-					response.Item = doneItem
-				}
-				responses = append(responses, response)
-			}
+					ContentIndex:   &contentIndex,
+					ItemID:         &itemID,
+					Part:           part,
+				})
 
-			// Emit output_item.done for tool call
-			statusCompleted := "completed"
-			doneItem := &schemas.ResponsesMessage{
-				ID:     &itemID,
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-				Status: &statusCompleted,
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID:    &toolCallID,
-					Name:      &toolName,
-					Arguments: &accumulatedArgs,
-				},
-			}
+				if accumulatedArgs != "" {
+					var doneItem *schemas.ResponsesMessage
+					if toolCallID != "" || toolName != "" {
+						doneItem = &schemas.ResponsesMessage{
+							ResponsesToolMessage: &schemas.ResponsesToolMessage{},
+						}
+						if toolCallID != "" {
+							doneItem.ResponsesToolMessage.CallID = &toolCallID
+						}
+						if toolName != "" {
+							doneItem.ResponsesToolMessage.Name = &toolName
+						}
+					}
+					response := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+						SequenceNumber: sequenceNumber + len(responses),
+						OutputIndex:    schemas.Ptr(outputIndex),
+						Arguments:      &accumulatedArgs,
+					}
+					if itemID != "" {
+						response.ItemID = &itemID
+					}
+					if doneItem != nil {
+						response.Item = doneItem
+					}
+					responses = append(responses, response)
+				}
 
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   &contentIndex,
-				ItemID:         &itemID,
-				Item:           doneItem,
-			})
+				doneItem := &schemas.ResponsesMessage{
+					ID:     &itemID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					Status: &statusCompleted,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    &toolCallID,
+						Name:      &toolName,
+						Arguments: &accumulatedArgs,
+					},
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentIndex,
+					ItemID:         &itemID,
+					Item:           doneItem,
+				})
+			} // end else (regular function call)
 		} else {
 			// This is likely a text item that needs to be closed
 
@@ -1165,14 +1450,24 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-		// Content block start
+		// Content block start — handles nova_grounding (web_search_call), function calls, and text items.
 		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesToolMessage != nil {
-			// Tool use start
-			if bifrostResp.Item.ResponsesToolMessage.Name != nil && bifrostResp.Item.ResponsesToolMessage.CallID != nil {
-				contentBlockIndex := 0
-				if bifrostResp.ContentIndex != nil {
-					contentBlockIndex = *bifrostResp.ContentIndex
+			contentBlockIndex := 0
+			if bifrostResp.ContentIndex != nil {
+				contentBlockIndex = *bifrostResp.ContentIndex
+			}
+			// web_search_call (nova_grounding): CallID is set, Name is nil
+			if bifrostResp.Item.Type != nil && *bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+				bifrostResp.Item.ResponsesToolMessage.CallID != nil {
+				event.ContentBlockIndex = &contentBlockIndex
+				event.Start = &BedrockContentBlockStart{
+					ToolUse: &BedrockToolUseStart{
+						ToolUseID: *bifrostResp.Item.ResponsesToolMessage.CallID,
+						Name:      string(BedrockSystemToolNovaGrounding),
+					},
 				}
+			} else if bifrostResp.Item.ResponsesToolMessage.Name != nil && bifrostResp.Item.ResponsesToolMessage.CallID != nil {
+				// Regular function call
 				event.ContentBlockIndex = &contentBlockIndex
 				event.Start = &BedrockContentBlockStart{
 					ToolUse: &BedrockToolUseStart{
@@ -1180,14 +1475,96 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 						Name:      *bifrostResp.Item.ResponsesToolMessage.Name,
 					},
 				}
+			} else {
+				return nil, nil
 			}
 		} else if bifrostResp.Item != nil {
 			// Text item added - Bedrock doesn't have an explicit text start event, so we skip it
-			// Check if it's a text message (has content blocks or is a message type)
 			if bifrostResp.Item.Content != nil || (bifrostResp.Item.Type != nil && *bifrostResp.Item.Type == schemas.ResponsesMessageTypeMessage) {
 				return nil, nil
 			}
 		}
+
+	case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+		// url_citation annotation → contentBlockDelta.citation
+		if bifrostResp.Annotation != nil && bifrostResp.Annotation.URL != nil {
+			contentBlockIndex := 0
+			if bifrostResp.ContentIndex != nil {
+				contentBlockIndex = *bifrostResp.ContentIndex
+			}
+			domain := ""
+			if bifrostResp.Annotation.Title != nil {
+				domain = *bifrostResp.Annotation.Title
+			}
+			event.ContentBlockIndex = &contentBlockIndex
+			event.Delta = &BedrockContentBlockDelta{
+				Citation: &BedrockCitation{
+					Location: BedrockCitationLocation{
+						Web: &BedrockWebCitationLocation{
+							URL:    *bifrostResp.Annotation.URL,
+							Domain: domain,
+						},
+					},
+				},
+			}
+		} else {
+			return nil, nil
+		}
+
+	case schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
+		schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
+		schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
+		schemas.ResponsesStreamResponseTypeWebSearchCallResultsAdded,
+		schemas.ResponsesStreamResponseTypeWebSearchCallResultsCompleted:
+		// No Bedrock equivalent for these status events — skip.
+		return nil, nil
+
+	case schemas.ResponsesStreamResponseTypeCodeInterpreterCallInProgress:
+		// nova_code_interpreter → contentBlockStart
+		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesToolMessage != nil &&
+			bifrostResp.Item.ResponsesToolMessage.ResponsesCodeInterpreterToolCall != nil {
+			toolUseID := bifrostResp.Item.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.ContainerID
+			if toolUseID == "" && bifrostResp.Item.ID != nil {
+				toolUseID = *bifrostResp.Item.ID
+			}
+			contentBlockIndex := 0
+			if bifrostResp.ContentIndex != nil {
+				contentBlockIndex = *bifrostResp.ContentIndex
+			}
+			event.ContentBlockIndex = &contentBlockIndex
+			event.Start = &BedrockContentBlockStart{
+				ToolUse: &BedrockToolUseStart{
+					ToolUseID: toolUseID,
+					Name:      string(BedrockSystemToolNovaCodeInterpreter),
+				},
+			}
+		} else {
+			return nil, nil
+		}
+
+	case schemas.ResponsesStreamResponseTypeCodeInterpreterCallCodeDelta:
+		// nova_code_interpreter toolUse delta — wrap snippet back into {"snippet":"..."} JSON
+		if bifrostResp.Delta != nil && *bifrostResp.Delta != "" {
+			contentBlockIndex := 0
+			if bifrostResp.ContentIndex != nil {
+				contentBlockIndex = *bifrostResp.ContentIndex
+			}
+			inputJSON, _ := json.Marshal(map[string]string{"snippet": *bifrostResp.Delta})
+			event.ContentBlockIndex = &contentBlockIndex
+			event.Delta = &BedrockContentBlockDelta{
+				ToolUse: &BedrockToolUseDelta{
+					Input: string(inputJSON),
+				},
+			}
+		} else {
+			return nil, nil
+		}
+
+	case schemas.ResponsesStreamResponseTypeCodeInterpreterCallCodeDone,
+		schemas.ResponsesStreamResponseTypeCodeInterpreterCallCompleted,
+		schemas.ResponsesStreamResponseTypeCodeInterpreterCallInterpreting:
+		// No Bedrock equivalent — skip.
+		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeOutputTextDelta:
 		// Text delta
@@ -1436,6 +1813,18 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				}
 
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
+			} else if tool.SystemTool != nil {
+				// Nova system tools: nova_grounding → web_search, nova_code_interpreter → code_interpreter
+				var toolType schemas.ResponsesToolType
+				switch tool.SystemTool.Name {
+				case BedrockSystemToolNovaGrounding:
+					toolType = schemas.ResponsesToolTypeWebSearch
+				case BedrockSystemToolNovaCodeInterpreter:
+					toolType = schemas.ResponsesToolTypeCodeInterpreter
+				default:
+					continue
+				}
+				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, schemas.ResponsesTool{Type: toolType})
 			} else if tool.CachePoint != nil && !schemas.IsNovaModel(bifrostReq.Model) {
 				// add cache control to last tool in tools array
 				if len(bifrostReq.Params.Tools) > 0 {
@@ -1931,7 +2320,24 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Convert tools
 	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
 		var bedrockTools []BedrockTool
+		isNova2 := schemas.IsNova2Model(bifrostReq.Model)
 		for _, tool := range bifrostReq.Params.Tools {
+			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
+				if !isNova2 {
+					return nil, fmt.Errorf("tool type %q is only supported on Nova 2 models in Bedrock; got model %q", tool.Type, bifrostReq.Model)
+				}
+				var systemToolName BedrockSystemToolType
+				switch tool.Type {
+				case schemas.ResponsesToolTypeWebSearch:
+					systemToolName = BedrockSystemToolNovaGrounding
+				case schemas.ResponsesToolTypeCodeInterpreter:
+					systemToolName = BedrockSystemToolNovaCodeInterpreter
+				}
+				bedrockTools = append(bedrockTools, BedrockTool{
+					SystemTool: &BedrockSystemTool{Name: systemToolName},
+				})
+				continue
+			}
 			if tool.ResponsesToolFunction != nil {
 				// Create the complete schema object that Bedrock expects
 				var schemaObject interface{}
@@ -2099,6 +2505,11 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 		bifrostResp.ServiceTier = &response.ServiceTier.Type
 	}
 
+	if response.StopReason != "" {
+		stopReason := convertBedrockStopReason(response.StopReason)
+		bifrostResp.StopReason = &stopReason
+	}
+
 	return bifrostResp, nil
 }
 
@@ -2134,9 +2545,19 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			message.Content = append(message.Content, bedrockMsg.Content...)
 		}
 
-		// Check for tool use in the content blocks
+		// Check for tool use in the content blocks. Server-managed tools
+		// (nova_grounding, nova_code_interpreter) return both toolUse and
+		// toolResult in the same message — their stop reason is "end_turn",
+		// not "tool_use". Only flag hasToolUse when there is an unmatched
+		// toolUse (i.e. the model is waiting for a client-side tool result).
+		resolvedToolUseIDs := make(map[string]bool)
 		for _, block := range message.Content {
-			if block.ToolUse != nil {
+			if block.ToolResult != nil {
+				resolvedToolUseIDs[block.ToolResult.ToolUseID] = true
+			}
+		}
+		for _, block := range message.Content {
+			if block.ToolUse != nil && !resolvedToolUseIDs[block.ToolUse.ToolUseID] {
 				hasToolUse = true
 				break
 			}
@@ -2145,10 +2566,11 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 
 	bedrockResp.Output.Message = message
 
-	// Find stop reason from incomplete details or derive from response
-	// Priority: IncompleteDetails > tool_use detection > end_turn
+	// Derive stop reason: StopReason > IncompleteDetails > tool_use detection > end_turn
 	stopReason := "end_turn"
-	if bifrostResp.IncompleteDetails != nil {
+	if bifrostResp.StopReason != nil {
+		stopReason = convertBifrostToBedrockStopReason(*bifrostResp.StopReason)
+	} else if bifrostResp.IncompleteDetails != nil {
 		stopReason = bifrostResp.IncompleteDetails.Reason
 	} else if hasToolUse {
 		stopReason = "tool_use"
@@ -2205,16 +2627,17 @@ func ensureResponsesToolConfigForConversation(bifrostReq *schemas.BifrostRespons
 		return // Already has tool config
 	}
 
-	hasToolContent, tools := extractToolsFromResponsesConversationHistory(bifrostReq.Input)
+	hasToolContent, tools := extractToolsFromResponsesConversationHistory(bifrostReq.Input, bifrostReq.Model)
 	if hasToolContent && len(tools) > 0 {
 		bedrockReq.ToolConfig = &BedrockToolConfig{Tools: tools}
 	}
 }
 
 // extractToolsFromResponsesConversationHistory extracts tools from Responses conversation history
-func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMessage) (bool, []BedrockTool) {
+func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMessage, model string) (bool, []BedrockTool) {
 	var hasToolContent bool
 	toolMap := make(map[string]*schemas.ResponsesTool) // Use map to deduplicate by name
+	var hasNovaGrounding, hasNovaCodeInterpreter bool
 
 	for _, msg := range messages {
 		// Check if message contains tool use or tool result
@@ -2239,11 +2662,17 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 						}
 					}
 				}
+			case schemas.ResponsesMessageTypeWebSearchCall:
+				hasToolContent = true
+				hasNovaGrounding = true
+			case schemas.ResponsesMessageTypeCodeInterpreterCall:
+				hasToolContent = true
+				hasNovaCodeInterpreter = true
 			}
 		}
 	}
 
-	// Convert map to slice
+	// Convert function tool map to BedrockTool slice
 	var tools []BedrockTool
 	for _, tool := range toolMap {
 		if tool.Name != nil && tool.ResponsesToolFunction != nil {
@@ -2271,6 +2700,16 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 				},
 			}
 			tools = append(tools, bedrockTool)
+		}
+	}
+
+	// Append system tools found in history — only valid on Nova 2 models
+	if schemas.IsNova2Model(model) {
+		if hasNovaGrounding {
+			tools = append(tools, BedrockTool{SystemTool: &BedrockSystemTool{Name: BedrockSystemToolNovaGrounding}})
+		}
+		if hasNovaCodeInterpreter {
+			tools = append(tools, BedrockTool{SystemTool: &BedrockSystemTool{Name: BedrockSystemToolNovaCodeInterpreter}})
 		}
 	}
 
@@ -2538,6 +2977,9 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 	var bedrockMessages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 	var pendingReasoningContentBlocks []BedrockContentBlock
+	// pendingServerToolBlocks accumulates nova_grounding / nova_code_interpreter toolUse+toolResult
+	// blocks that must be prepended to the next assistant text message (same-turn server-managed tools).
+	var pendingServerToolBlocks []BedrockContentBlock
 
 	// Initialize the state manager for tracking tool calls and results
 	stateManager := NewToolCallStateManager()
@@ -2876,6 +3318,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				// Convert user/assistant text message
 				bedrockMsg := convertBifrostMessageToBedrockMessage(ctx, &msg)
 				if bedrockMsg != nil {
+					// Prepend buffered server-managed tool blocks (nova_grounding / nova_code_interpreter)
+					// to the assistant message they belong to — they're part of the same turn.
+					if bedrockMsg.Role == BedrockMessageRoleAssistant && len(pendingServerToolBlocks) > 0 {
+						bedrockMsg.Content = append(pendingServerToolBlocks, bedrockMsg.Content...)
+						pendingServerToolBlocks = nil
+					}
 					bedrockMessages = append(bedrockMessages, *bedrockMsg)
 				}
 			}
@@ -2887,7 +3335,108 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			if len(reasoningBlocks) > 0 {
 				pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 			}
+
+		case schemas.ResponsesMessageTypeWebSearchCall:
+			// Convert web_search_call → nova_grounding toolUse + toolResult.
+			if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.CallID == nil {
+				continue
+			}
+			callID := *msg.ResponsesToolMessage.CallID
+			// Build toolUse input from the search query (matches original Bedrock format).
+			inputMap := map[string]string{}
+			if msg.ResponsesToolMessage.Action != nil &&
+				msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction != nil {
+				action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+				if action.Query != nil {
+					inputMap["query"] = *action.Query
+				}
+			}
+			inputBytes, _ := json.Marshal(inputMap)
+			toolUseBlock := BedrockContentBlock{
+				ToolUse: &BedrockToolUse{
+					ToolUseID: callID,
+					Name:      string(BedrockSystemToolNovaGrounding),
+					Input:     json.RawMessage(inputBytes),
+					Type:      "server_tool_use",
+				},
+			}
+			// Serialize sources as JSON for the toolResult content; preserve type and status.
+			sourcesText := "[]"
+			if msg.ResponsesToolMessage.Action != nil &&
+				msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction != nil {
+				action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+				if len(action.Sources) > 0 {
+					if b, err := json.Marshal(action.Sources); err == nil {
+						sourcesText = string(b)
+					}
+				}
+			}
+			resultType := BedrockNovaGroundingResultType
+			toolResultBlock := BedrockContentBlock{
+				ToolResult: &BedrockToolResult{
+					ToolUseID: callID,
+					Type:      &resultType,
+					Status:    schemas.Ptr("success"),
+					Content:   []BedrockContentBlock{{Text: &sourcesText}},
+				},
+			}
+			pendingServerToolBlocks = append(pendingServerToolBlocks, toolUseBlock, toolResultBlock)
+
+		case schemas.ResponsesMessageTypeCodeInterpreterCall:
+			// Convert code_interpreter_call → nova_code_interpreter toolUse + toolResult.
+			// Both blocks are buffered and prepended to the next assistant message.
+			if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall == nil {
+				continue
+			}
+			ci := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+			toolUseID := ci.ContainerID
+			if toolUseID == "" && msg.ID != nil {
+				toolUseID = *msg.ID
+			}
+			code := ""
+			if ci.Code != nil {
+				code = *ci.Code
+			}
+			inputBytes, _ := json.Marshal(map[string]string{"snippet": code})
+			toolUseBlock := BedrockContentBlock{
+				ToolUse: &BedrockToolUse{
+					ToolUseID: toolUseID,
+					Name:      string(BedrockSystemToolNovaCodeInterpreter),
+					Input:     json.RawMessage(inputBytes),
+					Type:      "server_tool_use",
+				},
+			}
+			// Build toolResult from outputs (stdout/stderr).
+			var stdOut, stdErr string
+			for _, output := range ci.Outputs {
+				if output.ResponsesCodeInterpreterOutputLogs != nil {
+					stdOut += output.ResponsesCodeInterpreterOutputLogs.Logs
+				}
+			}
+			execResultBytes, _ := json.Marshal(struct {
+				StdOut string `json:"stdOut"`
+				StdErr string `json:"stdErr"`
+			}{StdOut: stdOut, StdErr: stdErr})
+			execResultStr := string(execResultBytes)
+			resultType := BedrockNovaCodeInterpreterResultType
+			toolResultBlock := BedrockContentBlock{
+				ToolResult: &BedrockToolResult{
+					ToolUseID: toolUseID,
+					Type:      &resultType,
+					Content:   []BedrockContentBlock{{Text: &execResultStr}},
+				},
+			}
+			pendingServerToolBlocks = append(pendingServerToolBlocks, toolUseBlock, toolResultBlock)
 		}
+	}
+
+	// Flush any remaining server-managed tool blocks (no following assistant message).
+	if len(pendingServerToolBlocks) > 0 {
+		bedrockMessages = append(bedrockMessages, BedrockMessage{
+			Role:    BedrockMessageRoleAssistant,
+			Content: pendingServerToolBlocks,
+		})
+		pendingServerToolBlocks = nil
 	}
 
 	// Flush any remaining pending tool calls
@@ -3096,7 +3645,55 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 		}
 	}
 
+	// Pre-scan: build toolUseId → toolResult map for nova_code_interpreter_result blocks
+	// so we can attach execution output when we encounter the matching toolUse block.
+	novaCodeResults := make(map[string]*BedrockToolResult)
+	for i := range msg.Content {
+		r := msg.Content[i].ToolResult
+		if r != nil && r.Type != nil && *r.Type == BedrockNovaCodeInterpreterResultType {
+			novaCodeResults[r.ToolUseID] = r
+		}
+	}
+
+	// Pre-scan: collect nova_grounding toolUseIDs and citation sources from citationsContent.
+	// nova_grounding toolResults (paired with the toolUse) are skipped in the main loop;
+	// citation URLs from text blocks are surfaced as sources on the web_search_call item.
+	novaGroundingToolUseIDs := make(map[string]bool)
+	var novaGroundingSources []schemas.ResponsesWebSearchToolCallActionSearchSource
+	seenCitationURLs := make(map[string]bool)
+	for i := range msg.Content {
+		if msg.Content[i].ToolUse != nil && msg.Content[i].ToolUse.Name == string(BedrockSystemToolNovaGrounding) {
+			novaGroundingToolUseIDs[msg.Content[i].ToolUse.ToolUseID] = true
+		}
+		if msg.Content[i].CitationsContent != nil {
+			for _, citation := range msg.Content[i].CitationsContent.Citations {
+				if citation.Location.Web != nil && !seenCitationURLs[citation.Location.Web.URL] {
+					seenCitationURLs[citation.Location.Web.URL] = true
+					domain := citation.Location.Web.Domain
+					novaGroundingSources = append(novaGroundingSources, schemas.ResponsesWebSearchToolCallActionSearchSource{
+						Type:  "url",
+						URL:   citation.Location.Web.URL,
+						Title: &domain,
+					})
+				}
+			}
+		}
+	}
+
+	// lastTextOutputIdx tracks the index into outputMessages of the most recently appended
+	// text message, so standalone citationsContent blocks can be attached to it as annotations.
+	lastTextOutputIdx := -1
+
 	for _, block := range msg.Content {
+		// Skip nova_code_interpreter_result tool results — they are consumed via novaCodeResults above.
+		if block.ToolResult != nil && block.ToolResult.Type != nil && *block.ToolResult.Type == BedrockNovaCodeInterpreterResultType {
+			continue
+		}
+		// Skip nova_grounding tool results — server-managed, consumed by the pre-scan above.
+		if block.ToolResult != nil && novaGroundingToolUseIDs[block.ToolResult.ToolUseID] {
+			continue
+		}
+
 		if block.Text != nil {
 			// Text content
 			role := convertBedrockRoleToBifrostRole(msg.Role)
@@ -3113,6 +3710,37 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
 			}
 			outputMessages = append(outputMessages, bifrostMsg)
+			// Track this message so standalone citationsContent blocks can be attached to it.
+			lastTextOutputIdx = len(outputMessages) - 1
+
+		} else if block.CitationsContent != nil {
+			// Standalone citationsContent block — attach citations as url_citation annotations
+			// to the most recently created text message (interleaved in the Bedrock format).
+			if lastTextOutputIdx >= 0 {
+				lastMsg := &outputMessages[lastTextOutputIdx]
+				if lastMsg.Content != nil && len(lastMsg.Content.ContentBlocks) > 0 {
+					cb := &lastMsg.Content.ContentBlocks[0]
+					if cb.ResponsesOutputMessageContentText == nil {
+						cb.ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						}
+					}
+					for _, citation := range block.CitationsContent.Citations {
+						if citation.Location.Web == nil {
+							continue
+						}
+						cb.ResponsesOutputMessageContentText.Annotations = append(
+							cb.ResponsesOutputMessageContentText.Annotations,
+							schemas.ResponsesOutputMessageContentTextAnnotation{
+								Type:  "url_citation",
+								URL:   schemas.Ptr(citation.Location.Web.URL),
+								Title: schemas.Ptr(citation.Location.Web.Domain),
+							},
+						)
+					}
+				}
+			}
 
 		} else if block.ReasoningContent != nil {
 			// Reasoning content - collect to create a single reasoning message
@@ -3147,6 +3775,96 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
 				}
 				outputMessages = append(outputMessages, bifrostMsg)
+			} else if toolUseName == "nova_code_interpreter" {
+				// Nova code interpreter: build a code_interpreter_call message.
+				// Bedrock returns the code under the "snippet" key in toolUse.input.
+				var snippetInput []byte
+				if block.ToolUse.Input != nil {
+					snippetInput = block.ToolUse.Input
+				}
+				codeSnippet := providerUtils.GetJSONField(snippetInput, "snippet").String()
+
+				// Build outputs from the paired toolResult (pre-scanned above).
+				var ciOutputs []schemas.ResponsesCodeInterpreterOutput
+				if result, ok := novaCodeResults[toolUseID]; ok {
+					// Extract the JSON payload: {"stdOut":"...","stdErr":"...","exitCode":0,"isError":false}
+					var execResult struct {
+						StdOut string `json:"stdOut"`
+						StdErr string `json:"stdErr"`
+					}
+					for _, c := range result.Content {
+						if c.Text != nil {
+							_ = json.Unmarshal([]byte(*c.Text), &execResult)
+							break
+						}
+					}
+					if execResult.StdOut != "" {
+						ciOutputs = append(ciOutputs, schemas.ResponsesCodeInterpreterOutput{
+							ResponsesCodeInterpreterOutputLogs: &schemas.ResponsesCodeInterpreterOutputLogs{
+								Type: "logs",
+								Logs: execResult.StdOut,
+							},
+						})
+					}
+					if execResult.StdErr != "" {
+						ciOutputs = append(ciOutputs, schemas.ResponsesCodeInterpreterOutput{
+							ResponsesCodeInterpreterOutputLogs: &schemas.ResponsesCodeInterpreterOutputLogs{
+								Type: "logs",
+								Logs: execResult.StdErr,
+							},
+						})
+					}
+				}
+				if ciOutputs == nil {
+					ciOutputs = []schemas.ResponsesCodeInterpreterOutput{}
+				}
+
+				ciMsg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{
+							Code:        &codeSnippet,
+							ContainerID: toolUseID,
+							Outputs:     ciOutputs,
+						},
+					},
+				}
+				if isOutputMessage {
+					ciMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+					role := schemas.ResponsesInputMessageRoleAssistant
+					ciMsg.Role = &role
+				}
+				outputMessages = append(outputMessages, ciMsg)
+
+			} else if toolUseName == string(BedrockSystemToolNovaGrounding) {
+				// nova_grounding → web_search_call with query from toolUse.input and citations from text blocks.
+				wsAction := &schemas.ResponsesWebSearchToolCallAction{
+					Type:    "search",
+					Sources: novaGroundingSources,
+				}
+				if block.ToolUse.Input != nil {
+					if q := providerUtils.GetJSONField(block.ToolUse.Input, "query").String(); q != "" {
+						wsAction.Query = &q
+						wsAction.Queries = []string{q}
+					}
+				}
+				wsMsg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: &toolUseID,
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: wsAction,
+						},
+					},
+				}
+				if isOutputMessage {
+					wsMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+					role := schemas.ResponsesInputMessageRoleAssistant
+					wsMsg.Role = &role
+				}
+				outputMessages = append(outputMessages, wsMsg)
 			} else {
 				// Normal tool call message
 				arguments := "{}"
@@ -3473,6 +4191,32 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				bedrockBlock.JSON != nil ||
 				bedrockBlock.GuardContent != nil {
 				blocks = append(blocks, bedrockBlock)
+			}
+
+			// For text blocks: emit a citationsContent block per url_citation annotation,
+			// reconstructing the interleaved text+citation structure Bedrock uses.
+			if bedrockBlock.Text != nil && block.ResponsesOutputMessageContentText != nil {
+				for _, annotation := range block.ResponsesOutputMessageContentText.Annotations {
+					if annotation.Type != "url_citation" || annotation.URL == nil {
+						continue
+					}
+					domain := ""
+					if annotation.Title != nil {
+						domain = *annotation.Title
+					}
+					blocks = append(blocks, BedrockContentBlock{
+						CitationsContent: &BedrockCitationsContent{
+							Citations: []BedrockCitation{{
+								Location: BedrockCitationLocation{
+									Web: &BedrockWebCitationLocation{
+										URL:    *annotation.URL,
+										Domain: domain,
+									},
+								},
+							}},
+						},
+					})
+				}
 			}
 
 			if block.CacheControl != nil {

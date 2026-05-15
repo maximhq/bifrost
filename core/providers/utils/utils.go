@@ -27,7 +27,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/network"
-	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
@@ -2041,7 +2041,7 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 // Returns a cleanup function that MUST be called when streaming is done to
 // prevent the goroutine from closing the stream during normal operation.
 // Works with both fasthttp's BodyStream() (io.Reader) and net/http's resp.Body (io.ReadCloser).
-func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
+func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
 	done := make(chan struct{})
 	closed := make(chan struct{})
 
@@ -2054,10 +2054,12 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 				if err := closer.Close(); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
 				if err := wce.CloseWithError(ctx.Err()); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
 		case <-done:
 			// If context was also cancelled (race between done and ctx.Done),
@@ -2066,16 +2068,20 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 				if closer, ok := bodyStream.(io.Closer); ok {
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
+					} else {
+						ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					}
 				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
 					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
+					} else {
+						ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					}
+
 				}
 			}
 		}
 	}()
-
 	return func() {
 		close(done)
 		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
@@ -2205,7 +2211,7 @@ func HandleStreamCancellation(
 	}
 	// Create cancellation error
 	cancelErr := &schemas.BifrostError{
-		StatusCode: schemas.Ptr(499), // Client Closed Request
+		StatusCode: new(499), // Client Closed Request
 		Error: &schemas.ErrorField{
 			Message: "Request cancelled: client disconnected",
 			Type:    schemas.Ptr(schemas.RequestCancelled),
@@ -2408,7 +2414,7 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 }
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
-func ReleaseStreamingResponse(resp *fasthttp.Response) {
+func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
 	defer func() {
 		if r := recover(); r != nil {
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
@@ -2416,6 +2422,11 @@ func ReleaseStreamingResponse(resp *fasthttp.Response) {
 		// Always release the response to prevent leaks, even after a panic
 		fasthttp.ReleaseResponse(resp)
 	}()
+	// First we will check if the connection is already closed
+	// In that case we won't drain the body stream, as it is already closed
+	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
+		return
+	}
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).

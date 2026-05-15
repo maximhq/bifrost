@@ -2376,34 +2376,20 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
-	require.NotNil(t, bedrockReq.AdditionalModelRequestFields, "expected additional model request fields for anthropic responses structured output")
 
-	outputConfigRaw, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic responses structured output")
-
-	outputConfig, ok := schemas.SafeExtractOrderedMap(outputConfigRaw)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	formatMap, ok := schemas.SafeExtractOrderedMap(formatRaw)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-
-	formatType, ok := formatMap.Get("type")
-	require.True(t, ok, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-
-	schemaRaw, ok := formatMap.Get("schema")
-	require.True(t, ok, "expected output_config.format.schema")
-	schemaMap, ok := schemas.SafeExtractOrderedMap(schemaRaw)
-	require.True(t, ok, "expected output_config.format.schema to remain ordered")
-	require.NotNil(t, schemaMap)
-
-	if bedrockReq.ToolConfig != nil {
-		assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic responses structured output")
-		assert.Empty(t, bedrockReq.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic responses structured output")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// (rejected by Opus 4.7) onto the synthetic bf_so_* tool path used by all
+	// Bedrock models. The test now asserts the synthetic tool reached
+	// toolConfig.tools.
+	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range bedrockReq.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
 	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
@@ -3312,22 +3298,17 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
-	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
-
-	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-	formatType, hasType := format.Get("type")
-	require.True(t, hasType, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-	_, hasSchema := format.Get("schema")
-	assert.True(t, hasSchema, "expected output_config.format.schema")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// onto the synthetic bf_so_* tool path used by all Bedrock models.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
+	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
 
 	// reasoning should still be preserved for anthropic
 	thinkingRaw, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
@@ -3335,12 +3316,6 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	thinking, ok := thinkingRaw.(map[string]any)
 	require.True(t, ok, "expected thinking to be a map")
 	assert.Equal(t, "enabled", thinking["type"])
-
-	// structured output should NOT force tool choice on Bedrock anthropic
-	if result.ToolConfig != nil {
-		assert.Nil(t, result.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic structured output")
-		assert.Empty(t, result.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic structured output")
-	}
 }
 
 func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
@@ -3385,26 +3360,19 @@ func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
-	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
-
-	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-
-	formatType, ok := format.Get("type")
-	require.True(t, ok, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-
-	schemaRaw, ok := format.Get("schema")
-	require.True(t, ok, "expected output_config.format.schema")
-	_, ok = schemaRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// onto the synthetic bf_so_* tool path. Test asserts the synthetic tool path
+	// accepts OrderedMap-shaped response_format input without dropping the schema.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	var syntheticTool *bedrock.BedrockTool
+	for i, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			syntheticTool = &result.ToolConfig.Tools[i]
+			break
+		}
+	}
+	require.NotNil(t, syntheticTool, "expected synthetic bf_so_* tool for structured output")
+	require.NotEmpty(t, syntheticTool.ToolSpec.InputSchema.JSON, "expected synthetic tool schema bytes")
 }
 
 // betaListContains reports whether the OrderedMap's anthropic_beta entry
@@ -3677,23 +3645,27 @@ func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *test
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
+	// Structured output is routed through the synthetic bf_so_* tool path on all
+	// Bedrock models (see PR #3184 and utils.go:1172). Native output_config.format
+	// is intentionally not written for any Bedrock model, so the merge test
+	// asserts the synthetic tool reached toolConfig.tools instead.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
+	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
+
+	// Incoming additionalModelRequestFieldPaths.output_config key must be merged
+	// into AdditionalModelRequestFields.output_config even though the structured
+	// output path no longer writes output_config.format itself.
 	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config to exist after merge")
+	require.True(t, hasOutputConfig, "expected output_config to exist from user-provided fields")
 	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
 	require.True(t, ok, "expected output_config to be an ordered map")
-
-	// Existing structured output format must be preserved.
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format to be preserved")
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-	formatType, hasType := format.Get("type")
-	require.True(t, hasType, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-	_, hasSchema := format.Get("schema")
-	assert.True(t, hasSchema, "expected output_config.format.schema")
-
-	// Incoming additionalModelRequestFieldPaths.output_config key must be merged.
 	foo, hasFoo := outputConfig.Get("foo")
 	require.True(t, hasFoo, "expected output_config.foo to be preserved")
 	assert.Equal(t, "bar", foo)
@@ -4069,9 +4041,9 @@ func TestBedrockStopReasonMapping(t *testing.T) {
 		{"MaxTokens", "max_tokens", "length"},
 		{"StopSequence", "stop_sequence", "stop"},
 		{"ToolUse", "tool_use", "tool_calls"},
-		{"GuardrailIntervened", "guardrail_intervened", "content_filter"},
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
 		{"ContentFiltered", "content_filtered", "content_filter"},
-		{"UnknownReason", "some_unknown_reason", "stop"},
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"}, // no clean mapping — passes through
 	}
 
 	for _, tt := range tests {
@@ -4100,6 +4072,116 @@ func TestBedrockStopReasonMapping(t *testing.T) {
 			require.NotNil(t, bifrostResp.Choices[0].FinishReason)
 			assert.Equal(t, tt.expectedBifrost, *bifrostResp.Choices[0].FinishReason,
 				"Bedrock stop reason %q should map to %q", tt.bedrockStopReason, tt.expectedBifrost)
+		})
+	}
+}
+
+// TestBedrockStopReasonMappingResponsesPath tests stop reason normalisation for
+// the Responses API path (BedrockConverseResponse.ToBifrostResponsesResponse).
+func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		bedrockReason   string
+		expectedBifrost string
+	}{
+		{"EndTurn", "end_turn", "stop"},
+		{"MaxTokens", "max_tokens", "length"},
+		{"StopSequence", "stop_sequence", "stop"},
+		{"ToolUse", "tool_use", "tool_calls"},
+		{"ContentFiltered", "content_filtered", "content_filter"},
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"},         // no clean mapping — passes through
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &bedrock.BedrockConverseResponse{
+				StopReason: tt.bedrockReason,
+				Output: &bedrock.BedrockConverseOutput{
+					Message: &bedrock.BedrockMessage{
+						Role: bedrock.BedrockMessageRoleAssistant,
+						Content: []bedrock.BedrockContentBlock{
+							{Text: schemas.Ptr("Response text")},
+						},
+					},
+				},
+			}
+
+			bifrostResp, err := response.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp)
+			require.NotNil(t, bifrostResp.StopReason, "StopReason should be set")
+			assert.Equal(t, tt.expectedBifrost, *bifrostResp.StopReason,
+				"Bedrock stop reason %q should map to %q in responses path", tt.bedrockReason, tt.expectedBifrost)
+		})
+	}
+}
+
+// TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
+// (BifrostResponsesResponse.StopReason → BedrockConverseResponse.StopReason).
+func TestBifrostToBedrockStopReasonReverseMapping(t *testing.T) {
+	t.Parallel()
+
+	textOutput := []schemas.ResponsesMessage{
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		stopReason     *string
+		incompleteDetails *schemas.ResponsesResponseIncompleteDetails
+		expectedBedrock string
+	}{
+		{"Stop", schemas.Ptr("stop"), nil, "end_turn"},
+		{"Length", schemas.Ptr("length"), nil, "max_tokens"},
+		{"ToolCalls", schemas.Ptr("tool_calls"), nil, "tool_use"},
+		{"ContentFilter", schemas.Ptr("content_filter"), nil, "content_filtered"},
+		{"GuardrailIntervened", schemas.Ptr("guardrail_intervened"), nil, "guardrail_intervened"}, // passes through
+		{"UnknownPassthrough", schemas.Ptr("some_unknown_reason"), nil, "some_unknown_reason"},    // passes through
+		{
+			// StopReason takes priority over IncompleteDetails
+			name:            "StopReasonOverridesIncompleteDetails",
+			stopReason:      schemas.Ptr("stop"),
+			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
+			expectedBedrock: "end_turn",
+		},
+		{
+			// IncompleteDetails is used when StopReason is nil
+			name:            "IncompleteDetailsFallback",
+			stopReason:      nil,
+			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
+			expectedBedrock: "max_tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &schemas.BifrostResponsesResponse{
+				Output:            textOutput,
+				StopReason:        tt.stopReason,
+				IncompleteDetails: tt.incompleteDetails,
+			}
+
+			actual, err := bedrock.ToBedrockConverseResponse(input)
+			require.NoError(t, err)
+			require.NotNil(t, actual)
+			assert.Equal(t, tt.expectedBedrock, actual.StopReason,
+				"Bifrost stop reason %v should reverse-map to Bedrock %q", tt.stopReason, tt.expectedBedrock)
 		})
 	}
 }

@@ -127,16 +127,14 @@ type UpdateVirtualKeyRequest struct {
 
 // CreateBudgetRequest represents the request body for creating a budget
 type CreateBudgetRequest struct {
-	MaxLimit        float64 `json:"max_limit" validate:"required"`      // Maximum budget in dollars
-	ResetDuration   string  `json:"reset_duration" validate:"required"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
-	CalendarAligned bool    `json:"calendar_aligned,omitempty"`         // Snap resets to calendar boundaries (day/week/month/year)
+	MaxLimit      float64 `json:"max_limit" validate:"required"`      // Maximum budget in dollars
+	ResetDuration string  `json:"reset_duration" validate:"required"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 }
 
 // UpdateBudgetRequest represents the request body for updating a budget
 type UpdateBudgetRequest struct {
-	MaxLimit        *float64 `json:"max_limit,omitempty"`
-	ResetDuration   *string  `json:"reset_duration,omitempty"`
-	CalendarAligned *bool    `json:"calendar_aligned,omitempty"` // When switching to true, current usage is reset to 0
+	MaxLimit      *float64 `json:"max_limit,omitempty"`
+	ResetDuration *string  `json:"reset_duration,omitempty"`
 }
 
 // RoutingTarget represents a single weighted routing target within a rule.
@@ -230,18 +228,20 @@ func collectProviderConfigDeleteIDs(
 
 // CreateTeamRequest represents the request body for creating a team
 type CreateTeamRequest struct {
-	Name       string                  `json:"name" validate:"required"`
-	CustomerID *string                 `json:"customer_id,omitempty"` // Team can belong to a customer
-	Budgets    []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
-	RateLimit  *CreateRateLimitRequest `json:"rate_limit,omitempty"`  // Team can have its own rate limit
+	Name            string                  `json:"name" validate:"required"`
+	CustomerID      *string                 `json:"customer_id,omitempty"`      // Team can belong to a customer
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
+	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`       // Team can have its own rate limit
+	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // Team-wide: snap all team budgets and rate-limit resets to calendar boundaries
 }
 
 // UpdateTeamRequest represents the request body for updating a team
 type UpdateTeamRequest struct {
-	Name       *string                 `json:"name,omitempty"`
-	CustomerID *string                 `json:"customer_id,omitempty"`
-	Budgets    []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all team budgets
-	RateLimit  *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	Name            *string                 `json:"name,omitempty"`
+	CustomerID      *string                 `json:"customer_id,omitempty"`
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all team budgets
+	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"` // Team-wide setting; nil means "leave unchanged"
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
@@ -1514,9 +1514,10 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 	var team configstoreTables.TableTeam
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		team = configstoreTables.TableTeam{
-			ID:         uuid.NewString(),
-			Name:       req.Name,
-			CustomerID: req.CustomerID,
+			ID:              uuid.NewString(),
+			Name:            req.Name,
+			CustomerID:      req.CustomerID,
+			CalendarAligned: req.CalendarAligned,
 		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
@@ -1551,13 +1552,12 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			}
 			seenDurations[b.ResetDuration] = true
 			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        b.MaxLimit,
-				ResetDuration:   b.ResetDuration,
-				LastReset:       budgetLastReset(b.CalendarAligned, b.ResetDuration),
-				CurrentUsage:    0,
-				CalendarAligned: b.CalendarAligned,
-				TeamID:          &team.ID,
+				ID:            uuid.NewString(),
+				MaxLimit:      b.MaxLimit,
+				ResetDuration: b.ResetDuration,
+				LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
+				CurrentUsage:  0,
+				TeamID:        &team.ID,
 			}
 			if err := validateBudget(&budget); err != nil {
 				return err
@@ -1660,6 +1660,18 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				team.CustomerID = req.CustomerID
 			}
 		}
+		// Resolve team-level calendar alignment for this update:
+		//   - explicit team-level field wins (req.CalendarAligned != nil)
+		//   - else leave existing team.CalendarAligned untouched
+		wasCalendarAligned := team.CalendarAligned
+		if req.CalendarAligned != nil {
+			team.CalendarAligned = *req.CalendarAligned
+		}
+		calendarAlignmentJustEnabled := !wasCalendarAligned && team.CalendarAligned
+		// Snap-to-calendar-period happens after budget/rate-limit reconciliation
+		// below, so combined `calendar_aligned + budgets/rate_limit` updates see
+		// the final persisted state.
+
 		// Multi-budget reconciliation: match by reset_duration, preserve usage on update,
 		// create new budgets for new durations, delete unmatched existing budgets.
 		// Mirrors VK multi-budget handling above.
@@ -1688,17 +1700,10 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			matchedIDs := make(map[string]bool)
 			for _, b := range req.Budgets {
 				if existing, found := existingByDuration[b.ResetDuration]; found {
-					wasCalendarAligned := existing.CalendarAligned
 					existing.MaxLimit = b.MaxLimit
-					existing.CalendarAligned = b.CalendarAligned
-					// Match the UI's calendar-alignment confirmation promise: on the
-					// false → true transition, snap LastReset to the current period
-					// start and zero out CurrentUsage now, instead of lazily waiting
-					// for the next period boundary in ResetExpiredBudgetsInMemory.
-					if b.CalendarAligned && !wasCalendarAligned {
-						existing.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, time.Now())
-						existing.CurrentUsage = 0
-					}
+					// LastReset / CurrentUsage are preserved on update; if calendar
+					// alignment was just enabled in this request, the post-reconciliation
+					// snap block below resets them.
 					if err := validateBudget(&existing); err != nil {
 						return err
 					}
@@ -1709,13 +1714,12 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 					matchedIDs[existing.ID] = true
 				} else {
 					budget := configstoreTables.TableBudget{
-						ID:              uuid.NewString(),
-						MaxLimit:        b.MaxLimit,
-						ResetDuration:   b.ResetDuration,
-						LastReset:       budgetLastReset(b.CalendarAligned, b.ResetDuration),
-						CurrentUsage:    0,
-						CalendarAligned: b.CalendarAligned,
-						TeamID:          &team.ID,
+						ID:            uuid.NewString(),
+						MaxLimit:      b.MaxLimit,
+						ResetDuration: b.ResetDuration,
+						LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
+						CurrentUsage:  0,
+						TeamID:        &team.ID,
 					}
 					if err := validateBudget(&budget); err != nil {
 						return err
@@ -1783,6 +1787,44 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				}
 				team.RateLimitID = &rateLimit.ID
 				team.RateLimit = &rateLimit
+			}
+		}
+		// Snap budgets and rate limit to the current calendar period when calendar
+		// alignment transitions false -> true in this request. Runs after budget/
+		// rate-limit reconciliation so both the standalone-toggle and the combined
+		// (toggle + budgets/rate_limit in the same request) cases are covered, and
+		// only fires once per transition.
+		if calendarAlignmentJustEnabled {
+			now := time.Now()
+			for i := range team.Budgets {
+				b := &team.Budgets[i]
+				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
+					continue
+				}
+				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+				b.CurrentUsage = 0
+				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
+					return fmt.Errorf("failed to snap team budget %s on calendar-align enable: %w", b.ID, err)
+				}
+			}
+			if team.RateLimit != nil {
+				rl := team.RateLimit
+				snapped := false
+				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
+					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+					rl.TokenCurrentUsage = 0
+					snapped = true
+				}
+				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
+					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+					rl.RequestCurrentUsage = 0
+					snapped = true
+				}
+				if snapped {
+					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
+						return fmt.Errorf("failed to snap team rate limit on calendar-align enable: %w", err)
+					}
+				}
 			}
 		}
 		if err := h.configStore.UpdateTeam(ctx, team, tx); err != nil {

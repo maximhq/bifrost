@@ -710,6 +710,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddTeamCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7526,4 +7532,95 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 	})
+}
+
+// migrationDropLegacyCalendarAlignedColumns drops the legacy calendar_aligned
+// columns from governance_budgets and governance_rate_limits. Calendar
+// alignment is now a VK-only setting (governance_virtual_keys.calendar_aligned);
+// budget and rate-limit reset logic derives the value from the owning VK at
+// reset time. The columns were re-added by migrate_calendar_aligned after
+// add_multi_budget_tables dropped governance_budgets.calendar_aligned, so any
+// DB that ran both still has them — this migration cleans them up.
+func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_legacy_calendar_aligned_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mig.DropColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop legacy calendar_aligned column from governance_budgets: %w", err)
+				}
+			}
+			if mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
+				if err := mig.DropColumn(&tables.TableRateLimit{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop legacy calendar_aligned column from governance_rate_limits: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_legacy_calendar_aligned_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTeamCalendarAlignedColumn adds calendar_aligned to governance_teams so
+// team-level calendar alignment (governing all team budgets and the team rate limit)
+// can be persisted.
+func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_team_calendar_aligned_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableTeam{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableTeam{}, "CalendarAligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to governance_teams: %w", err)
+				}
+			}
+			// Backfill from legacy per-budget / per-rate-limit flags before the
+			// drop migration removes them. Any team-owned budget with
+			// calendar_aligned=true, or a team rate-limit with calendar_aligned=true,
+			// promotes the team to calendar-aligned so behavior is preserved across upgrade.
+			if mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := tx.Exec(`
+					UPDATE governance_teams t
+					SET calendar_aligned = TRUE
+					WHERE EXISTS (
+						SELECT 1 FROM governance_budgets b
+						WHERE b.team_id = t.id AND b.calendar_aligned = TRUE
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill team calendar_aligned from budgets: %w", err)
+				}
+			}
+			if mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
+				if err := tx.Exec(`
+					UPDATE governance_teams t
+					SET calendar_aligned = TRUE
+					WHERE t.rate_limit_id IN (
+						SELECT id FROM governance_rate_limits WHERE calendar_aligned = TRUE
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill team calendar_aligned from rate limits: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableTeam{}, "calendar_aligned") {
+				return mig.DropColumn(&tables.TableTeam{}, "calendar_aligned")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_team_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
 }
