@@ -32,6 +32,9 @@ type TableTeam struct {
 	Claims       *string        `gorm:"type:text" json:"-"`
 	ParsedClaims map[string]any `gorm:"-" json:"claims"`
 
+	// IsBudgetCalendarAligned indicates whether the team's budget is calendar-aligned
+	CalendarAligned bool `gorm:"-" json:"calendar_aligned"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
