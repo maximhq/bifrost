@@ -24,6 +24,9 @@ export interface TriStateCheckboxProps {
 
 	/** Accessible name for icon-only checkbox (e.g. when label is rendered elsewhere) */
 	ariaLabel?: string;
+
+	/** Test identifier for E2E targeting */
+	"data-testid"?: string;
 }
 
 export const TriStateCheckbox: React.FC<TriStateCheckboxProps> = ({
@@ -34,6 +37,7 @@ export const TriStateCheckbox: React.FC<TriStateCheckboxProps> = ({
 	disabled = false,
 	className = "",
 	ariaLabel,
+	"data-testid": dataTestId,
 }) => {
 	const state: TriState = useMemo(() => {
 		if (!allIds.length) return "none";
@@ -80,6 +84,7 @@ export const TriStateCheckbox: React.FC<TriStateCheckboxProps> = ({
 			role="checkbox"
 			aria-checked={ariaChecked}
 			aria-label={ariaLabel}
+			data-testid={dataTestId}
 			className={cn(
 				"inline-flex items-center gap-2 focus:outline-none",
 				"focus-visible:ring-ring focus-visible:ring-offset-background focus-visible:ring-2 focus-visible:ring-offset-2",
