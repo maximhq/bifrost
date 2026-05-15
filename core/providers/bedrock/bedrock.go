@@ -28,17 +28,20 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
-	logger               schemas.Logger                // Logger for provider operations
-	client               *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
-	streamingClient      *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
-	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
-	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
-	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
+	logger                schemas.Logger                // Logger for provider operations
+	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
+	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
+	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle (OpenAI-compatible) requests
+	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
+	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
+	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
+	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
 }
 
 // assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
@@ -121,19 +124,36 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 	streamingClient := providerUtils.BuildStreamingHTTPClient(client)
 
+	// fasthttp clients for Bedrock Mantle (OpenAI-compatible endpoint)
+	mantleFasthttpClient := &fasthttp.Client{
+		ReadTimeout:         requestTimeout,
+		WriteTimeout:        requestTimeout,
+		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
+		MaxIdleConnDuration: 30 * time.Second,
+		MaxConnWaitTimeout:  requestTimeout,
+		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:    fasthttp.FIFO,
+	}
+	mantleFasthttpClient = providerUtils.ConfigureProxy(mantleFasthttpClient, config.ProxyConfig, logger)
+	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient)
+	mantleFasthttpClient = providerUtils.ConfigureTLS(mantleFasthttpClient, config.NetworkConfig, logger)
+	mantleStreamingFasthttpClient := providerUtils.BuildStreamingClient(mantleFasthttpClient)
+
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
 		bedrockChatResponsePool.Put(&BedrockConverseResponse{})
 	}
 
 	return &BedrockProvider{
-		logger:               logger,
-		client:               client,
-		streamingClient:      streamingClient,
-		networkConfig:        config.NetworkConfig,
-		customProviderConfig: config.CustomProviderConfig,
-		sendBackRawRequest:   config.SendBackRawRequest,
-		sendBackRawResponse:  config.SendBackRawResponse,
+		logger:                logger,
+		client:                client,
+		streamingClient:       streamingClient,
+		mantleClient:          mantleFasthttpClient,
+		mantleStreamingClient: mantleStreamingFasthttpClient,
+		networkConfig:         config.NetworkConfig,
+		customProviderConfig:  config.CustomProviderConfig,
+		sendBackRawRequest:    config.SendBackRawRequest,
+		sendBackRawResponse:   config.SendBackRawResponse,
 	}, nil
 }
 
@@ -502,6 +522,30 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 // It is used in providers like Bedrock.
 // It sets required headers, calculates the request body hash, and signs the request
 // using the provided AWS credentials.
+// signAWSRequestFromKey is a convenience wrapper around signAWSRequest that reads
+// credentials from a BedrockKeyConfig. When cfg is nil (no explicit key configured),
+// all credential fields are zero-valued, causing signAWSRequest to fall back to the
+// default AWS credential chain (IAM role, env vars, instance profile, etc.).
+func signAWSRequestFromKey(
+	ctx *schemas.BifrostContext,
+	req *http.Request,
+	cfg *schemas.BedrockKeyConfig,
+	region, service string,
+) *schemas.BifrostError {
+	if cfg != nil {
+		return signAWSRequest(ctx, req,
+			cfg.AccessKey, cfg.SecretKey,
+			cfg.SessionToken, cfg.RoleARN,
+			cfg.ExternalID, cfg.RoleSessionName,
+			region, service)
+	}
+	// No config: pass zero EnvVar values so signAWSRequest uses the default chain.
+	return signAWSRequest(ctx, req,
+		schemas.EnvVar{}, schemas.EnvVar{},
+		nil, nil, nil, nil,
+		region, service)
+}
+
 // Returns a BifrostError if signing fails.
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
@@ -1028,6 +1072,10 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, err
 	}
 
+	if isMantleModel(request.Model) {
+		return provider.chatCompletionViaMantle(ctx, key, request)
+	}
+
 	// Use centralized Bedrock converter
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -1103,6 +1151,11 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
+
+	if isMantleModel(request.Model) {
+		return provider.chatCompletionStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1407,6 +1460,10 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
+	if isMantleModel(request.Model) {
+		return provider.responsesViaMantle(ctx, key, request)
+	}
+
 	// Use centralized Bedrock converter
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -1473,6 +1530,10 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
+	}
+
+	if isMantleModel(request.Model) {
+		return provider.responsesStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
