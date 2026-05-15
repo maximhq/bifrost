@@ -190,6 +190,131 @@ If you omit the `grpc` block entirely, both defaults apply. Override only when t
 
 ---
 
+## Broker Mode
+
+The default `mesh` clustering described above is peer-to-peer: every node must
+accept inbound gossip and gRPC connections from every other node. Some
+environments do not allow that. **Google Cloud Run**, for example, gives each
+instance only a single inbound serving port, ephemeral instances with no
+stable addresses, and no instance-to-instance networking - so memberlist
+gossip and the gRPC mesh cannot form.
+
+**Broker mode** solves this. Instead of connecting to each other, every node
+makes a single **outbound** connection to a central **broker** process. The
+broker is a pure relay: a message received from one node is fanned out to all
+other connected nodes. The broker also pushes a **roster** (the list of
+connected node IDs) to every node.
+
+```
+   ┌──────────┐   outbound    ┌──────────┐   outbound   ┌──────────┐
+   │  Node A  │──── stream ──▶│  Broker  │◀── stream ────│  Node B  │
+   │(CloudRun)│               │ (relay)  │               │(CloudRun)│
+   └──────────┘               └──────────┘               └──────────┘
+        message from A ──▶ broker ──▶ forwarded to B, C, …  (never back to A)
+```
+
+Because nodes only need **outbound** connectivity, broker mode runs on any
+platform that can make an outbound gRPC connection.
+
+### How it differs from mesh mode
+
+| Aspect | Mesh mode | Broker mode |
+|--------|-----------|-------------|
+| Connectivity | Every node connects to every node | Each node makes one outbound connection to the broker |
+| Membership | memberlist gossip | Roster pushed by the broker |
+| Discovery | 6 discovery methods | Not used - the broker is the rendezvous point |
+| Ports on a node | `10101/TCP+UDP`, `10102/TCP` inbound | None - outbound only |
+| Leader election | Deterministic over gossip members | Deterministic over the broker roster (same algorithm) |
+| Entity replication | Over the gRPC mesh | Over the broker relay - identical entity types |
+
+Leadership in broker mode uses the **same deterministic rule** as mesh mode:
+the lexicographically-smallest node ID in the roster is the leader. Every node
+computes this independently from the roster the broker pushes, so there is
+nothing to configure and no broker-side election.
+
+### Configuration
+
+Nodes run in broker mode by setting `cluster_config.type` to `broker` and
+pointing at the broker address:
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "type": "broker",
+    "region": "us-east-1",
+    "broker": {
+      "address": "broker.example.run.app:443",
+      "tls": true,
+      "auth_token": "your-shared-secret"
+    }
+  }
+}
+```
+
+See the [config.json cluster reference](/deployment-guides/config-json/cluster#broker-mode)
+for the full field list.
+
+### Running the broker
+
+The broker is **not** a separate binary - the same Bifrost Enterprise image
+runs as the broker when started with the `-mode=broker` flag (or the
+`BIFROST_MODE=broker` environment variable):
+
+```bash
+bifrost-enterprise -mode=broker -app-dir /app/data
+```
+
+In broker mode the process branches before the normal server bootstrap: it starts
+**only** the relay gRPC server and runs no database, providers, plugins, or
+HTTP gateway. It reads `cluster_config.broker` from the same `config.json` and
+serves on `broker.listen_port` (default `50051`). A standard gRPC health
+service is registered for readiness probes.
+
+### Deploying on Cloud Run
+
+<Warning>
+All nodes must connect to the **same** broker process. Fan-out cannot span
+multiple broker instances, so the broker must run as a **single instance**.
+</Warning>
+
+**Broker service:**
+- Deploy as a Cloud Run service with `min-instances=1` and `max-instances=1`.
+- Enable **HTTP/2** (end-to-end) so gRPC works.
+- Expose on `:443`; nodes use the service URL as `broker.address` with `tls: true`.
+- Set the Cloud Run container port to `50051` so it matches
+  `cluster_config.broker.listen_port`, or override `listen_port` to `8080` to
+  match Cloud Run's default `$PORT`.
+- Set `auth_token` so only your nodes can connect.
+
+**Node services:**
+- Deploy normally - they only need outbound access to the broker URL.
+- Set `cluster_config.type` to `broker` and `broker.address` to the broker URL.
+
+<Note>
+Cloud Run caps a single request - including a streaming gRPC connection - at
+60 minutes. When the broker stream is closed by the platform, each node
+automatically reconnects with exponential backoff, so this is transparent.
+gRPC keepalive pings are enabled on both sides to keep otherwise-idle streams
+alive within that window.
+</Note>
+
+### Roster and reconnection
+
+The broker pushes the roster on three triggers: when a node connects or
+disconnects, the full roster to a node as its first frame on join, and a
+periodic rebroadcast (every ~20s) as a safety net for any node that missed an
+event-driven update. A node that stops receiving roster heartbeats treats the
+broker as down and enters its reconnect loop.
+
+<Note>
+There is a brief window after a node disconnects where nodes can disagree on
+the leader until the updated roster lands everywhere - the same
+eventual-consistency window that gossip has in mesh mode.
+</Note>
+
+---
+
 ## Service Discovery Methods
 
 Bifrost supports 6 service discovery methods to fit any infrastructure. Choose based on your deployment environment:
