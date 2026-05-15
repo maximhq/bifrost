@@ -867,6 +867,44 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
+	// Synthesize lifecycle events if Bedrock never sent a messageStart
+	if !state.HasEmittedCreated {
+		if state.MessageID == nil {
+			messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
+			state.MessageID = &messageID
+		}
+		createdResponse := &schemas.BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+			Usage:     usage,
+		}
+		if state.Model != nil {
+			createdResponse.Model = *state.Model
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCreated,
+			SequenceNumber: sequenceNumber + len(responses),
+			Response:       createdResponse,
+		})
+		state.HasEmittedCreated = true
+	}
+
+	if !state.HasEmittedInProgress {
+		inProgressResponse := &schemas.BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+		}
+		if state.Model != nil {
+			inProgressResponse.Model = *state.Model
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeInProgress,
+			SequenceNumber: sequenceNumber + len(responses),
+			Response:       inProgressResponse,
+		})
+		state.HasEmittedInProgress = true
+	}
+
 	// Close any open items (text items and tool calls)
 	for contentIndex, outputIndex := range state.ContentIndexToOutputIndex {
 		// Skip reasoning blocks
