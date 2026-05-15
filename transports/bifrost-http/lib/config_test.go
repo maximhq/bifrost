@@ -16214,6 +16214,16 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
 	})
 
+	t.Run("fallback default pricing url uses env override", func(t *testing.T) {
+		envURL := "https://env-default.example.com/pricing.json"
+		t.Setenv("BIFROST_PRICING_URL", envURL)
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, envURL, *normalizedTable.PricingURL)
+		require.Equal(t, envURL, *normalizedModelCatalog.PricingURL)
+	})
+
 	t.Run("invalid db interval (zero) falls back and requests db update", func(t *testing.T) {
 		invalidDBSync := int64(0)
 		dbConfig := &tables.TableFrameworkConfig{

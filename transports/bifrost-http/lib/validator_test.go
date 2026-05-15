@@ -1,12 +1,50 @@
 package lib
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestGetSchemaURLUsesEnv(t *testing.T) {
+	t.Setenv(SchemaURLEnvVar, " https://internal.example/schema ")
+	if got := getSchemaURL(); got != "https://internal.example/schema" {
+		t.Fatalf("expected env schema URL, got %q", got)
+	}
+
+	t.Setenv(SchemaURLEnvVar, "")
+	if got := getSchemaURL(); got != DefaultSchemaURL {
+		t.Fatalf("expected default schema URL, got %q", got)
+	}
+}
+
+func TestValidateConfigSchemaUsesSchemaURLEnv(t *testing.T) {
+	originalLocalSchemaCandidates := localSchemaCandidates
+	localSchemaCandidates = nil
+	t.Cleanup(func() {
+		localSchemaCandidates = originalLocalSchemaCandidates
+	})
+
+	requested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+		_, _ = w.Write(loadLocalSchema(t))
+	}))
+	defer server.Close()
+
+	t.Setenv(SchemaURLEnvVar, server.URL)
+
+	if err := ValidateConfigSchema([]byte(`{}`)); err != nil {
+		t.Fatalf("expected validation to succeed with schema URL env, got %v", err)
+	}
+	if !requested {
+		t.Fatal("expected schema URL env endpoint to be requested")
+	}
+}
 
 // loadLocalSchema reads the local config.schema.json for use in tests,
 // avoiding remote fetches during test execution.

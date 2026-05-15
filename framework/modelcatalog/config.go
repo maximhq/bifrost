@@ -1,6 +1,8 @@
 package modelcatalog
 
 import (
+	"os"
+	"strings"
 	"time"
 )
 
@@ -18,9 +20,26 @@ const (
 	ConfigLastParamsSyncKey       = "LastModelParametersSync"
 	DefaultPricingURL             = "https://getbifrost.ai/datasheet"
 	DefaultModelParametersURL     = "https://getbifrost.ai/datasheet/model-parameters"
+	PricingURLEnvVar              = "BIFROST_PRICING_URL"
+	ModelParametersURLEnvVar      = "BIFROST_MODEL_PARAMETERS_URL"
 	DefaultPricingTimeout         = 45 * time.Second
 	DefaultModelParametersTimeout = 45 * time.Second
 )
+
+func defaultURLWithEnv(defaultURL, envVar string) string {
+	if value := strings.TrimSpace(os.Getenv(envVar)); value != "" {
+		return value
+	}
+	return defaultURL
+}
+
+func defaultPricingURL() string {
+	return defaultURLWithEnv(DefaultPricingURL, PricingURLEnvVar)
+}
+
+func defaultModelParametersURL() string {
+	return defaultURLWithEnv(DefaultModelParametersURL, ModelParametersURLEnvVar)
+}
 
 // Config is the model pricing configuration.
 type Config struct {

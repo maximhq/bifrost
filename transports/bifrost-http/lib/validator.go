@@ -9,15 +9,21 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+)
+
+const (
+	DefaultSchemaURL = "https://www.getbifrost.ai/schema"
+	SchemaURLEnvVar  = "BIFROST_SCHEMA_URL"
 )
 
 // localSchemaCandidates lists paths (relative to CWD) where config.schema.json may be found
 // when running from a source checkout. Checked in order before falling back to the remote URL.
 var localSchemaCandidates = []string{
-	"config.schema.json",         // running from transports/
-	"../config.schema.json",      // running from transports/bifrost-http/
+	"config.schema.json",            // running from transports/
+	"../config.schema.json",         // running from transports/bifrost-http/
 	"transports/config.schema.json", // running from repo root
 }
 
@@ -33,6 +39,13 @@ func tryLoadLocalSchema() []byte {
 	return nil
 }
 
+func getSchemaURL() string {
+	if value := strings.TrimSpace(os.Getenv(SchemaURLEnvVar)); value != "" {
+		return value
+	}
+	return DefaultSchemaURL
+}
+
 // ValidateConfigSchema validates config data against the JSON schema.
 // Returns nil if valid, or a formatted error describing all validation failures.
 // An optional schemaOverride can be provided to use a local schema instead of fetching from the remote URL.
@@ -45,8 +58,7 @@ func ValidateConfigSchema(data []byte, schemaOverride ...[]byte) error {
 		// This avoids validating against a potentially stale remote schema.
 		configSchemaJSONBytes = localSchema
 	} else {
-		// Pulling config.schema from https://www.getbifrost.ai/schema
-		configSchemaJSON, err := http.Get("https://www.getbifrost.ai/schema")
+		configSchemaJSON, err := http.Get(getSchemaURL())
 		if err != nil {
 			return fmt.Errorf("failed to get config schema: %w", err)
 		}

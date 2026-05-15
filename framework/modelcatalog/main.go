@@ -22,10 +22,11 @@ type ModelCatalog struct {
 	logger schemas.Logger
 
 	// Configuration fields (protected by syncMu)
-	pricingURL   string
-	syncInterval time.Duration
-	lastSyncedAt time.Time
-	syncMu       sync.RWMutex
+	pricingURL         string
+	modelParametersURL string
+	syncInterval       time.Duration
+	lastSyncedAt       time.Time
+	syncMu             sync.RWMutex
 
 	shouldSyncGate func(ctx context.Context) bool
 	afterSyncHook  func(ctx context.Context)
@@ -65,10 +66,11 @@ type ModelCatalog struct {
 // Init initializes the model catalog
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {
 	// Initialize pricing URL and sync interval
-	pricingURL := DefaultPricingURL
+	pricingURL := defaultPricingURL()
 	if config.PricingURL != nil {
 		pricingURL = *config.PricingURL
 	}
+	modelParametersURL := defaultModelParametersURL()
 	syncInterval := DefaultSyncInterval
 	if config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
@@ -81,6 +83,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	mc := &ModelCatalog{
 		pricingURL:             pricingURL,
+		modelParametersURL:     modelParametersURL,
 		syncInterval:           syncInterval,
 		configStore:            configStore,
 		logger:                 logger,
@@ -267,10 +270,11 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 	}
 
 	// Update pricing configuration
-	mc.pricingURL = DefaultPricingURL
+	mc.pricingURL = defaultPricingURL()
 	if config.PricingURL != nil {
 		mc.pricingURL = *config.PricingURL
 	}
+	mc.modelParametersURL = defaultModelParametersURL()
 
 	mc.syncInterval = DefaultSyncInterval
 	if config.PricingSyncInterval != nil {
@@ -352,6 +356,12 @@ func (mc *ModelCatalog) getPricingURL() string {
 	mc.syncMu.RLock()
 	defer mc.syncMu.RUnlock()
 	return mc.pricingURL
+}
+
+func (mc *ModelCatalog) getModelParametersURL() string {
+	mc.syncMu.RLock()
+	defer mc.syncMu.RUnlock()
+	return mc.modelParametersURL
 }
 
 // IsRequestTypeSupported checks if a model supports chat completion.
