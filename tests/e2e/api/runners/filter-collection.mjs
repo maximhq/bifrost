@@ -79,6 +79,25 @@ const STRUCTURAL_KEYWORDS = {
   crosscut: (item) => STRUCTURAL_KEYWORDS["cross-cut"](item),
 };
 
+const FEATURE_ALIASES = {
+  chat: ["chat", "messages", "responses"],
+  streaming: ["streaming", "\"stream\": true", "streamgeneratecontent", "converse-stream", "alt=sse"],
+  embeddings: ["embeddings", "embedding"],
+  audio: ["audio", "speech", "transcription"],
+  "image-gen": ["image-gen", "image generation", "image gen", "images/generations"],
+  tools: ["tools", "\"tools\"", "tool use", "tool_choice", "function calling", "functiondeclarations", "function_calling"],
+  vision: ["vision", "image_url", "\"type\":\"image\"", "\"type\": \"image\"", "inline_data", "filedata"],
+  json: ["json_schema", "json object", "structured output", "responseschema", "response_schema", "responsemimetype", "response mime"],
+  reasoning: ["reasoning", "thinking", "reasoning_effort", "budget_tokens", "thinkingbudget", "thinking_budget"],
+};
+
+const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
+  const structural = STRUCTURAL_KEYWORDS[keyword];
+  if (structural && (structural(item) || haystack.includes(keyword))) return true;
+  const aliases = FEATURE_ALIASES[keyword] || [keyword];
+  return aliases.some((alias) => haystack.includes(alias));
+};
+
 const itemMatchesProvider = (item, ancestorNames) => {
   if (!PROVIDER) return true;
   const keywords = PROVIDER_KEYWORDS[PROVIDER] || [PROVIDER];
@@ -87,23 +106,15 @@ const itemMatchesProvider = (item, ancestorNames) => {
 };
 
 const itemMatchesFeature = (item, ancestorNames) => {
-  if (!FEATURE_PARTS.length) return true;
-  const haystack = buildHaystack(item, ancestorNames);
-  return FEATURE_PARTS.every((p) => {
-    const structural = STRUCTURAL_KEYWORDS[p];
-    if (structural) return structural(item) || haystack.includes(p);
-    return haystack.includes(p);
-  });
+	if (!FEATURE_PARTS.length) return true;
+	const haystack = buildHaystack(item, ancestorNames);
+	return FEATURE_PARTS.every((p) => matchesKeyword(item, ancestorNames, haystack, p));
 };
 
 const itemMatchesFeatureAny = (item, ancestorNames) => {
-  if (!FEATURE_ANY_PARTS.length) return true;
-  const haystack = buildHaystack(item, ancestorNames);
-  return FEATURE_ANY_PARTS.some((p) => {
-    const structural = STRUCTURAL_KEYWORDS[p];
-    if (structural) return structural(item) || haystack.includes(p);
-    return haystack.includes(p);
-  });
+	if (!FEATURE_ANY_PARTS.length) return true;
+	const haystack = buildHaystack(item, ancestorNames);
+	return FEATURE_ANY_PARTS.some((p) => matchesKeyword(item, ancestorNames, haystack, p));
 };
 
 let failedNames = null;
