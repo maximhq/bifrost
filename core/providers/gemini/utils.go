@@ -1728,13 +1728,17 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 	config.SpeechConfig = &speechConfig
 }
 
-// convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(ctx context.Context, messages []schemas.ChatMessage) ([]Content, *Content) {
+// convertBifrostMessagesToGemini converts Bifrost messages to Gemini format.
+// Returns an error if any audio URL referenced by the messages fails to
+// download or validate; the responses path propagates the same way, so the
+// two conversion paths fail symmetrically instead of one silently dropping
+// audio while the other surfaces the error.
+func convertBifrostMessagesToGemini(ctx context.Context, messages []schemas.ChatMessage) ([]Content, *Content, error) {
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		content := convertSystemChatMessageToGeminiUserContent(messages[0])
 		if len(content.Parts) > 0 {
-			return []Content{content}, nil
+			return []Content{content}, nil, nil
 		}
 	}
 
@@ -1962,7 +1966,7 @@ func convertBifrostMessagesToGemini(ctx context.Context, messages []schemas.Chat
 							var err error
 							audioData, err = providerUtils.DownloadURLToBase64(ctx, block.InputAudio.URL)
 							if err != nil {
-								continue
+								return nil, nil, fmt.Errorf("failed to download audio from URL: %w", err)
 							}
 						}
 
@@ -2094,7 +2098,7 @@ func convertBifrostMessagesToGemini(ctx context.Context, messages []schemas.Chat
 		}
 	}
 
-	return contents, systemInstruction
+	return contents, systemInstruction, nil
 }
 
 func convertSystemChatMessageToGeminiUserContent(message schemas.ChatMessage) Content {

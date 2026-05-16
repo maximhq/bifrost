@@ -2523,7 +2523,10 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal messages", err)
 					}
 
-					contents, systemInstruction := convertBifrostMessagesToGemini(ctx, chatMessages)
+					contents, systemInstruction, convErr := convertBifrostMessagesToGemini(ctx, chatMessages)
+					if convErr != nil {
+						return nil, providerUtils.NewBifrostOperationError("failed to convert messages to gemini", convErr)
+					}
 					geminiReq.Contents = contents
 					geminiReq.SystemInstruction = systemInstruction
 				} else {
