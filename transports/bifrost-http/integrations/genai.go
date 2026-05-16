@@ -235,7 +235,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
 		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-			return gemini.ToGeminiResponsesResponse(resp), nil
+			return gemini.ToGeminiResponsesResponse(ctx, resp), nil
 		},
 		SpeechResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
 			return gemini.ToGeminiSpeechResponse(resp), nil
@@ -271,7 +271,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					ctx.SetValue(stateKey, state)
 				}
 
-				geminiResponse := gemini.ToGeminiResponsesStreamResponse(resp, state)
+				geminiResponse := gemini.ToGeminiResponsesStreamResponse(ctx, resp, state)
 				if geminiResponse == nil {
 					return "", nil, nil
 				}

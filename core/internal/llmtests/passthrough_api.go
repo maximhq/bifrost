@@ -85,7 +85,7 @@ func buildPassthroughChatReq(t *testing.T, provider schemas.ModelProvider, model
 		return passthroughChatReq{path: "/v1/messages", body: body}, true
 
 	case schemas.Gemini:
-		nativeReq, err := gemini.ToGeminiChatCompletionRequest(bfReq)
+		nativeReq, err := gemini.ToGeminiChatCompletionRequest(context.Background(), bfReq)
 		if err != nil {
 			return passthroughChatReq{}, false
 		}

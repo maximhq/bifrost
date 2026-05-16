@@ -919,6 +919,7 @@ type ResponsesInputMessageContentBlockFile struct {
 type ResponsesInputMessageContentBlockAudio struct {
 	Format string `json:"format"` // "mp3" or "wav"
 	Data   string `json:"data"`   // base64 encoded audio data
+	URL    string `json:"url,omitempty"`
 }
 
 // =============================================================================

@@ -288,7 +288,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiChatCompletionRequest(request)
+			return ToGeminiChatCompletionRequest(ctx, request)
 		})
 	if err != nil {
 		return nil, err
@@ -344,7 +344,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiChatCompletionRequest(request)
+			reqBody, err := ToGeminiChatCompletionRequest(ctx, request)
 			if err != nil {
 				return nil, err
 			}
@@ -657,7 +657,7 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := ToGeminiResponsesRequest(request)
+				reqBody, err := ToGeminiResponsesRequest(ctx, request)
 				if err != nil {
 					return nil, err
 				}
@@ -845,7 +845,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiResponsesRequest(request)
+			reqBody, err := ToGeminiResponsesRequest(ctx, request)
 			if err != nil {
 				return nil, err
 			}
@@ -2523,7 +2523,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 						return nil, providerUtils.NewBifrostOperationError("failed to unmarshal messages", err)
 					}
 
-					contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
+					contents, systemInstruction := convertBifrostMessagesToGemini(ctx, chatMessages)
 					geminiReq.Contents = contents
 					geminiReq.SystemInstruction = systemInstruction
 				} else {
@@ -3947,7 +3947,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToGeminiResponsesRequest(request)
+				return ToGeminiResponsesRequest(ctx, request)
 			},
 		)
 		if bifrostErr != nil {

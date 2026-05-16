@@ -1729,7 +1729,7 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
+func convertBifrostMessagesToGemini(ctx context.Context, messages []schemas.ChatMessage) ([]Content, *Content) {
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		content := convertSystemChatMessageToGeminiUserContent(messages[0])
@@ -1957,8 +1957,17 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 							})
 						}
 					} else if block.InputAudio != nil {
+						audioData := block.InputAudio.Data
+						if audioData == "" && block.InputAudio.URL != "" {
+							var err error
+							audioData, err = providerUtils.DownloadURLToBase64(ctx, block.InputAudio.URL)
+							if err != nil {
+								continue
+							}
+						}
+
 						// Decode the audio data (handles both standard and URL-safe base64)
-						decodedData, err := decodeBase64StringToBytes(block.InputAudio.Data)
+						decodedData, err := decodeBase64StringToBytes(audioData)
 						if err != nil || len(decodedData) == 0 {
 							continue
 						}
