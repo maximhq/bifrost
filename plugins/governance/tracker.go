@@ -118,7 +118,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	}
 
 	// Get virtual key
-	vk, exists := t.store.GetVirtualKey(update.VirtualKey)
+	vk, exists := t.store.GetVirtualKey(ctx, update.VirtualKey)
 	if !exists {
 		t.logger.Debug(fmt.Sprintf("Virtual key not found: %s", update.VirtualKey))
 		return

@@ -123,9 +123,11 @@ type ErrorResponse struct {
 
 // Latency defines latency simulation settings
 type Latency struct {
-	Min  time.Duration `json:"min"`  // Minimum latency as time.Duration (e.g., 100*time.Millisecond, NOT raw int)
-	Max  time.Duration `json:"max"`  // Maximum latency as time.Duration (e.g., 500*time.Millisecond, NOT raw int)
-	Type string        `json:"type"` // Latency type: "fixed" or "uniform"
+	// Min and Max accept Go duration strings (e.g. "100ms", "1s") or integer
+	// nanosecond values for backward compatibility.
+	Min  schemas.Duration `json:"min"`  // Minimum latency
+	Max  schemas.Duration `json:"max"`  // Maximum latency
+	Type string           `json:"type"` // Latency type: "fixed" or "uniform"
 }
 
 // SizeRange defines request size constraints in bytes
@@ -360,13 +362,13 @@ func validateLatency(latency Latency) error {
 	}
 
 	// Min latency should be non-negative
-	if latency.Min < 0 {
+	if latency.Min.D() < 0 {
 		return fmt.Errorf("minimum latency cannot be negative")
 	}
 
 	// For uniform type, max should be >= min
 	if latency.Type == LatencyTypeUniform {
-		if latency.Max < latency.Min {
+		if latency.Max.D() < latency.Min.D() {
 			return fmt.Errorf("maximum latency (%v) cannot be less than minimum latency (%v)", latency.Max, latency.Min)
 		}
 	}
@@ -506,7 +508,10 @@ func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
-	if req.RequestType != schemas.ChatCompletionRequest && req.RequestType != schemas.ResponsesRequest {
+	if req.RequestType != schemas.ChatCompletionRequest &&
+		req.RequestType != schemas.ChatCompletionStreamRequest &&
+		req.RequestType != schemas.ResponsesRequest &&
+		req.RequestType != schemas.ResponsesStreamRequest {
 		return req, nil, nil
 	}
 
@@ -550,15 +555,27 @@ func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	p.ruleHitsMu.Unlock()
 
 	// Generate appropriate mock response based on type
+	var modifiedReq *schemas.BifrostRequest
+	var shortCircuit *schemas.LLMPluginShortCircuit
+	var err error
+
 	switch response.Type {
 	case ResponseTypeSuccess:
-		return p.generateSuccessShortCircuit(req, response, startTime)
+		modifiedReq, shortCircuit, err = p.generateSuccessShortCircuit(req, response, startTime)
 	case ResponseTypeError:
-		return p.generateErrorShortCircuit(req, response)
+		modifiedReq, shortCircuit, err = p.generateErrorShortCircuit(req, response)
+	default:
+		// Fallback: continue with normal flow if response type is unrecognized
+		return req, nil, nil
 	}
 
-	// Fallback: continue with normal flow if response type is unrecognized
-	return req, nil, nil
+	// For streaming requests with a short-circuit response, mark the stream as complete
+	// This is required for plugins like semantic cache that need to know when the stream ends
+	if shortCircuit != nil && shortCircuit.Response != nil && bifrost.IsStreamRequestType(req.RequestType) {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	}
+
+	return modifiedReq, shortCircuit, err
 }
 
 // PostLLMHook processes responses after provider calls
@@ -817,7 +834,7 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	// Create mock response with proper structure
 	mockResponse := &schemas.BifrostResponse{}
 
-	if req.RequestType == schemas.ChatCompletionRequest {
+	if req.RequestType == schemas.ChatCompletionRequest || req.RequestType == schemas.ChatCompletionStreamRequest {
 		mockResponse.ChatResponse = &schemas.BifrostChatResponse{
 			Model: model,
 			Usage: &usage,
@@ -836,9 +853,9 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
+				RequestType:    req.RequestType,
 				Provider:       provider,
-				ModelRequested: model,
+				OriginalModelRequested: model,
 				Latency:        int64(time.Since(startTime).Milliseconds()),
 			},
 		}
@@ -862,7 +879,35 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.ResponsesRequest,
 				Provider:       provider,
-				ModelRequested: model,
+				OriginalModelRequested: model,
+				Latency:        int64(time.Since(startTime).Milliseconds()),
+			},
+		}
+	} else if req.RequestType == schemas.ResponsesStreamRequest {
+		mockResponse.ResponsesStreamResponse = &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: 0,
+			Response: &schemas.BifrostResponsesResponse{
+				CreatedAt: int(time.Now().Unix()),
+				Output: []schemas.ResponsesMessage{
+					{
+						Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: &message,
+						},
+						Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+					},
+				},
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  usage.PromptTokens,
+					OutputTokens: usage.CompletionTokens,
+					TotalTokens:  usage.TotalTokens,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ResponsesStreamRequest,
+				Provider:       provider,
+				OriginalModelRequested: model,
 				Latency:        int64(time.Since(startTime).Milliseconds()),
 			},
 		}
@@ -916,7 +961,7 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 		ExtraFields: schemas.BifrostErrorExtraFields{
 			RequestType:    req.RequestType,
 			Provider:       provider,
-			ModelRequested: model,
+			OriginalModelRequested: model,
 		},
 	}
 
@@ -985,17 +1030,17 @@ func (p *MockerPlugin) getLatency(rule *MockRule) *Latency {
 func (p *MockerPlugin) calculateLatency(latency *Latency) time.Duration {
 	switch latency.Type {
 	case LatencyTypeFixed:
-		return latency.Min
+		return latency.Min.D()
 	case LatencyTypeUniform:
-		if latency.Max <= latency.Min {
-			return latency.Min
+		if latency.Max.D() <= latency.Min.D() {
+			return latency.Min.D()
 		}
 		// Calculate random duration between Min and Max
-		diff := latency.Max - latency.Min
-		return latency.Min + time.Duration(rand.Float64()*float64(diff))
+		diff := latency.Max.D() - latency.Min.D()
+		return latency.Min.D() + time.Duration(rand.Float64()*float64(diff))
 	default:
 		// Default to fixed latency
-		return latency.Min
+		return latency.Min.D()
 	}
 }
 
@@ -1040,7 +1085,7 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 					ExtraFields: schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ChatCompletionRequest,
 						Provider:       provider,
-						ModelRequested: model,
+						OriginalModelRequested: model,
 					},
 				},
 			},

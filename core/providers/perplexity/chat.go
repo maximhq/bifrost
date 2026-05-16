@@ -38,10 +38,14 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 
 		// Handle reasoning effort mapping
 		if bifrostReq.Params.Reasoning != nil && bifrostReq.Params.Reasoning.Effort != nil {
-			if *bifrostReq.Params.Reasoning.Effort == "minimal" {
+			effort := *bifrostReq.Params.Reasoning.Effort
+			switch effort {
+			case "minimal":
 				perplexityReq.ReasoningEffort = schemas.Ptr("low")
-			} else {
-				perplexityReq.ReasoningEffort = bifrostReq.Params.Reasoning.Effort
+			case "xhigh", "max":
+				perplexityReq.ReasoningEffort = schemas.Ptr("high")
+			default:
+				perplexityReq.ReasoningEffort = &effort
 			}
 		}
 
@@ -280,8 +284,6 @@ func (response *PerplexityChatResponse) ToBifrostChatResponse(model string) *sch
 		Object:  response.Object,
 		Created: response.Created,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.ChatCompletionRequest,
-			Provider:    schemas.Perplexity,
 		},
 		SearchResults: response.SearchResults,
 		Videos:        response.Videos,

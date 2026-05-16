@@ -227,7 +227,7 @@ This consistent naming convention ensures clear separation between tools from di
 Virtual Keys can have their own MCP tool access configuration, which **takes precedence** over request-level headers.
 
 <Note>
-When a Virtual Key has MCP configurations, it generates the `x-bf-mcp-include-tools` header automatically, overriding any manually sent header.
+When a Virtual Key has no MCP configurations, **no MCP tools are available** (deny-by-default). You must explicitly add MCP client configurations to allow tools. When a Virtual Key has MCP configurations, it generates the `x-bf-mcp-include-tools` header automatically, overriding any manually sent header.
 </Note>
 
 ### Configuration

@@ -1,10 +1,8 @@
-"use client";
-
 import * as React from "react";
 
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { cn } from "@/lib/utils";
 import { CopyIcon } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "./button";
 
 export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
@@ -14,6 +12,8 @@ export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> 
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
 	({ className, type, showCopyButton = false, inputClassName, ...props }, ref) => {
+		const { copy } = useCopyToClipboard();
+
 		if (showCopyButton) {
 			return (
 				<div
@@ -38,12 +38,8 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
 						variant="ghost"
 						size="icon"
 						onClick={() => {
-							if (typeof props.value === "string") {
-								navigator.clipboard.writeText(props.value as string);
-							} else {
-								navigator.clipboard.writeText(JSON.stringify(props.value));
-							}
-							toast.success("Copied to clipboard");
+							const text = typeof props.value === "string" ? props.value : JSON.stringify(props.value);
+							copy(text);
 						}}
 					>
 						<CopyIcon className="h-4 w-4" />

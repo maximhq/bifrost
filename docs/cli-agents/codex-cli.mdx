@@ -1,0 +1,98 @@
+---
+title: "Codex CLI"
+description: "Use OpenAI's Codex CLI with Bifrost for powerful code generation with any provider."
+icon: "openai"
+---
+
+[Codex CLI](https://developers.openai.com/codex/cli/) provides powerful code generation and completion capabilities directly in your terminal.
+
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not, and you face issues integrating Bifrost with Codex CLI, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
+## Installing Codex CLI
+
+```bash
+npm install -g @openai/codex
+```
+
+## Configuring Codex CLI with Bifrost
+
+<Warning>
+Codex CLI always prefers OAuth over custom API keys. Make sure you run `/logout` before configuring the Bifrost gateway with Codex.
+</Warning>
+
+### Update codex.toml
+
+Add the Bifrost base URL and credentials to your global `~/.codex/config.toml` or project-specific `.codex/config.toml`:
+
+```bash
+export OPENAI_API_KEY=<bifrost_virtual_key>
+```
+
+```toml
+openai_base_url="http://localhost:8080/openai/v1"
+env_key="OPENAI_API_KEY"
+model = "openai/gpt-5.4"
+```
+
+Always run `codex` from the same terminal session where you exported variables, or restart the terminal after changing your profile. GUI-launched terminals or IDEs may not pick up shell-profile exports unless the environment is configured there as well.
+
+## Using Non-OpenAI models
+
+Codex CLI defaults to [websocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) for the Responses API and automatically falls back to HTTPS if the WebSocket connection fails. Non-OpenAI models are not supported in WebSocket mode, because in this mode, the server is expected to maintain the conversation context. If you are using non-OpenAI models, you must enable HTTPS mode.
+
+To enable https for Codex CLI by default, add these settings in your `config.toml`: 
+
+```toml
+
+model_provider = "openai_http"
+
+[model_providers.openai_http]
+name = "OpenAI HTTP"
+wire_api = "responses"
+supports_websockets = false
+base_url = "http://localhost:8080/openai/v1"
+```
+
+## Model Configuration
+
+Use the `--model` flag to start Codex with a specific model:
+
+```bash
+codex --model openai/gpt-5-codex
+codex --model openai/gpt-5.4-pro
+```
+
+You can also switch models mid-session with the `/model` command:
+
+```bash
+/model openai/gpt-5.4-pro
+/model openai/gpt-5-codex
+```
+
+## Using Non-OpenAI Models with Codex CLI
+
+Bifrost automatically translates OpenAI API requests to other providers, so you can use Codex CLI with models from Anthropic, Google, Mistral, and more. Use the `provider/model-name` format to specify any Bifrost-configured model:
+
+```bash
+# Start with an Anthropic model
+codex --model anthropic/claude-sonnet-4-5-20250929
+
+# Start with a Google model
+codex --model gemini/gemini-2.5-pro
+
+# Switch mid-session
+/model anthropic/claude-sonnet-4-5-20250929
+/model mistral/mistral-large-latest
+```
+
+### Supported Providers
+
+Bifrost supports the following providers with the `provider/model-name` format:
+
+`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+
+<Warning>
+Non-OpenAI models **must support tool use** for Codex CLI to work properly. Codex CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
+</Warning>

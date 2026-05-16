@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: ./extract-npx-version.sh
 
 # Path to package.json
-PACKAGE_JSON="npx/package.json"
+PACKAGE_JSON="npx/bifrost/package.json"
 
 if [[ ! -f "${PACKAGE_JSON}" ]]; then
   echo "❌ package.json not found at ${PACKAGE_JSON}"
@@ -34,7 +34,7 @@ echo "📦 Extracted NPX version: ${VERSION}"
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "version=${VERSION}"
-    echo "full-tag=npx/v${VERSION}"
+    echo "full-tag=npx/bifrost/v${VERSION}"
   } >> "$GITHUB_OUTPUT"
 else
   echo "::notice::GITHUB_OUTPUT not set; skipping outputs (local run?)"

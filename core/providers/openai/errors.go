@@ -10,10 +10,10 @@ import (
 )
 
 // ErrorConverter is a function that converts provider-specific error responses to BifrostError.
-type ErrorConverter func(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError
+type ErrorConverter func(resp *fasthttp.Response) *schemas.BifrostError
 
 // ParseOpenAIError parses OpenAI error responses.
-func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
+func ParseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
 
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
@@ -49,11 +49,6 @@ func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, 
 	}
 
 	// Set ExtraFields unconditionally so provider/model/request metadata is always attached
-	if bifrostErr != nil {
-		bifrostErr.ExtraFields.Provider = providerName
-		bifrostErr.ExtraFields.ModelRequested = model
-		bifrostErr.ExtraFields.RequestType = requestType
-	}
 
 	return bifrostErr
 }

@@ -112,13 +112,10 @@ func (w *TokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
 				w.logger.Error("Failed to refresh token", "oauth_config_id", oauthConfig.ID, "error", err)
 			}
 
-			// Mark the oauth_config as expired so user knows to re-authorize
-			oauthConfig.Status = "expired"
-			if updateErr := w.provider.configStore.UpdateOauthConfig(ctx, oauthConfig); updateErr != nil {
-				if w.logger != nil {
-					w.logger.Error("Failed to update oauth config status: %s, error: %s", oauthConfig.ID, updateErr.Error())
-				}
-			}
+			// Only mark as expired for permanent auth rejections (e.g. invalid_grant, 401).
+			// Transient failures (DNS, timeout, offline) are skipped — the worker will
+			// retry on the next tick and the connection heals automatically when online.
+			w.provider.markExpiredIfPermanent(ctx, oauthConfig, err)
 		} else {
 			if w.logger != nil {
 				w.logger.Debug("Successfully refreshed token: %s", oauthConfig.ID)

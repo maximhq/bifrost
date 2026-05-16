@@ -10,7 +10,7 @@ import (
 )
 
 // parseHuggingFaceImageError parses HuggingFace error responses
-func parseHuggingFaceImageError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+func parseHuggingFaceImageError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp HuggingFaceResponseError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 
@@ -51,14 +51,6 @@ func parseHuggingFaceImageError(resp *fasthttp.Response, meta *providerUtils.Req
 		bifrostErr.Error.Message = errorResp.Message
 	} else if strings.TrimSpace(errorResp.Error) != "" {
 		bifrostErr.Error.Message = errorResp.Error
-	}
-
-	if meta != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       meta.Provider,
-			ModelRequested: meta.Model,
-			RequestType:    meta.RequestType,
-		}
 	}
 
 	return bifrostErr

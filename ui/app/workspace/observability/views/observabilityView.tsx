@@ -1,11 +1,8 @@
-"use client";
-
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
-import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
+import { setSelectedPlugin, useAppDispatch, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
-import Image from "next/image";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo } from "react";
 import BigQueryView from "./plugins/bigqueryView";
@@ -43,22 +40,22 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 	{
 		id: "prometheus",
 		name: "Prometheus",
-		icon: <Image alt="Prometheus" src="/images/prometheus-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		icon: <img alt="Prometheus" src="/images/prometheus-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "maxim",
 		name: "Maxim",
-		icon: <Image alt="Maxim" src={`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.png`} width={19} height={19} />,
+		icon: <img alt="Maxim" src={`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.webp`} width={19} height={19} />,
 	},
 	{
 		id: "datadog",
 		name: "Datadog",
-		icon: <Image alt="Datadog" src="/images/datadog-logo.png" width={32} height={32} className="-ml-0.5" />,
+		icon: <img alt="Datadog" src="/images/datadog-logo.webp" width={32} height={32} className="-ml-0.5" />,
 	},
 	{
 		id: "bigquery",
 		name: "BigQuery",
-		icon: <Image alt="BigQuery" src="/images/bigquery-logo.svg" width={21} height={21} className="-ml-0.5" />,
+		icon: <img alt="BigQuery" src="/images/bigquery-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "newrelic",
@@ -78,8 +75,6 @@ export default function ObservabilityView() {
 	const dispatch = useAppDispatch();
 	const { data: plugins, isLoading } = useGetPluginsQuery();
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
-	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
-
 	const { resolvedTheme } = useTheme();
 
 	const supportedPlatforms = useMemo(() => supportedPlatformsList(resolvedTheme || "light"), [resolvedTheme]);

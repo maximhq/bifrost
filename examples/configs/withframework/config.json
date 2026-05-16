@@ -1,0 +1,29 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "version": 2,
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "framework": {
+    "pricing": {
+      "pricing_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+      "pricing_sync_interval": 86400
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "sk-dummy",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}

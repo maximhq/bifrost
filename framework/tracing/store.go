@@ -12,13 +12,14 @@ import (
 
 // DeferredSpanInfo stores information about a deferred span for streaming requests
 type DeferredSpanInfo struct {
-	SpanID         string
-	StartTime      time.Time
-	Tracer         schemas.Tracer // Reference to tracer for completing the span
-	RequestID      string         // Request ID for accumulator lookup
-	FirstChunkTime time.Time      // Timestamp of first chunk (for TTFT calculation)
-	ChunkCount     int            // Count of received streaming chunks (for AttrTotalChunks)
-	mu             sync.Mutex     // Mutex for thread-safe chunk accumulation
+	SpanID              string
+	StartTime           time.Time
+	Tracer              schemas.Tracer          // Reference to tracer for completing the span
+	RequestID           string                  // Request ID for accumulator lookup
+	FirstChunkTime      time.Time               // Timestamp of first chunk (for TTFT calculation)
+	ChunkCount          int                     // Count of received streaming chunks (for AttrTotalChunks)
+	AccumulatedResponse *schemas.BifrostResponse // Full accumulated response from streaming chunks
+	mu                  sync.Mutex              // Mutex for thread-safe chunk accumulation
 }
 
 // TraceStore manages traces with thread-safe access and object pooling
@@ -72,7 +73,7 @@ func NewTraceStore(ttl time.Duration, logger schemas.Logger) *TraceStore {
 // If empty, a new trace ID will be generated.
 // Note: The parent span ID (for linking to upstream spans) is handled separately
 // via context in StartSpan, not stored on the trace itself.
-func (s *TraceStore) CreateTrace(inheritedTraceID string) string {
+func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) string {
 	trace := s.tracePool.Get().(*schemas.Trace)
 	// Reset and initialize the trace
 	if inheritedTraceID != "" {
@@ -84,6 +85,9 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string) string {
 	// Parent-child relationships are between spans, not traces.
 	// The root span's ParentID is set in StartSpan from context.
 	trace.ParentID = ""
+	if len(requestID) > 0 {
+		trace.RequestID = requestID[0]
+	}
 	trace.StartTime = time.Now()
 	trace.EndTime = time.Time{}
 	trace.RootSpan = nil
@@ -112,6 +116,15 @@ func (s *TraceStore) GetTrace(traceID string) *schemas.Trace {
 		return val.(*schemas.Trace)
 	}
 	return nil
+}
+
+// SetRequestID sets the request ID for the trace
+func (s *TraceStore) SetRequestID(traceID string, requestID string) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetRequestID(requestID)
 }
 
 // CompleteTrace marks the trace as complete, removes it from store, and returns it for flushing
@@ -173,7 +186,7 @@ func (s *TraceStore) AppendStreamingChunk(traceID string, chunk *schemas.Bifrost
 
 // GetAccumulatedData returns TTFT and chunk count for a deferred span.
 // Chunks are no longer stored; full content is available via the streaming.Accumulator.
-func (s *TraceStore) GetAccumulatedData(traceID string) (ttftMs int64, chunkCount int) {
+func (s *TraceStore) GetAccumulatedData(traceID string) (ttftNs int64, chunkCount int) {
 	info := s.GetDeferredSpan(traceID)
 	if info == nil {
 		return 0, 0
@@ -181,12 +194,40 @@ func (s *TraceStore) GetAccumulatedData(traceID string) (ttftMs int64, chunkCoun
 	info.mu.Lock()
 	defer info.mu.Unlock()
 
-	// Calculate TTFT in milliseconds
+	// Calculate TTFT in nanoseconds
 	if !info.StartTime.IsZero() && !info.FirstChunkTime.IsZero() {
-		ttftMs = info.FirstChunkTime.Sub(info.StartTime).Milliseconds()
+		ttftNs = info.FirstChunkTime.Sub(info.StartTime).Nanoseconds()
 	}
 
-	return ttftMs, info.ChunkCount
+	return ttftNs, info.ChunkCount
+}
+
+// SetAccumulatedResponse stores the accumulated BifrostResponse on the deferred span info.
+// Called during the final ProcessStreamingChunk to make the full response
+// available for span attribute population in completeDeferredSpan.
+func (s *TraceStore) SetAccumulatedResponse(traceID string, resp *schemas.BifrostResponse) {
+	info := s.GetDeferredSpan(traceID)
+	if info == nil {
+		return
+	}
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	if info.AccumulatedResponse != nil {
+		return // already set; do not overwrite
+	}
+	info.AccumulatedResponse = resp
+}
+
+// GetAccumulatedResponse returns the accumulated BifrostResponse for a deferred span.
+// Returns nil if no accumulated response has been stored.
+func (s *TraceStore) GetAccumulatedResponse(traceID string) *schemas.BifrostResponse {
+	info := s.GetDeferredSpan(traceID)
+	if info == nil {
+		return nil
+	}
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	return info.AccumulatedResponse
 }
 
 // ReleaseTrace returns the trace and its spans to the pools for reuse

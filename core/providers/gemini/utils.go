@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +13,8 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -32,9 +36,133 @@ func isGemini3Plus(model string) bool {
 		return false
 	}
 
-	// Check first character - if it's '3' or higher, it's 3.0+
+	// Check first character - must be a digit, and '3' or higher for 3.0+
 	firstChar := afterPrefix[0]
+	if firstChar < '0' || firstChar > '9' {
+		return false
+	}
 	return firstChar >= '3'
+}
+
+// NormalizeRawGenerateContentRequestForCompatibility applies the same
+// provider-compatibility cleanup expected by the typed conversion path, while
+// preserving JSON key order with gjson/sjson-style byte edits.
+func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte {
+	if len(jsonBody) == 0 {
+		return jsonBody
+	}
+
+	out := jsonBody
+	for _, path := range []string{
+		"generationConfig.responseLogprobs",
+		"generationConfig.logprobs",
+		"generationConfig.presencePenalty",
+		"generationConfig.frequencyPenalty",
+		"fallbacks",
+	} {
+		if providerUtils.JSONFieldExists(out, path) {
+			if updated, err := providerUtils.DeleteJSONField(out, path); err == nil {
+				out = updated
+			}
+		}
+	}
+
+	contents := gjson.GetBytes(out, "contents")
+	if !contents.IsArray() {
+		return out
+	}
+
+	var rebuiltContents bytes.Buffer
+	rebuiltContents.WriteByte('[')
+	keptContents := 0
+	removedAny := false
+	for _, content := range contents.Array() {
+		contentRaw := content.Raw
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			if keptContents > 0 {
+				rebuiltContents.WriteByte(',')
+			}
+			rebuiltContents.WriteString(contentRaw)
+			keptContents++
+			continue
+		}
+		var rebuiltParts bytes.Buffer
+		rebuiltParts.WriteByte('[')
+		keptParts := 0
+		contentRemovedAny := false
+		parts.ForEach(func(_, part gjson.Result) bool {
+			inlineData := part.Get("inlineData")
+			removePart := false
+			if inlineData.Exists() {
+				mimeType := strings.ToLower(inlineData.Get("mimeType").String())
+				data := inlineData.Get("data").String()
+				if strings.HasPrefix(mimeType, "audio/") && !isValidAudioBase64Payload(data) {
+					removePart = true
+					removedAny = true
+					contentRemovedAny = true
+				}
+			}
+			if !removePart {
+				if keptParts > 0 {
+					rebuiltParts.WriteByte(',')
+				}
+				rebuiltParts.WriteString(part.Raw)
+				keptParts++
+			}
+			return true
+		})
+		rebuiltParts.WriteByte(']')
+		if keptParts == 0 {
+			if contentRemovedAny {
+				continue
+			}
+		} else if contentRemovedAny {
+			if updated, err := sjson.SetRawBytes([]byte(contentRaw), "parts", rebuiltParts.Bytes()); err == nil {
+				contentRaw = string(updated)
+			}
+		}
+		if keptContents > 0 {
+			rebuiltContents.WriteByte(',')
+		}
+		rebuiltContents.WriteString(contentRaw)
+		keptContents++
+	}
+	rebuiltContents.WriteByte(']')
+	if removedAny {
+		if updated, err := sjson.SetRawBytes(out, "contents", rebuiltContents.Bytes()); err == nil {
+			out = updated
+		}
+	}
+
+	return out
+}
+
+func isValidAudioBase64Payload(data string) bool {
+	decoded, err := decodeBase64StringToBytes(data)
+	return err == nil && len(decoded) > 0
+}
+
+// supportsThinkingConfig returns true if the model supports ThinkingConfig.
+// Only specific Gemini models support thinking:
+// - gemini-*-thinking models (e.g., gemini-2.0-flash-thinking)
+// - gemini-2.5-* models
+// - gemini-3.* and higher models
+func supportsThinkingConfig(model string) bool {
+	modelLower := strings.ToLower(model)
+
+	// Check for explicit "thinking" in model name
+	if strings.Contains(modelLower, "thinking") {
+		return true
+	}
+
+	// Check for gemini-2.5-* models
+	if strings.Contains(modelLower, "gemini-2.5") {
+		return true
+	}
+
+	// Check for Gemini 3.0+ models
+	return isGemini3Plus(model)
 }
 
 // effortToThinkingLevel converts reasoning effort to Gemini ThinkingLevel string
@@ -58,7 +186,7 @@ func effortToThinkingLevel(effort string, model string) string {
 			return "high" // Pro models don't support medium, use high
 		}
 		return "medium"
-	case "high":
+	case "high", "xhigh", "max":
 		return "high"
 	default:
 		if isPro {
@@ -66,6 +194,51 @@ func effortToThinkingLevel(effort string, model string) string {
 		}
 		return "medium"
 	}
+}
+
+func getThinkingBudgetRange(model string, defaultMaxTokens int) thinkingBudgetRange {
+	modelLower := strings.ToLower(model)
+	for _, entry := range thinkingBudgetRanges {
+		if strings.Contains(modelLower, entry.prefix) {
+			return entry.r
+		}
+	}
+	// Fallback for unknown thinking-capable models
+	return thinkingBudgetRange{Min: DefaultReasoningMinBudget, Max: defaultMaxTokens}
+}
+
+// validateThinkingBudget returns an error if the explicit thinking budget is outside the
+// model's allowed range. Budget 0 (disable) and -1 (dynamic) are always valid.
+// Models not present in thinkingBudgetRanges are skipped — limits are only enforced
+// for models whose ranges are explicitly known.
+func validateThinkingBudget(model string, budget int) error {
+	if budget == 0 || budget == DynamicReasoningBudget {
+		return nil // 0 = disable thinking, -1 = dynamic
+	}
+	if budget < 0 {
+		return fmt.Errorf("thinking budget %d is invalid; only 0 and -1 are supported special values", budget)
+	}
+	modelLower := strings.ToLower(model)
+
+	var budgetRange thinkingBudgetRange
+	found := false
+	for _, entry := range thinkingBudgetRanges {
+		if strings.Contains(modelLower, entry.prefix) {
+			budgetRange = entry.r
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil // skip validation
+	}
+	if budget < budgetRange.Min {
+		return fmt.Errorf("thinking budget %d is below the minimum of %d for model %s", budget, budgetRange.Min, model)
+	}
+	if budget > budgetRange.Max {
+		return fmt.Errorf("thinking budget %d exceeds the maximum of %d for model %s", budget, budgetRange.Max, model)
+	}
+	return nil
 }
 
 func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters() *schemas.ResponsesParameters {
@@ -97,11 +270,11 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		}
 
 		// Determine max tokens for conversions
-		maxTokens := DefaultCompletionMaxTokens
+		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
 		if config.MaxOutputTokens > 0 {
 			maxTokens = int(config.MaxOutputTokens)
 		}
-		minBudget := DefaultReasoningMinBudget
+		budgetRange := getThinkingBudgetRange(r.Model, maxTokens)
 
 		// Priority: Budget first (if present), then Level
 		if config.ThinkingConfig.ThinkingBudget != nil {
@@ -110,7 +283,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 			params.Reasoning.MaxTokens = schemas.Ptr(budget)
 
 			// Also provide effort for compatibility
-			effort := providerUtils.GetReasoningEffortFromBudgetTokens(budget, minBudget, maxTokens)
+			effort := providerUtils.GetReasoningEffortFromBudgetTokens(budget, budgetRange.Min, budgetRange.Max)
 			params.Reasoning.Effort = schemas.Ptr(effort)
 
 			// Handle special cases
@@ -125,8 +298,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 			level := *config.ThinkingConfig.ThinkingLevel
 			var effort string
 
-			// Map Gemini thinking level to Bifrost effort
-			switch level {
+			switch strings.ToLower(level) {
 			case "minimal":
 				effort = "minimal"
 			case "low":
@@ -140,12 +312,6 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 			}
 
 			params.Reasoning.Effort = schemas.Ptr(effort)
-
-			// Also convert to budget for compatibility
-			if effort != "none" {
-				budget, _ := providerUtils.GetBudgetTokensFromReasoningEffort(effort, minBudget, maxTokens)
-				params.Reasoning.MaxTokens = schemas.Ptr(budget)
-			}
 		}
 	}
 	if config.CandidateCount > 0 {
@@ -341,7 +507,7 @@ func convertSchemaToOrderedMap(schema *Schema) *schemas.OrderedMap {
 
 func convertSchemaToMap(schema *Schema) *schemas.OrderedMap {
 	// Convert map[string]*Schema to map[string]interface{} using JSON marshaling
-	data, err := sonic.Marshal(schema.Properties)
+	data, err := providerUtils.MarshalSorted(schema.Properties)
 	if err != nil {
 		return schemas.NewOrderedMap()
 	}
@@ -473,18 +639,33 @@ func convertFileDataToBytes(fileData string) ([]byte, string) {
 var (
 	// Maps Gemini finish reasons to Bifrost format
 	geminiFinishReasonToBifrost = map[FinishReason]string{
-		FinishReasonStop:                  "stop",
-		FinishReasonMaxTokens:             "length",
-		FinishReasonSafety:                "content_filter",
-		FinishReasonRecitation:            "content_filter",
-		FinishReasonLanguage:              "content_filter",
-		FinishReasonOther:                 "stop",
-		FinishReasonBlocklist:             "content_filter",
-		FinishReasonProhibitedContent:     "content_filter",
-		FinishReasonSPII:                  "content_filter",
-		FinishReasonMalformedFunctionCall: "stop",
-		FinishReasonImageSafety:           "content_filter",
-		FinishReasonUnexpectedToolCall:    "tool_calls",
+		FinishReasonStop:                    "stop",
+		FinishReasonMaxTokens:               "length",
+		FinishReasonSafety:                  "content_filter",
+		FinishReasonRecitation:              "content_filter",
+		FinishReasonLanguage:                "content_filter",
+		FinishReasonOther:                   "stop",
+		FinishReasonBlocklist:               "content_filter",
+		FinishReasonProhibitedContent:       "content_filter",
+		FinishReasonSPII:                    "content_filter",
+		FinishReasonMalformedFunctionCall:   "stop",
+		FinishReasonImageSafety:             "content_filter",
+		FinishReasonImageProhibitedContent:  "content_filter",
+		FinishReasonImageOther:              "stop",
+		FinishReasonNoImage:                 "stop",
+		FinishReasonImageRecitation:         "content_filter",
+		FinishReasonUnexpectedToolCall:      "stop",
+		FinishReasonTooManyToolCalls:        "stop",
+		FinishReasonMissingThoughtSignature: "stop",
+		FinishReasonMalformedResponse:       "stop",
+	}
+
+	// Maps Bifrost canonical finish reasons back to the most representative Gemini finish reason
+	bifrostToGeminiFinishReason = map[string]FinishReason{
+		"stop":           FinishReasonStop,
+		"length":         FinishReasonMaxTokens,
+		"content_filter": FinishReasonSafety,
+		"tool_calls":     FinishReasonStop,
 	}
 )
 
@@ -494,6 +675,14 @@ func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
 		return bifrostReason
 	}
 	return string(providerReason)
+}
+
+// ConvertBifrostFinishReasonToGemini converts Bifrost canonical finish reasons back to Gemini format.
+func ConvertBifrostFinishReasonToGemini(bifrostReason string) FinishReason {
+	if geminiReason, ok := bifrostToGeminiFinishReason[bifrostReason]; ok {
+		return geminiReason
+	}
+	return FinishReasonStop
 }
 
 // ConvertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage
@@ -895,7 +1084,7 @@ func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesR
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
-func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, model string) GenerationConfig {
+func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, model string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	// Add response modalities if specified
@@ -930,17 +1119,11 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		penalty := float64(*params.FrequencyPenalty)
 		config.FrequencyPenalty = &penalty
 	}
-	if params.Reasoning != nil {
+	// Only set ThinkingConfig if the model actually supports thinking
+	if params.Reasoning != nil && supportsThinkingConfig(model) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
-
-		// Get max tokens for conversions
-		maxTokens := DefaultCompletionMaxTokens
-		if config.MaxOutputTokens > 0 {
-			maxTokens = int(config.MaxOutputTokens)
-		}
-		minBudget := DefaultReasoningMinBudget
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
@@ -964,6 +1147,9 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
+				if err := validateThinkingBudget(model, budget); err != nil {
+					return config, err
+				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
 			}
 		} else if hasEffort {
@@ -973,11 +1159,16 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 				level := effortToThinkingLevel(*params.Reasoning.Effort, model)
 				config.ThinkingConfig.ThinkingLevel = &level
 			} else {
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
+				if config.MaxOutputTokens > 0 {
+					maxTokens = int(config.MaxOutputTokens)
+				}
+				budgetRange := getThinkingBudgetRange(model, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
-					minBudget,
-					maxTokens,
+					budgetRange.Min,
+					budgetRange.Max,
 				)
 				if err == nil {
 					config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
@@ -985,7 +1176,6 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			}
 		}
 	}
-
 	// Handle response_format to response_schema conversion
 	if params.ResponseFormat != nil {
 		formatMap, ok := (*params.ResponseFormat).(map[string]interface{})
@@ -1006,7 +1196,6 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			}
 		}
 	}
-
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
 			if val, success := schemas.SafeExtractInt(topK); success {
@@ -1021,8 +1210,22 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.ResponseJSONSchema = responseJsonSchema
 		}
 	}
-
-	return config
+	// Mapping logprobs to generation config
+	if params.LogProbs != nil {
+		config.ResponseLogprobs = *params.LogProbs
+	}
+	// Mapping top_logprobs to generation config
+	if params.TopLogProbs != nil {
+		topLogProbs := *params.TopLogProbs
+		if topLogProbs > 20 {
+			topLogProbs = 20
+		}
+		if topLogProbs > 0 {
+			config.ResponseLogprobs = true
+			config.Logprobs = schemas.Ptr(int32(topLogProbs))
+		}
+	}
+	return config, nil
 }
 
 // convertBifrostToolsToGemini converts Bifrost tools to Gemini format
@@ -1073,6 +1276,7 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 
 	if params.Properties != nil && params.Properties.Len() > 0 {
 		schema.Properties = make(map[string]*Schema)
+		schema.PropertyOrdering = params.Properties.Keys()
 		params.Properties.Range(func(k string, v interface{}) bool {
 			schema.Properties[k] = convertPropertyToSchema(v)
 			return true
@@ -1106,6 +1310,12 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 	}
 	// Note: Gemini doesn't have native allOf support, but we can still attempt to pass it through AnyOf
 	// This is a best-effort conversion as allOf semantics differ from anyOf
+
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return schemaWithAnyOfOnly(schema.AnyOf, params.Nullable)
+	}
 
 	// String validation fields
 	if params.Format != nil {
@@ -1143,6 +1353,77 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 	return schema
 }
 
+// extractUnionTypes parses a JSON Schema "type" value into the set of non-null
+// type strings and a boolean indicating whether "null" was present. It reuses
+// extractTypesFromValue for supported input shapes; duplicates are deduplicated.
+func extractUnionTypes(v interface{}) (nonNullTypes []string, hasNull bool) {
+	seen := make(map[string]struct{})
+	for _, s := range extractTypesFromValue(v) {
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		if s == "null" {
+			hasNull = true
+		} else {
+			nonNullTypes = append(nonNullTypes, s)
+		}
+	}
+
+	return nonNullTypes, hasNull
+}
+
+// applyUnionType applies the result of extractUnionTypes to a Schema, following
+// Gemini/Vertex normalisation rules:
+//
+//	["T", "null"]      → Type=T,  Nullable=true
+//	["T1", "T2", ...]  → anyOf:[{type:T1},{type:T2},...], optionally with a null branch
+//	["null"]           → Type=TypeNULL
+//	[1, 2]             → no type set (all elements were non-string; invalid input)
+func applyUnionType(schema *Schema, nonNullTypes []string, hasNull bool) {
+	switch len(nonNullTypes) {
+	case 0:
+		// Only "null" was in the array (or all elements were invalid non-string values).
+		// Emit TypeNULL only when "null" was explicitly present.
+		if hasNull {
+			schema.Type = TypeNULL
+		}
+		// Otherwise leave Type as zero-value — the array carried no usable type info.
+	case 1:
+		schema.Type = Type(nonNullTypes[0])
+		if hasNull {
+			schema.Nullable = schemas.Ptr(true)
+		}
+	default:
+		anyOfSchemas := make([]*Schema, 0, len(nonNullTypes))
+		for _, t := range nonNullTypes {
+			anyOfSchemas = append(anyOfSchemas, &Schema{Type: Type(t)})
+		}
+		if hasNull {
+			schema.AnyOf = append(anyOfSchemas, &Schema{Type: Type("null")})
+			return
+		}
+		schema.AnyOf = anyOfSchemas
+	}
+}
+
+func schemaWithAnyOfOnly(anyOf []*Schema, nullable *bool) *Schema {
+	if nullable != nil && *nullable {
+		hasNull := false
+		for _, item := range anyOf {
+			if item != nil && strings.EqualFold(string(item.Type), "null") {
+				hasNull = true
+				break
+			}
+		}
+		if !hasNull {
+			anyOf = append(anyOf, &Schema{Type: Type("null")})
+		}
+	}
+
+	return &Schema{AnyOf: anyOf}
+}
+
 // convertPropertyToSchema recursively converts a property to Gemini Schema
 func convertPropertyToSchema(prop interface{}) *Schema {
 	schema := &Schema{}
@@ -1159,8 +1440,17 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 	}
 	if propMap != nil {
 		if propType, exists := propMap["type"]; exists {
-			if typeStr, ok := propType.(string); ok {
-				schema.Type = Type(typeStr)
+			switch v := propType.(type) {
+			case string:
+				schema.Type = Type(v)
+			case []interface{}, []string:
+				// Handle JSON Schema union types like ["integer", "null"].
+				// Gemini/Vertex AI does not support array-typed "type" fields in
+				// tool parameter schemas (Vertex rejects with "schema didn't specify
+				// the schema type field"), so we normalise to the closest supported
+				// form via extractUnionTypes + applyUnionType.
+				nonNullTypes, hasNull := extractUnionTypes(v)
+				applyUnionType(schema, nonNullTypes, hasNull)
 			}
 		}
 
@@ -1196,12 +1486,14 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 				}
 			case *schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true
 				})
 			case schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true
@@ -1318,6 +1610,12 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 		}
 	}
 
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return schemaWithAnyOfOnly(schema.AnyOf, schema.Nullable)
+	}
+
 	return schema
 }
 
@@ -1354,8 +1652,11 @@ func toFloat64(v interface{}) (float64, bool) {
 }
 
 // convertToolChoiceToToolConfig converts Bifrost tool choice to Gemini tool config
-func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfig {
-	config := ToolConfig{}
+func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) *ToolConfig {
+	if toolChoice == nil || (toolChoice.ChatToolChoiceStr == nil && toolChoice.ChatToolChoiceStruct == nil) {
+		return nil
+	}
+	config := &ToolConfig{}
 	functionCallingConfig := FunctionCallingConfig{}
 
 	if toolChoice.ChatToolChoiceStr != nil {
@@ -1429,6 +1730,14 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
 func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
+		content := convertSystemChatMessageToGeminiUserContent(messages[0])
+		if len(content.Parts) > 0 {
+			return []Content{content}, nil
+		}
+	}
+
 	var contents []Content
 	var systemInstruction *Content
 
@@ -1440,7 +1749,8 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 
 	for i, message := range messages {
 		// Handle system messages separately - Gemini requires them in SystemInstruction field
-		if message.Role == schemas.ChatMessageRoleSystem {
+		// Gemini has no support for role "developer", so we treat it as "system"
+		if message.Role == schemas.ChatMessageRoleSystem || message.Role == schemas.ChatMessageRoleDeveloper {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -1482,7 +1792,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 		// must be sent in a single message with only functionResponse parts (no text parts)
 		if isToolResponse {
 			// Parse the response content
-			var responseData map[string]any
+			var responseData json.RawMessage
 			var contentStr string
 
 			if message.Content != nil {
@@ -1503,18 +1813,21 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 				}
 			}
 
-			// Try to unmarshal as JSON
+			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object)
 			if contentStr != "" {
-				err := sonic.Unmarshal([]byte(contentStr), &responseData)
-				if err != nil {
-					// If unmarshaling fails, wrap the original string to preserve it
-					responseData = map[string]any{
+				var buf bytes.Buffer
+				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' {
+					// Valid JSON object — use raw bytes directly
+					responseData = json.RawMessage(buf.Bytes())
+				} else {
+					// Not valid JSON or not an object — wrap to preserve content
+					responseData, _ = providerUtils.MarshalSorted(map[string]any{
 						"content": contentStr,
-					}
+					})
 				}
 			} else {
-				// If no content at all, use empty map to avoid nil
-				responseData = map[string]any{}
+				// If no content at all, use empty object to avoid nil
+				responseData = json.RawMessage(`{}`)
 			}
 
 			// Use ToolCallID if available, ensuring it's not nil
@@ -1679,10 +1992,17 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			for _, toolCall := range message.ChatAssistantMessage.ToolCalls {
 				// Convert tool call to function call part
 				if toolCall.Function.Name != nil {
-					// Create function call part - simplified implementation
-					argsMap := make(map[string]any)
+					// Preserve original key ordering of tool arguments for prompt caching.
+					var argsRaw json.RawMessage
 					if toolCall.Function.Arguments != "" {
-						sonic.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
+						var buf bytes.Buffer
+						if err := json.Compact(&buf, []byte(toolCall.Function.Arguments)); err == nil {
+							argsRaw = buf.Bytes()
+						} else {
+							argsRaw = json.RawMessage("{}")
+						}
+					} else {
+						argsRaw = json.RawMessage("{}")
 					}
 					// Handle ID: use it if available, otherwise fallback to function name
 					callID := *toolCall.Function.Name
@@ -1703,7 +2023,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						FunctionCall: &FunctionCall{
 							ID:   callID,
 							Name: *toolCall.Function.Name,
-							Args: argsMap,
+							Args: argsRaw,
 						},
 					}
 					// Store the mapping for later use in FunctionResponse
@@ -1742,6 +2062,10 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						}
 					}
 
+					if part.ThoughtSignature == nil {
+						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+					}
+
 					parts = append(parts, part)
 				}
 			}
@@ -1762,6 +2086,33 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 	}
 
 	return contents, systemInstruction
+}
+
+func convertSystemChatMessageToGeminiUserContent(message schemas.ChatMessage) Content {
+	content := Content{Role: "user"}
+
+	if message.Content == nil {
+		return content
+	}
+
+	if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+		content.Parts = append(content.Parts, &Part{
+			Text: *message.Content.ContentStr,
+		})
+		return content
+	}
+
+	if message.Content.ContentBlocks != nil {
+		for _, block := range message.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				content.Parts = append(content.Parts, &Part{
+					Text: *block.Text,
+				})
+			}
+		}
+	}
+
+	return content
 }
 
 // normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase
@@ -2017,6 +2368,17 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 	return jsonSchema
 }
 
+func NormalizeModelName(model string) string {
+	model = strings.TrimSpace(model)
+	if len(model) >= len("google/") && strings.EqualFold(model[:len("google/")], "google/") {
+		strippedModel := model[len("google/"):]
+		if schemas.IsGeminiModel(strippedModel) || schemas.IsVeoModel(strippedModel) || schemas.IsImagenModel(strippedModel) || schemas.IsGemmaModel(strippedModel) {
+			return strippedModel
+		}
+	}
+	return model
+}
+
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
 func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *Schema) *schemas.ResponsesTextConfig {
 	name := "json_response"
@@ -2038,7 +2400,7 @@ func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *S
 		}
 	} else if responseSchema != nil {
 		// Convert responseSchema to map using JSON marshaling and type normalization
-		data, err := sonic.Marshal(responseSchema)
+		data, err := providerUtils.MarshalSorted(responseSchema)
 		if err != nil {
 			// If marshaling fails, fall back to json_object mode
 			return &schemas.ResponsesTextConfig{
@@ -2270,18 +2632,19 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 	}
 
 	// Try to extract "output" field first
-	if outputVal, ok := funcResp.Response["output"]; ok {
-		if outputStr, ok := outputVal.(string); ok {
-			return outputStr
+	var respMap map[string]json.RawMessage
+	if err := sonic.Unmarshal(funcResp.Response, &respMap); err == nil {
+		if outputVal, ok := respMap["output"]; ok {
+			var outputStr string
+			if err := sonic.Unmarshal(outputVal, &outputStr); err == nil {
+				return outputStr
+			}
+			return string(outputVal)
 		}
 	}
 
-	// If no "output" key, marshal the entire response
-	if jsonResponse, err := sonic.Marshal(funcResp.Response); err == nil {
-		return string(jsonResponse)
-	}
-
-	return ""
+	// If no "output" key or unmarshal failed, return raw JSON
+	return string(funcResp.Response)
 }
 
 // decodeBase64StringToBytes decodes a base64-encoded string into raw bytes.
@@ -2342,7 +2705,8 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	req.SetRequestURI(imageURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return "", fmt.Errorf("failed to download image: %v", bifrostErr)
 	}
@@ -2360,4 +2724,40 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	imageCopy := append([]byte(nil), body...)
 
 	return encodeBytesToBase64String(imageCopy), nil
+}
+
+// tokenToBytes converts a token string to its UTF-8 byte representation as []int
+func tokenToBytes(token string) []int {
+	bytes := []byte(token)
+	result := make([]int, len(bytes))
+	for i, b := range bytes {
+		result[i] = int(b)
+	}
+	return result
+}
+
+// ConvertGeminiLogprobsResultToBifrost converts a Gemini LogprobsResult to Bifrost BifrostLogProbs
+func ConvertGeminiLogprobsResultToBifrost(result *LogprobsResult) *schemas.BifrostLogProbs {
+	if result == nil || len(result.ChosenCandidates) == 0 {
+		return nil
+	}
+
+	content := make([]schemas.ContentLogProb, len(result.ChosenCandidates))
+	for i, chosen := range result.ChosenCandidates {
+		content[i] = schemas.ContentLogProb{
+			Token:   chosen.Token,
+			LogProb: float64(chosen.LogProbability),
+			Bytes:   tokenToBytes(chosen.Token),
+		}
+		if i < len(result.TopCandidates) && result.TopCandidates[i] != nil {
+			for _, tc := range result.TopCandidates[i].Candidates {
+				content[i].TopLogProbs = append(content[i].TopLogProbs, schemas.LogProb{
+					Token:   tc.Token,
+					LogProb: float64(tc.LogProbability),
+					Bytes:   tokenToBytes(tc.Token),
+				})
+			}
+		}
+	}
+	return &schemas.BifrostLogProbs{Content: content}
 }

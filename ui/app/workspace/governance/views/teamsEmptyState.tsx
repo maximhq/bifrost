@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Building } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
@@ -33,12 +31,7 @@ export function TeamsEmptyState({ onAddClick, canCreate = true }: TeamsEmptyStat
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Add your first team"
-						onClick={onAddClick}
-						disabled={!canCreate}
-						data-testid="team-button-add"
-					>
+					<Button aria-label="Add your first team" onClick={onAddClick} disabled={!canCreate} data-testid="team-button-add">
 						Add Team
 					</Button>
 				</div>

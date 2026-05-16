@@ -68,12 +68,12 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: ['**/config/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**'],
+      testIgnore: ['**/config/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**', '**/model-limits/**', '**/providers/**'],
     },
     {
       name: 'chromium-serial',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: ['**/plugins/**/*.spec.ts', '**/virtual-keys/**/*.spec.ts', '**/mcp-registry/**/*.spec.ts'],
+      testMatch: ['**/plugins/**/*.spec.ts', '**/virtual-keys/**/*.spec.ts', '**/mcp-registry/**/*.spec.ts', '**/model-limits/**/*.spec.ts', '**/providers/**/*.spec.ts'],
       fullyParallel: false,
     },
     {
@@ -103,7 +103,7 @@ export default defineConfig({
     timeout: 120000,
     env: {
       ...process.env,
-      NEXT_PUBLIC_DISABLE_PROFILER: '1',
+      BIFROST_DISABLE_PROFILER: '1',
     },
   },
 

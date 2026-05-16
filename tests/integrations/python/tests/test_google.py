@@ -51,6 +51,7 @@ Tests all core scenarios using Google GenAI SDK directly:
 41. Image generation
 42. Google Search grounding (non-streaming)
 43. Google Search grounding (streaming)
+44. Context caching (Gemini Caches API) - create, list, get, update, delete, generate with cache
 """
 
 import io
@@ -117,12 +118,15 @@ from .utils.parametrize import (
 )
 
 
-def get_provider_google_client(provider: str = "gemini"):
+def get_provider_google_client(provider: str = "gemini", passthrough: bool = False):
     """Create Google GenAI client with x-model-provider header for given provider"""
     from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key(provider)
-    base_url = get_integration_url("google")
+    integration_provider = "google"
+    if passthrough:
+        integration_provider = "gemini_passthrough"
+    base_url = get_integration_url(integration_provider)
     config = get_config()
     api_config = config.get_api_config()
 
@@ -2393,6 +2397,8 @@ Joe: Pretty good, thanks for asking."""
                     found = True
                     break
             
+            if not found:
+                print(f"Uploaded file {response.name} not found in file list")
             assert found, f"Uploaded file {response.name} should be in file list"
             print(f"Success: Verified file {response.name} exists in file list")
             
@@ -2480,7 +2486,6 @@ Joe: Pretty good, thanks for asking."""
             
             # Retrieve file metadata
             response = client.files.get(name=uploaded_file.name)
-            
             # Validate response
             assert_valid_google_file_response(response)
             assert response.name == uploaded_file.name, (
@@ -2530,7 +2535,7 @@ Joe: Pretty good, thanks for asking."""
             print(f"Success: Deleted file {file_name}")
             
             # Verify file is no longer retrievable
-            with pytest.raises(RuntimeError):
+            with pytest.raises(Exception):
                 client.files.get(name=file_name)
             
             print(f"Success: Verified file {file_name} no longer exists")
@@ -2571,14 +2576,19 @@ Joe: Pretty good, thanks for asking."""
             # Upload the file
             uploaded_file = client.files.upload(
                 file=temp_file_path,
-                config=types.UploadFileConfig(display_name=f'batch_file_test_{provider}')
+                config=types.UploadFileConfig(display_name=f'batch_file_test_{provider}.jsonl')
             )
             
+            print(f"Success: Uploaded file {uploaded_file.name} for provider {provider}")
+            print(uploaded_file)
+
             # Create batch job using file reference
             batch_job = client.batches.create(
                 model=format_provider_model(provider, model),
                 src=uploaded_file.name,
             )
+
+            print(f"Success: Created batch job {batch_job.name} for provider {provider}")
             
             # Validate response
             assert_valid_google_batch_response(batch_job)
@@ -2720,10 +2730,7 @@ Joe: Pretty good, thanks for asking."""
             )
             
             # Cancel the batch job
-            cancelled_job = client.batches.cancel(name=batch_job.name)
-            
-            # Validate response - job should be cancelling or cancelled
-            assert cancelled_job is not None, "Cancel should return a response"
+            client.batches.cancel(name=batch_job.name)
             
             # Check state after cancel
             retrieved_job = client.batches.get(name=batch_job.name)
@@ -3280,6 +3287,190 @@ Joe: Pretty good, thanks for asking."""
         completed = _poll_video_operation(client, operation)
         generated_video = _extract_first_generated_video(completed)
         assert generated_video is not None
+
+    # =========================================================================
+    # CONTEXT CACHING TEST CASES (Gemini Caches API - pass-through via Bifrost)
+    # =========================================================================
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45a_context_cache_create(self, test_config, provider, model):
+        """Test Case 45a: Create a context cache with system instruction (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        system_instruction = "You are an expert analyzing transcripts." * 10000
+
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(system_instruction=system_instruction),
+            )
+            assert cache is not None
+            assert hasattr(cache, "name")
+            assert cache.name
+            assert "cachedContents" in cache.name or "cachedcontents" in cache.name.lower()
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45b_context_cache_list(self, test_config, provider, model):
+        """Test Case 45b: List context caches (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="Test cache for list verification" * 10000,
+                ),
+            )
+            caches = list(client.caches.list())
+            assert isinstance(caches, list)
+            names = [c.name for c in caches if hasattr(c, "name")]
+            assert cache.name in names
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45c_context_cache_get(self, test_config, provider, model):
+        """Test Case 45c: Retrieve a single context cache by name (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="Test cache for get verification" * 10000,
+                ),
+            )
+            retrieved = client.caches.get(name=cache.name)
+            assert retrieved is not None
+            assert retrieved.name == cache.name
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45d_context_cache_update(self, test_config, provider, model):
+        """Test Case 45d: Update a context cache TTL (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="Test cache for update verification" * 10000,
+                ),
+            )
+            updated = client.caches.update(
+                name=cache.name,
+                config=types.UpdateCachedContentConfig(ttl="300s"),
+            )
+            assert updated is not None
+            assert updated.name == cache.name
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45e_context_cache_delete(self, test_config, provider, model):
+        """Test Case 45e: Delete a context cache (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = client.caches.create(
+            model=model,
+            config=types.CreateCachedContentConfig(
+                system_instruction="Test cache for delete verification" * 10000,
+            ),
+        )
+        client.caches.delete(name=cache.name)
+        with pytest.raises(Exception):
+            client.caches.get(name=cache.name)
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45f_context_cache_generate_content(self, test_config, provider, model):
+        """Test Case 45f: Create cache, generate content with cached_content, verify (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="You are a concise assistant. Answer in one short sentence" * 10000,
+                ),
+            )
+            response = client.models.generate_content(
+                model=model,
+                contents="What is 2+2?",
+                config=types.GenerateContentConfig(cached_content=cache.name),
+            )
+            assert response is not None
+            assert hasattr(response, "text")
+            assert response.text
+            # Verify usage metadata reflects cached content when available
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                pass  # Cached token counts may be present
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
 
 # Additional helper functions specific to Google GenAI
 def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:

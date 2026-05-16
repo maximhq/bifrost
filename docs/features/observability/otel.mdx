@@ -558,7 +558,7 @@ Configure the OTel plugin with the following settings:
 
 | Field | Value |
 |-------|-------|
-| **Collector URL** | `https://cloud.langfuse.com/api/public/otel` (EU) or `https://us.cloud.langfuse.com/api/public/otel` (US) |
+| **Collector URL** | `https://cloud.langfuse.com/api/public/otel/v1/traces` (EU) or `https://us.cloud.langfuse.com/api/public/otel/v1/traces` (US) |
 | **Trace Type** | `genai_extension` |
 | **Protocol** | `http` (required - Langfuse does not support gRPC) |
 | **Headers** | `Authorization`: `env.LANGFUSE_AUTH` |
@@ -806,7 +806,7 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to upstream providers |
 | `bifrost_success_requests_total` | Counter | Successful upstream requests |
-| `bifrost_error_requests_total` | Counter | Error requests with reason labels |
+| `bifrost_error_requests_total` | Counter | Error requests with status code labels |
 | `bifrost_input_tokens_total` | Counter | Total input tokens |
 | `bifrost_output_tokens_total` | Counter | Total output tokens |
 | `bifrost_cache_hits_total` | Counter | Cache hits |

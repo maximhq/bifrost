@@ -97,7 +97,8 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						"model":    speechSynthesisModel,
 					},
 				}
-				ttsExpectations := ApplyRawExpectations(SpeechExpectations(100), testConfig, false)
+				// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+				ttsExpectations := ApplyRawExpectations(SpeechExpectations(100), testConfig, false, false, true)
 				ttsExpectations = ModifyExpectationsForProvider(ttsExpectations, speechSynthesisProvider)
 				ttsSpeechRetryConfig := SpeechRetryConfig{
 					MaxAttempts: ttsRetryConfig.MaxAttempts,
@@ -241,8 +242,12 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						if response.BifrostTranscriptionStreamResponse.Type != schemas.TranscriptionStreamResponseTypeDelta {
 							t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostTranscriptionStreamResponse.Type)
 						}
-						if response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != testConfig.TranscriptionModel {
-							t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested)
+						gotModel := response.BifrostTranscriptionStreamResponse.ExtraFields.OriginalModelRequested
+						if gotModel == "" {
+							t.Fatal("❌ Stream chunk missing extra_fields.original_model_requested")
+						}
+						if gotModel != testConfig.TranscriptionModel {
+							t.Fatalf("❌ Unexpected original_model_requested in stream: got %q want %q", gotModel, testConfig.TranscriptionModel)
 						}
 
 						lastResponse = DeepCopyBifrostStreamChunk(response)

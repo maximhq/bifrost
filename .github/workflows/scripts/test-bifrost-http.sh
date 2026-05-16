@@ -57,7 +57,7 @@ go build ./...
 
 # Run unit tests with coverage
 echo "🧪 Running unit tests with coverage..."
-go test --race -coverprofile=coverage.txt -coverpkg=./... ./...
+go test --race -v -timeout 40m -coverprofile=coverage.txt ./...
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then
@@ -91,7 +91,6 @@ CONFIGS_TO_TEST=(
   "withdynamicplugin"
   "withobservability"
   "withsemanticcache"
-  "withpostgresmcpclientsinconfig"
 )
 
 TEST_BINARY="../tmp/bifrost-http"

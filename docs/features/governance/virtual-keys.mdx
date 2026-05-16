@@ -16,8 +16,6 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 <Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
 
-<Info>You can also use `Authorization`, `x-api-key` and `x-goog-api-key` headers to pass direct keys to the provider. Read more about it in [Direct Key Bypass](../keys-management#direct-key-bypass).</Info>
-
 **Key Features:**
 - **Access Control** - Model and provider filtering
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
@@ -38,7 +36,8 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 **Budget Settings:**
 - **Max Limit**: Dollar amount (e.g., `10.50`)
-- **Reset Duration**: `1m`, `1h`, `1d`, `1w`, `1M`
+- **Reset Duration**: `1m`, `1h`, `1d`, `1w`, `1M`, `1Y`
+- **Calendar aligned** (optional): When enabled, the budget resets at calendar boundaries in UTC (day/week/month/year) instead of on a rolling window. Only applies to day/week/month/year periods. See [Budget and Limits](./budget-and-limits#calendar-aligned-budgets).
 
 **Rate Limits:**
 - **Token Limit**: Max tokens per period
@@ -119,7 +118,7 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 
 > **Note**: 
 > - `team_id` and `customer_id` are mutually exclusive - a VK can only belong to one team OR one customer, not both.
-> - `key_ids` restricts the VK to only use those specific provider API keys. Omit this field to allow access to all available keys.
+> - `key_ids` restricts the VK to only use those specific provider API keys. Use `["*"]` to allow access to all available keys. An empty array `[]` or omitting the field entirely denies all keys.
 
 **Update Virtual Key:**
 ```bash
@@ -154,21 +153,22 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   },
   "governance": {
     "virtual_keys": [
       {
         "id": "vk-001",
         "name": "Engineering Team API",
-        "value": "vk-engineering-main",
+        "value": "sk-bf-*",
         "description": "Main API key for engineering team",
         "is_active": true,
         "provider_configs": [
           {
             "provider": "openai",
             "weight": 0.5,
-            "allowed_models": ["gpt-4o-mini"]
+            "allowed_models": ["gpt-4o-mini"],
+            "key_ids": ["openai-primary"]
           },
           {
             "provider": "anthropic",
@@ -177,11 +177,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           }
         ],
         "team_id": "team-eng-001",
-        "budget_id": "budget-eng-vk",
-        "rate_limit_id": "rate-limit-eng-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "rate_limit_id": "rate-limit-eng-vk"
       },
       {
         "id": "vk-002",
@@ -201,16 +197,13 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
             "allowed_models": ["claude-3-opus-20240229"]
           }
         ],
-        "customer_id": "customer-acme-corp",
-        "budget_id": "budget-exec-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "customer_id": "customer-acme-corp"
       }
     ],
     "budgets": [
       {
         "id": "budget-eng-vk",
+        "virtual_key_id": "vk-001",
         "max_limit": 100.00,
         "reset_duration": "1M",
         "current_usage": 0.0,
@@ -218,6 +211,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
       },
       {
         "id": "budget-exec-vk",
+        "virtual_key_id": "vk-002",
         "max_limit": 500.00,
         "reset_duration": "1M",
         "current_usage": 0.0,
@@ -494,7 +488,7 @@ All governance-enabled requests must include the virtual key header:
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "x-bf-vk: vk-engineering-main" \
+  -H "x-bf-vk: sk-bf-*" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -519,7 +513,7 @@ curl -X PUT http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
   -d '{
     "client_config": {
-      "enforce_governance_header": true
+      "enforce_auth_on_inference": true
     }
   }'
 ```
@@ -530,7 +524,7 @@ curl -X PUT http://localhost:8080/api/config \
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   }
 }
 ```
@@ -567,6 +561,24 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer <VIRTUAL_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4o-mini", "messages": [...]}'
+```
+
+### Listing models with a virtual key
+
+When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful.
+
+```bash
+# Lists models across providers allowed by the virtual key
+curl -sS "http://localhost:8080/v1/models" \
+  -H "x-bf-vk: <VIRTUAL_KEY>"
+```
+
+If you specify a provider explicitly via `?provider=...`, that provider must still be allowed by the virtual key or the request will be rejected:
+
+```bash
+# If "anthropic" is not configured/allowed on this virtual key, this returns 403
+curl -sS "http://localhost:8080/v1/models?provider=anthropic" \
+  -H "x-bf-vk: <VIRTUAL_KEY>"
 ```
 
 **When `disable_auth_on_inference: false` (auth enabled):**

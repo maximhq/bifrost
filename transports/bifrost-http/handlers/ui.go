@@ -39,7 +39,7 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	// Clean the path to prevent directory traversal
 	cleanPath := path.Clean(requestPath)
 
-	// Handle .txt files (Next.js RSC payload files) - map from /{page}.txt to /{page}/index.txt
+	// Handle .txt files - map from /{page}.txt to /{page}/index.txt
 	if strings.HasSuffix(cleanPath, ".txt") {
 		// Remove .txt extension and add /index.txt
 		basePath := strings.TrimSuffix(cleanPath, ".txt")
@@ -54,6 +54,27 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		cleanPath = "ui/index.html"
 	} else {
 		cleanPath = "ui" + cleanPath
+	}
+
+	// Block hidden directories and files (any path segment starting with .)
+	segments := strings.Split(cleanPath, "/")
+	for _, segment := range segments {
+		if strings.HasPrefix(segment, ".") {
+			ctx.SetStatusCode(fasthttp.StatusNotFound)
+			ctx.SetBodyString("404 - Not found")
+			return
+		}
+	}
+
+	// Block sensitive files
+	baseName := filepath.Base(cleanPath)
+	sensitiveFiles := []string{"package.json", "package-lock.json"}
+	for _, sensitive := range sensitiveFiles {
+		if baseName == sensitive {
+			ctx.SetStatusCode(fasthttp.StatusNotFound)
+			ctx.SetBodyString("404 - Not found")
+			return
+		}
 	}
 
 	// Check if this is a static asset request (has file extension)
@@ -102,7 +123,7 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType(contentType)
 
 	// Set cache headers for static assets
-	if strings.HasPrefix(cleanPath, "ui/_next/static/") {
+	if strings.HasPrefix(cleanPath, "ui/assets/") {
 		ctx.Response.Header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else if ext == ".html" {
 		ctx.Response.Header.Set("Cache-Control", "no-cache")

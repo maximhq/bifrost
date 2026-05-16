@@ -2,19 +2,26 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"time"
 )
 
 const (
-	DefaultMaxRetries              = 0
-	DefaultRetryBackoffInitial     = 500 * time.Millisecond
-	DefaultRetryBackoffMax         = 5 * time.Second
-	DefaultRequestTimeoutInSeconds = 30
-	DefaultBufferSize              = 5000
-	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize        = 256
+	DefaultMaxRetries                 = 0
+	DefaultRetryBackoffInitial        = 500 * time.Millisecond
+	DefaultRetryBackoffMax            = 5 * time.Second
+	DefaultRequestTimeoutInSeconds    = 30
+	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
+	DefaultBufferSize                 = 5000
+	DefaultConcurrency                = 1000
+	DefaultStreamBufferSize           = 256
+	DefaultStreamIdleTimeoutInSeconds = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultMaxConnsPerHost            = 5000
+	MaxConnsPerHostUpperBound         = 10000
+	DefaultMaxIdleConnsPerHost        = 40
 )
 
 // Pre-defined errors for provider operations
@@ -38,26 +45,32 @@ const (
 // NetworkConfig represents the network configuration for provider connections.
 // ExtraHeaders is automatically copied during provider initialization to prevent data races.
 //
-// RetryBackoffInitial and RetryBackoffMax are stored internally as time.Duration (nanoseconds),
-// but are serialized/deserialized to/from JSON as milliseconds (integers).
-// This means:
-//   - In JSON: values are represented as milliseconds (e.g., 1000 means 1000ms)
-//   - In Go: values are time.Duration (e.g., 1000ms = 1000000000 nanoseconds)
-//   - When unmarshaling from JSON: a value of 1000 is interpreted as 1000ms, not 1000ns
-//   - When marshaling to JSON: a time.Duration is converted to milliseconds
+// RetryBackoffInitial and RetryBackoffMax are stored internally as time.Duration (nanoseconds).
+// They accept two JSON formats for backward compatibility:
+//   - Duration string: "500ms", "5s", "1m" — parsed via time.ParseDuration (preferred)
+//   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
-	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
-	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
-	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
-	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
+	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
+	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
+	MaxRetries                     int               `json:"max_retries"`                              // Maximum number of retries
+	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
+	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
+	CACertPEM                      *EnvVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
+	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
+	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
+	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
+	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
-// RetryBackoffInitial and RetryBackoffMax are interpreted as milliseconds in JSON,
-// but stored as time.Duration (nanoseconds) internally.
+//
+// RetryBackoffInitial and RetryBackoffMax accept two formats:
+//   - Duration string (preferred): "500ms", "5s", "1m" — parsed via time.ParseDuration
+//   - Integer (legacy): treated as milliseconds for backward compatibility
+//     (e.g. 500 → 500ms, matching the original behavior)
 func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
@@ -65,8 +78,14 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
 		MaxRetries                     int               `json:"max_retries"`
-		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
-		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
+		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
+		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
+		CACertPEM                      *EnvVar           `json:"ca_cert_pem,omitempty"`
+		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
+		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
+		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -74,22 +93,68 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Copy all fields
+	// Copy all non-duration fields
 	nc.BaseURL = alias.BaseURL
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
+	nc.InsecureSkipVerify = alias.InsecureSkipVerify
+	nc.CACertPEM = alias.CACertPEM
+	nc.StreamIdleTimeoutInSeconds = alias.StreamIdleTimeoutInSeconds
+	nc.MaxConnsPerHost = alias.MaxConnsPerHost
+	nc.EnforceHTTP2 = alias.EnforceHTTP2
+	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
 
-	// Convert milliseconds to time.Duration (nanoseconds)
-	// Only convert if value is greater than 0
-	if alias.RetryBackoffInitial > 0 {
-		nc.RetryBackoffInitial = time.Duration(alias.RetryBackoffInitial) * time.Millisecond
+	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
+	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
+		dur, err := parseNetworkBackoffDuration(alias.RetryBackoffInitial, "retry_backoff_initial")
+		if err != nil {
+			return err
+		}
+		if dur > 0 {
+			nc.RetryBackoffInitial = dur
+		}
 	}
-	if alias.RetryBackoffMax > 0 {
-		nc.RetryBackoffMax = time.Duration(alias.RetryBackoffMax) * time.Millisecond
+
+	// Parse RetryBackoffMax: string → ParseDuration, integer → milliseconds (legacy)
+	if len(alias.RetryBackoffMax) > 0 && string(alias.RetryBackoffMax) != "null" {
+		dur, err := parseNetworkBackoffDuration(alias.RetryBackoffMax, "retry_backoff_max")
+		if err != nil {
+			return err
+		}
+		if dur > 0 {
+			nc.RetryBackoffMax = dur
+		}
 	}
 
 	return nil
+}
+
+// parseNetworkBackoffDuration parses a retry backoff JSON value.
+// Strings are parsed via time.ParseDuration.
+// Integers are treated as milliseconds for backward compatibility with the
+// original NetworkConfig JSON format.
+func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.Duration, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return 0, nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return 0, err
+		}
+		dur, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s %q: use a Go duration string like \"500ms\", \"5s\", \"1m\"", fieldName, s)
+		}
+		return dur, nil
+	}
+	// Integer: milliseconds (original legacy format)
+	var ms int64
+	if err := json.Unmarshal(data, &ms); err != nil {
+		return 0, fmt.Errorf("invalid %s: expected a duration string (e.g. \"500ms\") or integer milliseconds: %w", fieldName, err)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
 }
 
 // MarshalJSON customizes JSON marshaling for NetworkConfig.
@@ -104,6 +169,12 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxRetries                     int               `json:"max_retries"`
 		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
+		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
+		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
+		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
+		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -112,11 +183,35 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
 		MaxRetries:                     nc.MaxRetries,
 		// Convert time.Duration (nanoseconds) to milliseconds
-		RetryBackoffInitial: int64(nc.RetryBackoffInitial / time.Millisecond),
-		RetryBackoffMax:     int64(nc.RetryBackoffMax / time.Millisecond),
+		RetryBackoffInitial:        int64(nc.RetryBackoffInitial / time.Millisecond),
+		RetryBackoffMax:            int64(nc.RetryBackoffMax / time.Millisecond),
+		InsecureSkipVerify:         nc.InsecureSkipVerify,
+		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
+		MaxConnsPerHost:            nc.MaxConnsPerHost,
+		EnforceHTTP2:               nc.EnforceHTTP2,
+		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
+	}
+	if nc.CACertPEM != nil {
+		if nc.CACertPEM.IsFromEnv() {
+			alias.CACertPEM = nc.CACertPEM.EnvVar
+		} else {
+			alias.CACertPEM = nc.CACertPEM.GetValue()
+		}
 	}
 
 	return json.Marshal(alias)
+}
+
+// Redacted returns a redacted copy of the network configuration with CACertPEM masked.
+func (nc *NetworkConfig) Redacted() *NetworkConfig {
+	if nc == nil {
+		return nil
+	}
+	redacted := *nc
+	if nc.CACertPEM != nil && nc.CACertPEM.IsSet() {
+		redacted.CACertPEM = nc.CACertPEM.Redacted()
+	}
+	return &redacted
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
@@ -125,6 +220,8 @@ var DefaultNetworkConfig = NetworkConfig{
 	MaxRetries:                     DefaultMaxRetries,
 	RetryBackoffInitial:            DefaultRetryBackoffInitial,
 	RetryBackoffMax:                DefaultRetryBackoffMax,
+	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
+	MaxConnsPerHost:                DefaultMaxConnsPerHost,
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -156,25 +253,44 @@ const (
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
 	Type      ProxyType `json:"type"`        // Type of proxy to use
-	URL       string    `json:"url"`         // URL of the proxy server
-	Username  string    `json:"username"`    // Username for proxy authentication
-	Password  string    `json:"password"`    // Password for proxy authentication
-	CACertPEM string    `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy
+	URL       *EnvVar   `json:"url"`         // URL of the proxy server (supports env.*)
+	Username  *EnvVar   `json:"username"`    // Username for proxy authentication (supports env.*)
+	Password  *EnvVar   `json:"password"`    // Password for proxy authentication (supports env.*)
+	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
+
+
 
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
-	// Create redacted config with same structure but redacted values
-	redactedConfig := ProxyConfig{
-		Type:     pc.Type,
-		URL:      pc.URL,
-		Username: pc.Username,
+	redactedConfig := ProxyConfig{Type: pc.Type}
+	if pc.URL != nil {
+		if pc.URL.IsFromEnv() {
+			redactedConfig.URL = pc.URL.Redacted()
+		} else {
+			redactedConfig.URL = pc.URL
+		}
 	}
-	if pc.Password != "" {
-		redactedConfig.Password = "********"
+	if pc.Username != nil {
+		if pc.Username.IsFromEnv() {
+			redactedConfig.Username = pc.Username.Redacted()
+		} else {
+			redactedConfig.Username = pc.Username
+		}
 	}
-	if pc.CACertPEM != "" {
-		redactedConfig.CACertPEM = "********"
+	if pc.Password != nil && pc.Password.IsSet() {
+		if pc.Password.IsFromEnv() {
+			redactedConfig.Password = pc.Password.Redacted()
+		} else {
+			redactedConfig.Password = NewEnvVar("<REDACTED>")
+		}
+	}
+	if pc.CACertPEM != nil && pc.CACertPEM.IsSet() {
+		if pc.CACertPEM.IsFromEnv() {
+			redactedConfig.CACertPEM = pc.CACertPEM.Redacted()
+		} else {
+			redactedConfig.CACertPEM = NewEnvVar("<REDACTED>")
+		}
 	}
 	return &redactedConfig
 }
@@ -193,6 +309,7 @@ type AllowedRequests struct {
 	CountTokens           bool `json:"count_tokens"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
+	OCR                   bool `json:"ocr"`
 	Speech                bool `json:"speech"`
 	SpeechStream          bool `json:"speech_stream"`
 	Transcription         bool `json:"transcription"`
@@ -212,6 +329,7 @@ type AllowedRequests struct {
 	BatchList             bool `json:"batch_list"`
 	BatchRetrieve         bool `json:"batch_retrieve"`
 	BatchCancel           bool `json:"batch_cancel"`
+	BatchDelete           bool `json:"batch_delete"`
 	BatchResults          bool `json:"batch_results"`
 	FileUpload            bool `json:"file_upload"`
 	FileList              bool `json:"file_list"`
@@ -227,6 +345,15 @@ type AllowedRequests struct {
 	ContainerFileRetrieve bool `json:"container_file_retrieve"`
 	ContainerFileContent  bool `json:"container_file_content"`
 	ContainerFileDelete   bool `json:"container_file_delete"`
+	Passthrough           bool `json:"passthrough"`
+	PassthroughStream     bool `json:"passthrough_stream"`
+	WebSocketResponses    bool `json:"websocket_responses"`
+	Realtime              bool `json:"realtime"`
+	CachedContentCreate   bool `json:"cached_content_create"`
+	CachedContentList     bool `json:"cached_content_list"`
+	CachedContentRetrieve bool `json:"cached_content_retrieve"`
+	CachedContentUpdate   bool `json:"cached_content_update"`
+	CachedContentDelete   bool `json:"cached_content_delete"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -256,6 +383,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Embedding
 	case RerankRequest:
 		return ar.Rerank
+	case OCRRequest:
+		return ar.OCR
 	case SpeechRequest:
 		return ar.Speech
 	case SpeechStreamRequest:
@@ -294,6 +423,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.BatchRetrieve
 	case BatchCancelRequest:
 		return ar.BatchCancel
+	case BatchDeleteRequest:
+		return ar.BatchDelete
 	case BatchResultsRequest:
 		return ar.BatchResults
 	case FileUploadRequest:
@@ -324,6 +455,24 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ContainerFileContent
 	case ContainerFileDeleteRequest:
 		return ar.ContainerFileDelete
+	case PassthroughRequest:
+		return ar.Passthrough
+	case PassthroughStreamRequest:
+		return ar.PassthroughStream
+	case WebSocketResponsesRequest:
+		return ar.WebSocketResponses
+	case RealtimeRequest:
+		return ar.Realtime
+	case CachedContentCreateRequest:
+		return ar.CachedContentCreate
+	case CachedContentListRequest:
+		return ar.CachedContentList
+	case CachedContentRetrieveRequest:
+		return ar.CachedContentRetrieve
+	case CachedContentUpdateRequest:
+		return ar.CachedContentUpdate
+	case CachedContentDeleteRequest:
+		return ar.CachedContentDelete
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -335,62 +484,6 @@ type CustomProviderConfig struct {
 	BaseProviderType     ModelProvider          `json:"base_provider_type"`               // Base provider type
 	AllowedRequests      *AllowedRequests       `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
 	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
-}
-
-type PricingOverrideMatchType string
-
-const (
-	PricingOverrideMatchExact    PricingOverrideMatchType = "exact"
-	PricingOverrideMatchWildcard PricingOverrideMatchType = "wildcard"
-	PricingOverrideMatchRegex    PricingOverrideMatchType = "regex"
-)
-
-// ProviderPricingOverride contains a partial pricing patch applied at lookup time.
-// Any nil field falls back to the base pricing data.
-type ProviderPricingOverride struct {
-	ModelPattern string                   `json:"model_pattern"`
-	MatchType    PricingOverrideMatchType `json:"match_type"`
-	RequestTypes []RequestType            `json:"request_types,omitempty"`
-
-	// Basic token pricing
-	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
-
-	// Additional pricing for media
-	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
-	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
-
-	// Character-based pricing
-	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
-	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
-
-	// Pricing above 128k tokens
-	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
-	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
-	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
-	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
-	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
-
-	// Pricing above 200k tokens
-	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
-	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
-
-	// Cache and batch pricing
-	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
-	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
-
-	// Image generation pricing
-	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
-	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
-	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
-	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
-	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
@@ -408,12 +501,18 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger               Logger                    `json:"-"`
-	ProxyConfig          *ProxyConfig              `json:"proxy_config,omitempty"` // Proxy configuration
-	SendBackRawRequest   bool                      `json:"send_back_raw_request"`  // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse  bool                      `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
-	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	Logger                  Logger                `json:"-"`
+	ProxyConfig             *ProxyConfig          `json:"proxy_config,omitempty"`     // Proxy configuration
+	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
+	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+}
+
+// OpenAIConfig holds OpenAI-specific provider configuration.
+type OpenAIConfig struct {
+	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
@@ -425,7 +524,7 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.ConcurrencyAndBufferSize.BufferSize = DefaultBufferSize
 	}
 
-	if config.NetworkConfig.DefaultRequestTimeoutInSeconds == 0 {
+	if config.NetworkConfig.DefaultRequestTimeoutInSeconds <= 0 {
 		config.NetworkConfig.DefaultRequestTimeoutInSeconds = DefaultRequestTimeoutInSeconds
 	}
 
@@ -441,11 +540,28 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.NetworkConfig.RetryBackoffMax = DefaultRetryBackoffMax
 	}
 
+	if config.NetworkConfig.StreamIdleTimeoutInSeconds <= 0 {
+		config.NetworkConfig.StreamIdleTimeoutInSeconds = DefaultStreamIdleTimeoutInSeconds
+	}
+
+	if config.NetworkConfig.MaxConnsPerHost <= 0 {
+		config.NetworkConfig.MaxConnsPerHost = DefaultMaxConnsPerHost
+	} else if config.NetworkConfig.MaxConnsPerHost > MaxConnsPerHostUpperBound {
+		config.NetworkConfig.MaxConnsPerHost = MaxConnsPerHostUpperBound
+	}
+
 	// Create a defensive copy of ExtraHeaders to prevent data races
 	if config.NetworkConfig.ExtraHeaders != nil {
 		headersCopy := make(map[string]string, len(config.NetworkConfig.ExtraHeaders))
 		maps.Copy(headersCopy, config.NetworkConfig.ExtraHeaders)
 		config.NetworkConfig.ExtraHeaders = headersCopy
+	}
+
+	// Create a defensive copy of BetaHeaderOverrides to prevent data races
+	if config.NetworkConfig.BetaHeaderOverrides != nil {
+		overridesCopy := make(map[string]bool, len(config.NetworkConfig.BetaHeaderOverrides))
+		maps.Copy(overridesCopy, config.NetworkConfig.BetaHeaderOverrides)
+		config.NetworkConfig.BetaHeaderOverrides = overridesCopy
 	}
 }
 
@@ -459,40 +575,45 @@ type Provider interface {
 	ListModels(ctx *BifrostContext, keys []Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx *BifrostContext, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
-	// TextCompletionStream performs a text completion stream request
-	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostTextCompletionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	// TextCompletionStream performs a text completion stream request.
+	// postHookSpanFinalizer is invoked by the provider's stream goroutine on stream completion
+	// (or on its panic-recovery defer) to finalize aggregated post-hook spans and release the
+	// per-attempt plugin pipeline. Pass nil if the caller does not need finalization.
+	TextCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTextCompletionRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ChatCompletion performs a chat completion request
 	ChatCompletion(ctx *BifrostContext, key Key, request *BifrostChatRequest) (*BifrostChatResponse, *BifrostError)
 	// ChatCompletionStream performs a chat completion stream request
-	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostChatRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ChatCompletionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostChatRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// Responses performs a completion request using the Responses API (uses chat completion request internally for non-openai providers)
 	Responses(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostResponsesResponse, *BifrostError)
 	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
-	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
+	ResponsesStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostResponsesRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// CountTokens performs a count tokens request
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query
 	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
+	// OCR performs an optical character recognition request on a document
+	OCR(ctx *BifrostContext, key Key, request *BifrostOCRRequest) (*BifrostOCRResponse, *BifrostError)
 	// Speech performs a text to speech request
 	Speech(ctx *BifrostContext, key Key, request *BifrostSpeechRequest) (*BifrostSpeechResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
-	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostSpeechRequest) (chan *BifrostStreamChunk, *BifrostError)
+	SpeechStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostSpeechRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// Transcription performs a transcription request
 	Transcription(ctx *BifrostContext, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
-	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStreamChunk, *BifrostError)
+	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, request *BifrostTranscriptionRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageGeneration performs an image generation request
 	ImageGeneration(ctx *BifrostContext, key Key, request *BifrostImageGenerationRequest) (
 		*BifrostImageGenerationResponse, *BifrostError)
 	// ImageGenerationStream performs an image generation stream request
-	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
 		request *BifrostImageGenerationRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageEdit performs an image edit request
 	ImageEdit(ctx *BifrostContext, key Key, request *BifrostImageEditRequest) (*BifrostImageGenerationResponse, *BifrostError)
 	// ImageEditStream performs an image edit stream request
-	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key,
 		request *BifrostImageEditRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageVariation performs an image variation request
 	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
@@ -516,6 +637,8 @@ type Provider interface {
 	BatchRetrieve(ctx *BifrostContext, keys []Key, request *BifrostBatchRetrieveRequest) (*BifrostBatchRetrieveResponse, *BifrostError)
 	// BatchCancel cancels a batch job
 	BatchCancel(ctx *BifrostContext, keys []Key, request *BifrostBatchCancelRequest) (*BifrostBatchCancelResponse, *BifrostError)
+	// BatchDelete deletes a batch job
+	BatchDelete(ctx *BifrostContext, keys []Key, request *BifrostBatchDeleteRequest) (*BifrostBatchDeleteResponse, *BifrostError)
 	// BatchResults retrieves results from a completed batch job
 	BatchResults(ctx *BifrostContext, keys []Key, request *BifrostBatchResultsRequest) (*BifrostBatchResultsResponse, *BifrostError)
 	// FileUpload uploads a file to the provider
@@ -528,6 +651,16 @@ type Provider interface {
 	FileDelete(ctx *BifrostContext, keys []Key, request *BifrostFileDeleteRequest) (*BifrostFileDeleteResponse, *BifrostError)
 	// FileContent downloads file content from the provider
 	FileContent(ctx *BifrostContext, keys []Key, request *BifrostFileContentRequest) (*BifrostFileContentResponse, *BifrostError)
+	// CachedContentCreate creates a new cached content (Gemini / Vertex AI named cache lifecycle)
+	CachedContentCreate(ctx *BifrostContext, key Key, request *BifrostCachedContentCreateRequest) (*BifrostCachedContentCreateResponse, *BifrostError)
+	// CachedContentList lists cached contents
+	CachedContentList(ctx *BifrostContext, keys []Key, request *BifrostCachedContentListRequest) (*BifrostCachedContentListResponse, *BifrostError)
+	// CachedContentRetrieve retrieves a single cached content by name
+	CachedContentRetrieve(ctx *BifrostContext, keys []Key, request *BifrostCachedContentRetrieveRequest) (*BifrostCachedContentRetrieveResponse, *BifrostError)
+	// CachedContentUpdate updates a cached content's expiration (TTL or expireTime)
+	CachedContentUpdate(ctx *BifrostContext, keys []Key, request *BifrostCachedContentUpdateRequest) (*BifrostCachedContentUpdateResponse, *BifrostError)
+	// CachedContentDelete deletes a cached content by name
+	CachedContentDelete(ctx *BifrostContext, keys []Key, request *BifrostCachedContentDeleteRequest) (*BifrostCachedContentDeleteResponse, *BifrostError)
 	// ContainerCreate creates a new container
 	ContainerCreate(ctx *BifrostContext, key Key, request *BifrostContainerCreateRequest) (*BifrostContainerCreateResponse, *BifrostError)
 	// ContainerList lists containers
@@ -546,4 +679,22 @@ type Provider interface {
 	ContainerFileContent(ctx *BifrostContext, keys []Key, request *BifrostContainerFileContentRequest) (*BifrostContainerFileContentResponse, *BifrostError)
 	// ContainerFileDelete deletes a file from a container
 	ContainerFileDelete(ctx *BifrostContext, keys []Key, request *BifrostContainerFileDeleteRequest) (*BifrostContainerFileDeleteResponse, *BifrostError)
+	// Passthrough executes a non-streaming passthrough; body is fully buffered.
+	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
+	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
+	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+}
+
+// WebSocketCapableProvider is an optional interface that providers can implement
+// to indicate support for the OpenAI Responses API WebSocket Mode.
+// Checked via type assertion: provider.(WebSocketCapableProvider).
+// Providers that implement this interface will have native WS upstream connections
+// instead of the HTTP bridge fallback for Responses WS mode.
+type WebSocketCapableProvider interface {
+	// SupportsWebSocketMode returns true if the provider supports the Responses API WebSocket Mode.
+	SupportsWebSocketMode() bool
+	// WebSocketResponsesURL returns the WebSocket URL for the Responses API.
+	WebSocketResponsesURL(key Key) string
+	// WebSocketHeaders returns the headers required for the upstream WebSocket connection.
+	WebSocketHeaders(key Key) map[string]string
 }

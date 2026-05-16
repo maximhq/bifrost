@@ -212,8 +212,7 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
     "enable_logging": true,
     "enforce_governance_header": false,
     "allow_direct_keys": false,
-    "max_request_body_size_mb": 100,
-    "enable_litellm_fallbacks": false
+    "max_request_body_size_mb": 100
   },
   "encryption_key": ""
 }
@@ -288,13 +287,13 @@ fi
 
 # echo pwd: $(pwd)
 # # Run the E2E API test scripts (marked as flaky - failures are logged but don't block)
-# if ! ./tests/e2e/api/run-newman-tests.sh; then
-#   echo "WARNING: run-newman-tests.sh failed (flaky test - continuing)"
+# if ! ./tests/e2e/api/runners/run-newman-inference-tests.sh; then
+#   echo "WARNING: runners/run-newman-inference-tests.sh failed (flaky test - continuing)"
 # fi
 # if ! ./tests/e2e/api/run-all-integrations.sh; then
 #   echo "WARNING: run-all-integrations.sh failed (flaky test - continuing)"
 # fi
-# if ! ./tests/e2e/api/run-newman-api-tests.sh; then
+# if ! ./tests/e2e/api/runners/run-newman-api-tests.sh; then
 #   echo "WARNING: run-newman-api-tests.sh failed (flaky test - continuing)"
 # fi
 

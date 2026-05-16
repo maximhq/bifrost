@@ -15,7 +15,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
@@ -25,7 +24,6 @@ import (
 type Config struct {
 	// Embedding Model settings - REQUIRED for semantic caching
 	Provider       schemas.ModelProvider `json:"provider"`
-	Keys           []schemas.Key         `json:"keys"`
 	EmbeddingModel string                `json:"embedding_model,omitempty"` // Model to use for generating embeddings (optional)
 
 	// Plugin behavior settings
@@ -38,9 +36,9 @@ type Config struct {
 	// Advanced caching behavior
 	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
 	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
-	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
-	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
+	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
+	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
+	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -48,19 +46,18 @@ type Config struct {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// Define a temporary struct to avoid infinite recursion
 	type TempConfig struct {
-		Provider                     string        `json:"provider"`
-		Keys                         []schemas.Key `json:"keys"`
-		EmbeddingModel               string        `json:"embedding_model,omitempty"`
-		CleanUpOnShutdown            bool          `json:"cleanup_on_shutdown,omitempty"`
-		Dimension                    int           `json:"dimension"`
-		TTL                          interface{}   `json:"ttl,omitempty"`
-		Threshold                    float64       `json:"threshold,omitempty"`
-		VectorStoreNamespace         string        `json:"vector_store_namespace,omitempty"`
-		DefaultCacheKey              string        `json:"default_cache_key,omitempty"`
-		ConversationHistoryThreshold int           `json:"conversation_history_threshold,omitempty"`
-		CacheByModel                 *bool         `json:"cache_by_model,omitempty"`
-		CacheByProvider              *bool         `json:"cache_by_provider,omitempty"`
-		ExcludeSystemPrompt          *bool         `json:"exclude_system_prompt,omitempty"`
+		Provider                     string      `json:"provider"`
+		EmbeddingModel               string      `json:"embedding_model,omitempty"`
+		CleanUpOnShutdown            bool        `json:"cleanup_on_shutdown,omitempty"`
+		Dimension                    int         `json:"dimension"`
+		TTL                          interface{} `json:"ttl,omitempty"`
+		Threshold                    float64     `json:"threshold,omitempty"`
+		VectorStoreNamespace         string      `json:"vector_store_namespace,omitempty"`
+		DefaultCacheKey              string      `json:"default_cache_key,omitempty"`
+		ConversationHistoryThreshold int         `json:"conversation_history_threshold,omitempty"`
+		CacheByModel                 *bool       `json:"cache_by_model,omitempty"`
+		CacheByProvider              *bool       `json:"cache_by_provider,omitempty"`
+		ExcludeSystemPrompt          *bool       `json:"exclude_system_prompt,omitempty"`
 	}
 
 	var temp TempConfig
@@ -70,7 +67,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 	// Set simple fields
 	c.Provider = schemas.ModelProvider(temp.Provider)
-	c.Keys = temp.Keys
 	c.EmbeddingModel = temp.EmbeddingModel
 	c.CleanUpOnShutdown = temp.CleanUpOnShutdown
 	c.Dimension = temp.Dimension
@@ -117,16 +113,21 @@ type StreamChunk struct {
 
 // StreamAccumulator manages accumulation of streaming chunks for caching
 type StreamAccumulator struct {
-	RequestID      string                 // The request ID
-	Chunks         []*StreamChunk         // All chunks for this stream
-	IsComplete     bool                   // Whether the stream is complete
-	HasError       bool                   // Whether any chunk in the stream had an error
-	FinalTimestamp time.Time              // When the stream completed
-	Embedding      []float32              // Embedding for the original request
-	Metadata       map[string]interface{} // Metadata for caching
-	TTL            time.Duration          // TTL for this cache entry
-	mu             sync.Mutex             // Protects chunk operations
+	RequestID      string         // The request ID
+	StorageID      string         // The final cache entry ID
+	Chunks         []*StreamChunk // All chunks for this stream
+	IsComplete     bool           // Whether the stream is complete
+	HasError       bool           // Whether any chunk in the stream had an error
+	FinalTimestamp time.Time      // When the stream completed
+	Embedding      []float32      // Embedding for the original request
+	Metadata       map[string]any // Metadata for caching
+	TTL            time.Duration  // TTL for this cache entry
+	mu             sync.Mutex     // Protects chunk operations
 }
+
+// EmbeddingRequestExecutor is a function that executes a request and returns a response and an error.
+// It maps to .EmbeddingRequest() of the bifrost client.
+type EmbeddingRequestExecutor func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError)
 
 // Plugin implements the schemas.LLMPlugin interface for semantic caching.
 // It caches responses using a two-tier approach: direct hash matching for exact requests
@@ -138,12 +139,12 @@ type StreamAccumulator struct {
 //   - config: Plugin configuration including semantic cache and caching settings
 //   - logger: Logger instance for plugin operations
 type Plugin struct {
-	store              vectorstore.VectorStore
-	config             *Config
-	logger             schemas.Logger
-	client             *bifrost.Bifrost
-	streamAccumulators sync.Map // Track stream accumulators by request ID
-	waitGroup          sync.WaitGroup
+	store                    vectorstore.VectorStore
+	config                   *Config
+	logger                   schemas.Logger
+	embeddingRequestExecutor EmbeddingRequestExecutor
+	streamAccumulators       sync.Map // Track stream accumulators by request ID
+	waitGroup                sync.WaitGroup
 }
 
 // Plugin constants
@@ -200,45 +201,6 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 	},
 }
 
-type PluginAccount struct {
-	provider schemas.ModelProvider
-	keys     []schemas.Key
-}
-
-func (pa *PluginAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{pa.provider}, nil
-}
-
-func (pa *PluginAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
-	return pa.keys, nil
-}
-
-func (pa *PluginAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	return &schemas.ProviderConfig{
-		NetworkConfig:            schemas.DefaultNetworkConfig,
-		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-	}, nil
-}
-
-// Dependencies is a list of dependencies that the plugin requires.
-var Dependencies []framework.FrameworkDependency = []framework.FrameworkDependency{framework.FrameworkDependencyVectorStore}
-
-// ProvidersWithEmbeddingSupport lists all providers that support embedding operations.
-// Providers not in this list will return UnsupportedOperationError for embedding requests.
-var ProvidersWithEmbeddingSupport = map[schemas.ModelProvider]bool{
-	schemas.OpenAI:      true,
-	schemas.Azure:       true,
-	schemas.Bedrock:     true,
-	schemas.Cohere:      true,
-	schemas.Gemini:      true,
-	schemas.Vertex:      true,
-	schemas.Mistral:     true,
-	schemas.Ollama:      true,
-	schemas.Nebius:      true,
-	schemas.HuggingFace: true,
-	schemas.SGL:         true,
-}
-
 const (
 	CacheKey          schemas.BifrostContextKey = "semantic_cache_key"        // To set the cache key for a request - REQUIRED for all requests
 	CacheTTLKey       schemas.BifrostContextKey = "semantic_cache_ttl"        // To explicitly set the TTL for a request
@@ -248,6 +210,7 @@ const (
 
 	// context keys for internal usage
 	requestIDKey              schemas.BifrostContextKey = "semantic_cache_request_id"
+	requestStorageIDKey       schemas.BifrostContextKey = "semantic_cache_request_storage_id"
 	requestHashKey            schemas.BifrostContextKey = "semantic_cache_request_hash"
 	requestEmbeddingKey       schemas.BifrostContextKey = "semantic_cache_embedding"
 	requestEmbeddingTokensKey schemas.BifrostContextKey = "semantic_cache_embedding_tokens"
@@ -306,10 +269,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 
 	// Set cache behavior defaults
 	if config.CacheByModel == nil {
-		config.CacheByModel = bifrost.Ptr(true)
+		config.CacheByModel = new(true)
 	}
 	if config.CacheByProvider == nil {
-		config.CacheByProvider = bifrost.Ptr(true)
+		config.CacheByProvider = new(true)
 	}
 
 	plugin := &Plugin{
@@ -319,26 +282,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 		waitGroup: sync.WaitGroup{},
 	}
 
-	if config.Provider == "" || len(config.Keys) == 0 {
-		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
-	} else {
-		// Validate that the provider supports embeddings
-		if bifrost.IsStandardProvider(config.Provider) && !ProvidersWithEmbeddingSupport[config.Provider] {
-			return nil, fmt.Errorf("provider '%s' does not support embedding operations required for semantic cache. Supported providers: openai, azure, bedrock, cohere, gemini, vertex, mistral, ollama, nebius, huggingface, sgl. Note: custom providers based on embedding-capable providers are also supported", config.Provider)
-		}
-
-		bifrost, err := bifrost.Init(ctx, schemas.BifrostConfig{
-			Logger: logger,
-			Account: &PluginAccount{
-				provider: config.Provider,
-				keys:     config.Keys,
-			},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize bifrost for semantic cache: %w", err)
-		}
-
-		plugin.client = bifrost
+	if config.Provider == "" && config.Dimension == 1 {
+		logger.Info(PluginLoggerPrefix + " Starting in direct-only mode (dimension=1, no embedding provider)")
+	} else if config.Provider == "" {
+		logger.Warn(PluginLoggerPrefix + " Incomplete semantic mode config: missing provider, falling back to direct search only")
 	}
 
 	createCtx, cancel := context.WithTimeout(ctx, CreateNamespaceTimeout)
@@ -403,6 +350,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
+	// Clear request-scoped semantic cache state up front in case the context is reused.
+	plugin.clearRequestScopedContext(ctx)
+
+	if !isSemanticCacheSupportedRequestType(req.RequestType) {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for unsupported request type: " + string(req.RequestType))
+		return req, nil, nil
+	}
+
 	if plugin.isConversationHistoryThresholdExceeded(req) {
 		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for request with conversation history threshold exceeded")
 		return req, nil, nil
@@ -430,7 +385,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	if performDirectSearch {
 		shortCircuit, err := plugin.performDirectSearch(ctx, req, cacheKey)
 		if err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error())
+			plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error() + " (" + describeRequestShape(req) + ")")
 			// Don't return - continue to semantic search fallback
 			shortCircuit = nil // Ensure we don't use an invalid shortCircuit
 		}
@@ -440,7 +395,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
-	if performSemanticSearch && plugin.client != nil {
+	if performSemanticSearch && plugin.embeddingRequestExecutor != nil {
 		if req.EmbeddingRequest != nil || req.TranscriptionRequest != nil {
 			plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic search for embedding/transcription input")
 			// For vector stores that require vectors, set a zero vector placeholder
@@ -456,13 +411,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		// Try semantic search as fallback
 		shortCircuit, err := plugin.performSemanticSearch(ctx, req, cacheKey)
 		if err != nil {
+			plugin.logger.Debug(PluginLoggerPrefix + " Semantic search skipped: " + err.Error() + " (" + describeRequestShape(req) + ")")
 			return req, nil, nil
 		}
 
 		if shortCircuit != nil {
 			return req, shortCircuit, nil
 		}
-	} else if !performSemanticSearch && plugin.store.RequiresVectors() && plugin.client != nil {
+	} else if !performSemanticSearch && plugin.store.RequiresVectors() && plugin.embeddingRequestExecutor != nil {
 		// Vector store requires vectors but we're in direct-only mode
 		// Generate embeddings for storage purposes (not for searching)
 		if req.EmbeddingRequest != nil || req.TranscriptionRequest != nil {
@@ -517,6 +473,16 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		return res, bifrostErr, nil
 	}
 
+	// Skip caching for large payloads — body is too large to materialize for cache storage
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic cache for large payload request")
+		return res, nil, nil
+	}
+	if isLargeResponse, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); ok && isLargeResponse {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic cache for large payload response")
+		return res, nil, nil
+	}
+
 	isCacheHit := ctx.Value(isCacheHitKey)
 	if isCacheHit != nil {
 		isCacheHitValue, ok := isCacheHit.(bool)
@@ -549,6 +515,13 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	requestID, ok := ctx.Value(requestIDKey).(string)
 	if !ok {
 		return res, nil, nil
+	}
+	storageID := requestID
+	// When direct lookup prepared a deterministic storage ID, reuse it here so
+	// default-mode traffic warms the GetChunk fast path instead of only the
+	// legacy search path.
+	if v, ok := ctx.Value(requestStorageIDKey).(string); ok && v != "" {
+		storageID = v
 	}
 	// Check cache type to optimize embedding handling
 	var embedding []float32
@@ -658,6 +631,20 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// when the same context is reused across multiple requests
 	paramsHash, _ := ctx.Value(requestParamsHashKey).(string)
 
+	// Snapshot the response synchronously for the non-streaming cache path.
+	// Marshaling inside the cache goroutine races with the framework returning
+	// res upstream and downstream consumers mutating it (CacheDebug, etc.).
+	// Streaming uses a chunk accumulator that snapshots per-chunk separately.
+	var singleResponseData []byte
+	if !bifrost.IsStreamRequestType(requestType) {
+		var marshalErr error
+		singleResponseData, marshalErr = json.Marshal(res)
+		if marshalErr != nil {
+			plugin.logger.Warn("%s Failed to snapshot response for caching: %v", PluginLoggerPrefix, marshalErr)
+			return res, nil, nil
+		}
+	}
+
 	// Cache everything in a unified VectorEntry asynchronously to avoid blocking the response
 	plugin.waitGroup.Add(1)
 	go func() {
@@ -677,11 +664,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		}
 
 		if bifrost.IsStreamRequestType(requestType) {
-			if err := plugin.addStreamingResponse(cacheCtx, requestID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
+			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
 				plugin.logger.Warn("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err)
 			}
 		} else {
-			if err := plugin.addSingleResponse(cacheCtx, requestID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+			if err := plugin.addSingleResponse(cacheCtx, storageID, singleResponseData, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
 				plugin.logger.Warn("%s Failed to cache single response: %v", PluginLoggerPrefix, err)
 			}
 		}
@@ -715,11 +702,6 @@ func (plugin *Plugin) Cleanup() error {
 
 	// Clean up old stream accumulators first
 	plugin.cleanupOldStreamAccumulators()
-
-	// Shutdown the internal Bifrost client used for embeddings
-	if plugin.client != nil {
-		plugin.client.Shutdown()
-	}
 
 	// Only clean up cache entries if configured to do so
 	if !plugin.config.CleanUpOnShutdown {
@@ -759,6 +741,15 @@ func (plugin *Plugin) Cleanup() error {
 	}
 
 	return nil
+}
+
+// SetEmbeddingRequestExecutor sets the embedding request executor for the plugin.
+// Needs to be set before the plugin is used.
+//
+// Parameters:
+//   - executor: The embedding request executor to set
+func (plugin *Plugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExecutor) {
+	plugin.embeddingRequestExecutor = executor
 }
 
 // Public Methods for External Use
@@ -825,4 +816,17 @@ func (plugin *Plugin) ClearCacheForRequestID(requestID string) error {
 	plugin.logger.Debug(fmt.Sprintf("%s Deleted cache entry for key %s", PluginLoggerPrefix, requestID))
 
 	return nil
+}
+
+func (plugin *Plugin) clearRequestScopedContext(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(requestIDKey)
+	ctx.ClearValue(requestStorageIDKey)
+	ctx.ClearValue(requestHashKey)
+	ctx.ClearValue(requestParamsHashKey)
+	ctx.ClearValue(requestModelKey)
+	ctx.ClearValue(requestProviderKey)
+	ctx.ClearValue(requestEmbeddingKey)
+	ctx.ClearValue(requestEmbeddingTokensKey)
+	ctx.ClearValue(isCacheHitKey)
+	ctx.ClearValue(cacheHitTypeKey)
 }

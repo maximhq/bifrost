@@ -1,6 +1,9 @@
 package schemas
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestToChatMessages_PreservesDeveloperRole(t *testing.T) {
 	messages := []ResponsesMessage{
@@ -317,5 +320,719 @@ func TestToBifrostResponsesStreamResponse_PopulatesFinalDoneTextAndCompletedOutp
 	}
 	if *msg.Content.ContentBlocks[0].Text != "Hello world" {
 		t.Fatalf("expected completed output text %q, got %q", "Hello world", *msg.Content.ContentBlocks[0].Text)
+	}
+}
+
+func TestToBifrostResponsesResponse_MapsLengthToIncomplete(t *testing.T) {
+	length := string(BifrostFinishReasonLength)
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &length},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil || resp.Status == nil {
+		t.Fatal("expected status to be set")
+	}
+	if *resp.Status != "incomplete" {
+		t.Fatalf("expected status %q, got %q", "incomplete", *resp.Status)
+	}
+	if resp.IncompleteDetails == nil {
+		t.Fatal("expected incomplete_details to be set")
+	}
+	if resp.IncompleteDetails.Reason != "max_output_tokens" {
+		t.Fatalf("expected incomplete_details.reason %q, got %q", "max_output_tokens", resp.IncompleteDetails.Reason)
+	}
+}
+
+func TestToBifrostResponsesResponse_MapsToolCallsToCompleted(t *testing.T) {
+	toolCalls := string(BifrostFinishReasonToolCalls)
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &toolCalls},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil || resp.Status == nil {
+		t.Fatal("expected status to be set")
+	}
+	if *resp.Status != "completed" {
+		t.Fatalf("expected status %q, got %q", "completed", *resp.Status)
+	}
+	if resp.IncompleteDetails != nil {
+		t.Fatal("expected incomplete_details to be nil")
+	}
+}
+
+func TestToBifrostResponsesResponse_PrioritizesLengthAcrossChoices(t *testing.T) {
+	stop := string(BifrostFinishReasonStop)
+	length := string(BifrostFinishReasonLength)
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &stop},
+			{FinishReason: &length},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil || resp.Status == nil {
+		t.Fatal("expected status to be set")
+	}
+	if *resp.Status != "incomplete" {
+		t.Fatalf("expected status %q, got %q", "incomplete", *resp.Status)
+	}
+	if resp.IncompleteDetails == nil || resp.IncompleteDetails.Reason != "max_output_tokens" {
+		t.Fatal("expected max_output_tokens incomplete_details")
+	}
+}
+
+func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *testing.T) {
+	unknown := "content_filter"
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &unknown},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.Status != nil {
+		t.Fatalf("expected status to be nil, got %q", *resp.Status)
+	}
+	if resp.IncompleteDetails != nil {
+		t.Fatal("expected incomplete_details to be nil")
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_IncludesFunctionCallsInCompletedOutput(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	part1 := "Let me help"
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	funcName := "get_weather"
+	toolCallID := "call_abc123"
+
+	var all []*BifrostResponsesStreamResponse
+
+	// Role chunk
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Role: &role,
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Text content chunk
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Content: &part1,
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Tool call chunk with function name
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index:    0,
+								ID:       &toolCallID,
+								Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"city":`},
+							},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Tool call argument continuation
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index:    0,
+								Function: ChatAssistantMessageToolCallFunction{Arguments: `"Paris"}`},
+							},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Finish with tool_calls
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason: &toolCallsFinish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+	}
+
+	if completed == nil || completed.Response == nil {
+		t.Fatal("expected response.completed event")
+	}
+
+	output := completed.Response.Output
+	if len(output) < 2 {
+		t.Fatalf("expected at least 2 output items (text + function_call), got %d", len(output))
+	}
+
+	var hasText, hasFunctionCall bool
+	for _, item := range output {
+		if item.Type != nil && *item.Type == ResponsesMessageTypeMessage {
+			hasText = true
+			if item.Content == nil || len(item.Content.ContentBlocks) == 0 || item.Content.ContentBlocks[0].Text == nil {
+				t.Fatal("text message missing content")
+			}
+			if *item.Content.ContentBlocks[0].Text != "Let me help" {
+				t.Fatalf("expected text %q, got %q", "Let me help", *item.Content.ContentBlocks[0].Text)
+			}
+		}
+		if item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall {
+			hasFunctionCall = true
+			if item.ResponsesToolMessage == nil {
+				t.Fatal("function_call item missing ResponsesToolMessage")
+			}
+			if item.Name == nil || *item.Name != "get_weather" {
+				t.Fatalf("expected function name %q, got %v", "get_weather", item.Name)
+			}
+			if item.Arguments == nil || *item.Arguments != `{"city":"Paris"}` {
+				t.Fatalf("expected arguments %q, got %v", `{"city":"Paris"}`, item.Arguments)
+			}
+			if item.CallID == nil || *item.CallID != toolCallID {
+				t.Fatalf("expected call_id %q, got %v", toolCallID, item.CallID)
+			}
+		}
+	}
+
+	if !hasText {
+		t.Fatal("expected text message in completed output")
+	}
+	if !hasFunctionCall {
+		t.Fatal("expected function_call item in completed output")
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_ToolCallsOnlyInCompletedOutput(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	funcName := "get_weather"
+	toolCallID := "call_xyz789"
+
+	var all []*BifrostResponsesStreamResponse
+
+	// Role chunk
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Role: &role,
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Tool call chunk (no text content at all)
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index:    0,
+								ID:       &toolCallID,
+								Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"q":"test"}`},
+							},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// Finish with tool_calls
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason: &toolCallsFinish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+	}
+
+	if completed == nil || completed.Response == nil {
+		t.Fatal("expected response.completed event")
+	}
+
+	output := completed.Response.Output
+	if len(output) != 1 {
+		t.Fatalf("expected 1 output item (function_call only), got %d", len(output))
+	}
+
+	item := output[0]
+	if item.Type == nil || *item.Type != ResponsesMessageTypeFunctionCall {
+		t.Fatal("expected function_call type")
+	}
+	if item.ResponsesToolMessage == nil {
+		t.Fatal("function_call item missing ResponsesToolMessage")
+	}
+	if item.Name == nil || *item.Name != "get_weather" {
+		t.Fatalf("expected function name %q, got %v", "get_weather", item.Name)
+	}
+	if item.Arguments == nil || *item.Arguments != `{"q":"test"}` {
+		t.Fatalf("expected arguments %q, got %v", `{"q":"test"}`, item.Arguments)
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_MapsLengthToIncompleteEvent(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	makeChunk := func(role *string, content *string, finishReason *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role:    role,
+							Content: content,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	role := string(ChatMessageRoleAssistant)
+	part := "Hello"
+	length := string(BifrostFinishReasonLength)
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, makeChunk(&role, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, &part, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, &length).ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	var incomplete *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt == nil {
+			continue
+		}
+		if evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+		if evt.Type == ResponsesStreamResponseTypeIncomplete {
+			incomplete = evt
+		}
+	}
+
+	if completed != nil {
+		t.Fatal("did not expect response.completed for finish_reason=length")
+	}
+	if incomplete == nil || incomplete.Response == nil {
+		t.Fatal("expected response.incomplete with response payload")
+	}
+	if incomplete.Response.Status == nil || *incomplete.Response.Status != "incomplete" {
+		t.Fatal("expected terminal response status to be incomplete")
+	}
+	if incomplete.Response.IncompleteDetails == nil || incomplete.Response.IncompleteDetails.Reason != "max_output_tokens" {
+		t.Fatal("expected incomplete_details.reason to be max_output_tokens")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// response_format ↔ text.format conversion tests
+// ---------------------------------------------------------------------------
+
+func makeJSONSchemaResponseFormat(name, description string, strict bool, schema interface{}) interface{} {
+	jsObj := map[string]interface{}{
+		"name":   name,
+		"strict": strict,
+		"schema": schema,
+	}
+	if description != "" {
+		jsObj["description"] = description
+	}
+	return map[string]interface{}{
+		"type":        "json_schema",
+		"json_schema": jsObj,
+	}
+}
+
+func TestToResponsesRequest_ResponseFormat_JSONSchema(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}},
+		"required":   []interface{}{"name"},
+	}
+	rf := makeJSONSchemaResponseFormat("CityInfo", "City schema", true, schema)
+	chatReq := &BifrostChatRequest{
+		Params: &ChatParameters{ResponseFormat: &rf},
+	}
+
+	rr := chatReq.ToResponsesRequest()
+	if rr.Params == nil || rr.Params.Text == nil || rr.Params.Text.Format == nil {
+		t.Fatal("expected Text.Format to be set")
+	}
+	f := rr.Params.Text.Format
+	if f.Type != "json_schema" {
+		t.Fatalf("expected type json_schema, got %q", f.Type)
+	}
+	if f.Name == nil || *f.Name != "CityInfo" {
+		t.Fatalf("expected Name=CityInfo, got %v", f.Name)
+	}
+	if f.Description == nil || *f.Description != "City schema" {
+		t.Fatalf("expected Description='City schema', got %v", f.Description)
+	}
+	if f.Strict == nil || !*f.Strict {
+		t.Fatal("expected Strict=true")
+	}
+	// JSONSchemaFromMap populates typed fields, not the raw Schema *any blob.
+	if f.JSONSchema == nil {
+		t.Fatal("expected JSONSchema to be set")
+	}
+	if f.JSONSchema.Type == nil || *f.JSONSchema.Type != "object" {
+		t.Fatalf("expected JSONSchema.Type=object, got %v", f.JSONSchema.Type)
+	}
+	if f.JSONSchema.Properties == nil {
+		t.Fatal("expected JSONSchema.Properties to be set")
+	}
+	if len(f.JSONSchema.Required) == 0 {
+		t.Fatal("expected JSONSchema.Required to be set")
+	}
+}
+
+func TestToResponsesRequest_ResponseFormat_JSONObject(t *testing.T) {
+	rf := interface{}(map[string]interface{}{"type": "json_object"})
+	chatReq := &BifrostChatRequest{
+		Params: &ChatParameters{ResponseFormat: &rf},
+	}
+
+	rr := chatReq.ToResponsesRequest()
+	if rr.Params == nil || rr.Params.Text == nil || rr.Params.Text.Format == nil {
+		t.Fatal("expected Text.Format to be set")
+	}
+	if rr.Params.Text.Format.Type != "json_object" {
+		t.Fatalf("expected type json_object, got %q", rr.Params.Text.Format.Type)
+	}
+}
+
+func TestToResponsesRequest_ResponseFormat_Text(t *testing.T) {
+	rf := interface{}(map[string]interface{}{"type": "text"})
+	chatReq := &BifrostChatRequest{
+		Params: &ChatParameters{ResponseFormat: &rf},
+	}
+
+	rr := chatReq.ToResponsesRequest()
+	if rr.Params == nil || rr.Params.Text == nil || rr.Params.Text.Format == nil {
+		t.Fatal("expected Text.Format to be set")
+	}
+	if rr.Params.Text.Format.Type != "text" {
+		t.Fatalf("expected type text, got %q", rr.Params.Text.Format.Type)
+	}
+}
+
+func TestToResponsesRequest_NoResponseFormat(t *testing.T) {
+	chatReq := &BifrostChatRequest{
+		Params: &ChatParameters{},
+	}
+	rr := chatReq.ToResponsesRequest()
+	if rr.Params != nil && rr.Params.Text != nil && rr.Params.Text.Format != nil {
+		t.Fatal("expected Text.Format to be nil when no response_format set")
+	}
+}
+
+func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"country"},
+	}
+	rr := &BifrostResponsesRequest{
+		Params: &ResponsesParameters{
+			Text: &ResponsesTextConfig{
+				Format: &ResponsesTextConfigFormat{
+					Type:        "json_schema",
+					Name:        Ptr("CityInfo"),
+					Description: Ptr("City schema"),
+					Strict:      Ptr(true),
+					JSONSchema:  &ResponsesTextConfigFormatJSONSchema{Schema: func() *any { v := any(schema); return &v }()},
+				},
+			},
+		},
+	}
+
+	cr := rr.ToChatRequest()
+	if cr.Params == nil || cr.Params.ResponseFormat == nil {
+		t.Fatal("expected ResponseFormat to be set")
+	}
+	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
+	if !ok {
+		t.Fatal("expected ResponseFormat to be map[string]interface{}")
+	}
+	if rfMap["type"] != "json_schema" {
+		t.Fatalf("expected type json_schema, got %v", rfMap["type"])
+	}
+	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected json_schema inner object")
+	}
+	if jsObj["name"] != "CityInfo" {
+		t.Fatalf("expected name=CityInfo, got %v", jsObj["name"])
+	}
+	if jsObj["description"] != "City schema" {
+		t.Fatalf("expected description='City schema', got %v", jsObj["description"])
+	}
+	if jsObj["strict"] != true {
+		t.Fatalf("expected strict=true, got %v", jsObj["strict"])
+	}
+	if jsObj["schema"] == nil {
+		t.Fatal("expected schema to be set")
+	}
+}
+
+func TestToChatRequest_TextFormat_JSONObject(t *testing.T) {
+	rr := &BifrostResponsesRequest{
+		Params: &ResponsesParameters{
+			Text: &ResponsesTextConfig{
+				Format: &ResponsesTextConfigFormat{Type: "json_object"},
+			},
+		},
+	}
+
+	cr := rr.ToChatRequest()
+	if cr.Params == nil || cr.Params.ResponseFormat == nil {
+		t.Fatal("expected ResponseFormat to be set")
+	}
+	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
+	if !ok {
+		t.Fatal("expected ResponseFormat to be map[string]interface{}")
+	}
+	if rfMap["type"] != "json_object" {
+		t.Fatalf("expected type json_object, got %v", rfMap["type"])
+	}
+	if _, hasJS := rfMap["json_schema"]; hasJS {
+		t.Fatal("json_schema key should not be present for json_object type")
+	}
+}
+
+func TestToChatRequest_NoTextFormat(t *testing.T) {
+	rr := &BifrostResponsesRequest{
+		Params: &ResponsesParameters{},
+	}
+	cr := rr.ToChatRequest()
+	if cr.Params != nil && cr.Params.ResponseFormat != nil {
+		t.Fatal("expected ResponseFormat to be nil when no text.format set")
+	}
+}
+
+func TestResponseFormatRoundTrip_ChatToResponsesAndBack(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}},
+	}
+	rf := makeJSONSchemaResponseFormat("CityInfo", "City schema", true, schema)
+	chatReq := &BifrostChatRequest{
+		Params: &ChatParameters{ResponseFormat: &rf},
+	}
+
+	// Chat → Responses → Chat
+	rr := chatReq.ToResponsesRequest()
+	cr := rr.ToChatRequest()
+
+	if cr.Params == nil || cr.Params.ResponseFormat == nil {
+		t.Fatal("expected ResponseFormat to survive round-trip")
+	}
+	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
+	if !ok {
+		t.Fatal("expected ResponseFormat to be map after round-trip")
+	}
+	if rfMap["type"] != "json_schema" {
+		t.Fatalf("type did not survive round-trip: got %v", rfMap["type"])
+	}
+	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
+	if !ok {
+		t.Fatal("json_schema inner object missing after round-trip")
+	}
+	if jsObj["name"] != "CityInfo" {
+		t.Fatalf("name did not survive round-trip: got %v", jsObj["name"])
+	}
+	if jsObj["description"] != "City schema" {
+		t.Fatalf("description did not survive round-trip: got %v", jsObj["description"])
+	}
+	if jsObj["strict"] != true {
+		t.Fatalf("strict did not survive round-trip: got %v", jsObj["strict"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JSON wire-format tests (catch serialization bugs, not just struct values)
+// ---------------------------------------------------------------------------
+
+// TestToResponsesRequest_JSONSchema_NoDoubleNesting verifies that the json_schema
+// body serializes as "schema": {...} and NOT "schema": {"schema": {...}}.
+func TestToResponsesRequest_JSONSchema_NoDoubleNesting(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}},
+		"required":   []interface{}{"name"},
+	}
+	rf := makeJSONSchemaResponseFormat("CityInfo", "", true, schema)
+	chatReq := &BifrostChatRequest{
+		Params: &ChatParameters{ResponseFormat: &rf},
+	}
+
+	rr := chatReq.ToResponsesRequest()
+	if rr.Params == nil || rr.Params.Text == nil || rr.Params.Text.Format == nil {
+		t.Fatal("expected Text.Format to be set")
+	}
+
+	// Marshal to JSON and inspect the wire shape
+	b, err := json.Marshal(rr.Params.Text.Format)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var wire map[string]interface{}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	schemaVal, ok := wire["schema"]
+	if !ok {
+		t.Fatalf("expected 'schema' key in wire format, got: %s", string(b))
+	}
+
+	schemaMap, ok := schemaVal.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema to be an object, got: %T — wire: %s", schemaVal, string(b))
+	}
+
+	// Must NOT have a nested "schema" key (double-nesting bug)
+	if _, nested := schemaMap["schema"]; nested {
+		t.Fatalf("double-nested schema detected: wire=%s", string(b))
+	}
+
+	// Must have the actual schema fields at the top level
+	if schemaMap["type"] != "object" {
+		t.Fatalf("expected schema.type=object, wire=%s", string(b))
+	}
+}
+
+// TestToChatRequest_TextFormat_TypedFields verifies that when a Responses API
+// request has schema fields spread across the typed fields of
+// ResponsesTextConfigFormatJSONSchema (Schema==nil), ToChatRequest still
+// produces a valid response_format with a non-empty json_schema.schema body.
+func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
+	props := map[string]any{"name": map[string]any{"type": "string"}}
+	rr := &BifrostResponsesRequest{
+		Params: &ResponsesParameters{
+			Text: &ResponsesTextConfig{
+				Format: &ResponsesTextConfigFormat{
+					Type:   "json_schema",
+					Name:   Ptr("CityInfo"),
+					Strict: Ptr(true),
+					// Schema is nil — fields are spread across typed fields (direct client path)
+					JSONSchema: &ResponsesTextConfigFormatJSONSchema{
+						Type:       Ptr("object"),
+						Properties: &props,
+						Required:   []string{"name"},
+						// Schema *any is intentionally nil here
+					},
+				},
+			},
+		},
+	}
+
+	cr := rr.ToChatRequest()
+	if cr.Params == nil || cr.Params.ResponseFormat == nil {
+		t.Fatal("expected ResponseFormat to be set")
+	}
+
+	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
+	if !ok {
+		t.Fatal("expected ResponseFormat to be a map")
+	}
+
+	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected json_schema inner object")
+	}
+
+	// Schema body must be present and non-empty
+	schemaVal, ok := jsObj["schema"]
+	if !ok {
+		t.Fatalf("schema body silently dropped: json_schema=%v", jsObj)
+	}
+
+	schemaMap, ok := schemaVal.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema to be a map, got %T", schemaVal)
+	}
+	if schemaMap["type"] != "object" {
+		t.Fatalf("expected schema.type=object, got %v", schemaMap["type"])
 	}
 }

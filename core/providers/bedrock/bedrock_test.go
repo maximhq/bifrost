@@ -2,16 +2,54 @@ package bedrock_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func mustMarshalJSON(v interface{}) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("mustMarshalJSON: " + err.Error())
+	}
+	return json.RawMessage(b)
+}
+
+// jsonEqual compares two json.RawMessage values semantically (ignoring key order).
+func jsonEqual(t *testing.T, expected, actual json.RawMessage, msgAndArgs ...interface{}) {
+	t.Helper()
+	if expected == nil && actual == nil {
+		return
+	}
+	var e, a interface{}
+	if err := json.Unmarshal(expected, &e); err != nil {
+		t.Errorf("failed to unmarshal expected JSON: %v", err)
+		return
+	}
+	if err := json.Unmarshal(actual, &a); err != nil {
+		t.Errorf("failed to unmarshal actual JSON: %v", err)
+		return
+	}
+	assert.Equal(t, e, a, msgAndArgs...)
+}
+
+// mustMarshalToolParams marshals ToolFunctionParameters to json.RawMessage,
+// matching the conversion code path for deterministic output.
+func mustMarshalToolParams(params *schemas.ToolFunctionParameters) json.RawMessage {
+	b, err := json.Marshal(params)
+	if err != nil {
+		panic("mustMarshalToolParams: " + err.Error())
+	}
+	return json.RawMessage(b)
+}
 
 // Common test variables
 var (
@@ -26,6 +64,14 @@ var (
 			"type":        "string",
 			"description": "The city name",
 		}),
+	)
+	// testPropsFromJSON is the same as testProps but with nested values as *OrderedMap
+	// (as produced by json.Unmarshal -> OrderedMap.UnmarshalJSON)
+	testPropsFromJSON = *schemas.NewOrderedMapFromPairs(
+		schemas.KV("location", schemas.NewOrderedMapFromPairs(
+			schemas.KV("type", "string"),
+			schemas.KV("description", "The city name"),
+		)),
 	)
 )
 
@@ -80,7 +126,15 @@ func assertBedrockRequestEqual(t *testing.T, expected, actual *bedrock.BedrockCo
 		actualTool, exists := actualToolMap[name]
 		assert.True(t, exists, "Tool %s not found in actual tools", name)
 		if exists {
-			assert.Equal(t, expectedTool, actualTool, "Tool %s differs", name)
+			// Compare tool specs field-by-field, using JSON-semantic comparison
+			// for InputSchema to handle key ordering differences from sorted marshaling
+			if expectedTool.ToolSpec != nil && actualTool.ToolSpec != nil {
+				assert.Equal(t, expectedTool.ToolSpec.Name, actualTool.ToolSpec.Name, "Tool %s name differs", name)
+				assert.Equal(t, expectedTool.ToolSpec.Description, actualTool.ToolSpec.Description, "Tool %s description differs", name)
+				jsonEqual(t, expectedTool.ToolSpec.InputSchema.JSON, actualTool.ToolSpec.InputSchema.JSON, "Tool %s input schema differs", name)
+			} else {
+				assert.Equal(t, expectedTool, actualTool, "Tool %s differs", name)
+			}
 		}
 	}
 }
@@ -97,6 +151,7 @@ func TestBedrock(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	// Get Bedrock-specific configuration from environment
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
@@ -121,64 +176,182 @@ func TestBedrock(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:    schemas.Bedrock,
-		ChatModel:   "claude-4-sonnet",
-		VisionModel: "claude-4-sonnet",
+		ChatModel:   "claude-4.6-sonnet",
+		VisionModel: "claude-4.6-sonnet",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
-			{Provider: schemas.Bedrock, Model: "anthropic.claude-sonnet-4-20250514-v1:0"}, // Used for count tokens
 		},
-		EmbeddingModel:      "cohere.embed-v4:0",
-		RerankModel:         rerankModelARN,
-		ReasoningModel:      "claude-4.5-sonnet",
-		PromptCachingModel:  "claude-4.5-sonnet",
-		ImageEditModel:      "amazon.nova-canvas-v1:0",
-		ImageVariationModel: "amazon.nova-canvas-v1:0",
-		BatchExtraParams:    batchExtraParams,
-		FileExtraParams:     fileExtraParams,
+		EmbeddingModel:           "cohere.embed-v4:0",
+		RerankModel:              rerankModelARN,
+		ReasoningModel:           "claude-4.5-sonnet",
+		PromptCachingModel:       "claude-4.5-sonnet",
+		ImageEditModel:           "amazon.nova-canvas-v1:0",
+		ImageVariationModel:      "amazon.nova-canvas-v1:0",
+		InterleavedThinkingModel: "global.anthropic.claude-opus-4-5-20251101-v1:0",
+		BatchExtraParams:         batchExtraParams,
+		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false, // Bedrock doesn't support image URL
-			ImageBase64:           true,
-			MultipleImages:        false, // Since one of the image is URL
-			FileBase64:            true,
-			FileURL:               false, // S3 urls supported for nova models
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			Rerank:                rerankModelARN != "",
-			ListModels:            true,
-			Reasoning:             true,
-			PromptCaching:         true,
-			BatchCreate:           true,
-			BatchList:             true,
-			BatchRetrieve:         true,
-			BatchCancel:           true,
-			BatchResults:          true,
-			FileUpload:            true,
-			FileList:              true,
-			FileRetrieve:          true,
-			FileDelete:            true,
-			FileContent:           true,
-			FileBatchInput:        true,
-			CountTokens:           true,
-			ImageEdit:             true,
-			ImageVariation:        true,
-			StructuredOutputs:     true,
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false, // Bedrock doesn't support image URL
+			ImageBase64:                true,
+			MultipleImages:             false, // Since one of the image is URL
+			FileBase64:                 true,
+			FileURL:                    false, // S3 urls supported for nova models
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			Rerank:                     rerankModelARN != "",
+			ListModels:                 true,
+			Reasoning:                  true,
+			PromptCaching:              true,
+			BatchCreate:                true,
+			BatchList:                  true,
+			BatchRetrieve:              true,
+			BatchCancel:                true,
+			BatchResults:               true,
+			FileUpload:                 true,
+			FileList:                   true,
+			FileRetrieve:               true,
+			FileDelete:                 true,
+			FileContent:                true,
+			FileBatchInput:             true,
+			CountTokens:                true,
+			ImageEdit:                  true,
+			ImageVariation:             true,
+			StructuredOutputs:          true,
+			InterleavedThinking:        true,
+			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
+			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
+			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},
 	}
 
 	t.Run("BedrockTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
+
+	// BedrockOpus47Tests subtree: live end-to-end repro of the user-reported
+	// regression on Claude Opus 4.7. GA structured outputs (output_config.format
+	// with json_schema) against Opus 4.7 on Bedrock currently fails with
+	// `output_config.format: Extra inputs are not permitted` after PR #3053
+	// (commit 7df13ab45) tunneled `anthropic_beta: ["structured-outputs-2025-11-13"]`
+	// into additionalModelRequestFields.
+	//
+	// This subtree reuses the existing structured-output scenarios from
+	// core/internal/llmtests (RunStructuredOutputChatTest +
+	// RunStructuredOutputResponsesTest) so we exercise the SAME wire path the
+	// user's snippet (`client.messages.create(... output_config={"format":...})`)
+	// takes: Anthropic SDK -> /v1/messages -> ToBifrostResponsesRequest ->
+	// ToBedrockResponsesRequest.
+	//
+	// Naming places the leaf test at
+	//   TestBedrock/BedrockOpus47Tests/TestBedrockOpus47StructuredOutputRegression
+	// so the Makefile's TESTCASE convention works:
+	//   make test-core PROVIDER=bedrock TESTCASE=TestBedrockOpus47StructuredOutputRegression
+	//
+	// Skipped unless BEDROCK_OPUS_47_MODEL_ID is set to the exact Bedrock model
+	// id (or alias) for Claude Opus 4.7. We don't default this because per
+	// Anthropic's docs
+	// (cite: https://platform.claude.com/docs/en/docs/build-with-claude/structured-outputs)
+	// "Claude Opus 4.7 ... [is] available through Claude in Amazon Bedrock
+	// (the Messages-API Bedrock endpoint)" - i.e. not Converse - and the exact
+	// inference-profile id depends on the caller's Bedrock entitlements.
+	t.Run("BedrockOpus47Tests", func(t *testing.T) {
+		t.Run("TestBedrockOpus47StructuredOutputRegression", func(t *testing.T) {
+			modelID := strings.TrimSpace(os.Getenv("BEDROCK_OPUS_47_MODEL_ID"))
+			if modelID == "" {
+				t.Skip("Skipping Bedrock Opus 4.7 repro because BEDROCK_OPUS_47_MODEL_ID is not set (e.g. 'anthropic.claude-opus-4-7' or the inference-profile id you have entitlements for)")
+			}
+			t.Logf("Running Opus 4.7 structured-output repro against Bedrock model id: %s", modelID)
+
+			// Mirror the user's failing Python snippet exactly:
+			//   - Anthropic SDK call with system as a structured array (text block
+			//     + cache_control: ephemeral)
+			//   - user content as an array of text blocks
+			//   - max_tokens: 4096
+			//   - output_config.format with json_schema and anyOf-style nullable
+			//     fields (`{"anyOf":[{"type":"string"},{"type":"null"}]}`)
+			//   - NO outer `anthropic-beta` HTTP header (the SDK does not auto-set
+			//     it for GA output_config; the existing llmtests scenarios DO set
+			//     it, which is why those scenarios pass on Opus 4.7 even today)
+			outputFormatJSON := json.RawMessage(`{
+				"type": "json_schema",
+				"schema": {
+					"type": "object",
+					"properties": {
+						"isNewTopic": {"type": "boolean"},
+						"title":      {"anyOf": [{"type": "string"}, {"type": "null"}]},
+						"result":     {"anyOf": [{"type": "number"}, {"type": "null"}]}
+					},
+					"required": ["isNewTopic", "title", "result"],
+					"additionalProperties": false
+				}
+			}`)
+
+			anthropicReq := &anthropic.AnthropicMessageRequest{
+				Model:     modelID,
+				MaxTokens: 4096,
+				System: &anthropic.AnthropicContent{
+					ContentBlocks: []anthropic.AnthropicContentBlock{
+						{
+							Type:         anthropic.AnthropicContentBlockTypeText,
+							Text:         schemas.Ptr("You are an AI assistant. Analyze the user's message and respond with structured JSON."),
+							CacheControl: &schemas.CacheControl{Type: "ephemeral"},
+						},
+					},
+				},
+				Messages: []anthropic.AnthropicMessage{
+					{
+						Role: anthropic.AnthropicMessageRoleUser,
+						Content: anthropic.AnthropicContent{
+							ContentBlocks: []anthropic.AnthropicContentBlock{
+								{
+									Type: anthropic.AnthropicContentBlockTypeText,
+									Text: schemas.Ptr("Hello, what's the result of 678*132?"),
+								},
+							},
+						},
+					},
+				},
+				OutputConfig: &anthropic.AnthropicOutputConfig{
+					Format: outputFormatJSON,
+				},
+			}
+
+			// Convert via the SAME entry point the HTTP integration uses
+			// (transports/bifrost-http/integrations/anthropic.go RequestConverter
+			// at lines 92-100 calls anthropicReq.ToBifrostResponsesRequest(ctx)).
+			reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bifrostReq := anthropicReq.ToBifrostResponsesRequest(reqCtx)
+			require.NotNil(t, bifrostReq, "ToBifrostResponsesRequest returned nil")
+			bifrostReq.Provider = schemas.Bedrock
+			bifrostReq.Model = modelID
+
+			// Send. NO BifrostContextKeyExtraHeaders — this is the key delta
+			// from llmtests.RunStructuredOutputResponsesTest (which sets
+			// `anthropic-beta: structured-outputs-2025-11-13` outer header
+			// at structured_outputs.go:411-418, masking the regression).
+			resp, bifrostErr := client.ResponsesRequest(reqCtx, bifrostReq)
+
+			if bifrostErr != nil {
+				// Repro hit. Surface the full error for the user to confirm
+				// it matches the reported "output_config.format: Extra inputs
+				// are not permitted" Bedrock validator response.
+				t.Fatalf("Bedrock Opus 4.7 structured-output request failed (this is the regression repro): %s", llmtests.GetErrorMessage(bifrostErr))
+			}
+			require.NotNil(t, resp, "expected non-nil response when error is nil")
+			t.Logf("Bedrock Opus 4.7 structured-output request SUCCEEDED. Response id=%v", resp.ID)
+		})
+	})
 }
 
 // TestBifrostToBedrockRequestConversion tests the conversion from Bifrost request to Bedrock request
@@ -432,11 +605,11 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "get_weather",
 								Description: schemas.Ptr("Get weather information"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
-										"type":       "object",
-										"properties": &props,
-										"required":   []string{"location"},
-									},
+									JSON: mustMarshalToolParams(&schemas.ToolFunctionParameters{
+										Type:       "object",
+										Properties: &props,
+										Required:   []string{"location"},
+									}),
 								},
 							},
 						},
@@ -596,14 +769,14 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
 									Name:      "hello",
-									Input:     map[string]interface{}{},
+									Input:     json.RawMessage("{}"),
 								},
 							},
 							{
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tooluse_eARDw2iqRXak8uyRC2KxXw",
 									Name:      "world",
-									Input:     map[string]interface{}{},
+									Input:     json.RawMessage("{}"),
 								},
 							},
 						},
@@ -643,10 +816,10 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "hello",
 								Description: schemas.Ptr("Tool extracted from conversation history"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
+									JSON: mustMarshalJSON(map[string]interface{}{
 										"type":       "object",
 										"properties": map[string]interface{}{},
-									},
+									}),
 								},
 							},
 						},
@@ -655,10 +828,10 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "world",
 								Description: schemas.Ptr("Tool extracted from conversation history"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
+									JSON: mustMarshalJSON(map[string]interface{}{
 										"type":       "object",
 										"properties": map[string]interface{}{},
-									},
+									}),
 								},
 							},
 						},
@@ -765,9 +938,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
 									Name:      "get_weather",
-									Input: map[string]any{
-										"location": "New York",
-									},
+									Input:     json.RawMessage(`{"location":"New York"}`),
 								},
 							},
 						},
@@ -780,12 +951,12 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
 									Content: []bedrock.BedrockContentBlock{
 										{
-											JSON: map[string]any{
+											JSON: mustMarshalJSON(map[string]any{
 												"results": []any{
 													any(map[string]any{"period": "now", "weather": "sunny"}),
 													any(map[string]any{"period": "next_1_hour", "weather": "cloudy"}),
 												},
-											},
+											}),
 										},
 									},
 									Status: schemas.Ptr("success"),
@@ -802,11 +973,11 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "get_weather",
 								Description: schemas.Ptr("Get weather information"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
-										"type":       "object",
-										"properties": &props,
-										"required":   []string{"location"},
-									},
+									JSON: mustMarshalToolParams(&schemas.ToolFunctionParameters{
+										Type:       "object",
+										Properties: &props,
+										Required:   []string{"location"},
+									}),
 								},
 							},
 						},
@@ -828,11 +999,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
-				if tt.name == "ParallelToolCalls" {
-					assertBedrockRequestEqual(t, tt.expected, actual)
-				} else {
-					assert.Equal(t, tt.expected, actual)
-				}
+				assertBedrockRequestEqual(t, tt.expected, actual)
 			}
 		})
 	}
@@ -846,6 +1013,22 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 	trace := testTrace
 	latency := testLatency
 	props := testProps
+	_ = props // used in input construction
+
+	// Build expected params via JSON round-trip so keyOrder and nested OrderedMap match
+	expectedParamsJSON := mustMarshalJSON(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"location": map[string]interface{}{
+				"type":        "string",
+				"description": "The city name",
+			},
+		},
+		"required": []string{"location"},
+	})
+	var expectedParams schemas.ToolFunctionParameters
+	_ = json.Unmarshal(expectedParamsJSON, &expectedParams)
+
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
@@ -1058,7 +1241,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								Name:        "get_weather",
 								Description: schemas.Ptr("Get weather information"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
+									JSON: mustMarshalJSON(map[string]interface{}{
 										"type": "object",
 										"properties": map[string]interface{}{
 											"location": map[string]interface{}{
@@ -1067,7 +1250,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 											},
 										},
 										"required": []string{"location"},
-									},
+									}),
 								},
 							},
 						},
@@ -1099,11 +1282,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 							Name:        schemas.Ptr("get_weather"),
 							Description: schemas.Ptr("Get weather information"),
 							ResponsesToolFunction: &schemas.ResponsesToolFunction{
-								Parameters: &schemas.ToolFunctionParameters{
-									Type:       "object",
-									Properties: &props,
-									Required:   []string{"location"},
-								},
+								Parameters: &expectedParams,
 							},
 						},
 					},
@@ -1201,9 +1380,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-123",
 									Name:      "get_weather",
-									Input: map[string]interface{}{
-										"location": "NYC",
-									},
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -1278,9 +1455,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-456",
 									Name:      "calculate",
-									Input: map[string]interface{}{
-										"expression": "2+2",
-									},
+									Input:     json.RawMessage(`{"expression":"2+2"}`),
 								},
 							},
 						},
@@ -1482,7 +1657,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     map[string]interface{}{"location": "NYC"},
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -1518,7 +1693,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     "invalid json {", // Should fallback to raw string
+									Input:     json.RawMessage("invalid json {"), // Should fallback to raw string
 								},
 							},
 						},
@@ -1554,7 +1729,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     map[string]interface{}{}, // Should default to empty map
+									Input:     json.RawMessage("{}"), // Should default to empty map
 								},
 							},
 						},
@@ -1712,10 +1887,10 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 									Status:    schemas.Ptr("success"),
 									Content: []bedrock.BedrockContentBlock{
 										{
-											JSON: map[string]interface{}{
+											JSON: mustMarshalJSON(map[string]interface{}{
 												"temperature": float64(72),
 												"location":    "NYC",
-											},
+											}),
 										},
 									},
 								},
@@ -1809,9 +1984,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "call-111",
 									Name:      "get_weather",
-									Input: map[string]interface{}{
-										"location": "NYC",
-									},
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 							{
@@ -1820,9 +1993,9 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 									Status:    schemas.Ptr("success"),
 									Content: []bedrock.BedrockContentBlock{
 										{
-											JSON: map[string]interface{}{
+											JSON: mustMarshalJSON(map[string]interface{}{
 												"temperature": float64(72),
-											},
+											}),
 										},
 									},
 								},
@@ -1863,7 +2036,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     map[string]interface{}{"location": "NYC"},
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -1919,9 +2092,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 	totalTokens := 30
 	toolUseID := "call-123"
 	toolName := "get_weather"
-	toolInput := map[string]interface{}{
-		"location": "NYC",
-	}
+	toolInput := json.RawMessage(`{"location":"NYC"}`)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
@@ -2042,7 +2213,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID:    &toolUseID,
 							Name:      &toolName,
-							Arguments: schemas.Ptr(schemas.JsonifyInput(toolInput)),
+							Arguments: schemas.Ptr(string(toolInput)),
 						},
 					},
 				},
@@ -2175,6 +2346,173 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
 }
 
+func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		)),
+		schemas.KV("required", []string{"topic"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+	require.NotNil(t, bedrockReq.AdditionalModelRequestFields, "expected additional model request fields for anthropic responses structured output")
+
+	outputConfigRaw, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config for anthropic responses structured output")
+
+	outputConfig, ok := schemas.SafeExtractOrderedMap(outputConfigRaw)
+	require.True(t, ok, "expected output_config to be an ordered map")
+
+	formatRaw, hasFormat := outputConfig.Get("format")
+	require.True(t, hasFormat, "expected output_config.format")
+
+	formatMap, ok := schemas.SafeExtractOrderedMap(formatRaw)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+
+	formatType, ok := formatMap.Get("type")
+	require.True(t, ok, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+
+	schemaRaw, ok := formatMap.Get("schema")
+	require.True(t, ok, "expected output_config.format.schema")
+	schemaMap, ok := schemas.SafeExtractOrderedMap(schemaRaw)
+	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+	require.NotNil(t, schemaMap)
+
+	if bedrockReq.ToolConfig != nil {
+		assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic responses structured output")
+		assert.Empty(t, bedrockReq.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic responses structured output")
+	}
+}
+
+func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		)),
+		schemas.KV("required", []string{"topic"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/amazon.nova-pro-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	if bedrockReq.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected no output_config for non-anthropic responses structured output")
+	}
+
+	require.NotNil(t, bedrockReq.ToolConfig, "expected tool_config for non-anthropic responses structured output")
+	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected synthetic structured output tool to be added")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected structured output tool choice to be forced")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected structured output tool choice to target the synthetic tool")
+	assert.Contains(t, bedrockReq.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool choice to target the synthetic structured output tool")
+}
+
+func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		)),
+		schemas.KV("required", []string{"topic"}),
+	))
+
+	toolParams := schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("city", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		),
+	}
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/amazon.nova-pro-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:        schemas.ResponsesToolTypeFunction,
+					Name:        schemas.Ptr("get_weather"),
+					Description: schemas.Ptr("Get weather information"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &toolParams,
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+	require.NotNil(t, bedrockReq.ToolConfig, "expected tool_config to be initialized")
+	require.Len(t, bedrockReq.ToolConfig.Tools, 2, "expected synthetic structured output tool plus user tool")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected structured output tool choice to be forced")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected structured output tool choice to target the synthetic tool")
+	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.Tools[0].ToolSpec.Name)
+	assert.Equal(t, "get_weather", bedrockReq.ToolConfig.Tools[1].ToolSpec.Name)
+}
+
 // TestToolResultJSONParsingResponsesAPI tests that tool results are correctly parsed and wrapped based on JSON type
 // Tests only Responses API.
 func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
@@ -2182,7 +2520,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 		name                string
 		toolResultContent   string
 		expectedContentType string // "text" or "json"
-		expectedJSON        map[string]any
+		expectedJSON        json.RawMessage
 		expectedText        *string
 	}{
 		{
@@ -2201,54 +2539,54 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			name:                "JSONObjectResult",
 			toolResultContent:   `{"location":"NYC","temperature":72}`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"location": "NYC", "temperature": float64(72)},
+			expectedJSON:        mustMarshalJSON(map[string]any{"location": "NYC", "temperature": float64(72)}),
 		},
 		{
 			name:                "JSONArrayResult",
 			toolResultContent:   `[{"period":"now","weather":"sunny"},{"period":"next_1_hour","weather":"cloudy"}]`,
 			expectedContentType: "json",
-			expectedJSON: map[string]any{
+			expectedJSON: mustMarshalJSON(map[string]any{
 				"results": []any{
 					map[string]any{"period": "now", "weather": "sunny"},
 					map[string]any{"period": "next_1_hour", "weather": "cloudy"},
 				},
-			},
+			}),
 		},
 		{
 			name:                "JSONPrimitiveNumberResult",
 			toolResultContent:   `42`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": float64(42)},
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": float64(42)}),
 		},
 		{
 			name:                "JSONPrimitiveStringResult",
 			toolResultContent:   `"hello world"`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": "hello world"},
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": "hello world"}),
 		},
 		{
 			name:                "JSONPrimitiveBooleanResult",
 			toolResultContent:   `true`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": true},
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": true}),
 		},
 		{
 			name:                "JSONPrimitiveNullResult",
 			toolResultContent:   `null`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": nil},
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": nil}),
 		},
 		{
 			name:                "EmptyJSONObjectResult",
 			toolResultContent:   `{}`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{},
+			expectedJSON:        mustMarshalJSON(map[string]any{}),
 		},
 		{
 			name:                "EmptyJSONArrayResult",
 			toolResultContent:   `[]`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"results": []any{}},
+			expectedJSON:        mustMarshalJSON(map[string]any{"results": []any{}}),
 		},
 	}
 
@@ -2267,7 +2605,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 				},
 			}
 
-			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
 			require.NoError(t, err)
 			require.Len(t, messages, 1)
 
@@ -2590,13 +2928,13 @@ func TestToolResultDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// tool call and result
-		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`, nil)
 		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("First result")}}
-		manager.RegisterToolResult("call-123", content1, "success")
+		manager.RegisterToolResult("call-123", content1, "success", nil)
 
 		// duplicate result with different content
 		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate result")}}
-		manager.RegisterToolResult("call-123", content2, "success")
+		manager.RegisterToolResult("call-123", content2, "success", nil)
 
 		// Deduplicated regardless of content. Practically same ID should not ever has diff content.
 		results := manager.GetPendingResults()
@@ -2609,19 +2947,19 @@ func TestToolResultDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// Register and emit a tool call
-		manager.RegisterToolCall("call-456", "calculate", `{"x":1,"y":2}`)
+		manager.RegisterToolCall("call-456", "calculate", `{"x":1,"y":2}`, nil)
 		callIDs := manager.EmitPendingToolCalls()
 		require.Len(t, callIDs, 1)
 		manager.MarkToolCallsEmitted(callIDs, 0)
 
 		// register and emit the result
 		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("3")}}
-		manager.RegisterToolResult("call-456", content1, "success")
+		manager.RegisterToolResult("call-456", content1, "success", nil)
 		manager.MarkResultsEmitted([]string{"call-456"})
 
 		// Register a duplicate
 		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate")}}
-		manager.RegisterToolResult("call-456", content2, "success")
+		manager.RegisterToolResult("call-456", content2, "success", nil)
 
 		// Not added due to it being duplicated with the emitted result
 		results := manager.GetPendingResults()
@@ -2632,20 +2970,20 @@ func TestToolResultDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// Register multiple tool calls
-		manager.RegisterToolCall("call-a", "tool_a", `{}`)
-		manager.RegisterToolCall("call-b", "tool_b", `{}`)
+		manager.RegisterToolCall("call-a", "tool_a", `{}`, nil)
+		manager.RegisterToolCall("call-b", "tool_b", `{}`, nil)
 
 		// Register results for both
 		contentA := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
 		contentB := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
-		manager.RegisterToolResult("call-a", contentA, "success")
-		manager.RegisterToolResult("call-b", contentB, "success")
+		manager.RegisterToolResult("call-a", contentA, "success", nil)
+		manager.RegisterToolResult("call-b", contentB, "success", nil)
 
 		// Try to register duplicates
 		contentADup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
 		contentBDup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
-		manager.RegisterToolResult("call-a", contentADup, "success")
-		manager.RegisterToolResult("call-b", contentBDup, "success")
+		manager.RegisterToolResult("call-a", contentADup, "success", nil)
+		manager.RegisterToolResult("call-b", contentBDup, "success", nil)
 
 		// Verify original results are preserved
 		results := manager.GetPendingResults()
@@ -2660,8 +2998,8 @@ func TestToolCallDeduplication(t *testing.T) {
 	t.Run("DuplicateToolCallIgnored", func(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
-		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
-		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`, nil)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`, nil)
 
 		// Deduplicated regardless of content.
 		callIDs := manager.EmitPendingToolCalls()
@@ -2673,14 +3011,14 @@ func TestToolCallDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// initial registration
-		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
-		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
-		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`, nil)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`, nil)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`, nil)
 
 		// duplications
-		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
-		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
-		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`, nil)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`, nil)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`, nil)
 
 		// no duplicates
 		callIDs := manager.EmitPendingToolCalls()
@@ -2694,13 +3032,13 @@ func TestToolCallDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// register and emit a tool call
-		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`, nil)
 		callIDs := manager.EmitPendingToolCalls()
 		require.Len(t, callIDs, 1)
 		manager.MarkToolCallsEmitted(callIDs, 0)
 
 		// register the same tool call again after emission
-		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`, nil)
 
 		// duplicate was rejected
 		newCallIDs := manager.EmitPendingToolCalls()
@@ -2838,6 +3176,536 @@ func TestAnthropicReasoningConfigUsesThinkingField(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAnthropicOrderedOutputConfigRoundTripsReasoning(t *testing.T) {
+	request := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-opus-4-6-v1",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						Text: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+		AdditionalModelRequestFields: schemas.NewOrderedMapFromPairs(
+			schemas.KV("thinking", map[string]any{
+				"type":          "adaptive",
+				"budget_tokens": 2048,
+			}),
+			schemas.KV("output_config", schemas.NewOrderedMapFromPairs(
+				schemas.KV("effort", "medium"),
+			)),
+		),
+		ExtraParams: map[string]any{
+			"reasoning_summary": "auto",
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := request.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Params)
+	require.NotNil(t, result.Params.Reasoning)
+	require.NotNil(t, result.Params.Reasoning.Effort)
+	assert.Equal(t, "medium", *result.Params.Reasoning.Effort)
+	require.NotNil(t, result.Params.Reasoning.MaxTokens)
+	assert.Equal(t, 2048, *result.Params.Reasoning.MaxTokens)
+	require.NotNil(t, result.Params.Reasoning.Summary)
+	assert.Equal(t, "auto", *result.Params.Reasoning.Summary)
+}
+
+func TestAnthropicOutputConfigFormatStillFallsBackToBudgetTokensForReasoning(t *testing.T) {
+	request := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-opus-4-6-v1",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						Text: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+		AdditionalModelRequestFields: schemas.NewOrderedMapFromPairs(
+			schemas.KV("thinking", map[string]any{
+				"type":          "adaptive",
+				"budget_tokens": 2048,
+			}),
+			schemas.KV("output_config", schemas.NewOrderedMapFromPairs(
+				schemas.KV("format", schemas.NewOrderedMapFromPairs(
+					schemas.KV("type", "json_schema"),
+					schemas.KV("schema", schemas.NewOrderedMapFromPairs(
+						schemas.KV("type", "object"),
+					)),
+				)),
+			)),
+		),
+		ExtraParams: map[string]any{
+			"reasoning_summary": "auto",
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := request.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Params)
+	require.NotNil(t, result.Params.Reasoning)
+	require.NotNil(t, result.Params.Reasoning.Effort)
+	// Effort is inferred from budget_tokens (2048) against the model-specific max output tokens
+	// (128K for claude-opus-4-6) minus Anthropic's minimum reasoning budget (1024). That ratio
+	// (~0.008) falls in the "low" bucket — see providerUtils.GetReasoningEffortFromBudgetTokens.
+	assert.Equal(t, "low", *result.Params.Reasoning.Effort)
+	require.NotNil(t, result.Params.Reasoning.MaxTokens)
+	assert.Equal(t, 2048, *result.Params.Reasoning.MaxTokens)
+	require.NotNil(t, result.Params.Reasoning.Summary)
+	assert.Equal(t, "auto", *result.Params.Reasoning.Summary)
+}
+
+// TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice ensures
+// Anthropic Bedrock structured output uses native output_config.format and does
+// not synthesize a forced tool choice, while keeping reasoning (thinking) active.
+func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "classification",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"topic": map[string]any{
+						"type": "string",
+					},
+				},
+				"required": []any{"topic"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-7-sonnet-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Reasoning: &schemas.ChatReasoning{
+				MaxTokens: schemas.Ptr(2048),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
+
+	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config to be an ordered map")
+
+	formatRaw, hasFormat := outputConfig.Get("format")
+	require.True(t, hasFormat, "expected output_config.format")
+
+	format, ok := formatRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+	formatType, hasType := format.Get("type")
+	require.True(t, hasType, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+	_, hasSchema := format.Get("schema")
+	assert.True(t, hasSchema, "expected output_config.format.schema")
+
+	// reasoning should still be preserved for anthropic
+	thinkingRaw, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
+	require.True(t, hasThinking, "expected thinking field for anthropic reasoning")
+	thinking, ok := thinkingRaw.(map[string]any)
+	require.True(t, ok, "expected thinking to be a map")
+	assert.Equal(t, "enabled", thinking["type"])
+
+	// structured output should NOT force tool choice on Bedrock anthropic
+	if result.ToolConfig != nil {
+		assert.Nil(t, result.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic structured output")
+		assert.Empty(t, result.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic structured output")
+	}
+}
+
+func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
+	responseFormat := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("json_schema", schemas.NewOrderedMapFromPairs(
+			schemas.KV("name", "classification"),
+			schemas.KV("schema", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("description", "Return structured classification"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+					schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+						schemas.KV("type", "string"),
+					)),
+				)),
+				schemas.KV("required", []any{"topic"}),
+			)),
+		)),
+	))
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-7-sonnet-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Reasoning: &schemas.ChatReasoning{
+				MaxTokens: schemas.Ptr(2048),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
+
+	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config to be an ordered map")
+
+	formatRaw, hasFormat := outputConfig.Get("format")
+	require.True(t, hasFormat, "expected output_config.format")
+
+	format, ok := formatRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+
+	formatType, ok := format.Get("type")
+	require.True(t, ok, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+
+	schemaRaw, ok := format.Get("schema")
+	require.True(t, ok, "expected output_config.format.schema")
+	_, ok = schemaRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+}
+
+// betaListContains reports whether the OrderedMap's anthropic_beta entry
+// (regardless of slice element type) contains the given header value.
+// Mirrors the multiple shapes appendAnthropicBetaToFields can leave behind
+// (string, []string, []interface{}) so each test covers all three.
+func betaListContains(t *testing.T, fields *schemas.OrderedMap, header string) bool {
+	t.Helper()
+	if fields == nil {
+		return false
+	}
+	raw, ok := fields.Get("anthropic_beta")
+	if !ok {
+		return false
+	}
+	switch v := raw.(type) {
+	case string:
+		return v == header
+	case []string:
+		for _, s := range v {
+			if s == header {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s == header {
+				return true
+			}
+		}
+	default:
+		t.Logf("unexpected anthropic_beta type %T: %#v", v, v)
+	}
+	return false
+}
+
+// TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool locks in Route A:
+// Bedrock + Anthropic + json_schema response_format routes through the
+// synthetic `bf_so_*` tool path (same as non-Anthropic Bedrock providers),
+// not Bedrock's native `output_config.format`. Bedrock Converse's support for
+// `output_config.format` is inconsistent across Claude variants (Opus 4.7
+// rejects with "output_config.format: Extra inputs are not permitted"); the
+// synthetic-tool path is a regular Converse tool call that all variants
+// accept reliably.
+func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "classification",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"isNewTopic": map[string]any{"type": "boolean"},
+					"title":      map[string]any{"type": "string"},
+					"result":     map[string]any{"type": "number"},
+				},
+				"required": []any{"isNewTopic", "title", "result"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-opus-4-7-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Hello, what's the result of 678*132?"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Negative: no `output_config` and no structured-outputs beta tunnel
+	// in additionalModelRequestFields. PR #3053 added both; Route A removes them.
+	if result.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
+		assert.False(
+			t,
+			betaListContains(t, result.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
+			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
+		)
+	}
+
+	// Positive: synthetic bf_so_* tool present and forced via tool_choice —
+	// this is the contract that replaces output_config.format on Bedrock.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, result.ToolConfig.ToolChoice, "expected forced tool_choice")
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
+	assert.Contains(t, result.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
+	assert.Equal(t, "bf_so_classification", result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+// TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool
+// is the responses-path twin of TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool.
+// The user's failing request comes through the Anthropic Messages SDK
+// (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
+// -> ToBedrockResponsesRequest with Params.Text.Format set.
+func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
+			schemas.KV("title", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
+		)),
+		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "anthropic.claude-opus-4-7-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Negative: no output_config, no structured-outputs beta tunnel.
+	if bedrockReq.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
+		assert.False(
+			t,
+			betaListContains(t, bedrockReq.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
+			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
+		)
+	}
+
+	// Positive: synthetic bf_so_* tool injected and forced.
+	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected forced tool_choice")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
+	assert.Contains(t, bedrockReq.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
+	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+}
+
+// TestNonAnthropicStructuredOutputStillUsesToolConversion ensures Bedrock models
+// other than Anthropic continue to use the legacy response_format->tool path.
+func TestNonAnthropicStructuredOutputStillUsesToolConversion(t *testing.T) {
+	responseFormat := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("json_schema", schemas.NewOrderedMapFromPairs(
+			schemas.KV("name", "classification"),
+			schemas.KV("schema", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("description", "Return structured classification"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+					schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+						schemas.KV("type", "string"),
+					)),
+				)),
+				schemas.KV("required", []any{"topic"}),
+			)),
+		)),
+	))
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "amazon.nova-pro-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Non-Anthropic models should not use output_config.format.
+	if result.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected no output_config for non-anthropic structured output")
+	}
+
+	require.NotNil(t, result.ToolConfig, "expected tool_config for non-anthropic structured output")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected synthetic structured output tool to be added")
+	require.NotNil(t, result.ToolConfig.ToolChoice, "expected structured output tool choice to be forced")
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected structured output tool choice to target the synthetic tool")
+	assert.Equal(t, "bf_so_classification", result.ToolConfig.ToolChoice.Tool.Name)
+	assert.Equal(t, "bf_so_classification", result.ToolConfig.Tools[0].ToolSpec.Name)
+
+	schemaRaw := result.ToolConfig.Tools[0].ToolSpec.InputSchema.JSON
+	var schema schemas.OrderedMap
+	require.NoError(t, schema.UnmarshalJSON(schemaRaw))
+	schemaType, ok := schema.Get("type")
+	require.True(t, ok, "expected tool schema type")
+	assert.Equal(t, "object", schemaType)
+}
+
+// TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths ensures
+// additionalModelRequestFieldPaths are merged into existing AdditionalModelRequestFields
+// and output_config is deep-merged instead of overwritten.
+func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "classification",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"topic": map[string]any{
+						"type": "string",
+					},
+				},
+				"required": []any{"topic"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-7-sonnet-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Reasoning: &schemas.ChatReasoning{
+				MaxTokens: schemas.Ptr(2048),
+			},
+			ExtraParams: map[string]any{
+				"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(
+					schemas.KV("output_config", map[string]any{
+						"foo": "bar",
+					}),
+					schemas.KV("customField", "customValue"),
+				),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config to exist after merge")
+	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config to be an ordered map")
+
+	// Existing structured output format must be preserved.
+	formatRaw, hasFormat := outputConfig.Get("format")
+	require.True(t, hasFormat, "expected output_config.format to be preserved")
+	format, ok := formatRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+	formatType, hasType := format.Get("type")
+	require.True(t, hasType, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+	_, hasSchema := format.Get("schema")
+	assert.True(t, hasSchema, "expected output_config.format.schema")
+
+	// Incoming additionalModelRequestFieldPaths.output_config key must be merged.
+	foo, hasFoo := outputConfig.Get("foo")
+	require.True(t, hasFoo, "expected output_config.foo to be preserved")
+	assert.Equal(t, "bar", foo)
+
+	// Existing top-level field (thinking) must not be lost.
+	_, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
+	assert.True(t, hasThinking, "expected thinking to be preserved")
+
+	// Incoming top-level keys must be merged.
+	customField, hasCustomField := result.AdditionalModelRequestFields.Get("customField")
+	require.True(t, hasCustomField, "expected customField to be merged")
+	assert.Equal(t, "customValue", customField)
 }
 
 // TestNovaReasoningConfigUsesReasoningConfigField verifies that Nova models use
@@ -3462,4 +4330,572 @@ func TestDocumentFormatResponseMapping(t *testing.T) {
 				"Bedrock format %q should map to MIME type %q", tt.bedrockFormat, tt.expectedMimeType)
 		})
 	}
+}
+
+// TestBedrockToolInputKeyOrderPreservation verifies that multiple parallel tool calls
+// preserve the client's original key ordering after conversion to Bedrock format.
+func TestBedrockToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-sonnet",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_001"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references quickly","timeout":30000,"command":"grep -r auth_injector ."}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_002"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff of commits"}`,
+							},
+						},
+						{
+							Index: 2,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_003"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git log main..HEAD","description":"Show commits in branch"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+
+	// Collect all tool use content blocks from assistant messages
+	var toolUseInputs []interface{}
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content {
+			if block.ToolUse != nil {
+				toolUseInputs = append(toolUseInputs, block.ToolUse.Input)
+			}
+		}
+	}
+
+	require.Len(t, toolUseInputs, 3, "expected 3 tool use blocks")
+
+	// Block 0: keys should be description, timeout, command (NOT alphabetical)
+	json0, _ := json.Marshal(toolUseInputs[0])
+	s0 := string(json0)
+	descIdx0 := strings.Index(s0, `"description"`)
+	timeIdx0 := strings.Index(s0, `"timeout"`)
+	cmdIdx0 := strings.Index(s0, `"command"`)
+	if descIdx0 < 0 || timeIdx0 < 0 || cmdIdx0 < 0 {
+		t.Fatalf("block 0: missing expected key(s) in: %s", s0)
+	}
+	assert.True(t, descIdx0 < timeIdx0 && timeIdx0 < cmdIdx0,
+		"block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+
+	// Block 1: keys should be command, description (NOT alphabetical)
+	json1, _ := json.Marshal(toolUseInputs[1])
+	s1 := string(json1)
+	cmdIdx1 := strings.Index(s1, `"command"`)
+	descIdx1 := strings.Index(s1, `"description"`)
+	if cmdIdx1 < 0 || descIdx1 < 0 {
+		t.Fatalf("block 1: missing expected key(s) in: %s", s1)
+	}
+	assert.True(t, cmdIdx1 < descIdx1,
+		"block 1: key order not preserved, expected command < description in: %s", s1)
+
+	// Block 2: keys should be command, description
+	json2, _ := json.Marshal(toolUseInputs[2])
+	s2 := string(json2)
+	cmdIdx2 := strings.Index(s2, `"command"`)
+	descIdx2 := strings.Index(s2, `"description"`)
+	if cmdIdx2 < 0 || descIdx2 < 0 {
+		t.Fatalf("block 2: missing expected key(s) in: %s", s2)
+	}
+	assert.True(t, cmdIdx2 < descIdx2,
+		"block 2: key order not preserved, expected command < description in: %s", s2)
+}
+
+// TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop verifies that
+// ContentPartDone does not emit a content_block_stop event (only OutputItemDone does),
+// preventing duplicate content_block_stop events in the stream. (Issue #2293)
+func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *testing.T) {
+	ctx := &schemas.BifrostContext{}
+	contentIdx := 0
+	model := "anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+	// Simulate the sequence FinalizeBedrockStream emits for a text block:
+	// 1. OutputTextDone  — should be skipped
+	// 2. ContentPartDone — should be skipped (was previously emitting content_block_stop)
+	// 3. OutputItemDone  — should emit content_block_stop
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{
+			Type:         schemas.ResponsesStreamResponseTypeOutputTextDone,
+			ContentIndex: &contentIdx,
+			ExtraFields:  schemas.BifrostResponseExtraFields{OriginalModelRequested: model},
+		},
+		{
+			Type:         schemas.ResponsesStreamResponseTypeContentPartDone,
+			ContentIndex: &contentIdx,
+			ExtraFields:  schemas.BifrostResponseExtraFields{OriginalModelRequested: model},
+		},
+		{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			ContentIndex: &contentIdx,
+			ExtraFields:  schemas.BifrostResponseExtraFields{OriginalModelRequested: model},
+		},
+	}
+
+	type bedrockChunk struct {
+		InvokeModelRawChunks [][]byte `json:"invokeModelRawChunks"`
+	}
+
+	var stopCount int
+	for _, ev := range events {
+		_, result, err := bedrock.ToBedrockInvokeMessagesStreamResponse(ctx, ev)
+		require.NoError(t, err)
+		if result == nil {
+			continue
+		}
+		raw, err := json.Marshal(result)
+		require.NoError(t, err)
+		var chunk bedrockChunk
+		require.NoError(t, json.Unmarshal(raw, &chunk))
+		for _, rawChunk := range chunk.InvokeModelRawChunks {
+			if strings.Contains(string(rawChunk), "content_block_stop") {
+				stopCount++
+			}
+		}
+	}
+
+	assert.Equal(t, 1, stopCount, "expected exactly one content_block_stop event, got %d", stopCount)
+}
+
+func TestToolResultImageContentResponsesAPI(t *testing.T) {
+	// Minimal 1x1 red PNG
+	pngBase64 := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
+	t.Run("ImageBlockPreservedInToolResult", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("tooluse_screenshot_001"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: schemas.Ptr("data:image/png;base64," + pngBase64),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
+		require.NoError(t, err)
+		require.Len(t, messages, 1)
+
+		toolResultMsg := messages[0]
+		assert.Equal(t, bedrock.BedrockMessageRoleUser, toolResultMsg.Role)
+		require.Len(t, toolResultMsg.Content, 1)
+
+		toolResult := toolResultMsg.Content[0].ToolResult
+		require.NotNil(t, toolResult, "expected tool result in content block")
+		assert.Equal(t, "tooluse_screenshot_001", toolResult.ToolUseID)
+		require.Len(t, toolResult.Content, 1, "tool result should contain exactly one content block")
+
+		imageBlock := toolResult.Content[0]
+		require.NotNil(t, imageBlock.Image, "tool result content should be an image")
+		assert.Equal(t, "png", imageBlock.Image.Format)
+		require.NotNil(t, imageBlock.Image.Source.Bytes)
+		assert.Equal(t, pngBase64, *imageBlock.Image.Source.Bytes)
+	})
+
+	t.Run("MixedTextAndImageBlocksPreserved", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("tooluse_mixed_002"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesOutputMessageContentTypeText,
+								Text: schemas.Ptr("Screenshot captured successfully"),
+							},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: schemas.Ptr("data:image/png;base64," + pngBase64),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
+		require.NoError(t, err)
+		require.Len(t, messages, 1)
+
+		toolResult := messages[0].Content[0].ToolResult
+		require.NotNil(t, toolResult)
+		require.Len(t, toolResult.Content, 2, "both text and image blocks should be preserved")
+
+		assert.NotNil(t, toolResult.Content[0].Text, "first block should be text")
+		assert.NotNil(t, toolResult.Content[1].Image, "second block should be image")
+		assert.Equal(t, "png", toolResult.Content[1].Image.Format)
+	})
+
+	t.Run("RemoteURLImageGracefullyDropped", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("tooluse_remote_003"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: schemas.Ptr("https://example.com/screenshot.png"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input)
+		require.NoError(t, err)
+		require.Len(t, messages, 1)
+
+		toolResult := messages[0].Content[0].ToolResult
+		require.NotNil(t, toolResult)
+		assert.Empty(t, toolResult.Content, "remote URL image should be dropped (Bedrock only supports base64)")
+	})
+}
+
+// TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice locks in the
+// per-model gate for Meta Llama on Bedrock. Bedrock Converse rejects
+// `toolConfig.toolChoice.tool` on Llama variants with HTTP 400
+// ("This model doesn't support the toolConfig.toolChoice.tool field. Remove
+// toolConfig.toolChoice.tool and try again."). The synthetic `bf_so_*` tool
+// is still injected — Llama receives a single tool to call — but no forced
+// tool_choice is emitted. With one tool bound and Bedrock's default "auto"
+// behavior, the structured-output contract is preserved (the model has
+// exactly one tool it can call, so "any" and "the named one" converge).
+//
+// See per-model support matrix at
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+// and the langchain-aws ChatBedrockConverse implementation
+// (`supports_tool_choice_values`) for prior art that ships the same gate.
+func TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "PlannerOutput",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"intent": map[string]any{"type": "string"},
+				},
+				"required": []any{"intent"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("classify this message"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Positive: synthetic bf_so_* tool still injected so the model has the
+	// schema available to call.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec, "expected ToolSpec on synthetic tool")
+	assert.Contains(t, result.ToolConfig.Tools[0].ToolSpec.Name, "bf_so_", "expected synthetic bf_so_* tool to be present")
+	assert.Equal(t, "bf_so_PlannerOutput", result.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// Negative: NO forced tool_choice on Llama. With one tool bound, Bedrock's
+	// default "auto" produces equivalent behavior without triggering the
+	// 400 ValidationException.
+	assert.Nil(t, result.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestBedrockNonLlamaChatStructuredOutputForcesToolChoice is the regression
+// guard for the non-Llama side of the gate added in
+// TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice. Non-Llama models
+// (Anthropic, Nova, etc.) MUST continue to receive the forced tool_choice
+// pinning the synthetic bf_so_* tool — that's the contract that makes
+// structured output reliable on those families.
+func TestBedrockNonLlamaChatStructuredOutputForcesToolChoice(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "PlannerOutput",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"intent": map[string]any{"type": "string"},
+				},
+				"required": []any{"intent"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "us.amazon.nova-pro-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("classify this message"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool")
+	require.NotNil(t, result.ToolConfig.ToolChoice, "expected forced tool_choice on non-Llama models")
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
+	assert.Equal(t, "bf_so_PlannerOutput", result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+// TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice
+// is the responses-path twin of
+// TestBedrockLlamaChatStructuredOutputOmitsForcedToolChoice. The OpenAI
+// Responses API surface routes structured output via Params.Text.Format
+// rather than Params.ResponseFormat, but lands at the same Bedrock Converse
+// constraint: toolChoice.tool is rejected on Llama.
+func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("intent", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+		)),
+		schemas.KV("required", []string{"intent"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("PlannerOutput"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Positive: synthetic bf_so_* tool still injected.
+	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
+	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
+	require.NotNil(t, bedrockReq.ToolConfig.Tools[0].ToolSpec, "expected ToolSpec on synthetic tool")
+	assert.Contains(t, bedrockReq.ToolConfig.Tools[0].ToolSpec.Name, "bf_so_", "expected synthetic bf_so_* tool to be present")
+
+	// Negative: no forced tool_choice on Llama for the Responses API path either.
+	assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestBedrockLlamaConvertToolConfigOmitsForcedToolChoice exercises the
+// defense-in-depth gate at the bind_tools entry point. Callers that pass an
+// explicit `tool_choice = {"type": "function", "function": {"name": "X"}}`
+// (the OpenAI SDK shape; emitted by some LangChain bind_tools callers) hit
+// `convertToolChoice` -> `BedrockToolChoice{Tool: ...}` rather than the
+// synthetic-tool path. The same Llama 400 applies, and the same gate
+// applies: drop the forced specific-tool pin and let the model "auto"
+// choose from the bound tool list.
+func TestBedrockLlamaConvertToolConfigOmitsForcedToolChoice(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("classify this message"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "PlannerOutput",
+						Description: schemas.Ptr("Return the planner output as JSON"),
+					},
+				},
+			},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type: schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{
+						Name: "PlannerOutput",
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Positive: tools list survives intact.
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+	require.NotNil(t, result.ToolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "PlannerOutput", result.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// Negative: forced specific-tool selection dropped on Llama.
+	assert.Nil(t, result.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestToBedrockResponsesRequest_LlamaConvertResponsesToolChoiceOmitsForcedToolChoice
+// is the responses-path twin of
+// TestBedrockLlamaConvertToolConfigOmitsForcedToolChoice. The Responses API
+// surface routes explicit tool_choice through
+// `convertResponsesToolChoice`, which yields `BedrockToolChoice{Tool: ...}`
+// for `{"type": "function", "name": "X"}`. The same Llama 400 applies, and
+// the same gate must apply: drop the forced specific-tool pin so the request
+// passes Bedrock's per-model toolChoice support matrix.
+func TestToBedrockResponsesRequest_LlamaConvertResponsesToolChoiceOmitsForcedToolChoice(t *testing.T) {
+	toolName := "PlannerOutput"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: &toolName,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{
+							Type:       "object",
+							Properties: &schemas.OrderedMap{},
+						},
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: &toolName,
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Positive: explicit tools list still present.
+	require.NotNil(t, bedrockReq.ToolConfig)
+	require.Len(t, bedrockReq.ToolConfig.Tools, 1)
+	require.NotNil(t, bedrockReq.ToolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, toolName, bedrockReq.ToolConfig.Tools[0].ToolSpec.Name)
+
+	// Negative: forced specific-tool selection dropped on Llama.
+	assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected NO forced tool_choice on Llama (Bedrock Converse rejects toolChoice.tool)")
+}
+
+// TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolChoice
+// is the regression guard for the Llama gate above: Nova / Anthropic must
+// still receive the explicit forced tool_choice when callers ask for it on
+// the Responses API path.
+func TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolChoice(t *testing.T) {
+	toolName := "PlannerOutput"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: &toolName,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{
+							Type:       "object",
+							Properties: &schemas.OrderedMap{},
+						},
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: &toolName,
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	// Anthropic / Nova still get the forced specific-tool selection — the
+	// Llama gate must not over-fire on supported model families.
+	require.NotNil(t, bedrockReq.ToolConfig)
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice)
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected forced tool_choice for non-Llama models")
+	assert.Equal(t, toolName, bedrockReq.ToolConfig.ToolChoice.Tool.Name)
 }

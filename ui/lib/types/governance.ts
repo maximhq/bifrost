@@ -1,6 +1,6 @@
 // Governance types that match the Go backend structures
 
-import { ModelProviderName } from "./config";
+import { ModelProviderName, RequestType } from "./config";
 
 export interface Budget {
 	id: string;
@@ -8,6 +8,7 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	calendar_aligned?: boolean; // When true, resets at clean calendar boundaries (day/week/month/year start)
 }
 
 export interface RateLimit {
@@ -28,11 +29,10 @@ export interface Team {
 	id: string;
 	name: string;
 	customer_id?: string;
-	budget_id?: string;
 	rate_limit_id?: string;
 	// Populated relationships
 	customer?: Customer;
-	budget?: Budget;
+	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
 	rate_limit?: RateLimit;
 }
 
@@ -71,27 +71,31 @@ export interface VirtualKey {
 	mcp_configs?: VirtualKeyMCPConfig[];
 	team_id?: string;
 	customer_id?: string;
-	budget_id?: string;
 	rate_limit_id?: string;
 	is_active: boolean;
+	calendar_aligned?: boolean;
 	created_at: string;
 	updated_at: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
-	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
+// Provider config budgets don't have calendar_aligned (it's a VK-level field)
+export type ProviderConfigBudget = Omit<Budget, "calendar_aligned">;
+
 export interface VirtualKeyProviderConfig {
 	id?: number;
 	provider: string;
-	weight: number;
+	weight: number | null;
 	allowed_models: string[];
-	budget?: Budget;
+	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
+	budgets?: ProviderConfigBudget[];
 	rate_limit?: RateLimit;
-	keys?: DBKey[]; // Associated database keys for this provider
+	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
 
 export interface VirtualKeyMCPConfig {
@@ -130,9 +134,9 @@ export interface UsageStats {
 // Request interfaces for provider config operations
 export interface VirtualKeyProviderConfigRequest {
 	provider: string;
-	weight?: number;
+	weight?: number | null;
 	allowed_models?: string[];
-	budget?: CreateBudgetRequest;
+	budgets?: ProviderConfigBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -140,12 +144,15 @@ export interface VirtualKeyProviderConfigRequest {
 export interface VirtualKeyProviderConfigUpdateRequest {
 	id?: number;
 	provider: string;
-	weight?: number;
+	weight?: number | null;
 	allowed_models?: string[];
-	budget?: UpdateBudgetRequest;
+	budgets?: ProviderConfigBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
+
+// VK-level budgets don't include calendar_aligned (it's a VK-level field, not per-budget)
+export type VirtualKeyBudgetRequest = Omit<CreateBudgetRequest, "calendar_aligned">;
 
 // Request types for API calls
 export interface CreateVirtualKeyRequest {
@@ -155,9 +162,10 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	budget?: CreateBudgetRequest;
+	budgets?: VirtualKeyBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -167,22 +175,23 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: VirtualKeyBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
+	calendar_aligned?: boolean;
 }
 
 export interface CreateTeamRequest {
 	name: string;
 	customer_id?: string;
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Multi-budget: each must have a unique reset_duration
 	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateTeamRequest {
 	name?: string;
 	customer_id?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
 }
 
@@ -201,11 +210,16 @@ export interface UpdateCustomerRequest {
 export interface CreateBudgetRequest {
 	max_limit: number; // In dollars
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	calendar_aligned?: boolean; // Snap resets to calendar boundaries (day/week/month/year)
 }
+
+// Provider config budget requests don't include calendar_aligned (it's a VK-level field)
+export type ProviderConfigBudgetRequest = Omit<CreateBudgetRequest, "calendar_aligned">;
 
 export interface UpdateBudgetRequest {
 	max_limit?: number;
 	reset_duration?: string;
+	calendar_aligned?: boolean; // When switching to true, current usage is reset to 0
 }
 
 export interface CreateRateLimitRequest {
@@ -228,20 +242,55 @@ export interface ResetUsageRequest {
 	model?: string;
 }
 
+// Query params
+export interface GetVirtualKeysParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+	customer_id?: string;
+	team_id?: string;
+	exclude_access_profile_managed_virtual?: boolean;
+	sort_by?: "name" | "budget_spent" | "created_at" | "status";
+	order?: "asc" | "desc";
+	export?: boolean;
+}
+
 // Response types
 export interface GetVirtualKeysResponse {
 	virtual_keys: VirtualKey[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
+export interface GetTeamsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+	customer_id?: string;
 }
 
 export interface GetTeamsResponse {
 	teams: Team[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
+export interface GetCustomersParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
 }
 
 export interface GetCustomersResponse {
 	customers: Customer[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 export interface GetBudgetsResponse {
@@ -315,10 +364,149 @@ export interface UpdateModelConfigRequest {
 	rate_limit?: UpdateRateLimitRequest;
 }
 
+export interface GetModelConfigsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+}
+
 // Response types for model configs
 export interface GetModelConfigsResponse {
 	model_configs: ModelConfig[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
+export type PricingOverrideScopeKind =
+	| "global"
+	| "provider"
+	| "provider_key"
+	| "virtual_key"
+	| "virtual_key_provider"
+	| "virtual_key_provider_key";
+export type PricingOverrideMatchType = "exact" | "wildcard";
+
+export interface PricingOverridePatch {
+	// Token
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	input_cost_per_token_batches?: number;
+	output_cost_per_token_batches?: number;
+	input_cost_per_token_priority?: number;
+	output_cost_per_token_priority?: number;
+	input_cost_per_token_flex?: number;
+	output_cost_per_token_flex?: number;
+	input_cost_per_character?: number;
+	// 128k tier
+	input_cost_per_token_above_128k_tokens?: number;
+	output_cost_per_token_above_128k_tokens?: number;
+	input_cost_per_image_above_128k_tokens?: number;
+	input_cost_per_video_per_second_above_128k_tokens?: number;
+	input_cost_per_audio_per_second_above_128k_tokens?: number;
+	// 200k tier
+	input_cost_per_token_above_200k_tokens?: number;
+	input_cost_per_token_above_200k_tokens_priority?: number;
+	output_cost_per_token_above_200k_tokens?: number;
+	output_cost_per_token_above_200k_tokens_priority?: number;
+	// 272k tier
+	input_cost_per_token_above_272k_tokens?: number;
+	input_cost_per_token_above_272k_tokens_priority?: number;
+	output_cost_per_token_above_272k_tokens?: number;
+	output_cost_per_token_above_272k_tokens_priority?: number;
+	// Cache
+	cache_creation_input_token_cost?: number;
+	cache_read_input_token_cost?: number;
+	cache_creation_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost_above_200k_tokens_priority?: number;
+	cache_creation_input_token_cost_above_1hr?: number;
+	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
+	cache_creation_input_audio_token_cost?: number;
+	cache_read_input_token_cost_priority?: number;
+	cache_read_input_token_cost_flex?: number;
+	cache_read_input_image_token_cost?: number;
+	cache_read_input_token_cost_above_272k_tokens?: number;
+	cache_read_input_token_cost_above_272k_tokens_priority?: number;
+	// Image
+	input_cost_per_image_token?: number;
+	output_cost_per_image_token?: number;
+	input_cost_per_image?: number;
+	input_cost_per_pixel?: number;
+	output_cost_per_image?: number;
+	output_cost_per_pixel?: number;
+	output_cost_per_image_premium_image?: number;
+	output_cost_per_image_above_512_and_512_pixels?: number;
+	output_cost_per_image_above_512_and_512_pixels_and_premium_image?: number;
+	output_cost_per_image_above_1024_and_1024_pixels?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
+	output_cost_per_image_low_quality?: number;
+	output_cost_per_image_medium_quality?: number;
+	output_cost_per_image_high_quality?: number;
+	output_cost_per_image_auto_quality?: number;
+	// Audio/Video
+	input_cost_per_audio_token?: number;
+	input_cost_per_audio_per_second?: number;
+	input_cost_per_second?: number;
+	input_cost_per_video_per_second?: number;
+	output_cost_per_audio_token?: number;
+	output_cost_per_video_per_second?: number;
+	output_cost_per_second?: number;
+	// Other
+	search_context_cost_per_query?: number;
+	code_interpreter_cost_per_session?: number;
+	// OCR
+	ocr_cost_per_page?: number;
+	annotation_cost_per_page?: number;
+}
+
+export interface PricingOverride {
+	id: string;
+	name: string;
+	scope_kind: PricingOverrideScopeKind;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type: PricingOverrideMatchType;
+	pattern: string;
+	request_types?: RequestType[];
+	pricing_patch: string;
+	config_hash?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CreatePricingOverrideRequest {
+	name: string;
+	scope_kind: PricingOverrideScopeKind;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type: PricingOverrideMatchType;
+	pattern: string;
+	request_types: RequestType[];
+	patch?: PricingOverridePatch;
+}
+
+export interface UpdatePricingOverrideRequest {
+	name?: string;
+	scope_kind?: PricingOverrideScopeKind;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type?: PricingOverrideMatchType;
+	pattern?: string;
+	request_types?: string[];
+	patch?: PricingOverridePatch;
+}
+
+export interface GetPricingOverridesResponse {
+	pricing_overrides: PricingOverride[];
+	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 // Provider governance - for extending provider with budget/rate limit

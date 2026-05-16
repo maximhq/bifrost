@@ -408,6 +408,11 @@ func TestEnvVar_IsRedacted(t *testing.T) {
 			input:    EnvVar{Val: "sk-test-key"},
 			expected: false,
 		},
+		{
+			name:     "uppercase redacted sentinel",
+			input:    EnvVar{Val: "<REDACTED>"},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -419,3 +424,55 @@ func TestEnvVar_IsRedacted(t *testing.T) {
 		})
 	}
 }
+
+// TestEnvVar_IsSet verifies the semantic difference between GetValue() != "" and IsSet().
+// IsSet() must return true when the EnvVar references an env var (regardless of whether
+// that env var has been resolved to a non-empty Val). This is the property that the
+// BeforeSave hooks rely on so env var references survive persistence.
+func TestEnvVar_IsSet(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *EnvVar
+		expected bool
+	}{
+		{
+			name:     "nil envvar",
+			input:    nil,
+			expected: false,
+		},
+		{
+			name:     "completely empty",
+			input:    &EnvVar{},
+			expected: false,
+		},
+		{
+			name:     "only Val set (plain value)",
+			input:    &EnvVar{Val: "abc"},
+			expected: true,
+		},
+		{
+			name:     "only EnvVar reference set (env not resolved on this server)",
+			input:    &EnvVar{EnvVar: "env.MISSING", FromEnv: true},
+			expected: true,
+		},
+		{
+			name:     "Val and EnvVar both set (env was resolved)",
+			input:    &EnvVar{Val: "resolved-secret", EnvVar: "env.X", FromEnv: true},
+			expected: true,
+		},
+		{
+			name:     "FromEnv true but no reference and no value",
+			input:    &EnvVar{FromEnv: true},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.input.IsSet(); got != tt.expected {
+				t.Errorf("IsSet() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+

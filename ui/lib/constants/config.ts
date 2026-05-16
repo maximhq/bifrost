@@ -27,7 +27,7 @@ function parseTrialExpiry(dateStr: string | undefined): Date | null {
 export const ModelPlaceholders = {
 	default: "e.g. gpt-4, gpt-3.5-turbo. Leave blank for all models.",
 	anthropic: "e.g. claude-3-haiku, claude-2.1",
-	azure: "e.g. gpt-4, gpt-35-turbo (must match deployment names)",
+	azure: "e.g. gpt-4, gpt-35-turbo (must match alias keys)",
 	bedrock: "e.g. claude-v2, titan-text-express-v1, ai21-j2-mid",
 	cerebras: "e.g. cerebras-2, cerebras-2-vision",
 	cohere: "e.g. command-r, command-r-plus",
@@ -48,6 +48,7 @@ export const ModelPlaceholders = {
 	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
 	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
+	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -73,6 +74,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	replicate: true,
 	runway: true,
 	vllm: false,
+	fireworks: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -81,6 +83,11 @@ export const DefaultNetworkConfig = {
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
+	insecure_skip_verify: false,
+	ca_cert_pem: { value: "", env_var: "", from_env: false },
+	stream_idle_timeout_in_seconds: 60,
+	max_conns_per_host: 5000,
+	enforce_http2: false,
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {
@@ -88,11 +95,13 @@ export const DefaultPerformanceConfig = {
 	buffer_size: 5000,
 } satisfies ConcurrencyAndBufferSize;
 
-export const MCP_STATUS_COLORS = {
+export const MCP_STATUS_COLORS: Record<string, string> = {
 	connected: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",
 	disconnected: "bg-gray-100 text-gray-800",
-} as const;
+	pending_tools: "bg-yellow-100 text-yellow-800",
+	disabled: "bg-orange-100 text-orange-800",
+};
 
 // Mapping of what IS supported by each base provider
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
@@ -175,7 +184,17 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_list",
 		"video_remix",
 	],
+	fireworks: [
+		"list_models",
+		"text_completion",
+		"text_completion_stream",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"embedding",
+	],
 };
 
-export const IS_ENTERPRISE = process.env.NEXT_PUBLIC_IS_ENTERPRISE === "true";
-export const TRIAL_EXPIRY = parseTrialExpiry(process.env.NEXT_PUBLIC_ENTERPRISE_TRIAL_EXPIRY);
+export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";
+export const TRIAL_EXPIRY = parseTrialExpiry(process.env.BIFROST_ENTERPRISE_TRIAL_EXPIRY);

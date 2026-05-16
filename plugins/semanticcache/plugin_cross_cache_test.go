@@ -22,7 +22,7 @@ func TestCrossCacheTypeAccessibility(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test 2: Retrieve with direct-only cache type
 	ctx2 := CreateContextWithCacheKeyAndType("test-cross-cache-access", CacheTypeDirect)
@@ -68,7 +68,7 @@ func TestCacheTypeIsolation(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test 2: Try to retrieve with semantic-only (should miss because no semantic entry)
 	ctx2 := CreateContextWithCacheKeyAndType("test-cache-isolation", CacheTypeSemantic)
@@ -79,7 +79,7 @@ func TestCacheTypeIsolation(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // Should miss - no semantic cache entry
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test 3: Retrieve with direct-only (should hit)
 	t.Log("Retrieving with CacheTypeKey=direct (should hit)...")
@@ -117,7 +117,7 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test similar request with direct-only (should miss direct, no fallback, but should cache response)
 	similarRequest := CreateBasicChatRequest("Explain machine learning concepts", 0.7, 100)
@@ -130,7 +130,7 @@ func TestCacheTypeFallbackBehavior(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2}) // Should miss - no direct match, no semantic search
 
-	WaitForCache() // Let the response get cached
+	WaitForCache(setup.Plugin) // Let the response get cached
 
 	// Test same similar request with semantic-only (should hit original entry)
 	ctx3 := CreateContextWithCacheKeyAndType("test-fallback-behavior", CacheTypeSemantic)
@@ -190,7 +190,7 @@ func TestMultipleCacheEntriesPriority(t *testing.T) {
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 	originalContent := *response1.Choices[0].Message.Content.ContentStr
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify it hits cache with default behavior
 	t.Log("Verifying cache hit with default behavior...")
@@ -249,7 +249,7 @@ func TestCrossCacheTypeWithDifferentParameters(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test same parameters with direct-only
 	ctx2 := CreateContextWithCacheKeyAndType("test-cross-cache-params", CacheTypeDirect)
@@ -306,7 +306,7 @@ func TestCacheTypeErrorHandling(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Should work with fallback behavior
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test nil cache type (should use default)
 	ctx2 := CreateContextWithCacheKey("test-cache-error-handling")

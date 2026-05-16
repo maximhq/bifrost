@@ -33,7 +33,9 @@ type WeaviateConfig struct {
 	Headers map[string]string `json:"headers,omitempty"` // Additional headers
 
 	// Connection settings
-	Timeout time.Duration `json:"timeout,omitempty"` // Request timeout (optional)
+	// Timeout accepts either a Go duration string (e.g. "5s", "30s") or an
+	// integer nanosecond value for backward compatibility.
+	Timeout schemas.Duration `json:"timeout,omitempty"` // Request timeout (optional)
 }
 
 type WeaviateGrpcConfig struct {
@@ -455,7 +457,7 @@ func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schema
 	testCtx := ctx
 	if config.Timeout > 0 {
 		var cancel context.CancelFunc
-		testCtx, cancel = context.WithTimeout(ctx, config.Timeout)
+		testCtx, cancel = context.WithTimeout(ctx, time.Duration(config.Timeout))
 		defer cancel()
 	}
 

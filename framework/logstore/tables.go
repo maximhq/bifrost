@@ -1,7 +1,6 @@
 package logstore
 
 import (
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -11,6 +10,21 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// sanitizeJSONForJSONB removes JSON escape sequences that PostgreSQL's jsonb
+// type cannot represent. Specifically, jsonb rejects the NUL unicode escape
+// (\u0000) with errcode 22P05 even though plain TEXT and the json type can
+// store it. Stripping the escape from the marshaled JSON keeps subsequent
+// TEXT->jsonb casts in list queries safe. The replacement is case-insensitive
+// since JSON allows \u0000 or \U0000.
+func sanitizeJSONForJSONB(s string) string {
+	if !strings.Contains(s, `\u`) && !strings.Contains(s, `\U`) {
+		return s
+	}
+	s = strings.ReplaceAll(s, `\u0000`, "")
+	s = strings.ReplaceAll(s, `\U0000`, "")
+	return s
+}
 
 type SortBy string
 
@@ -30,24 +44,32 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers         []string   `json:"providers,omitempty"`
-	Models            []string   `json:"models,omitempty"`
-	Status            []string   `json:"status,omitempty"`
-	Objects           []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
-	SelectedKeyIDs    []string   `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs     []string   `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs    []string   `json:"routing_rule_ids,omitempty"`
-	RoutingEngineUsed []string   `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	StartTime         *time.Time `json:"start_time,omitempty"`
-	EndTime           *time.Time `json:"end_time,omitempty"`
-	MinLatency        *float64   `json:"min_latency,omitempty"`
-	MaxLatency        *float64   `json:"max_latency,omitempty"`
-	MinTokens         *int       `json:"min_tokens,omitempty"`
-	MaxTokens         *int       `json:"max_tokens,omitempty"`
-	MinCost           *float64   `json:"min_cost,omitempty"`
-	MaxCost           *float64   `json:"max_cost,omitempty"`
-	MissingCostOnly   bool       `json:"missing_cost_only,omitempty"`
-	ContentSearch     string     `json:"content_search,omitempty"`
+	Providers         []string          `json:"providers,omitempty"`
+	Models            []string          `json:"models,omitempty"`
+	Aliases           []string          `json:"aliases,omitempty"`
+	Status            []string          `json:"status,omitempty"`
+	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID   string            `json:"parent_request_id,omitempty"`
+	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
+	TeamIDs           []string          `json:"team_ids,omitempty"`
+	CustomerIDs       []string          `json:"customer_ids,omitempty"`
+	UserIDs           []string          `json:"user_ids,omitempty"`
+	BusinessUnitIDs   []string          `json:"business_unit_ids,omitempty"`
+	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	StartTime         *time.Time        `json:"start_time,omitempty"`
+	EndTime           *time.Time        `json:"end_time,omitempty"`
+	MinLatency        *float64          `json:"min_latency,omitempty"`
+	MaxLatency        *float64          `json:"max_latency,omitempty"`
+	MinTokens         *int              `json:"min_tokens,omitempty"`
+	MaxTokens         *int              `json:"max_tokens,omitempty"`
+	MinCost           *float64          `json:"min_cost,omitempty"`
+	MaxCost           *float64          `json:"max_cost,omitempty"`
+	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
+	ContentSearch     string            `json:"content_search,omitempty"`
+	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 }
 
 // PaginationOptions represents pagination parameters
@@ -67,71 +89,120 @@ type SearchResult struct {
 	HasLogs    bool              `json:"has_logs"`
 }
 
+type SessionDetailResult struct {
+	SessionID     string            `json:"session_id"`
+	Logs          []Log             `json:"logs"`
+	Pagination    PaginationOptions `json:"pagination"`
+	Count         int64             `json:"count"`
+	ReturnedCount int               `json:"returned_count"`
+	HasMore       bool              `json:"has_more"`
+}
+
+type SessionSummaryResult struct {
+	SessionID   string  `json:"session_id"`
+	Count       int64   `json:"count"`
+	TotalCost   float64 `json:"total_cost"`
+	TotalTokens int64   `json:"total_tokens"`
+	StartedAt   string  `json:"started_at,omitempty"`
+	LatestAt    string  `json:"latest_at,omitempty"`
+	DurationMs  int64   `json:"duration_ms"`
+}
+
 type SearchStats struct {
-	TotalRequests  int64   `json:"total_requests"`
-	SuccessRate    float64 `json:"success_rate"`    // Percentage of successful requests
-	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
-	TotalTokens    int64   `json:"total_tokens"`    // Total tokens used
-	TotalCost      float64 `json:"total_cost"`      // Total cost in dollars
+	TotalRequests             int64   `json:"total_requests"`
+	SuccessRate               float64 `json:"success_rate"`                            // Percentage of individual attempts that succeeded
+	UserFacingSuccessRate     float64 `json:"user_facing_success_rate"`                // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
+	UserFacingTotalRequests   int64   `json:"user_facing_total_requests"`              // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
+	AverageLatency            float64 `json:"average_latency"`                         // Average latency in milliseconds
+	TotalTokens               int64   `json:"total_tokens"`                            // Total tokens used
+	TotalCost                 float64 `json:"total_cost"`                              // Total cost in dollars
+	CacheHitRateTotalRequests *int64  `json:"cache_hit_rate_total_requests,omitempty"` // Completed requests used as local-cache hit-rate denominator
+	DirectCacheHits           *int64  `json:"direct_cache_hits,omitempty"`             // Number of direct (exact) semantic cache hits
+	SemanticCacheHits         *int64  `json:"semantic_cache_hits,omitempty"`           // Number of semantic (fuzzy) cache hits
 }
 
 // Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type Log struct {
-	ID                    string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	ParentRequestID       *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
-	Timestamp             time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
-	Object                string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	Provider              string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
-	Model                 string    `gorm:"type:varchar(255);index;not null" json:"model"`
-	NumberOfRetries       int       `gorm:"default:0" json:"number_of_retries"`
-	FallbackIndex         int       `gorm:"default:0" json:"fallback_index"`
-	SelectedKeyID         string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
-	SelectedKeyName       string    `gorm:"type:varchar(255)" json:"selected_key_name"`
-	VirtualKeyID          *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
-	VirtualKeyName        *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	RoutingEnginesUsedStr *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
-	RoutingRuleID         *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
-	RoutingRuleName       *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	InputHistory          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
-	ResponsesInputHistory string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
-	OutputMessage         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
-	ResponsesOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
-	EmbeddingOutput       string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
-	RerankOutput          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
-	Params                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
-	Tools                 string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
-	ToolCalls             string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
-	SpeechInput           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
-	TranscriptionInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
-	ImageGenerationInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
-	VideoGenerationInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
-	SpeechOutput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
-	TranscriptionOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
-	ImageGenerationOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
-	ListModelsOutput      string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
-	VideoGenerationOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
-	VideoRetrieveOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
-	VideoDownloadOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
-	VideoListOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
-	VideoDeleteOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
-	Latency               *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	TokenUsage            string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
-	Cost                  *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
-	ErrorDetails          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
-	Stream                bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
-	ContentSummary        string    `gorm:"type:text" json:"-"`
-	RawRequest            string    `gorm:"type:text" json:"raw_request"`                   // Populated when `send-back-raw-request` is on
-	RawResponse           string    `gorm:"type:text" json:"raw_response"`                  // Populated when `send-back-raw-response` is on
-	RoutingEngineLogs     string    `gorm:"type:text" json:"routing_engine_logs,omitempty"` // Formatted routing engine decision logs
-	Metadata              string    `gorm:"type:text" json:"-"`                             // JSON serialized map[string]interface{}
+	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
+	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
+	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
+	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
+	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
+	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"` // Set when model was resolved via alias mapping; the original name the caller used
+	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
+	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
+	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
+	SelectedKeyName         string    `gorm:"type:varchar(255)" json:"selected_key_name"`
+	AttemptTrail            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.KeyAttemptRecord
+	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
+	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
+	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
+	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
+	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
+	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_id" json:"user_id"`
+	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
+	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_id" json:"team_id"`
+	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
+	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_id" json:"customer_id"`
+	CustomerName            *string   `gorm:"type:varchar(255)" json:"customer_name"`
+	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_id" json:"business_unit_id"`
+	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
+	InputHistory            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
+	ResponsesInputHistory   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
+	OutputMessage           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
+	ResponsesOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
+	EmbeddingOutput         string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
+	RerankOutput            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
+	OCROutput               string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostOCRResponse
+	Params                  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
+	Tools                   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
+	ToolCalls               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
+	SpeechInput             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
+	TranscriptionInput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
+	OCRInput                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.OCRDocument
+	ImageGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
+	ImageEditInput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageEditInput
+	ImageVariationInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageVariationInput
+	VideoGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
+	SpeechOutput            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
+	TranscriptionOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
+	ImageGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
+	ListModelsOutput        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
+	VideoGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
+	VideoRetrieveOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
+	VideoDownloadOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
+	VideoListOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
+	VideoDeleteOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
+	CacheDebug              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
+	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
+	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
+	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
+	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
+	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
+	ContentSummary          string    `gorm:"type:text" json:"-"`
+	RawRequest              string    `gorm:"type:text" json:"raw_request"`                         // Populated when `send-back-raw-request` is on
+	RawResponse             string    `gorm:"type:text" json:"raw_response"`                        // Populated when `send-back-raw-response` is on
+	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
+	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
+	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
+	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`               // JSON serialized plugin log entries grouped by plugin name
+	Metadata                *string   `gorm:"type:text" json:"-"`                                   // JSON serialized map[string]interface{}
+	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
+	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
+	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
 	CompletionTokens int `gorm:"default:0" json:"-"`
 	TotalTokens      int `gorm:"index:idx_logs_total_tokens;default:0" json:"-"`
+	CachedReadTokens int `gorm:"default:0" json:"-"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
@@ -143,6 +214,7 @@ type Log struct {
 	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
 	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
 	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
+	OCROutputParsed             *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
 	ParamsParsed                interface{}                             `gorm:"-" json:"params,omitempty"`
 	ToolsParsed                 []schemas.ChatTool                      `gorm:"-" json:"tools,omitempty"`
 	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall  `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
@@ -150,7 +222,10 @@ type Log struct {
 	ErrorDetailsParsed          *schemas.BifrostError                   `gorm:"-" json:"error_details,omitempty"`
 	SpeechInputParsed           *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
 	TranscriptionInputParsed    *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
+	OCRInputParsed              *schemas.OCRDocument                    `gorm:"-" json:"ocr_input,omitempty"`
 	ImageGenerationInputParsed  *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
+	ImageEditInputParsed        *schemas.ImageEditInput                 `gorm:"-" json:"image_edit_input,omitempty"`
+	ImageVariationInputParsed   *schemas.ImageVariationInput            `gorm:"-" json:"image_variation_input,omitempty"`
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
@@ -163,6 +238,8 @@ type Log struct {
 	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
+	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
@@ -196,11 +273,6 @@ func (l *Log) BeforeCreate(tx *gorm.DB) error {
 	return l.SerializeFields()
 }
 
-// BeforeSave GORM hook to serialize JSON fields
-func (l *Log) BeforeSave(tx *gorm.DB) error {
-	return l.SerializeFields()
-}
-
 // AfterFind GORM hook to deserialize JSON fields
 func (l *Log) AfterFind(tx *gorm.DB) error {
 	return l.DeserializeFields()
@@ -217,23 +289,23 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.InputHistoryParsed != nil {
-		if data, err := json.Marshal(l.InputHistoryParsed); err != nil {
+		if data, err := sonic.Marshal(l.InputHistoryParsed); err != nil {
 			return err
 		} else {
-			l.InputHistory = string(data)
+			l.InputHistory = sanitizeJSONForJSONB(string(data))
 		}
 	}
 
 	if l.ResponsesInputHistoryParsed != nil {
-		if data, err := json.Marshal(l.ResponsesInputHistoryParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResponsesInputHistoryParsed); err != nil {
 			return err
 		} else {
-			l.ResponsesInputHistory = string(data)
+			l.ResponsesInputHistory = sanitizeJSONForJSONB(string(data))
 		}
 	}
 
 	if l.OutputMessageParsed != nil {
-		if data, err := json.Marshal(l.OutputMessageParsed); err != nil {
+		if data, err := sonic.Marshal(l.OutputMessageParsed); err != nil {
 			return err
 		} else {
 			l.OutputMessage = string(data)
@@ -241,7 +313,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ResponsesOutputParsed != nil {
-		if data, err := json.Marshal(l.ResponsesOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResponsesOutputParsed); err != nil {
 			return err
 		} else {
 			l.ResponsesOutput = string(data)
@@ -249,7 +321,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.EmbeddingOutputParsed != nil {
-		if data, err := json.Marshal(l.EmbeddingOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.EmbeddingOutputParsed); err != nil {
 			return err
 		} else {
 			l.EmbeddingOutput = string(data)
@@ -257,15 +329,23 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.RerankOutputParsed != nil {
-		if data, err := json.Marshal(l.RerankOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.RerankOutputParsed); err != nil {
 			return err
 		} else {
 			l.RerankOutput = string(data)
 		}
 	}
 
+	if l.OCROutputParsed != nil {
+		if data, err := sonic.Marshal(l.OCROutputParsed); err != nil {
+			return err
+		} else {
+			l.OCROutput = string(data)
+		}
+	}
+
 	if l.SpeechInputParsed != nil {
-		if data, err := json.Marshal(l.SpeechInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.SpeechInputParsed); err != nil {
 			return err
 		} else {
 			l.SpeechInput = string(data)
@@ -273,23 +353,47 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TranscriptionInputParsed != nil {
-		if data, err := json.Marshal(l.TranscriptionInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.TranscriptionInputParsed); err != nil {
 			return err
 		} else {
 			l.TranscriptionInput = string(data)
 		}
 	}
 
+	if l.OCRInputParsed != nil {
+		if data, err := sonic.Marshal(l.OCRInputParsed); err != nil {
+			return err
+		} else {
+			l.OCRInput = string(data)
+		}
+	}
+
 	if l.ImageGenerationInputParsed != nil {
-		if data, err := json.Marshal(l.ImageGenerationInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ImageGenerationInputParsed); err != nil {
 			return err
 		} else {
 			l.ImageGenerationInput = string(data)
 		}
 	}
 
+	if l.ImageEditInputParsed != nil {
+		if data, err := sonic.Marshal(l.ImageEditInputParsed); err != nil {
+			return err
+		} else {
+			l.ImageEditInput = string(data)
+		}
+	}
+
+	if l.ImageVariationInputParsed != nil {
+		if data, err := sonic.Marshal(l.ImageVariationInputParsed); err != nil {
+			return err
+		} else {
+			l.ImageVariationInput = string(data)
+		}
+	}
+
 	if l.VideoGenerationInputParsed != nil {
-		if data, err := json.Marshal(l.VideoGenerationInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoGenerationInputParsed); err != nil {
 			return err
 		} else {
 			l.VideoGenerationInput = string(data)
@@ -297,7 +401,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.SpeechOutputParsed != nil {
-		if data, err := json.Marshal(l.SpeechOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.SpeechOutputParsed); err != nil {
 			return err
 		} else {
 			l.SpeechOutput = string(data)
@@ -305,7 +409,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TranscriptionOutputParsed != nil {
-		if data, err := json.Marshal(l.TranscriptionOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.TranscriptionOutputParsed); err != nil {
 			return err
 		} else {
 			l.TranscriptionOutput = string(data)
@@ -313,7 +417,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ImageGenerationOutputParsed != nil {
-		if data, err := json.Marshal(l.ImageGenerationOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ImageGenerationOutputParsed); err != nil {
 			return err
 		} else {
 			l.ImageGenerationOutput = string(data)
@@ -321,7 +425,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoGenerationOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoGenerationOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoGenerationOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoGenerationOutput = string(data)
@@ -329,7 +433,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoRetrieveOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoRetrieveOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoRetrieveOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoRetrieveOutput = string(data)
@@ -337,7 +441,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoDownloadOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoDownloadOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoDownloadOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoDownloadOutput = string(data)
@@ -345,7 +449,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoListOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoListOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoListOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoListOutput = string(data)
@@ -353,7 +457,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoDeleteOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoDeleteOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoDeleteOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoDeleteOutput = string(data)
@@ -361,7 +465,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ListModelsOutputParsed != nil {
-		if data, err := json.Marshal(l.ListModelsOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ListModelsOutputParsed); err != nil {
 			return err
 		} else {
 			l.ListModelsOutput = string(data)
@@ -369,7 +473,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ParamsParsed != nil {
-		if data, err := json.Marshal(l.ParamsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ParamsParsed); err != nil {
 			return err
 		} else {
 			l.Params = string(data)
@@ -377,7 +481,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ToolsParsed != nil {
-		if data, err := json.Marshal(l.ToolsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ToolsParsed); err != nil {
 			return err
 		} else {
 			l.Tools = string(data)
@@ -385,7 +489,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ToolCallsParsed != nil {
-		if data, err := json.Marshal(l.ToolCallsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ToolCallsParsed); err != nil {
 			return err
 		} else {
 			l.ToolCalls = string(data)
@@ -393,7 +497,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TokenUsageParsed != nil {
-		if data, err := json.Marshal(l.TokenUsageParsed); err != nil {
+		if data, err := sonic.Marshal(l.TokenUsageParsed); err != nil {
 			return err
 		} else {
 			l.TokenUsage = string(data)
@@ -402,10 +506,13 @@ func (l *Log) SerializeFields() error {
 		l.PromptTokens = l.TokenUsageParsed.PromptTokens
 		l.CompletionTokens = l.TokenUsageParsed.CompletionTokens
 		l.TotalTokens = l.TokenUsageParsed.TotalTokens
+		if l.TokenUsageParsed.PromptTokensDetails != nil {
+			l.CachedReadTokens = l.TokenUsageParsed.PromptTokensDetails.CachedReadTokens
+		}
 	}
 
 	if l.ErrorDetailsParsed != nil {
-		if data, err := json.Marshal(l.ErrorDetailsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ErrorDetailsParsed); err != nil {
 			return err
 		} else {
 			l.ErrorDetails = string(data)
@@ -413,23 +520,39 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.CacheDebugParsed != nil {
-		if data, err := json.Marshal(l.CacheDebugParsed); err != nil {
+		if data, err := sonic.Marshal(l.CacheDebugParsed); err != nil {
 			return err
 		} else {
 			l.CacheDebug = string(data)
 		}
 	}
 
-	if l.MetadataParsed != nil {
-		if data, err := json.Marshal(l.MetadataParsed); err != nil {
+	if len(l.AttemptTrailParsed) > 0 {
+		if data, err := sonic.Marshal(l.AttemptTrailParsed); err != nil {
 			return err
 		} else {
-			l.Metadata = string(data)
+			l.AttemptTrail = string(data)
+		}
+	} else {
+		l.AttemptTrail = ""
+	}
+
+	if l.MetadataParsed != nil {
+		data, err := sonic.Marshal(l.MetadataParsed)
+		if err != nil {
+			// Metadata is supplementary — null it out rather than aborting the log write.
+			l.Metadata = nil
+			l.MetadataParsed = nil
+		} else {
+			l.Metadata = new(string(data))
 		}
 	}
 
-	// Build content summary for search
-	l.ContentSummary = l.BuildContentSummary()
+	// Build content summary for search.
+	// Skip if already set (e.g., by the hybrid log store which builds input-only summaries).
+	if l.ContentSummary == "" {
+		l.ContentSummary = l.BuildContentSummary()
+	}
 
 	return nil
 }
@@ -437,126 +560,133 @@ func (l *Log) SerializeFields() error {
 // DeserializeFields converts JSON strings back to Go structs
 func (l *Log) DeserializeFields() error {
 	if l.InputHistory != "" {
-		if err := json.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
 			l.InputHistoryParsed = []schemas.ChatMessage{}
 		}
 	}
 
 	if l.ResponsesInputHistory != "" {
-		if err := json.Unmarshal([]byte(l.ResponsesInputHistory), &l.ResponsesInputHistoryParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ResponsesInputHistory), &l.ResponsesInputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
 			l.ResponsesInputHistoryParsed = []schemas.ResponsesMessage{}
 		}
 	}
 
 	if l.OutputMessage != "" {
-		if err := json.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.OutputMessageParsed = nil
 		}
 	}
 
 	if l.ResponsesOutput != "" {
-		if err := json.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ResponsesOutputParsed = []schemas.ResponsesMessage{}
 		}
 	}
 
 	if l.EmbeddingOutput != "" {
-		if err := json.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.EmbeddingOutputParsed = nil
 		}
 	}
 
 	if l.RerankOutput != "" {
-		if err := json.Unmarshal([]byte(l.RerankOutput), &l.RerankOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.RerankOutput), &l.RerankOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.RerankOutputParsed = nil
 		}
 	}
 
+	if l.OCROutput != "" {
+		if err := sonic.Unmarshal([]byte(l.OCROutput), &l.OCROutputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.OCROutputParsed = nil
+		}
+	}
+
 	if l.Params != "" {
-		if err := json.Unmarshal([]byte(l.Params), &l.ParamsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Params), &l.ParamsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ParamsParsed = nil
 		}
 	}
 
 	if l.Tools != "" {
-		if err := json.Unmarshal([]byte(l.Tools), &l.ToolsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Tools), &l.ToolsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ToolsParsed = nil
 		}
 	}
 
 	if l.ToolCalls != "" {
-		if err := json.Unmarshal([]byte(l.ToolCalls), &l.ToolCallsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ToolCalls), &l.ToolCallsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ToolCallsParsed = nil
 		}
 	}
 
 	if l.TokenUsage != "" {
-		if err := json.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TokenUsageParsed = nil
 		}
 	}
 
 	if l.ErrorDetails != "" {
-		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ErrorDetailsParsed = nil
 		}
 	}
 
 	if l.VideoGenerationOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoGenerationOutput), &l.VideoGenerationOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoGenerationOutput), &l.VideoGenerationOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoGenerationOutputParsed = nil
 		}
 	}
 
 	if l.VideoRetrieveOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoRetrieveOutput), &l.VideoRetrieveOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoRetrieveOutput), &l.VideoRetrieveOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoRetrieveOutputParsed = nil
 		}
 	}
 
 	if l.VideoDownloadOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoDownloadOutput), &l.VideoDownloadOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoDownloadOutput), &l.VideoDownloadOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoDownloadOutputParsed = nil
 		}
 	}
 
 	if l.VideoListOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoListOutput), &l.VideoListOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoListOutput), &l.VideoListOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoListOutputParsed = nil
 		}
 	}
 
 	if l.VideoDeleteOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoDeleteOutput), &l.VideoDeleteOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoDeleteOutput), &l.VideoDeleteOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoDeleteOutputParsed = nil
 		}
 	}
 
 	if l.VideoGenerationInput != "" {
-		if err := json.Unmarshal([]byte(l.VideoGenerationInput), &l.VideoGenerationInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoGenerationInput), &l.VideoGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoGenerationInputParsed = nil
 		}
 	}
 
 	if l.ListModelsOutput != "" {
-		if err := json.Unmarshal([]byte(l.ListModelsOutput), &l.ListModelsOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ListModelsOutput), &l.ListModelsOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ListModelsOutputParsed = nil
 		}
@@ -564,56 +694,80 @@ func (l *Log) DeserializeFields() error {
 
 	// Deserialize speech and transcription fields
 	if l.SpeechInput != "" {
-		if err := json.Unmarshal([]byte(l.SpeechInput), &l.SpeechInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.SpeechInput), &l.SpeechInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.SpeechInputParsed = nil
 		}
 	}
 
 	if l.TranscriptionInput != "" {
-		if err := json.Unmarshal([]byte(l.TranscriptionInput), &l.TranscriptionInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TranscriptionInput), &l.TranscriptionInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionInputParsed = nil
 		}
 	}
 
+	if l.OCRInput != "" {
+		if err := sonic.Unmarshal([]byte(l.OCRInput), &l.OCRInputParsed); err != nil {
+			l.OCRInputParsed = nil
+		}
+	}
+
 	if l.ImageGenerationInput != "" {
-		if err := json.Unmarshal([]byte(l.ImageGenerationInput), &l.ImageGenerationInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ImageGenerationInput), &l.ImageGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ImageGenerationInputParsed = nil
 		}
 	}
 
+	if l.ImageEditInput != "" {
+		if err := sonic.Unmarshal([]byte(l.ImageEditInput), &l.ImageEditInputParsed); err != nil {
+			l.ImageEditInputParsed = nil
+		}
+	}
+
+	if l.ImageVariationInput != "" {
+		if err := sonic.Unmarshal([]byte(l.ImageVariationInput), &l.ImageVariationInputParsed); err != nil {
+			l.ImageVariationInputParsed = nil
+		}
+	}
+
 	if l.SpeechOutput != "" {
-		if err := json.Unmarshal([]byte(l.SpeechOutput), &l.SpeechOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.SpeechOutput), &l.SpeechOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.SpeechOutputParsed = nil
 		}
 	}
 
 	if l.TranscriptionOutput != "" {
-		if err := json.Unmarshal([]byte(l.TranscriptionOutput), &l.TranscriptionOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TranscriptionOutput), &l.TranscriptionOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionOutputParsed = nil
 		}
 	}
 
 	if l.ImageGenerationOutput != "" {
-		if err := json.Unmarshal([]byte(l.ImageGenerationOutput), &l.ImageGenerationOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ImageGenerationOutput), &l.ImageGenerationOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ImageGenerationOutputParsed = nil
 		}
 	}
 
 	if l.CacheDebug != "" {
-		if err := json.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.CacheDebugParsed = nil
 		}
 	}
 
-	if l.Metadata != "" {
-		if err := json.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
+	if l.AttemptTrail != "" {
+		if err := sonic.Unmarshal([]byte(l.AttemptTrail), &l.AttemptTrailParsed); err != nil {
+			l.AttemptTrailParsed = nil
+		}
+	}
+
+	if l.Metadata != nil && *l.Metadata != "" {
+		if err := sonic.Unmarshal([]byte(*l.Metadata), &l.MetadataParsed); err != nil {
 			l.MetadataParsed = nil
 		}
 	}
@@ -632,6 +786,7 @@ func (l *Log) DeserializeFields() error {
 // This is separate from the main Log table since MCP tool calls have different fields
 type MCPToolLog struct {
 	ID             string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	RequestID      string    `gorm:"type:varchar(255);column:request_id;index:idx_mcp_logs_request_id" json:"request_id,omitempty"`             // The original request ID from context
 	LLMRequestID   *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
 	Timestamp      time.Time `gorm:"index;not null" json:"timestamp"`
 	ToolName       string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`
@@ -645,6 +800,7 @@ type MCPToolLog struct {
 	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
 	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
 	Metadata       string    `gorm:"type:text" json:"-"`                                                // JSON serialized map[string]interface{}
+	HasObject      bool      `gorm:"default:false" json:"-"`                                            // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - populated when needed
@@ -671,11 +827,6 @@ func (l *MCPToolLog) BeforeCreate(tx *gorm.DB) error {
 	return l.SerializeFields()
 }
 
-// BeforeSave GORM hook to serialize JSON fields
-func (l *MCPToolLog) BeforeSave(tx *gorm.DB) error {
-	return l.SerializeFields()
-}
-
 // AfterFind GORM hook to deserialize JSON fields
 func (l *MCPToolLog) AfterFind(tx *gorm.DB) error {
 	return l.DeserializeFields()
@@ -684,7 +835,7 @@ func (l *MCPToolLog) AfterFind(tx *gorm.DB) error {
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *MCPToolLog) SerializeFields() error {
 	if l.ArgumentsParsed != nil {
-		if data, err := json.Marshal(l.ArgumentsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ArgumentsParsed); err != nil {
 			return err
 		} else {
 			l.Arguments = string(data)
@@ -692,7 +843,7 @@ func (l *MCPToolLog) SerializeFields() error {
 	}
 
 	if l.ResultParsed != nil {
-		if data, err := json.Marshal(l.ResultParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResultParsed); err != nil {
 			return err
 		} else {
 			l.Result = string(data)
@@ -700,7 +851,7 @@ func (l *MCPToolLog) SerializeFields() error {
 	}
 
 	if l.ErrorDetailsParsed != nil {
-		if data, err := json.Marshal(l.ErrorDetailsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ErrorDetailsParsed); err != nil {
 			return err
 		} else {
 			l.ErrorDetails = string(data)
@@ -708,8 +859,11 @@ func (l *MCPToolLog) SerializeFields() error {
 	}
 
 	if l.MetadataParsed != nil {
-		if data, err := json.Marshal(l.MetadataParsed); err != nil {
-			return err
+		data, err := sonic.Marshal(l.MetadataParsed)
+		if err != nil {
+			// Metadata is supplementary — null it out rather than aborting the log write.
+			l.Metadata = ""
+			l.MetadataParsed = nil
 		} else {
 			l.Metadata = string(data)
 		}
@@ -721,25 +875,25 @@ func (l *MCPToolLog) SerializeFields() error {
 // DeserializeFields converts JSON strings back to Go structs
 func (l *MCPToolLog) DeserializeFields() error {
 	if l.Arguments != "" {
-		if err := json.Unmarshal([]byte(l.Arguments), &l.ArgumentsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Arguments), &l.ArgumentsParsed); err != nil {
 			l.ArgumentsParsed = nil
 		}
 	}
 
 	if l.Result != "" {
-		if err := json.Unmarshal([]byte(l.Result), &l.ResultParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Result), &l.ResultParsed); err != nil {
 			l.ResultParsed = nil
 		}
 	}
 
 	if l.ErrorDetails != "" {
-		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
 			l.ErrorDetailsParsed = nil
 		}
 	}
 
 	if l.Metadata != "" {
-		if err := json.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
 			l.MetadataParsed = nil
 		}
 	}
@@ -983,6 +1137,15 @@ func (l *Log) BuildContentSummary() string {
 		}
 	}
 
+	// Add OCR output content
+	if l.OCROutputParsed != nil {
+		for _, page := range l.OCROutputParsed.Pages {
+			if page.Markdown != "" {
+				parts = append(parts, page.Markdown)
+			}
+		}
+	}
+
 	// Add speech input content
 	if l.SpeechInputParsed != nil && l.SpeechInputParsed.Input != "" {
 		parts = append(parts, l.SpeechInputParsed.Input)
@@ -996,6 +1159,11 @@ func (l *Log) BuildContentSummary() string {
 	// Add image generation input prompt
 	if l.ImageGenerationInputParsed != nil && l.ImageGenerationInputParsed.Prompt != "" {
 		parts = append(parts, l.ImageGenerationInputParsed.Prompt)
+	}
+
+	// Add image edit input prompt
+	if l.ImageEditInputParsed != nil && l.ImageEditInputParsed.Prompt != "" {
+		parts = append(parts, l.ImageEditInputParsed.Prompt)
 	}
 
 	// Add video generation input prompt
@@ -1037,6 +1205,7 @@ type TokenHistogramBucket struct {
 	PromptTokens     int64     `json:"prompt_tokens"`
 	CompletionTokens int64     `json:"completion_tokens"`
 	TotalTokens      int64     `json:"total_tokens"`
+	CachedReadTokens int64     `json:"cached_read_tokens"`
 }
 
 // TokenHistogramResult represents the token histogram query result
@@ -1151,4 +1320,182 @@ type ProviderLatencyHistogramResult struct {
 	Buckets           []ProviderLatencyHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                            `json:"bucket_size_seconds"`
 	Providers         []string                         `json:"providers"`
+}
+
+// HistogramDimension represents a column that can be used as a grouping dimension in histograms
+type HistogramDimension string
+
+const (
+	DimensionProvider     HistogramDimension = "provider"
+	DimensionTeam         HistogramDimension = "team_id"
+	DimensionCustomer     HistogramDimension = "customer_id"
+	DimensionUser         HistogramDimension = "user_id"
+	DimensionBusinessUnit HistogramDimension = "business_unit_id"
+)
+
+// ValidHistogramDimensions is the set of allowed dimension values
+var ValidHistogramDimensions = map[HistogramDimension]bool{
+	DimensionProvider:     true,
+	DimensionTeam:         true,
+	DimensionCustomer:     true,
+	DimensionUser:         true,
+	DimensionBusinessUnit: true,
+}
+
+// Dimension-level histogram types (generic version of Provider histograms)
+
+// DimensionCostHistogramBucket represents a single time bucket for dimension-grouped cost data
+type DimensionCostHistogramBucket struct {
+	Timestamp   time.Time          `json:"timestamp"`
+	TotalCost   float64            `json:"total_cost"`
+	ByDimension map[string]float64 `json:"by_dimension"`
+}
+
+// DimensionCostHistogramResult represents the dimension cost histogram query result
+type DimensionCostHistogramResult struct {
+	Buckets           []DimensionCostHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                          `json:"bucket_size_seconds"`
+	Dimension         HistogramDimension             `json:"dimension"`
+	DimensionValues   []string                       `json:"dimension_values"`
+}
+
+// DimensionTokenStats represents token statistics for a single dimension value
+type DimensionTokenStats struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+}
+
+// DimensionTokenHistogramBucket represents a single time bucket for dimension-grouped token data
+type DimensionTokenHistogramBucket struct {
+	Timestamp   time.Time                      `json:"timestamp"`
+	ByDimension map[string]DimensionTokenStats `json:"by_dimension"`
+}
+
+// DimensionTokenHistogramResult represents the dimension token histogram query result
+type DimensionTokenHistogramResult struct {
+	Buckets           []DimensionTokenHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                           `json:"bucket_size_seconds"`
+	Dimension         HistogramDimension              `json:"dimension"`
+	DimensionValues   []string                        `json:"dimension_values"`
+}
+
+// DimensionLatencyStats represents latency statistics for a single dimension value
+type DimensionLatencyStats struct {
+	AvgLatency    float64 `json:"avg_latency"`
+	P90Latency    float64 `json:"p90_latency"`
+	P95Latency    float64 `json:"p95_latency"`
+	P99Latency    float64 `json:"p99_latency"`
+	TotalRequests int64   `json:"total_requests"`
+}
+
+// DimensionLatencyHistogramBucket represents a single time bucket for dimension-grouped latency data
+type DimensionLatencyHistogramBucket struct {
+	Timestamp   time.Time                        `json:"timestamp"`
+	ByDimension map[string]DimensionLatencyStats `json:"by_dimension"`
+}
+
+// DimensionLatencyHistogramResult represents the dimension latency histogram query result
+type DimensionLatencyHistogramResult struct {
+	Buckets           []DimensionLatencyHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                             `json:"bucket_size_seconds"`
+	Dimension         HistogramDimension                `json:"dimension"`
+	DimensionValues   []string                          `json:"dimension_values"`
+}
+
+// MCPHistogramBucket represents a single time bucket for MCP tool call volume
+type MCPHistogramBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	Count     int64     `json:"count"`
+	Success   int64     `json:"success"`
+	Error     int64     `json:"error"`
+}
+
+// MCPHistogramResult represents the MCP tool call volume histogram query result
+type MCPHistogramResult struct {
+	Buckets           []MCPHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                `json:"bucket_size_seconds"`
+}
+
+// MCPCostHistogramBucket represents a single time bucket for MCP cost data
+type MCPCostHistogramBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	TotalCost float64   `json:"total_cost"`
+}
+
+// MCPCostHistogramResult represents the MCP cost histogram query result
+type MCPCostHistogramResult struct {
+	Buckets           []MCPCostHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                    `json:"bucket_size_seconds"`
+}
+
+// MCPTopToolResult represents a single tool's aggregated stats
+type MCPTopToolResult struct {
+	ToolName string  `json:"tool_name"`
+	Count    int64   `json:"count"`
+	Cost     float64 `json:"cost"`
+}
+
+// MCPTopToolsResult represents the top N MCP tools by call count
+type MCPTopToolsResult struct {
+	Tools []MCPTopToolResult `json:"tools"`
+}
+
+// ModelRankingEntry represents aggregated stats for a single model over a time period.
+type ModelRankingEntry struct {
+	Model         string  `json:"model"`
+	Provider      string  `json:"provider"`
+	TotalRequests int64   `json:"total_requests"`
+	SuccessCount  int64   `json:"success_count"`
+	SuccessRate   float64 `json:"success_rate"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+	AvgLatency    float64 `json:"avg_latency"`
+}
+
+// ModelRankingTrend represents the percentage change compared to the previous period.
+type ModelRankingTrend struct {
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	TokensTrend       float64 `json:"tokens_trend"`
+	CostTrend         float64 `json:"cost_trend"`
+	LatencyTrend      float64 `json:"latency_trend"`
+}
+
+// ModelRankingWithTrend combines ranking entry with trend data.
+type ModelRankingWithTrend struct {
+	ModelRankingEntry
+	Trend ModelRankingTrend `json:"trend"`
+}
+
+// ModelRankingResult is the response for the model rankings endpoint.
+type ModelRankingResult struct {
+	Rankings []ModelRankingWithTrend `json:"rankings"`
+}
+
+// UserRankingEntry represents a single user's usage statistics.
+type UserRankingEntry struct {
+	UserID        string  `json:"user_id"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+}
+
+// UserRankingTrend represents the percentage change compared to the previous period.
+type UserRankingTrend struct {
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	TokensTrend       float64 `json:"tokens_trend"`
+	CostTrend         float64 `json:"cost_trend"`
+}
+
+// UserRankingWithTrend combines ranking entry with trend data.
+type UserRankingWithTrend struct {
+	UserRankingEntry
+	Trend UserRankingTrend `json:"trend"`
+}
+
+// UserRankingResult is the response for the user rankings endpoint.
+type UserRankingResult struct {
+	Rankings []UserRankingWithTrend `json:"rankings"`
 }

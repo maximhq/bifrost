@@ -196,8 +196,8 @@ else
   echo "✅ VLLM key config required fields match: [$HELM_VLLM_REQUIRED]"
 fi
 
-# Check concurrency_config required fields
-CONFIG_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrency_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+# Check concurrency_and_buffer_size required fields (renamed from concurrency_config)
+CONFIG_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrency_and_buffer_size.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
 HELM_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrencyConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_CONCURRENCY_REQUIRED" != "$HELM_CONCURRENCY_REQUIRED" ]; then
@@ -433,38 +433,17 @@ else
   echo "✅ MCP stdio config required fields match: [$CONFIG_MCP_STDIO_REQUIRED]"
 fi
 
-# Check MCP websocket_config required fields
-CONFIG_MCP_WS_REQUIRED=$(jq -r '."$defs".mcp_client_config.properties.websocket_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_MCP_WS_REQUIRED=$(jq -r '."$defs".mcpClientConfig.properties.websocketConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
-
-if [ "$CONFIG_MCP_WS_REQUIRED" != "$HELM_MCP_WS_REQUIRED" ]; then
-  echo "❌ MCP websocket config required fields mismatch:"
-  echo "   Config: [$CONFIG_MCP_WS_REQUIRED]"
-  echo "   Helm:   [$HELM_MCP_WS_REQUIRED]"
-  ERRORS=$((ERRORS + 1))
-else
-  echo "✅ MCP websocket config required fields match: [$CONFIG_MCP_WS_REQUIRED]"
-fi
-
-# Check MCP http_config required fields
-CONFIG_MCP_HTTP_REQUIRED=$(jq -r '."$defs".mcp_client_config.properties.http_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_MCP_HTTP_REQUIRED=$(jq -r '."$defs".mcpClientConfig.properties.httpConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
-
-if [ "$CONFIG_MCP_HTTP_REQUIRED" != "$HELM_MCP_HTTP_REQUIRED" ]; then
-  echo "❌ MCP http config required fields mismatch:"
-  echo "   Config: [$CONFIG_MCP_HTTP_REQUIRED]"
-  echo "   Helm:   [$HELM_MCP_HTTP_REQUIRED]"
-  ERRORS=$((ERRORS + 1))
-else
-  echo "✅ MCP http config required fields match: [$CONFIG_MCP_HTTP_REQUIRED]"
-fi
+# MCP websocket_config and http_config were removed from config.schema.json
+# because the corresponding Go fields don't exist (MCP rendering uses
+# connection_type + connection_string directly, not sub-object configs).
+# Helm still declares them for user convenience — not a schema sync concern.
 
 echo ""
 echo "🔍 Checking required fields in SAML/SCIM config..."
 
 # Check okta_config required fields
 CONFIG_OKTA_REQUIRED=$(jq -r '."$defs".okta_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_OKTA_REQUIRED=$(jq -r '.properties.bifrost.properties.saml.allOf[0].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+HELM_OKTA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[0].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_OKTA_REQUIRED" != "$HELM_OKTA_REQUIRED" ]; then
   echo "❌ Okta config required fields mismatch:"
@@ -477,7 +456,7 @@ fi
 
 # Check entra_config required fields
 CONFIG_ENTRA_REQUIRED=$(jq -r '."$defs".entra_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_ENTRA_REQUIRED=$(jq -r '.properties.bifrost.properties.saml.allOf[1].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+HELM_ENTRA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[1].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_ENTRA_REQUIRED" != "$HELM_ENTRA_REQUIRED" ]; then
   echo "❌ Entra config required fields mismatch:"
@@ -558,6 +537,36 @@ else
   echo "✅ Plugin items required fields match: [$CONFIG_PLUGIN_ITEMS_REQUIRED]"
 fi
 
+# Check plugin item properties completeness (all config properties must exist in helm custom items)
+echo ""
+echo "🔍 Checking plugin item property completeness..."
+
+CONFIG_PLUGIN_PROPS=$(jq -r '.properties.plugins.items.properties | keys | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_CUSTOM_PLUGIN_PROPS=$(jq -r '.properties.bifrost.properties.plugins.properties.custom.items.properties | keys | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+# Check each config property exists in helm custom items
+for prop in $(echo "$CONFIG_PLUGIN_PROPS" | tr ',' '\n'); do
+  if ! echo "$HELM_CUSTOM_PLUGIN_PROPS" | tr ',' '\n' | grep -qx "$prop"; then
+    echo "❌ Plugin property '$prop' exists in config.schema.json but missing from helm custom plugin items"
+    ERRORS=$((ERRORS + 1))
+  else
+    echo "✅ Plugin property '$prop' present in both schemas"
+  fi
+done
+
+# Verify placement enum values match
+CONFIG_PLACEMENT_ENUM=$(jq -r '.properties.plugins.items.properties.placement.enum // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_PLACEMENT_ENUM=$(jq -r '.properties.bifrost.properties.plugins.properties.custom.items.properties.placement.enum // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_PLACEMENT_ENUM" != "$HELM_PLACEMENT_ENUM" ]; then
+  echo "❌ Plugin placement enum mismatch:"
+  echo "   Config: [$CONFIG_PLACEMENT_ENUM]"
+  echo "   Helm:   [$HELM_PLACEMENT_ENUM]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Plugin placement enum values match: [$CONFIG_PLACEMENT_ENUM]"
+fi
+
 # Check maxim plugin config required fields (api_key)
 # Note: Helm allows either config.api_key OR secretRef.name via anyOf
 CONFIG_MAXIM_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "maxim") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
@@ -571,6 +580,76 @@ if [ "$CONFIG_MAXIM_REQUIRED" != "$HELM_MAXIM_REQUIRED" ]; then
 else
   echo "✅ Maxim plugin config required fields match: [$CONFIG_MAXIM_REQUIRED]"
 fi
+
+echo ""
+echo "🔍 Checking property existence for Gap 1-8 fields..."
+
+# Helper function to check a property exists in a schema
+check_property_exists() {
+  local label=$1
+  local jq_path=$2
+  local schema_file=$3
+  if ! jq -e "$jq_path" "$schema_file" > /dev/null 2>&1; then
+    echo "  ❌ Missing: $label"
+    ERRORS=$((ERRORS + 1))
+  else
+    echo "  ✅ Present: $label"
+  fi
+}
+
+# Gap 1+2: Client properties in Helm schema
+echo ""
+echo "  Checking client properties (Gap 1+2)..."
+for prop in asyncJobResultTTL requiredHeaders loggingHeaders allowedHeaders mcpAgentDepth mcpToolExecutionTimeout mcpCodeModeBindingLevel mcpToolSyncInterval hideDeletedVirtualKeysInFilters; do
+  check_property_exists "client.$prop" ".properties.bifrost.properties.client.properties.${prop}" "$HELM_SCHEMA"
+done
+
+# Gap 3: OTel plugin config properties
+echo ""
+echo "  Checking OTel plugin properties (Gap 3)..."
+for prop in headers tls_ca_cert insecure; do
+  check_property_exists "otel.config.$prop" ".properties.bifrost.properties.plugins.properties.otel.properties.config.properties.${prop}" "$HELM_SCHEMA"
+done
+
+# Gap 4: Governance plugin config properties
+echo ""
+echo "  Checking governance plugin properties (Gap 4)..."
+for prop in required_headers is_enterprise; do
+  check_property_exists "governance.plugin.config.$prop" ".properties.bifrost.properties.plugins.properties.governance.properties.config.properties.${prop}" "$HELM_SCHEMA"
+done
+
+# Gap 5: Governance top-level properties
+echo ""
+echo "  Checking governance top-level properties (Gap 5)..."
+for prop in modelConfigs providers; do
+  check_property_exists "governance.$prop" ".properties.bifrost.properties.governance.properties.${prop}" "$HELM_SCHEMA"
+done
+
+# Gap 6: MCP properties
+echo ""
+echo "  Checking MCP properties (Gap 6)..."
+check_property_exists "mcp.toolSyncInterval" ".properties.bifrost.properties.mcp.properties.toolSyncInterval" "$HELM_SCHEMA"
+check_property_exists "mcp.toolManagerConfig.codeModeBindingLevel" '.properties.bifrost.properties.mcp.properties.toolManagerConfig.properties.codeModeBindingLevel' "$HELM_SCHEMA"
+for prop in clientId isCodeModeClient toolSyncInterval isPingAvailable; do
+  check_property_exists "mcpClientConfig.$prop" '.["$defs"].mcpClientConfig.properties.'"${prop}" "$HELM_SCHEMA"
+done
+
+# Gap 7: Cluster properties
+echo ""
+echo "  Checking cluster properties (Gap 7)..."
+check_property_exists "cluster.region" ".properties.bifrost.properties.cluster.properties.region" "$HELM_SCHEMA"
+
+# Gap 8: Miscellaneous properties
+echo ""
+echo "  Checking miscellaneous properties (Gap 8)..."
+check_property_exists "telemetry.custom_labels" ".properties.bifrost.properties.plugins.properties.telemetry.properties.config.properties.custom_labels" "$HELM_SCHEMA"
+check_property_exists "semanticCache.default_cache_key" ".properties.bifrost.properties.plugins.properties.semanticCache.properties.config.properties.default_cache_key" "$HELM_SCHEMA"
+
+# Also verify these exist in config.schema.json
+echo ""
+echo "  Checking config.schema.json has is_ping_available + tool_pricing..."
+check_property_exists "mcp_client_config.is_ping_available" '."$defs".mcp_client_config.properties.is_ping_available' "$CONFIG_SCHEMA"
+check_property_exists "mcp_client_config.tool_pricing" '."$defs".mcp_client_config.properties.tool_pricing' "$CONFIG_SCHEMA"
 
 echo ""
 if [ $ERRORS -gt 0 ]; then

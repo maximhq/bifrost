@@ -7,6 +7,7 @@ icon: "v"
 ## Overview
 
 Vertex AI is Google's unified ML platform providing access to Google's Gemini models, Anthropic Claude models, and other third-party LLMs through a single API. Bifrost performs conversions including:
+
 - **Multi-model support** - Unified interface for Gemini, Anthropic, and third-party models
 - **OAuth2 authentication** - Service account credentials with automatic token refresh
 - **Project and region management** - Automatic endpoint construction from GCP project/region
@@ -17,27 +18,586 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 
 ### Supported Operations
 
-| Operation | Non-Streaming | Streaming | Endpoint |
-|-----------|---------------|-----------|----------|
-| Chat Completions | ✅ | ✅ | `/generate` |
-| Responses API | ✅ | ✅ | `/messages` |
-| Embeddings | ✅ | - | `/embeddings` |
-| Image Generation | ✅ | - | `/generateContent` or `/predict` (Imagen) |
-| Image Edit | ✅ | - | `/generateContent` or `/predict` (Imagen) |
-| Video Generation | ✅ | - | `/predictLongRunning` (Veo models only) |
-| Image Variation | ❌ | - | Not supported |
-| List Models | ✅ | - | `/models` |
-| Text Completions | ❌ | ❌ | - |
-| Speech (TTS) | ❌ | ❌ | - |
-| Transcriptions (STT) | ❌ | ❌ | - |
-| Files | ❌ | ❌ | - |
-| Batch | ❌ | ❌ | - |
+| Operation            | Non-Streaming | Streaming | Endpoint                                  |
+| -------------------- | ------------- | --------- | ----------------------------------------- |
+| Chat Completions     | ✅            | ✅        | `/generate`                               |
+| Responses API        | ✅            | ✅        | `/messages`                               |
+| Embeddings           | ✅            | -         | `/embeddings`                             |
+| Image Generation     | ✅            | -         | `/generateContent` or `/predict` (Imagen) |
+| Image Edit           | ✅            | -         | `/generateContent` or `/predict` (Imagen) |
+| Video Generation     | ✅            | -         | `/predictLongRunning` (Veo models only)   |
+| Image Variation      | ❌            | -         | Not supported                             |
+| List Models          | ✅            | -         | `/models`                                 |
+| Text Completions     | ❌            | ❌        | -                                         |
+| Speech (TTS)         | ❌            | ❌        | -                                         |
+| Transcriptions (STT) | ❌            | ❌        | -                                         |
+| Files                | ❌            | ❌        | -                                         |
+| Batch                | ❌            | ❌        | -                                         |
 
 <Note>
 **Unsupported Operations** (❌): Text Completions, Speech, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
 
 **Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models.
+
 </Note>
+
+---
+
+## Setup & Configuration
+
+Vertex AI requires Google Cloud project configuration and authentication credentials. Three authentication methods are supported.
+
+<Note>
+  The `aliases` field (mapping model names to fine-tuned model IDs or endpoint
+  identifiers) requires **v1.5.0-prerelease2 or later**. On v1.4.x, use
+  `deployments` inside `vertex_key_config` instead - see the [v1.5.0 Migration
+  Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases)
+  for details.
+</Note>
+
+### 1. Service Account JSON (Recommended for Production)
+
+Provide a credential JSON string in `auth_credentials`. The JSON must contain a `type` field. Supported types: `service_account` (most common), `impersonated_service_account`, `authorized_user`, `external_account`, `external_account_authorized_user`.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-vertex-service-account-auth-setup.png"
+    alt="Google Vertex AI Service Account (JSON) authentication setup in the Bifrost Web UI showing Project ID, Region, and Auth Credentials fields"
+  />
+</Frame>
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"Service Account (JSON)"**
+4. Set **Project ID**: Your Google Cloud project ID
+5. Set **Project Number** (Required only for fine-tuned models): Your GCP project number; leave blank for standard models
+6. Set **Region**: e.g., `us-central1`
+7. Set **Auth Credentials**: Paste your service account JSON or reference an env var (e.g., `env.VERTEX_CREDENTIALS`)
+8. Configure **Aliases**: Map model names to fine-tuned model IDs (if using fine-tuned models)
+9. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "vertex"}'
+
+# Step 2: Create a key (Service Account JSON)
+curl -X POST http://localhost:8080/api/providers/vertex/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "vertex-sa-key",
+    "value": "",
+    "models": ["*"],
+    "weight": 1.0,
+    "vertex_key_config": {
+      "project_id": "env.VERTEX_PROJECT_ID",
+      "region": "us-central1",
+      "auth_credentials": "env.VERTEX_CREDENTIALS"
+    }
+  }'
+```
+
+<Note>
+  **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
+  /api/providers` body - there is no separate `/api/providers/{provider}/keys`
+  endpoint. - Use `deployments` inside `vertex_key_config` instead of the
+  top-level `aliases` field for fine-tuned model mappings.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-sa-key",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us-central1",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+  On **v1.4.x**, use `deployments` inside `vertex_key_config` instead of the
+  top-level `aliases` field for fine-tuned model mappings.
+</Note>
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Vertex:
+        return []schemas.Key{
+            {
+                Value:  schemas.EnvVar{}, // Leave empty when using service account credentials
+                Models: []string{"*"},
+                Weight: 1.0,
+                VertexKeyConfig: &schemas.VertexKeyConfig{
+                    ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+                    Region:          *schemas.NewEnvVar("us-central1"),
+                    AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"), // full service account JSON
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 2. Application Default Credentials
+
+Leave `auth_credentials` empty. Bifrost calls `google.FindDefaultCredentials()` - Google's ADC library - which resolves credentials in this order:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` env var (path to a JSON credential file)
+2. Application default credential file (`~/.config/gcloud/application_default_credentials.json`, written by `gcloud auth application-default login`)
+3. GCE/GKE/Cloud Run/App Engine metadata server (attached service account or Workload Identity)
+
+<Tabs>
+
+<Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-vertex-default-service-account-auth-setup.png"
+    alt="Google Vertex AI Application Default Credentials setup in the Bifrost Web UI showing Project ID and Region fields with no credential inputs"
+  />
+</Frame>
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"Service Account (Attached)"**
+4. Set **Project ID**: Your Google Cloud project ID
+5. Set **Project Number** (Required only for fine-tuned models): Your GCP project number; leave blank for standard models
+6. Set **Region**: e.g., `us-central1`
+7. Configure **Aliases** if needed
+8. Save
+
+Ensure `GOOGLE_APPLICATION_CREDENTIALS` is set in your environment, or that Workload Identity / gcloud is configured.
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "vertex"}'
+
+# Step 2: Create a key (Application Default Credentials)
+curl -X POST http://localhost:8080/api/providers/vertex/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "vertex-adc-key",
+    "value": "",
+    "models": ["*"],
+    "weight": 1.0,
+    "vertex_key_config": {
+      "project_id": "env.VERTEX_PROJECT_ID",
+      "region": "us-central1",
+      "auth_credentials": ""
+    }
+  }'
+```
+
+<Note>
+  **On v1.4.x**, pass `keys` directly in the `POST /api/providers` body - there
+  is no separate `/api/providers/{provider}/keys` endpoint.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-adc-key",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us-central1",
+            "auth_credentials": ""
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Vertex:
+        return []schemas.Key{
+            {
+                Value:  schemas.EnvVar{},
+                Models: []string{"*"},
+                Weight: 1.0,
+                VertexKeyConfig: &schemas.VertexKeyConfig{
+                    ProjectID: *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+                    Region:    *schemas.NewEnvVar("us-central1"),
+                    // Leave AuthCredentials empty - uses Application Default Credentials
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 3. API Key (Gemini and Fine-Tuned Models Only)
+
+Set `value` to your Vertex API key. API key authentication is supported only for Gemini models and fine-tuned Gemini models. For Anthropic models on Vertex, use Service Account or Application Default Credentials.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-vertex-api-key-auth-setup.png"
+    alt="Google Vertex AI API Key authentication setup in the Bifrost Web UI showing API Key, Project ID, Region, and Project Number fields"
+  />
+</Frame>
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"API Key"**
+4. Set **API Key**: Your Vertex AI API key
+5. Set **Project ID**: Your Google Cloud project ID
+6. Set **Project Number** (Required only for fine-tuned models): Your GCP project number; leave blank for standard models
+7. Set **Region**: e.g., `us-central1`
+8. Configure **Aliases**: Map short names to fine-tuned model IDs (e.g., `my-model` → `123456789`)
+9. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "vertex"}'
+
+# Step 2: Create a key (API Key - Gemini + fine-tuned models)
+curl -X POST http://localhost:8080/api/providers/vertex/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "vertex-api-key",
+    "value": "env.VERTEX_API_KEY",
+    "models": ["gemini-pro", "gemini-2.0-flash", "my-fine-tuned-model"],
+    "weight": 1.0,
+    "aliases": {
+      "my-fine-tuned-model": "123456789"
+    },
+    "vertex_key_config": {
+      "project_id": "env.VERTEX_PROJECT_ID",
+      "project_number": "env.VERTEX_PROJECT_NUMBER",
+      "region": "us-central1"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, two differences apply:
+- Pass `keys` directly in the `POST /api/providers` body - there is no separate `/api/providers/{provider}/keys` endpoint.
+- Replace the top-level `aliases` with `"deployments"` inside `vertex_key_config`:
+```json
+"vertex_key_config": {
+  "project_id": "env.VERTEX_PROJECT_ID",
+  "region": "us-central1",
+  "deployments": {
+    "my-fine-tuned-model": "123456789"
+  }
+}
+```
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-api-key",
+          "value": "env.VERTEX_API_KEY",
+          "models": ["gemini-pro", "gemini-2.0-flash", "my-fine-tuned-model"],
+          "weight": 1.0,
+          "aliases": {
+            "my-fine-tuned-model": "123456789"
+          },
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "project_number": "env.VERTEX_PROJECT_NUMBER",
+            "region": "us-central1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+  On **v1.4.x**, use `deployments` inside `vertex_key_config` instead of the
+  top-level `aliases` field.
+</Note>
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Vertex:
+        return []schemas.Key{
+            {
+                Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"), // only when using Gemini or fine-tuned models
+                Models: []string{"gemini-pro", "gemini-2.0-flash", "my-fine-tuned-model"},
+                Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "my-fine-tuned-model": "123456789",
+                },
+                VertexKeyConfig: &schemas.VertexKeyConfig{
+                    ProjectID:     *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+                    ProjectNumber: *schemas.NewEnvVar("env.VERTEX_PROJECT_NUMBER"), // required for fine-tuned models
+                    Region:        *schemas.NewEnvVar("us-central1"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+  Vertex AI support for fine-tuned models is currently in beta. Requests to
+  non-Gemini fine-tuned models may fail, so please test and report any issues.
+</Note>
+
+**`vertex_key_config` fields:**
+
+| Field              | Required | Description                                            |
+| ------------------ | -------- | ------------------------------------------------------ |
+| `project_id`       | Yes      | Google Cloud project ID                                |
+| `region`           | Yes      | GCP region (e.g., `us-central1`, `eu-west1`, `global`) |
+| `auth_credentials` | No       | Service account JSON string (leave empty for ADC)      |
+| `project_number`   | No       | GCP project number (required for fine-tuned models)    |
+
+**Key-level fields:**
+
+| Field     | Required | Description                                                                               |
+| --------- | -------- | ----------------------------------------------------------------------------------------- |
+| `value`   | No       | Vertex API key (Gemini and fine-tuned models only; leave empty for Service Account / ADC) |
+| `aliases` | No       | Map model names to fine-tuned model IDs or endpoint identifiers (v1.5.0-prerelease2+)     |
+| `models`  | Yes      | Models this key can serve; use `["*"]` to allow all                                       |
+
+---
+
+## GKE Workload Identity Federation
+
+When running Bifrost on GKE, [Workload Identity Federation](https://cloud.google.com/kubernetes-engine/docs/concepts/workload-identity) (WIF) lets pods authenticate to Vertex AI without managing service account keys. The pod inherits an IAM identity through the Kubernetes ServiceAccount, and Bifrost picks it up automatically via [Application Default Credentials](#2-application-default-credentials).
+
+**What you need:**
+
+1. The GCP-side prerequisites below (API enabled, IAM service account, WIF binding)
+2. A Bifrost Vertex key using **"Service Account (Attached)"** auth - see [Application Default Credentials](#2-application-default-credentials) for Web UI, API, config.json, and Go SDK setup. For Helm, see [Helm - Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai).
+3. The Kubernetes ServiceAccount annotated for WIF:
+
+```bash
+kubectl annotate serviceaccount KSA_NAME \
+  --namespace NAMESPACE \
+  iam.gke.io/gcp-service-account=IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com
+```
+
+Replace `IAM_SA_NAME` with the IAM Service Account created in [Step 3](#gcp-prerequisites) below.
+
+### GCP Prerequisites
+
+<Accordion title="Step 1: Enable the Vertex AI API">
+
+The Vertex AI API must be enabled in your project. Search for `aiplatform` in the [API Library](https://console.cloud.google.com/apis/library) or run:
+
+```bash
+gcloud services enable aiplatform.googleapis.com --project=PROJECT_ID
+```
+
+WIF uses the IAM Credentials API for token exchange. Enable it as well:
+
+```bash
+gcloud services enable iamcredentials.googleapis.com --project=PROJECT_ID
+```
+
+</Accordion>
+
+<Accordion title="Step 2: Enable Workload Identity on GKE">
+
+**Autopilot clusters:** WIF is always enabled. Skip this step.
+
+**Standard clusters:** Enable the workload identity pool and GKE metadata server:
+
+```bash
+# Enable Workload Identity on the cluster
+gcloud container clusters update CLUSTER_NAME \
+  --location=LOCATION \
+  --workload-pool=PROJECT_ID.svc.id.goog
+
+# Enable GKE metadata server on each node pool
+gcloud container node-pools update NODEPOOL_NAME \
+  --cluster=CLUSTER_NAME \
+  --location=LOCATION \
+  --workload-metadata=GKE_METADATA
+```
+
+Verify:
+
+```bash
+gcloud container clusters describe CLUSTER_NAME \
+  --location=LOCATION \
+  --format="value(workloadIdentityConfig.workloadPool)"
+# Expected: PROJECT_ID.svc.id.goog
+```
+
+</Accordion>
+
+<Accordion title="Step 3: Create an IAM Service Account and grant Vertex access">
+
+Create a dedicated IAM Service Account (or use an existing one) and grant it the Vertex AI User role:
+
+```bash
+# Create the service account
+gcloud iam service-accounts create IAM_SA_NAME \
+  --display-name="Bifrost Vertex AI" \
+  --project=PROJECT_ID
+
+# Grant Vertex AI access
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+```
+
+</Accordion>
+
+<Accordion title="Step 4: Bind the Kubernetes ServiceAccount to the IAM Service Account">
+
+Allow the Kubernetes ServiceAccount to impersonate the IAM Service Account:
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding \
+  IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="serviceAccount:PROJECT_ID.svc.id.goog[NAMESPACE/KSA_NAME]"
+```
+
+Replace `NAMESPACE` and `KSA_NAME` with your Bifrost pod's namespace and Kubernetes ServiceAccount name.
+
+Then annotate the Kubernetes ServiceAccount so GKE knows which IAM identity to map:
+
+```bash
+kubectl annotate serviceaccount KSA_NAME \
+  --namespace NAMESPACE \
+  iam.gke.io/gcp-service-account=IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com
+```
+
+If deploying with the Bifrost Helm chart, set the annotation via `serviceAccount.annotations` in your values file - see [Helm - Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai) for the full example.
+
+</Accordion>
+
+### Verify
+
+From inside the Bifrost pod, confirm the GKE metadata server returns a token:
+
+```bash
+kubectl exec -n NAMESPACE POD_NAME -- \
+  wget -qO- --header="Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+```
+
+Replace `NAMESPACE` and `POD_NAME` with your Bifrost namespace and any running Bifrost pod name (e.g., `bifrost-0` for a StatefulSet or use `kubectl get pods -n NAMESPACE` to find it).
+
+A JSON response with an `access_token` field confirms WIF is working. Then send a request through Bifrost to a Vertex model (e.g., `vertex/gemini-2.5-flash`) to verify end-to-end.
+
+### Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+| --- | --- | --- |
+| `"could not find default credentials"` | GKE metadata server not enabled, or Kubernetes ServiceAccount missing WIF annotation | Enable GKE metadata server on the node pool ([Step 2](#gcp-prerequisites)); verify the `iam.gke.io/gcp-service-account` annotation on the ServiceAccount ([Step 4](#gcp-prerequisites)) |
+| `403 Forbidden` from Vertex API | IAM Service Account lacks Vertex permissions | Grant `roles/aiplatform.user` to the IAM Service Account |
+| `403` during token exchange | WIF binding missing | Run the `add-iam-policy-binding` command from Step 4; confirm `roles/iam.workloadIdentityUser` is granted |
+| Wrong project or region errors | Bifrost config mismatch | Check `project_id` and `region` in the Vertex key configuration |
+
+---
+
+## Beta Headers
+
+For Anthropic models on Vertex AI, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request.
+
+**Supported**: `computer-use-*`, `compact-*`, `context-management-*`, `interleaved-thinking-*`, `context-1m-*`
+
+**Not supported**: `structured-outputs-*`, `advanced-tool-use-*`, `mcp-client-*`, `prompt-caching-scope-*`, `files-api-*`, `skills-*`, `fast-mode-*`, `redact-thinking-*`
+
+You can override these defaults per provider via the **Beta Headers** tab in provider configuration or via [`beta_header_overrides`](/quickstart/gateway/provider-configuration#beta-header-overrides). See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
+
+<Frame>
+  <img
+    src="/media/vertex-ai-setting-anthropic-beta-headers.png"
+    alt="Vertex AI Beta Headers configuration tab showing supported and unsupported Anthropic beta features with override options"
+  />
+</Frame>
 
 ---
 
@@ -47,9 +607,9 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 
 ### Core Parameter Mapping
 
-| Parameter | Vertex Handling | Notes |
-|-----------|---|-------|
-| `model` | Maps to Vertex model ID | Region-specific endpoint constructed automatically |
+| Parameter        | Vertex Handling           | Notes                                                |
+| ---------------- | ------------------------- | ---------------------------------------------------- |
+| `model`          | Maps to Vertex model ID   | Region-specific endpoint constructed automatically   |
 | All other params | Model-specific conversion | Converted per underlying provider (Gemini/Anthropic) |
 
 ### Key Configuration
@@ -67,6 +627,7 @@ The key configuration for Vertex requires Google Cloud credentials:
 ```
 
 **Configuration Details**:
+
 - `project_id` - GCP project ID (required)
 - `region` - GCP region for API endpoints (required)
   - Examples: `us-central1`, `us-west1`, `eu-west1`, `global`
@@ -75,8 +636,9 @@ The key configuration for Vertex requires Google Cloud credentials:
 ### Authentication Methods
 
 1. **Service Account JSON** (recommended for production)
+
    ```json
-   {"auth_credentials": "{full-service-account-json}"}
+   { "auth_credentials": "{full-service-account-json}" }
    ```
 
 2. **Application Default Credentials** (for local development)
@@ -123,12 +685,12 @@ Refer to [Anthropic documentation](/providers/supported-providers/anthropic) for
 
 The region determines the API endpoint:
 
-| Region | Endpoint | Purpose |
-|--------|----------|---------|
-| `us-central1` | `us-central1-aiplatform.googleapis.com` | US Central |
-| `us-west1` | `us-west1-aiplatform.googleapis.com` | US West |
-| `eu-west1` | `eu-west1-aiplatform.googleapis.com` | Europe West |
-| `global` | `aiplatform.googleapis.com` | Global (no region prefix) |
+| Region        | Endpoint                                | Purpose                   |
+| ------------- | --------------------------------------- | ------------------------- |
+| `us-central1` | `us-central1-aiplatform.googleapis.com` | US Central                |
+| `us-west1`    | `us-west1-aiplatform.googleapis.com`    | US West                   |
+| `eu-west1`    | `eu-west1-aiplatform.googleapis.com`    | Europe West               |
+| `global`      | `aiplatform.googleapis.com`             | Global (no region prefix) |
 
 Availability varies by region. Check [GCP documentation](https://cloud.google.com/vertex-ai/docs/general/locations) for model availability.
 
@@ -149,12 +711,12 @@ The Responses API is available for both Anthropic (Claude) and Gemini models on 
 
 ### Core Parameter Mapping
 
-| Parameter | Vertex Handling | Notes |
-|-----------|---|-------|
-| `instructions` | Becomes system message | Model-specific conversion |
-| `input` | Converted to messages | String or array support |
-| `max_output_tokens` | Model-specific field mapping | Gemini vs Anthropic conversion |
-| All other params | Model-specific conversion | Converted per underlying provider |
+| Parameter           | Vertex Handling              | Notes                             |
+| ------------------- | ---------------------------- | --------------------------------- |
+| `instructions`      | Becomes system message       | Model-specific conversion         |
+| `input`             | Converted to messages        | String or array support           |
+| `max_output_tokens` | Model-specific field mapping | Gemini vs Anthropic conversion    |
+| All other params    | Model-specific conversion    | Converted per underlying provider |
 
 ### Gemini Models
 
@@ -163,6 +725,7 @@ For Gemini models, conversion follows Gemini's Responses API format.
 ### Anthropic Models (Claude)
 
 For Anthropic models, conversion follows Anthropic's message format:
+
 - `instructions` becomes system message
 - `reasoning` mapped to `thinking` structure
 
@@ -220,9 +783,9 @@ Embeddings are supported for Gemini and other models that support embedding gene
 
 ### Core Parameters
 
-| Parameter | Vertex Mapping | Notes |
-|-----------|---|-------|
-| `input` | `instances[].content` | Text to embed |
+| Parameter    | Vertex Mapping                    | Notes                |
+| ------------ | --------------------------------- | -------------------- |
+| `input`      | `instances[].content`             | Text to embed        |
 | `dimensions` | `parameters.outputDimensionality` | Optional output size |
 
 ### Advanced Parameters
@@ -273,11 +836,11 @@ resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
 
 #### Embedding Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `task_type` | string | Task type hint: `RETRIEVAL_QUERY`, `RETRIEVAL_DOCUMENT`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING` (optional) |
-| `title` | string | Optional title to help model produce better embeddings (used with task_type) |
-| `autoTruncate` | boolean | Auto-truncate input to max tokens (defaults to true) |
+| Parameter      | Type    | Description                                                                                                               |
+| -------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `task_type`    | string  | Task type hint: `RETRIEVAL_QUERY`, `RETRIEVAL_DOCUMENT`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING` (optional) |
+| `title`        | string  | Optional title to help model produce better embeddings (used with task_type)                                              |
+| `autoTruncate` | boolean | Auto-truncate input to max tokens (defaults to true)                                                                      |
 
 ### Task Type Effects
 
@@ -308,6 +871,7 @@ Embeddings response includes vectors and truncation information:
 ```
 
 **Response Fields**:
+
 - `values` - Embedding vector as floats
 - `statistics.token_count` - Input token count
 - `statistics.truncated` - Whether input was truncated due to length
@@ -322,11 +886,11 @@ Image Generation is supported for Gemini and Imagen on Vertex AI. The provider a
 
 ### Core Parameter Mapping
 
-| Parameter | Vertex Handling | Notes |
-|-----------|---|-------|
-| `model` | Mapped to deployment/model identifier | Model type detected automatically |
-| `prompt` | Model-specific conversion | Converted per underlying provider (Gemini/Imagen) |
-| All other params | Model-specific conversion | Converted per underlying provider |
+| Parameter        | Vertex Handling                       | Notes                                             |
+| ---------------- | ------------------------------------- | ------------------------------------------------- |
+| `model`          | Mapped to deployment/model identifier | Model type detected automatically                 |
+| `prompt`         | Model-specific conversion             | Converted per underlying provider (Gemini/Imagen) |
+| All other params | Model-specific conversion             | Converted per underlying provider                 |
 
 ### Model Type Detection
 
@@ -404,29 +968,27 @@ Image generation streaming is not supported by Vertex AI.
 
 # 5. Image Edit
 
-<Warning>
-Requests use **multipart/form-data**, not JSON.
-</Warning>
+<Warning>Requests use **multipart/form-data**, not JSON.</Warning>
 
 Image Edit is supported for Gemini and Imagen models on Vertex AI. The provider automatically routes to the appropriate format based on the model type.
 
 **Request Parameters**
 
-| Parameter | Type | Required | Notes |
-|-----------|------|----------|-------|
-| `model` | string | ✅ | Model identifier (must be Gemini or Imagen model) |
-| `prompt` | string | ✅ | Text description of the edit |
-| `image[]` | binary | ✅ | Image file(s) to edit (supports multiple images) |
-| `mask` | binary | ❌ | Mask image file |
-| `type` | string | ❌ | Edit type: `"inpainting"`, `"outpainting"`, `"inpaint_removal"`, `"bgswap"` (Imagen only) |
-| `n` | int | ❌ | Number of images to generate (1-10) |
-| `output_format` | string | ❌ | Output format: `"png"`, `"webp"`, `"jpeg"` |
-| `output_compression` | int | ❌ | Compression level (0-100%) |
-| `seed` | int | ❌ | Seed for reproducibility (via `ExtraParams["seed"]`) |
-| `negative_prompt` | string | ❌ | Negative prompt (via `ExtraParams["negativePrompt"]`) |
-| `maskMode` | string | ❌ | Mask mode (via `ExtraParams["maskMode"]`, Imagen only): `"MASK_MODE_USER_PROVIDED"`, `"MASK_MODE_BACKGROUND"`, `"MASK_MODE_FOREGROUND"`, `"MASK_MODE_SEMANTIC"` |
-| `dilation` | float | ❌ | Mask dilation (via `ExtraParams["dilation"]`, Imagen only): Range [0, 1] |
-| `maskClasses` | int[] | ❌ | Mask classes (via `ExtraParams["maskClasses"]`, Imagen only): For `MASK_MODE_SEMANTIC` |
+| Parameter            | Type   | Required | Notes                                                                                                                                                           |
+| -------------------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`              | string | ✅       | Model identifier (must be Gemini or Imagen model)                                                                                                               |
+| `prompt`             | string | ✅       | Text description of the edit                                                                                                                                    |
+| `image[]`            | binary | ✅       | Image file(s) to edit (supports multiple images)                                                                                                                |
+| `mask`               | binary | ❌       | Mask image file                                                                                                                                                 |
+| `type`               | string | ❌       | Edit type: `"inpainting"`, `"outpainting"`, `"inpaint_removal"`, `"bgswap"` (Imagen only)                                                                       |
+| `n`                  | int    | ❌       | Number of images to generate (1-10)                                                                                                                             |
+| `output_format`      | string | ❌       | Output format: `"png"`, `"webp"`, `"jpeg"`                                                                                                                      |
+| `output_compression` | int    | ❌       | Compression level (0-100%)                                                                                                                                      |
+| `seed`               | int    | ❌       | Seed for reproducibility (via `ExtraParams["seed"]`)                                                                                                            |
+| `negative_prompt`    | string | ❌       | Negative prompt (via `ExtraParams["negativePrompt"]`)                                                                                                           |
+| `maskMode`           | string | ❌       | Mask mode (via `ExtraParams["maskMode"]`, Imagen only): `"MASK_MODE_USER_PROVIDED"`, `"MASK_MODE_BACKGROUND"`, `"MASK_MODE_FOREGROUND"`, `"MASK_MODE_SEMANTIC"` |
+| `dilation`           | float  | ❌       | Mask dilation (via `ExtraParams["dilation"]`, Imagen only): Range [0, 1]                                                                                        |
+| `maskClasses`        | int[]  | ❌       | Mask classes (via `ExtraParams["maskClasses"]`, Imagen only): For `MASK_MODE_SEMANTIC`                                                                          |
 
 ---
 
@@ -440,6 +1002,7 @@ Vertex uses the same conversion functions as Gemini:
 **Model Validation**: Only Gemini and Imagen models are supported. Other models return `ConfigurationError`.
 
 **Request Body Processing**:
+
 - All request bodies are converted to `map[string]interface{}` for Vertex API compatibility
 - The `region` field is removed before sending to Vertex API
 - For Gemini models, unsupported fields are stripped via `stripVertexGeminiUnsupportedFields()` (removes `id` from function_call and function_response)
@@ -452,6 +1015,7 @@ Vertex uses the same conversion functions as Gemini:
 **Endpoint Selection**
 
 The provider automatically selects the endpoint based on model type:
+
 - **Gemini models**: `/v1/projects/{projectID}/locations/{region}/publishers/google/models/{model}:generateContent`
 - **Imagen models**: `/v1/projects/{projectID}/locations/{region}/publishers/google/models/{model}:predict`
 
@@ -495,7 +1059,9 @@ Lists models available in the specified project and region with metadata and dep
 ## Custom vs Non-Custom Models
 
 <Warning>
-**Important**: Vertex AI's List Models API **only returns custom fine-tuned models** that have been deployed to your project. It does NOT return standard foundation models (Gemini, Claude, etc.).
+  **Important**: Vertex AI's List Models API **only returns custom fine-tuned
+  models** that have been deployed to your project. It does NOT return standard
+  foundation models (Gemini, Claude, etc.).
 </Warning>
 
 To provide a complete model listing experience, Bifrost performs **multi-pass model discovery**:
@@ -508,27 +1074,29 @@ To provide a complete model listing experience, Bifrost performs **multi-pass mo
    - Custom models are identified by having deployment values that contain only digits
    - Example: `"deployment": "1234567890"`
 
-2. **Second Pass - Non-Custom Models from Deployments**
-   - Adds standard foundation models from your `deployments` configuration
+2. **Second Pass - Non-Custom Models from Aliases**
+   - Adds standard foundation models from your `aliases` configuration
    - Non-custom models have alphanumeric deployment values (e.g., `gemini-pro`, `claude-3-5-sonnet`)
-   - Filters by `allowedModels` if specified
+   - Filters by the key-level `models` allowlist, if specified
    - Example: `"deployment": "gemini-2.0-flash"`
 
-3. **Third Pass - Allowed Models Not in Deployments**
-   - Adds models specified in `allowedModels` that weren't in the `deployments` map
+3. **Third Pass - Allowed Models Not in Aliases**
+   - Adds models specified in `models` that weren't in the `aliases` map
    - Ensures all explicitly allowed models appear in the list
    - Uses the model name itself as the deployment value
    - Skips digit-only model IDs (reserved for custom models)
 
 ### Model Filtering Logic
 
-- **If `allowedModels` is empty**: All models from all three passes are included
-- **If `allowedModels` is non-empty**: Only models/deployments with keys in `allowedModels` are included
+- **If `models` is empty and no aliases are configured**: No models are returned
+- **If `models` is empty but aliases are configured**: Only aliased models are returned
+- **If `models` is `["*"]`**: All models from all three passes are included (unrestricted)
+- **If `models` is non-empty**: Only models/aliases whose request names appear in `models` are included
 - **Duplicate Prevention**: Each model ID is tracked to prevent duplicates across passes
 
 ### Model Name Formatting
 
-Non-custom models from deployments and allowed models are automatically formatted for display:
+Non-custom models from aliases and allowed models are automatically formatted for display:
 
 - `gemini-pro` → "Gemini Pro"
 - `claude-3-5-sonnet` → "Claude 3 5 Sonnet"
@@ -543,13 +1111,13 @@ Formatting uses title case and converts hyphens/underscores to spaces.
 
 ```json
 {
+  "aliases": {
+    "my-gemini-ft": "1234567890",
+    "my-claude-ft": "9876543210"
+  },
   "vertex_key_config": {
     "project_id": "my-project",
-    "region": "us-central1",
-    "deployments": {
-      "my-gemini-ft": "1234567890",
-      "my-claude-ft": "9876543210"
-    }
+    "region": "us-central1"
   }
 }
 ```
@@ -561,33 +1129,33 @@ This returns only your custom fine-tuned models from the API.
 
 ```json
 {
+  "aliases": {
+    "gemini-2.0-flash": "gemini-2.0-flash",
+    "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022"
+  },
   "vertex_key_config": {
     "project_id": "my-project",
-    "region": "us-central1",
-    "deployments": {
-      "gemini-2.0-flash": "gemini-2.0-flash",
-      "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022"
-    }
+    "region": "us-central1"
   }
 }
 ```
 
-This returns both custom models AND foundation models from deployments.
+This returns both custom models AND foundation models from aliases.
 
 </Tab>
 <Tab title="With Allowed Models Filter">
 
 ```json
 {
+  "models": ["gemini-2.0-flash", "claude-3-5-sonnet"],
+  "aliases": {
+    "gemini-2.0-flash": "gemini-2.0-flash",
+    "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022",
+    "gemini-1.5-pro": "gemini-1.5-pro"
+  },
   "vertex_key_config": {
     "project_id": "my-project",
-    "region": "us-central1",
-    "deployments": {
-      "gemini-2.0-flash": "gemini-2.0-flash",
-      "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022",
-      "gemini-1.5-pro": "gemini-1.5-pro"
-    },
-    "allowedModels": ["gemini-2.0-flash", "claude-3-5-sonnet"]
+    "region": "us-central1"
   }
 }
 ```
@@ -606,53 +1174,49 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 ## Caveats
 
 <Accordion title="Project ID and Region Required">
-**Severity**: High
-**Behavior**: Both project_id and region required for all operations
-**Impact**: Request fails without valid GCP project/region configuration
-**Code**: `vertex.go:127-138`
+  **Severity**: High **Behavior**: Both project_id and region required for all
+  operations **Impact**: Request fails without valid GCP project/region
+  configuration **Code**: `vertex.go:127-138`
 </Accordion>
 
 <Accordion title="OAuth2 Token Management">
-**Severity**: Medium
-**Behavior**: Tokens cached and automatically refreshed when expired
-**Impact**: First request slightly slower due to auth; cached for subsequent requests
-**Code**: `vertex.go:34-55`
+  **Severity**: Medium **Behavior**: Tokens cached and automatically refreshed
+  when expired **Impact**: First request slightly slower due to auth; cached for
+  subsequent requests **Code**: `vertex.go:34-55`
 </Accordion>
 
 <Accordion title="Anthropic Model Detection">
-**Severity**: Medium
-**Behavior**: Automatic detection of Anthropic vs Gemini models
-**Impact**: Different conversion logic applied transparently
-**Code**: `vertex.go` chat/responses endpoints
+  **Severity**: Medium **Behavior**: Automatic detection of Anthropic vs Gemini
+  models **Impact**: Different conversion logic applied transparently **Code**:
+  `vertex.go` chat/responses endpoints
 </Accordion>
 
 <Accordion title="Model-Specific Responses API Handling">
-**Severity**: Low
-**Behavior**: Responses API automatically routes to Anthropic or Gemini implementation based on model
-**Impact**: Different conversion logic applied transparently per model
-**Code**: `vertex.go:836-1080`
+  **Severity**: Low **Behavior**: Responses API automatically routes to
+  Anthropic or Gemini implementation based on model **Impact**: Different
+  conversion logic applied transparently per model **Code**:
+  `vertex.go:836-1080`
 </Accordion>
 
 <Accordion title="Anthropic Version Lock">
-**Severity**: Low
-**Behavior**: `anthropic_version` always set to `vertex-2023-10-16` for Claude
-**Impact**: Cannot override Anthropic version for Claude on Vertex
-**Code**: `utils.go:33, 71`
+  **Severity**: Low **Behavior**: `anthropic_version` always set to
+  `vertex-2023-10-16` for Claude **Impact**: Cannot override Anthropic version
+  for Claude on Vertex **Code**: `utils.go:33, 71`
 </Accordion>
 
-<Accordion title="Embeddings Float64 Conversion">
-**Severity**: Low
-**Behavior**: Vertex returns float64 embeddings, converted to float32 for Bifrost
-**Impact**: Minor precision loss (expected for embeddings)
-**Code**: `embedding.go:84-87`
+<Accordion title="Embeddings Precision Preservation">
+  **Severity**: Low **Behavior**: Vertex returns float64 embeddings, and Bifrost
+  preserves that precision in normalized embedding responses **Impact**: No
+  precision loss in the `/v1/embeddings` response path **Code**:
+  `embedding.go:84-91`
 </Accordion>
 
 <Accordion title="List Models API Returns Only Custom Models">
-**Severity**: High
-**Behavior**: Vertex AI's List Models API only returns custom fine-tuned models, NOT foundation models
-**Impact**: Bifrost performs three-pass discovery to include foundation models from deployments and allowedModels configuration
-**Why**: This is a Vertex AI API limitation - foundation models must be explicitly configured
-**Code**: `models.go:76-217`
+  **Severity**: High **Behavior**: Vertex AI's List Models API only returns
+  custom fine-tuned models, NOT foundation models **Impact**: Bifrost performs
+  three-pass discovery to include foundation models from aliases and the
+  key-level `models` allowlist **Why**: This is a Vertex AI API limitation -
+  foundation models must be explicitly configured **Code**: `models.go:76-217`
 </Accordion>
 
 ---
@@ -667,40 +1231,22 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 
 **Note**: For `global` region, endpoint is `https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/{resource}`
 
-## Setup & Configuration
-
-Vertex AI requires project configuration, region selection, and Google Cloud authentication. For detailed instructions on setting up Vertex AI, see the quickstart guides:
-
-<Tabs>
-<Tab title="Gateway">
-
-See **[Provider-Specific Authentication - Google Vertex](../../quickstart/gateway/provider-configuration#google-vertex)** in the Gateway Quickstart for configuration steps using Web UI, API, or config.json.
-
-</Tab>
-<Tab title="Go SDK">
-
-See **[Provider-Specific Authentication - Google Vertex](../../quickstart/go-sdk/provider-configuration#google-vertex)** in the Go SDK Quickstart for programmatic configuration examples.
-
-</Tab>
-</Tabs>
-
----
-
 ## Video Generation
 
 Vertex AI routes video generation through Gemini's Veo models using the `predictLongRunning` endpoint. All parameters are identical to [Gemini Video Generation](/providers/supported-providers/gemini#video-generation).
 
 <Note>
-Only Veo models are supported (e.g., `veo-2.0-generate-001`). Passing a non-Veo model name returns a configuration error.
+  Only Veo models are supported (e.g., `veo-2.0-generate-001`). Passing a
+  non-Veo model name returns a configuration error.
 </Note>
 
 **Supported Operations**
 
-| Operation | Supported | Notes |
-|-----------|-----------|-------|
-| Generate | ✅ | `POST /v1/videos` |
-| Retrieve | ✅ | `GET /v1/videos/{id}` |
-| Download | ✅ | `GET /v1/videos/{id}/content` |
-| Delete | ❌ | Not supported |
-| List | ❌ | Not supported |
-| Remix | ❌ | Not supported |
+| Operation | Supported | Notes                         |
+| --------- | --------- | ----------------------------- |
+| Generate  | ✅        | `POST /v1/videos`             |
+| Retrieve  | ✅        | `GET /v1/videos/{id}`         |
+| Download  | ✅        | `GET /v1/videos/{id}/content` |
+| Delete    | ❌        | Not supported                 |
+| List      | ❌        | Not supported                 |
+| Remix     | ❌        | Not supported                 |

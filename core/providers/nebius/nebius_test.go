@@ -20,6 +20,7 @@ func TestNebius(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Nebius,
@@ -31,29 +32,29 @@ func TestNebius(t *testing.T) {
 		EmbeddingModel:       "BAAI/bge-en-icl",
 		ImageGenerationModel: "black-forest-labs/flux-schnell",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        true,
-			TextCompletionStream:  true,
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              true,
-			ImageBase64:           true,
-			MultipleImages:        true,
-			ImageGeneration:       true,
-			CompleteEnd2End:       true,
-			ImageGenerationStream: false,
-			Embedding:             true, // Nebius supports embeddings
-			ListModels:            true,
+			TextCompletion:             true,
+			TextCompletionStream:       true,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   true,
+			ImageBase64:                true,
+			MultipleImages:             true,
+			ImageGeneration:            true,
+			CompleteEnd2End:            true,
+			ImageGenerationStream:      false,
+			Embedding:                  true, // Nebius supports embeddings
+			ListModels:                 true,
 		},
 	}
 
 	t.Run("NebiusTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

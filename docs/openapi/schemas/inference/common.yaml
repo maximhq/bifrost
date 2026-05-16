@@ -25,6 +25,8 @@ ModelProvider:
     - huggingface
     - nebius
     - xai
+    - runway
+    - fireworks
 
 Fallback:
   type: object
@@ -119,6 +121,10 @@ BifrostCacheDebug:
     cache_id:
       type: string
     hit_type:
+      type: string
+    requested_provider:
+      type: string
+    requested_model:
       type: string
     provider_used:
       type: string

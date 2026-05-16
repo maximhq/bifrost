@@ -1,0 +1,32 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "websocket": {
+    "max_connections_per_user": 100,
+    "transcript_buffer_size": 100,
+    "pool": {
+      "max_idle_per_key": 50,
+      "max_total_connections": 1000,
+      "idle_timeout_seconds": 600,
+      "max_connection_lifetime_seconds": 7200
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "sk-dummy",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}

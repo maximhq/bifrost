@@ -4,7 +4,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
+import {
+	ApiStructureFormFragment,
+	BetaHeadersFormFragment,
+	GovernanceFormFragment,
+	OpenAIConfigFormFragment,
+	ProxyFormFragment,
+} from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
@@ -15,9 +21,11 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) => {
+const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "azure"];
+
+const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, isAnthropicFamily: boolean) => {
 	const tabs = [];
-	if (provider?.custom_provider_config) {
+	if (hasCustomProviderConfig) {
 		tabs.push({
 			id: "api-structure",
 			label: "API Structure",
@@ -41,23 +49,44 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) =>
 			label: "Governance",
 		});
 	}
+	if (isAnthropicFamily) {
+		tabs.push({
+			id: "beta-headers",
+			label: "Beta Headers",
+		});
+	}
 	tabs.push({
 		id: "debugging",
 		label: "Debugging",
 	});
+	if (isOpenAI) {
+		tabs.push({
+			id: "openai-config",
+			label: "OpenAI Config",
+		});
+	}
 	return tabs;
 };
 
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasCustomProviderConfig = !!provider.custom_provider_config;
+	const isOpenAI = provider.name === "openai";
+	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
 
 	const tabs = useMemo(() => {
-		return availableTabs(provider, hasGovernanceAccess);
-	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
 
 	useEffect(() => {
-		setSelectedTab(tabs[0]?.id);
+		setSelectedTab((previousTab) => {
+			if (previousTab && tabs.some((tab) => tab.id === previousTab)) {
+				return previousTab;
+			}
+
+			return tabs[0]?.id;
+		});
 	}, [tabs]);
 
 	return (
@@ -67,48 +96,60 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-8 sm:max-w-[50%]">
-				<SheetHeader className="flex flex-col items-start">
+			<SheetContent className="p-0 pt-4 sm:max-w-[50%]">
+				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
 							<div className="flex items-center">
-								<Provider provider={provider.name} size={24} />
+								<Provider provider={provider.name} size={24} className="mt-0" />
 							</div>
 							Provider configuration
 						</div>
 					</SheetTitle>
 				</SheetHeader>
-				<div className="w-full rounded-sm border">
-					<Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
-						<TabsList
-							style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }}
-							className="mb-4 grid h-10 w-full rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none"
-						>
-							{tabs.map((tab) => (
-								<TabsTrigger key={tab.id} value={tab.id} data-testid={`provider-tab-${tab.id}`} className="flex items-center gap-2">
-									{tab.label}
-								</TabsTrigger>
-							))}
-						</TabsList>
-						<TabsContent value="api-structure">
-							<ApiStructureFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="network">
-							<NetworkFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="proxy">
-							<ProxyFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="performance">
-							<PerformanceFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="governance">
-							<GovernanceFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="debugging">
-							<DebuggingFormFragment provider={provider} />
-						</TabsContent>
-					</Tabs>
+				<div className="px-8 py-4">
+					<div className="w-full rounded-sm border">
+						<Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab}>
+							<div className="custom-scrollbar mb-4 w-full overflow-x-auto">
+								<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
+									{tabs.map((tab) => (
+										<TabsTrigger
+											key={tab.id}
+											value={tab.id}
+											data-testid={`provider-tab-${tab.id}`}
+											className="flex-none px-3 whitespace-nowrap"
+										>
+											{tab.label}
+										</TabsTrigger>
+									))}
+								</TabsList>
+							</div>
+							<TabsContent value="api-structure">
+								<ApiStructureFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="openai-config">
+								<OpenAIConfigFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="network">
+								<NetworkFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="proxy">
+								<ProxyFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="performance">
+								<PerformanceFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="governance">
+								<GovernanceFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="beta-headers">
+								<BetaHeadersFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="debugging">
+								<DebuggingFormFragment provider={provider} />
+							</TabsContent>
+						</Tabs>
+					</div>
 				</div>
 			</SheetContent>
 		</Sheet>

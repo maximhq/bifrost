@@ -145,12 +145,12 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Error("❌ ExtraFields.Provider is empty")
 		}
 
-		if imageGenerationResponse.ExtraFields.ModelRequested == "" {
-			t.Error("❌ ExtraFields.ModelRequested is empty")
+		if imageGenerationResponse.ExtraFields.OriginalModelRequested == "" {
+			t.Error("❌ ExtraFields.OriginalModelRequested is empty")
 		}
 
 		t.Logf("✅ Image generation successful: ID=%s, Provider=%s, Model=%s, Images=%d",
-			imageGenerationResponse.ID, imageGenerationResponse.ExtraFields.Provider, imageGenerationResponse.ExtraFields.ModelRequested, len(imageGenerationResponse.Data))
+			imageGenerationResponse.ID, imageGenerationResponse.ExtraFields.Provider, imageGenerationResponse.ExtraFields.OriginalModelRequested, len(imageGenerationResponse.Data))
 	})
 }
 

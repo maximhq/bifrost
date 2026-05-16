@@ -1,6 +1,9 @@
 package gemini_test
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -24,6 +27,7 @@ func TestGemini(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Gemini,
@@ -42,56 +46,58 @@ func TestGemini(t *testing.T) {
 		},
 		ReasoningModel:       "gemini-3-pro-preview",
 		VideoGenerationModel: "veo-3.1-generate-preview",
+		PassthroughModel:     "gemini-2.5-flash",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			WebSearchTool:         true,
-			ImageURL:              false,
-			ImageBase64:           true,
-			MultipleImages:        false,
-			ImageGeneration:       true,
-			ImageGenerationStream: false,
-			ImageEdit:             true,
-			VideoGeneration:       false, // disabled for now because of long running operations
-			VideoRetrieve:         false,
-			VideoDownload:         false,
-			FileBase64:            true,
-			FileURL:               false, // supported files via gemini files api
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			Transcription:         false,
-			TranscriptionStream:   false,
-			SpeechSynthesis:       true,
-			SpeechSynthesisStream: true,
-			Reasoning:             true,
-			ListModels:            true,
-			BatchCreate:           true,
-			BatchList:             true,
-			BatchRetrieve:         true,
-			BatchCancel:           true,
-			BatchResults:          true,
-			FileUpload:            true,
-			FileList:              true,
-			FileRetrieve:          true,
-			FileDelete:            true,
-			FileContent:           false,
-			FileBatchInput:        true,
-			CountTokens:           true,
-			StructuredOutputs:     true, // Structured outputs with nullable enum support
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			WebSearchTool:              true,
+			ImageURL:                   false,
+			ImageBase64:                true,
+			MultipleImages:             false,
+			ImageGeneration:            true,
+			ImageGenerationStream:      false,
+			ImageEdit:                  true,
+			VideoGeneration:            false, // disabled for now because of long running operations
+			VideoRetrieve:              false,
+			VideoDownload:              false,
+			FileBase64:                 true,
+			FileURL:                    false, // supported files via gemini files api
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			Transcription:              false,
+			TranscriptionStream:        false,
+			SpeechSynthesis:            true,
+			SpeechSynthesisStream:      true,
+			Reasoning:                  true,
+			ListModels:                 true,
+			BatchCreate:                true,
+			BatchList:                  true,
+			BatchRetrieve:              true,
+			BatchCancel:                true,
+			BatchResults:               true,
+			FileUpload:                 true,
+			FileList:                   true,
+			FileRetrieve:               true,
+			FileDelete:                 true,
+			FileContent:                false,
+			FileBatchInput:             true,
+			CountTokens:                true,
+			StructuredOutputs:          true, // Structured outputs with nullable enum support
+			PassthroughAPI:             true,
 		},
 	}
 
 	t.Run("GeminiTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestEmptyCandidatesRegression is a regression test for PR #1018
@@ -170,7 +176,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}
@@ -193,6 +199,24 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+		Embeddings: []gemini.GeminiEmbedding{
+			{
+				Values: []float64{want},
+			},
+		},
+	}, "gemini-embedding-001")
+
+	require.NotNil(t, resp)
+
+	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	assert.Equal(t, want, got)
+	assert.NotEqual(t, float64(float32(want)), got)
 }
 
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
@@ -221,9 +245,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 									FunctionCall: &gemini.FunctionCall{
 										Name: "get_weather",
 										ID:   "call_123",
-										Args: map[string]interface{}{
-											"location": "San Francisco",
-										},
+										Args: json.RawMessage(`{"location":"San Francisco"}`),
 									},
 									ThoughtSignature: thoughtSig,
 								},
@@ -250,9 +272,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 									FunctionCall: &gemini.FunctionCall{
 										Name: "get_weather",
 										ID:   "call_456",
-										Args: map[string]interface{}{
-											"location": "New York",
-										},
+										Args: json.RawMessage(`{"location":"New York"}`),
 									},
 									ThoughtSignature: thoughtSig,
 								},
@@ -274,7 +294,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}
@@ -329,6 +349,87 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			assert.True(t, foundEncrypted, "Should have encrypted reasoning detail with signature")
 		})
 	}
+}
+
+func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
+	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is the weather?")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:   schemas.Ptr("call_1"),
+						Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: `{"location":"Boston"}`,
+						},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"temperature":"10C"}`)},
+			},
+		},
+	})
+
+	require.Len(t, result.Contents, 3)
+	require.Len(t, result.Contents[1].Parts, 1)
+	assert.Equal(t, []byte("skip_thought_signature_validator"), result.Contents[1].Parts[0].ThoughtSignature)
+
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
+}
+
+func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
+	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
+	callID := "call_1_ts_" + thoughtSig
+
+	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID:   schemas.Ptr(callID),
+					Type: schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      schemas.Ptr("get_weather"),
+						Arguments: `{"location":"Boston"}`,
+					},
+				}},
+			},
+		}},
+	})
+
+	require.Len(t, result.Contents, 1)
+	require.Len(t, result.Contents[0].Parts, 1)
+	assert.NotEqual(t, []byte("skip_thought_signature_validator"), result.Contents[0].Parts[0].ThoughtSignature)
+
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+}
+
+func TestThoughtSignatureBypassSentinelRoundTripsThroughJSON(t *testing.T) {
+	part := gemini.Part{ThoughtSignature: []byte("skip_thought_signature_validator")}
+
+	encoded, err := json.Marshal(part)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+
+	var decoded gemini.Part
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, []byte("skip_thought_signature_validator"), decoded.ThoughtSignature)
 }
 
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format
@@ -733,6 +834,9 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 				require.Len(t, idProp.AnyOf, 2, "anyOf should have 2 options")
 				assert.Equal(t, gemini.Type("string"), idProp.AnyOf[0].Type)
 				assert.Equal(t, gemini.Type("integer"), idProp.AnyOf[1].Type)
+
+				// Validate that sibling fields are stripped because Gemini rejects them
+				assert.Empty(t, idProp.Description, "description should be stripped from anyOf per Gemini validation rules")
 			},
 		},
 		{
@@ -844,11 +948,103 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
 		})
 	}
+}
+
+func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
+	input := &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        "AnswerResponseModel",
+					Description: schemas.Ptr("Extract answer"),
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+						Properties: schemas.NewOrderedMapFromPairs(
+							schemas.KV("chain_of_thought", map[string]interface{}{"type": "string", "description": "Reasoning"}),
+							schemas.KV("answer", map[string]interface{}{"type": "string", "description": "The answer"}),
+							schemas.KV("citations", map[string]interface{}{"type": "array"}),
+						),
+						Required: []string{"chain_of_thought", "answer"},
+					},
+				},
+			}},
+		},
+	}
+
+	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 1)
+	fd := result.Tools[0].FunctionDeclarations[0]
+
+	// CoT: PropertyOrdering preserves client's intended field order
+	assert.Equal(t, []string{"chain_of_thought", "answer", "citations"}, fd.Parameters.PropertyOrdering,
+		"PropertyOrdering should preserve original property order")
+
+	// All properties present in map
+	assert.Len(t, fd.Parameters.Properties, 3)
+	assert.Contains(t, fd.Parameters.Properties, "chain_of_thought")
+	assert.Contains(t, fd.Parameters.Properties, "answer")
+	assert.Contains(t, fd.Parameters.Properties, "citations")
+}
+
+func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
+	input := &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name: "nested_tool",
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+						Properties: schemas.NewOrderedMapFromPairs(
+							schemas.KV("output", schemas.NewOrderedMapFromPairs(
+								schemas.KV("type", "object"),
+								schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+									schemas.KV("verdict", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+									schemas.KV("score", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
+									schemas.KV("explanation", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+								)),
+							)),
+							schemas.KV("reasoning", map[string]interface{}{"type": "string"}),
+						),
+					},
+				},
+			}},
+		},
+	}
+
+	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 1)
+	fd := result.Tools[0].FunctionDeclarations[0]
+
+	// Top-level property ordering
+	assert.Equal(t, []string{"output", "reasoning"}, fd.Parameters.PropertyOrdering)
+
+	// Nested property ordering
+	outputSchema := fd.Parameters.Properties["output"]
+	require.NotNil(t, outputSchema)
+	assert.Equal(t, []string{"verdict", "score", "explanation"}, outputSchema.PropertyOrdering,
+		"nested PropertyOrdering should preserve original order")
 }
 
 // TestStructuredOutputConversion tests that response_format with json_schema is properly converted to Gemini's responseJsonSchema
@@ -1069,7 +1265,8 @@ func TestStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1204,7 +1401,8 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1512,7 +1710,8 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1741,11 +1940,76 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "ResponsesAPI_FunctionCallOutput_ContentBlocks",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("List browser tabs"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_tabs"),
+							Name:      schemas.Ptr("browser_tabs"),
+							Arguments: schemas.Ptr(`{"action":"list"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_tabs"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								// Output as content blocks (Anthropic Responses API format)
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeText,
+										Text: schemas.Ptr("### Open tabs\n- 0: (current) [Google] (https://google.com)\n- 1: [GitHub] (https://github.com)\n"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				// Find the Content with function response
+				var toolResponseContent *gemini.Content
+				for i := range result.Contents {
+					content := &result.Contents[i]
+					if len(content.Parts) > 0 && content.Parts[0].FunctionResponse != nil {
+						toolResponseContent = content
+						break
+					}
+				}
+
+				require.NotNil(t, toolResponseContent, "Should have a content with functionResponse")
+				require.Len(t, toolResponseContent.Parts, 1)
+
+				part := toolResponseContent.Parts[0]
+				require.NotNil(t, part.FunctionResponse, "Part must have functionResponse")
+				assert.Equal(t, "call_tabs", part.FunctionResponse.ID)
+				assert.Equal(t, "browser_tabs", part.FunctionResponse.Name)
+
+				// Verify the response data contains the tool output (not empty)
+				require.NotNil(t, part.FunctionResponse.Response, "FunctionResponse.Response must not be nil")
+				responseStr := string(part.FunctionResponse.Response)
+				assert.Contains(t, responseStr, "Open tabs", "Response should contain the tool output text")
+				assert.Contains(t, responseStr, "Google", "Response should contain tab content")
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1820,6 +2084,86 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 				// Enum validation
 				sortProp := fd.Parameters.Properties["sort_order"]
 				assert.Equal(t, []string{"asc", "desc"}, sortProp.Enum)
+			},
+		},
+		{
+			name: "ResponsesAPI_ToolAnyOfWithSiblingFields",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Call the tool with a nullable parameter"),
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						{
+							Type:        schemas.ResponsesToolTypeFunction,
+							Name:        schemas.Ptr("get_process"),
+							Description: schemas.Ptr("Get process info"),
+							ResponsesToolFunction: &schemas.ResponsesToolFunction{
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("pid", map[string]interface{}{
+											"type": "integer",
+										}),
+										schemas.KV("timeout_secs", map[string]interface{}{
+											"anyOf": []interface{}{
+												map[string]interface{}{"type": "integer"},
+												map[string]interface{}{"type": "null"},
+											},
+											"description": "Optional timeout",
+										}),
+									),
+									Required: []string{"pid"},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Tools, 1)
+				fd := result.Tools[0].FunctionDeclarations[0]
+				require.NotNil(t, fd.Parameters)
+
+				timeoutProp := fd.Parameters.Properties["timeout_secs"]
+				require.NotNil(t, timeoutProp, "timeout_secs should be converted")
+				require.Len(t, timeoutProp.AnyOf, 2, "anyOf should be preserved")
+				assert.Equal(t, gemini.Type("integer"), timeoutProp.AnyOf[0].Type)
+				assert.Equal(t, gemini.Type("null"), timeoutProp.AnyOf[1].Type)
+				assert.Empty(t, timeoutProp.Description, "Gemini rejects sibling fields alongside anyOf")
+				assert.Empty(t, timeoutProp.Type, "Gemini rejects type alongside anyOf")
+
+				payload, err := json.Marshal(result)
+				require.NoError(t, err)
+
+				var raw map[string]interface{}
+				require.NoError(t, json.Unmarshal(payload, &raw))
+				tools, ok := raw["tools"].([]interface{})
+				require.True(t, ok)
+				tool, ok := tools[0].(map[string]interface{})
+				require.True(t, ok)
+				functionDeclarations, ok := tool["functionDeclarations"].([]interface{})
+				require.True(t, ok)
+				functionDeclaration, ok := functionDeclarations[0].(map[string]interface{})
+				require.True(t, ok)
+				parameters, ok := functionDeclaration["parameters"].(map[string]interface{})
+				require.True(t, ok)
+				properties, ok := parameters["properties"].(map[string]interface{})
+				require.True(t, ok)
+				timeoutSchema, ok := properties["timeout_secs"].(map[string]interface{})
+				require.True(t, ok)
+
+				assert.Contains(t, timeoutSchema, "anyOf")
+				assert.NotContains(t, timeoutSchema, "description")
+				assert.NotContains(t, timeoutSchema, "type")
 			},
 		},
 		{
@@ -1949,7 +2293,8 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1978,23 +2323,23 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				},
 				ThoughtsTokenCount: 41,
 			},
-		expected: &schemas.BifrostLLMUsage{
-			PromptTokens:     6,
-			CompletionTokens: 83,
-			TotalTokens:      48,
-			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-				TextTokens:  6,
-				AudioTokens: 0,
-				ImageTokens: 0,
-			},
-			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-				TextTokens:      1,
-				ReasoningTokens: 41,
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     6,
+				CompletionTokens: 83,
+				TotalTokens:      48,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens:  6,
+					AudioTokens: 0,
+					ImageTokens: 0,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					TextTokens:      1,
+					ReasoningTokens: 41,
+				},
 			},
 		},
-	},
-	{
-		name: "MultimodalInputWithCache",
+		{
+			name: "MultimodalInputWithCache",
 			metadata: &gemini.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        150,
 				CandidatesTokenCount:    50,
@@ -2160,24 +2505,24 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				},
 				ThoughtsTokenCount: 5,
 			},
-		expected: &schemas.ResponsesResponseUsage{
-			TotalTokens:  150,
-			InputTokens:  100,
-			OutputTokens: 55,
-			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
-				TextTokens:  60,
-				AudioTokens: 20,
-				ImageTokens: 20,
-			},
-			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
-				TextTokens:      40,
-				AudioTokens:     10,
-				ReasoningTokens: 5,
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:  150,
+				InputTokens:  100,
+				OutputTokens: 55,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					TextTokens:  60,
+					AudioTokens: 20,
+					ImageTokens: 20,
+				},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					TextTokens:      40,
+					AudioTokens:     10,
+					ReasoningTokens: 5,
+				},
 			},
 		},
-	},
-	{
-		name: "WithCachedTokens",
+		{
+			name: "WithCachedTokens",
 			metadata: &gemini.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        200,
 				CandidatesTokenCount:    100,
@@ -2279,6 +2624,812 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				assert.Equal(t, tt.expected.OutputTokensDetails.AudioTokens, result.OutputTokensDetails.AudioTokens)
 				assert.Equal(t, tt.expected.OutputTokensDetails.ReasoningTokens, result.OutputTokensDetails.ReasoningTokens)
 			}
+		})
+	}
+}
+
+// TestGeminiToolInputKeyOrderPreservation verifies that multiple parallel tool calls
+// preserve the client's original key ordering after conversion to Gemini format.
+func TestGeminiToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_001"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references quickly","timeout":30000,"command":"grep -r auth_injector ."}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_002"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := gemini.ToGeminiChatCompletionRequest(bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Collect all FunctionCall parts
+	var argsList []json.RawMessage
+	for _, content := range result.Contents {
+		for _, part := range content.Parts {
+			if part.FunctionCall != nil {
+				argsList = append(argsList, part.FunctionCall.Args)
+			}
+		}
+	}
+
+	require.Len(t, argsList, 2, "expected 2 FunctionCall parts")
+
+	// Block 0: keys should be description, timeout, command (NOT alphabetical)
+	s0 := string(argsList[0])
+	descIdx := strings.Index(s0, `"description"`)
+	timeoutIdx := strings.Index(s0, `"timeout"`)
+	commandIdx := strings.Index(s0, `"command"`)
+	require.NotEqual(t, -1, descIdx, "block 0: missing description key in: %s", s0)
+	require.NotEqual(t, -1, timeoutIdx, "block 0: missing timeout key in: %s", s0)
+	require.NotEqual(t, -1, commandIdx, "block 0: missing command key in: %s", s0)
+	assert.True(t, descIdx < timeoutIdx && timeoutIdx < commandIdx,
+		"block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+
+	// Block 1: keys should be command, description (NOT alphabetical)
+	s1 := string(argsList[1])
+	commandIdx = strings.Index(s1, `"command"`)
+	descIdx = strings.Index(s1, `"description"`)
+	require.NotEqual(t, -1, commandIdx, "block 1: missing command key in: %s", s1)
+	require.NotEqual(t, -1, descIdx, "block 1: missing description key in: %s", s1)
+	assert.True(t, commandIdx < descIdx,
+		"block 1: key order not preserved, expected command < description in: %s", s1)
+}
+
+// minimalChatInput returns a single user message for use in budget tests.
+func minimalChatInput() []schemas.ChatMessage {
+	return []schemas.ChatMessage{
+		{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
+		},
+	}
+}
+
+// TestThinkingBudgetValidation_Chat verifies that ToGeminiChatCompletionRequest
+// enforces per-model thinking budget bounds when max_tokens is set explicitly.
+func TestThinkingBudgetValidation_Chat(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		budget       int
+		wantErr      bool
+		wantDisabled bool   // budget=0: expect IncludeThoughts=false
+		wantDynamic  bool   // budget=-1: expect ThinkingBudget=-1
+		wantBudget   *int32 // expected ThinkingBudget value when no error
+	}{
+		// gemini-2.5-pro: valid range [128, 32768]
+		{
+			name:       "pro_valid_budget",
+			model:      "gemini-2.5-pro",
+			budget:     1000,
+			wantBudget: func() *int32 { v := int32(1000); return &v }(),
+		},
+		{
+			name:       "pro_at_minimum",
+			model:      "gemini-2.5-pro",
+			budget:     128,
+			wantBudget: func() *int32 { v := int32(128); return &v }(),
+		},
+		{
+			name:       "pro_at_maximum",
+			model:      "gemini-2.5-pro",
+			budget:     32768,
+			wantBudget: func() *int32 { v := int32(32768); return &v }(),
+		},
+		{
+			name:    "pro_below_minimum",
+			model:   "gemini-2.5-pro",
+			budget:  50,
+			wantErr: true,
+		},
+		{
+			name:    "pro_above_maximum",
+			model:   "gemini-2.5-pro",
+			budget:  40000,
+			wantErr: true,
+		},
+
+		// gemini-2.5-flash: valid range [0, 24576]
+		{
+			name:       "flash_valid_budget",
+			model:      "gemini-2.5-flash",
+			budget:     5000,
+			wantBudget: func() *int32 { v := int32(5000); return &v }(),
+		},
+		{
+			name:    "flash_above_maximum",
+			model:   "gemini-2.5-flash",
+			budget:  30000,
+			wantErr: true,
+		},
+		// budget=300 is valid for flash (min=0) — this is the key disambiguation test:
+		// the same budget is rejected for flash-lite (min=512) but accepted for flash.
+		{
+			name:       "flash_budget_300_valid",
+			model:      "gemini-2.5-flash",
+			budget:     300,
+			wantBudget: func() *int32 { v := int32(300); return &v }(),
+		},
+
+		// gemini-2.5-flash-lite: valid range [512, 24576]
+		// budget=300 must be rejected here even though it passes for flash.
+		{
+			name:    "flash_lite_below_minimum",
+			model:   "gemini-2.5-flash-lite",
+			budget:  300,
+			wantErr: true,
+		},
+		{
+			name:       "flash_lite_valid_budget",
+			model:      "gemini-2.5-flash-lite",
+			budget:     1000,
+			wantBudget: func() *int32 { v := int32(1000); return &v }(),
+		},
+		{
+			name:    "flash_lite_above_maximum",
+			model:   "gemini-2.5-flash-lite",
+			budget:  30000,
+			wantErr: true,
+		},
+
+		// Unknown model — no entry in thinkingBudgetRanges, validation is skipped.
+		{
+			name:       "unknown_model_skips_validation",
+			model:      "gemini-2.0-flash-thinking",
+			budget:     50, // would be rejected for pro (min=128) but unknown model is not validated
+			wantBudget: func() *int32 { v := int32(50); return &v }(),
+		},
+
+		// Special values — exempt from range checks on any model.
+		{
+			name:         "budget_zero_disables_thinking",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantDisabled: true,
+		},
+		{
+			name:        "budget_minus_one_dynamic",
+			model:       "gemini-2.5-flash",
+			budget:      -1,
+			wantDynamic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model: tt.model,
+				Input: minimalChatInput(),
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						MaxTokens: &tt.budget,
+					},
+				},
+			}
+
+			result, err := gemini.ToGeminiChatCompletionRequest(req)
+
+			if tt.wantErr {
+				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
+
+			tc := result.GenerationConfig.ThinkingConfig
+			switch {
+			case tt.wantDisabled:
+				assert.False(t, tc.IncludeThoughts, "IncludeThoughts should be false for budget=0")
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(0), *tc.ThinkingBudget)
+			case tt.wantDynamic:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(-1), *tc.ThinkingBudget)
+			default:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, *tt.wantBudget, *tc.ThinkingBudget)
+			}
+		})
+	}
+}
+
+// TestThinkingBudgetValidation_Responses verifies the same budget validation
+// for the Responses API path (ToGeminiResponsesRequest).
+func TestThinkingBudgetValidation_Responses(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		budget       int
+		wantErr      bool
+		wantDisabled bool
+		wantDynamic  bool
+		wantBudget   *int32
+	}{
+		// gemini-2.5-pro
+		{
+			name:       "pro_valid_budget",
+			model:      "gemini-2.5-pro",
+			budget:     2000,
+			wantBudget: func() *int32 { v := int32(2000); return &v }(),
+		},
+		{
+			name:    "pro_below_minimum",
+			model:   "gemini-2.5-pro",
+			budget:  100,
+			wantErr: true,
+		},
+		{
+			name:    "pro_above_maximum",
+			model:   "gemini-2.5-pro",
+			budget:  33000,
+			wantErr: true,
+		},
+
+		// gemini-2.5-flash-lite vs gemini-2.5-flash disambiguation
+		{
+			name:    "flash_lite_below_minimum",
+			model:   "gemini-2.5-flash-lite",
+			budget:  300,
+			wantErr: true,
+		},
+		{
+			name:       "flash_budget_300_valid",
+			model:      "gemini-2.5-flash",
+			budget:     300,
+			wantBudget: func() *int32 { v := int32(300); return &v }(),
+		},
+
+		// Special values
+		{
+			name:         "budget_zero_disables_thinking",
+			model:        "gemini-2.5-flash",
+			budget:       0,
+			wantDisabled: true,
+		},
+		{
+			name:        "budget_minus_one_dynamic",
+			model:       "gemini-2.5-pro",
+			budget:      -1,
+			wantDynamic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model: tt.model,
+				Params: &schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						MaxTokens: &tt.budget,
+					},
+				},
+			}
+
+			result, err := gemini.ToGeminiResponsesRequest(req)
+
+			if tt.wantErr {
+				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
+
+			tc := result.GenerationConfig.ThinkingConfig
+			switch {
+			case tt.wantDisabled:
+				assert.False(t, tc.IncludeThoughts)
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(0), *tc.ThinkingBudget)
+			case tt.wantDynamic:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(-1), *tc.ThinkingBudget)
+			default:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, *tt.wantBudget, *tc.ThinkingBudget)
+			}
+		})
+	}
+}
+
+// TestThinkingBudgetEffortUsesModelRange verifies that effort-based budget
+// calculation uses the correct model-specific range, not a global default.
+// In particular, gemini-2.5-flash-lite (min=512) must not use gemini-2.5-flash's
+// range (min=0), which would produce budgets below the model's minimum.
+func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
+	effort := "low"
+
+	t.Run("flash_lite_budget_respects_min_512", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash-lite",
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget)
+		assert.GreaterOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(512),
+			"flash-lite effort budget must be >= model minimum 512")
+	})
+
+	t.Run("flash_budget_may_start_from_zero", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget)
+		assert.GreaterOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(0))
+		assert.LessOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(24576),
+			"flash effort budget must not exceed model maximum 24576")
+	})
+}
+
+// Regression: GenAI /generateContent path must not turn thinkingLevel into a derived
+// thinkingBudget (which changes Gemini 3.x behavior). Inbound should set effort only;
+// outbound for Gemini 3+ should emit thinkingLevel again.
+func TestGenAIThinkingLevel_RoundTripPreservesLevelNotBudget(t *testing.T) {
+	level := "MiNiMaL"
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3-flash-preview",
+		GenerationConfig: gemini.GenerationConfig{
+			ThinkingConfig: &gemini.GenerationConfigThinkingConfig{
+				IncludeThoughts: true,
+				ThinkingLevel:   &level,
+			},
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq.Params)
+	require.NotNil(t, bifrostReq.Params.Reasoning)
+	require.NotNil(t, bifrostReq.Params.Reasoning.Effort)
+	assert.Equal(t, "minimal", *bifrostReq.Params.Reasoning.Effort)
+	assert.Nil(t, bifrostReq.Params.Reasoning.MaxTokens, "thinkingLevel must not populate reasoning max_tokens")
+
+	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, roundTrip)
+	require.NotNil(t, roundTrip.GenerationConfig.ThinkingConfig)
+	tc := roundTrip.GenerationConfig.ThinkingConfig
+	require.NotNil(t, tc.ThinkingLevel)
+	assert.Equal(t, "minimal", *tc.ThinkingLevel)
+	assert.Nil(t, tc.ThinkingBudget, "round-trip must not synthesize thinkingBudget from level-only config")
+}
+
+// Regression: MAX_TOKENS from Gemini must survive Gemini → Bifrost → Gemini on the GenAI path
+// (StopReason used to be dropped, so clients saw STOP instead of MAX_TOKENS).
+func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T) {
+	geminiResp := &gemini.GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content: &gemini.Content{
+					Role: "model",
+					Parts: []*gemini.Part{
+						{Text: "partial essay..."},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	require.NotNil(t, bifrostResp.StopReason)
+	assert.Equal(t, "length", *bifrostResp.StopReason)
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 1)
+	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
+}
+
+// Regression: GenAI usageMetadata modality details must include tokenCount even when zero.
+// Some clients (e.g. @ai-sdk/google) validate tokenCount as required and reject missing fields.
+func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T) {
+	bifrostResp := &schemas.BifrostResponsesResponse{
+		Model: "google/gemini-2.5-flash",
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:  0,
+			OutputTokens: 0,
+			TotalTokens:  0,
+			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+				TextTokens:  0,
+				AudioTokens: 0,
+			},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+				TextTokens: 0,
+			},
+		},
+	}
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.NotNil(t, out.UsageMetadata)
+
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+
+	usageMetadata, ok := payload["usageMetadata"].(map[string]any)
+	require.True(t, ok, "usageMetadata should be present")
+
+	candidatesTokensDetails, ok := usageMetadata["candidatesTokensDetails"].([]any)
+	require.True(t, ok, "candidatesTokensDetails should be present")
+	require.NotEmpty(t, candidatesTokensDetails, "candidatesTokensDetails should not be empty")
+
+	firstDetail, ok := candidatesTokensDetails[0].(map[string]any)
+	require.True(t, ok, "first candidatesTokensDetails entry should be an object")
+
+	tokenCount, exists := firstDetail["tokenCount"]
+	require.True(t, exists, "tokenCount should be present even when zero")
+	assert.Equal(t, float64(0), tokenCount)
+
+	promptTokensDetails, ok := usageMetadata["promptTokensDetails"].([]any)
+	require.True(t, ok, "promptTokensDetails should be present")
+	require.NotEmpty(t, promptTokensDetails, "promptTokensDetails should not be empty")
+
+	for i, detail := range promptTokensDetails {
+		detailObj, ok := detail.(map[string]any)
+		require.True(t, ok, "promptTokensDetails entry %d should be an object", i)
+
+		promptTokenCount, exists := detailObj["tokenCount"]
+		require.True(t, exists, "promptTokensDetails entry %d should include tokenCount", i)
+		assert.Equal(t, float64(0), promptTokenCount)
+	}
+}
+
+func TestGenAIFallbacks_PreservedInBifrostResponsesRequest(t *testing.T) {
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model:     "gemini/gemini-3-flash-preview",
+		Fallbacks: []string{"vertex/gemini-3-flash-preview"},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+
+	require.NotNil(t, bifrostReq)
+	require.Len(t, bifrostReq.Fallbacks, 1)
+	assert.Equal(t, schemas.Vertex, bifrostReq.Fallbacks[0].Provider)
+	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.Fallbacks[0].Model)
+}
+
+// TestNormalizeRawGenerateContentRequestForCompatibility tests that Bifrost-internal fields
+// (fallbacks) and provider-incompatible OpenAI fields (responseLogprobs, logprobs, presencePenalty,
+// frequencyPenalty) are stripped before the raw body is forwarded to the Gemini API.
+//
+// Regression: fallbacks was forwarded verbatim, causing Gemini to return 400
+// "Unknown name \"fallbacks\": Cannot find field."
+func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
+	parseBody := func(t *testing.T, b []byte) map[string]interface{} {
+		t.Helper()
+		var m map[string]interface{}
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+	genConfig := func(m map[string]interface{}) map[string]interface{} {
+		gc, _ := m["generationConfig"].(map[string]interface{})
+		return gc
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, result map[string]interface{})
+	}{
+		{
+			name:  "StripsFallbacksField",
+			input: `{"contents":[{"parts":[{"text":"Hello"}]}],"fallbacks":["openai/gpt-4o","vertex/gemini-2-flash"]}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks", "fallbacks must not be forwarded to Gemini")
+				assert.Contains(t, m, "contents", "contents must be preserved")
+			},
+		},
+		{
+			name:  "StripsGenerationConfigCompatFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"responseLogprobs":true,"logprobs":5,"presencePenalty":0.5,"frequencyPenalty":0.3}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.NotContains(t, gc, "responseLogprobs")
+				assert.NotContains(t, gc, "logprobs")
+				assert.NotContains(t, gc, "presencePenalty")
+				assert.NotContains(t, gc, "frequencyPenalty")
+				assert.Contains(t, gc, "temperature", "valid fields must be preserved")
+			},
+		},
+		{
+			name:  "StripsFallbacksAlongsideCompatFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"fallbacks":["openai/gpt-4o"],"generationConfig":{"temperature":0.5,"presencePenalty":0.2}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks")
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.NotContains(t, gc, "presencePenalty")
+				assert.Contains(t, gc, "temperature")
+			},
+		},
+		{
+			name:  "PreservesValidBodyWithNoStrippableFields",
+			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"maxOutputTokens":1000}}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.Contains(t, m, "contents")
+				gc := genConfig(m)
+				require.NotNil(t, gc)
+				assert.Contains(t, gc, "temperature")
+				assert.Contains(t, gc, "maxOutputTokens")
+			},
+		},
+		{
+			name:  "HandlesBodyWithOnlyFallbacks",
+			input: `{"fallbacks":["openai/gpt-4o"]}`,
+			validate: func(t *testing.T, m map[string]interface{}) {
+				assert.NotContains(t, m, "fallbacks")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte(tt.input))
+			require.NotEmpty(t, result)
+			tt.validate(t, parseBody(t, result))
+		})
+	}
+
+	t.Run("EmptyBodyReturnsEmpty", func(t *testing.T) {
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte{}))
+	})
+}
+
+// TestFunctionCallingConfigModeAny_RoundTrip verifies that FunctionCallingConfigMode.ANY and
+// AllowedFunctionNames survive the Gemini→Bifrost→Gemini round-trip on the GenAI passthrough path.
+// Regression: ANY was silently downgraded to AUTO (missing case in convertGeminiToolConfigToToolChoice)
+// and AllowedFunctionNames were dropped (ext.Tools not read in convertResponsesToolChoiceToGemini).
+func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
+	tests := []struct {
+		name                 string
+		mode                 gemini.FunctionCallingConfigMode
+		allowedFunctionNames []string
+		wantMode             gemini.FunctionCallingConfigMode
+		wantAllowedNames     []string
+	}{
+		{
+			name:                 "ANY_with_single_allowed_function",
+			mode:                 gemini.FunctionCallingConfigModeAny,
+			allowedFunctionNames: []string{"create_component"},
+			wantMode:             gemini.FunctionCallingConfigModeAny,
+			wantAllowedNames:     []string{"create_component"},
+		},
+		{
+			name:                 "ANY_with_multiple_allowed_functions",
+			mode:                 gemini.FunctionCallingConfigModeAny,
+			allowedFunctionNames: []string{"create_component", "delete_component"},
+			wantMode:             gemini.FunctionCallingConfigModeAny,
+			wantAllowedNames:     []string{"create_component", "delete_component"},
+		},
+		{
+			name:                 "ANY_without_allowed_functions",
+			mode:                 gemini.FunctionCallingConfigModeAny,
+			allowedFunctionNames: nil,
+			wantMode:             gemini.FunctionCallingConfigModeAny,
+			wantAllowedNames:     nil,
+		},
+		{
+			name:             "AUTO_unaffected",
+			mode:             gemini.FunctionCallingConfigModeAuto,
+			wantMode:         gemini.FunctionCallingConfigModeAuto,
+			wantAllowedNames: nil,
+		},
+		{
+			name:             "NONE_unaffected",
+			mode:             gemini.FunctionCallingConfigModeNone,
+			wantMode:         gemini.FunctionCallingConfigModeNone,
+			wantAllowedNames: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			geminiReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-2.5-flash",
+				Contents: []gemini.Content{
+					{Role: "user", Parts: []*gemini.Part{{Text: "call the function"}}},
+				},
+				Tools: []gemini.Tool{
+					{FunctionDeclarations: []*gemini.FunctionDeclaration{{Name: "create_component"}}},
+				},
+				ToolConfig: &gemini.ToolConfig{
+					FunctionCallingConfig: &gemini.FunctionCallingConfig{
+						Mode:                 tt.mode,
+						AllowedFunctionNames: tt.allowedFunctionNames,
+					},
+				},
+			}
+
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params)
+			require.NotNil(t, bifrostReq.Params.ToolChoice, "ToolChoice must be set")
+
+			roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, roundTrip)
+			require.NotNil(t, roundTrip.ToolConfig)
+			require.NotNil(t, roundTrip.ToolConfig.FunctionCallingConfig)
+
+			got := roundTrip.ToolConfig.FunctionCallingConfig
+			assert.Equal(t, tt.wantMode, got.Mode, "FunctionCallingConfig.Mode must survive round-trip")
+			assert.Equal(t, tt.wantAllowedNames, got.AllowedFunctionNames, "AllowedFunctionNames must survive round-trip")
+		})
+	}
+}
+
+// TestImageSizeRoundtrip verifies that imageSize and aspectRatio survive the
+// GeminiGenerationRequest → BifrostImageGenerationRequest → GeminiGenerationRequest round-trip
+// and that the outbound imageSize is always uppercase ("2K" not "2k").
+func TestImageSizeRoundtrip(t *testing.T) {
+	tests := []struct {
+		name            string
+		inImageSize     string
+		inAspectRatio   string
+		wantSize        string // expected Bifrost WxH
+		wantImageSize   string // expected outbound Gemini imageSize
+		wantAspectRatio string
+	}{
+		{"1K_square", "1K", "1:1", "1024x1024", "1K", "1:1"},
+		{"2K_square", "2K", "1:1", "2048x2048", "2K", "1:1"},
+		{"4K_square", "4K", "1:1", "4096x4096", "4K", "1:1"},
+		{"2K_portrait", "2K", "3:4", "1536x2048", "2K", "3:4"},
+		{"2K_landscape", "2K", "4:3", "2048x1536", "2K", "4:3"},
+		{"lowercase_normalised", "2k", "1:1", "2048x2048", "2K", "1:1"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-3.1-flash-image-preview",
+				GenerationConfig: gemini.GenerationConfig{
+					ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+					ImageConfig: &gemini.GeminiImageConfig{
+						ImageSize:   tt.inImageSize,
+						AspectRatio: tt.inAspectRatio,
+					},
+				},
+				Contents: []gemini.Content{{
+					Role:  "user",
+					Parts: []*gemini.Part{{Text: "hello kitty"}},
+				}},
+			}
+
+			bifrostReq := inReq.ToBifrostImageGenerationRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params.Size, "Size must be extracted from ImageConfig")
+			assert.Equal(t, tt.wantSize, *bifrostReq.Params.Size)
+
+			outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+			require.NotNil(t, outReq)
+			require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set on outbound request")
+			assert.Equal(t, tt.wantImageSize, outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be uppercase")
+			assert.Equal(t, tt.wantAspectRatio, outReq.GenerationConfig.ImageConfig.AspectRatio)
+		})
+	}
+}
+
+// TestImageEditSizeRoundtrip mirrors TestImageSizeRoundtrip for the image-edit path.
+func TestImageEditSizeRoundtrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// minimal 1x1 PNG for inline image data
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+
+	inReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3.1-flash-image-preview",
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+			ImageConfig: &gemini.GeminiImageConfig{
+				ImageSize:   "2K",
+				AspectRatio: "1:1",
+			},
+		},
+		Contents: []gemini.Content{{
+			Role: "user",
+			Parts: []*gemini.Part{
+				{Text: "make it pop"},
+				{InlineData: &gemini.Blob{MIMEType: "image/png", Data: base64.StdEncoding.EncodeToString(pngPixel)}},
+			},
+		}},
+	}
+
+	bifrostReq := inReq.ToBifrostImageEditRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.NotNil(t, bifrostReq.Params.Size, "Size must be extracted from ImageConfig in edit path")
+	assert.Equal(t, "2048x2048", *bifrostReq.Params.Size)
+
+	outReq := gemini.ToGeminiImageEditRequest(bifrostReq)
+	require.NotNil(t, outReq)
+	require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set on outbound edit request")
+	assert.Equal(t, "2K", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be uppercase on edit path")
+	assert.Equal(t, "1:1", outReq.GenerationConfig.ImageConfig.AspectRatio)
+}
+
+// TestImagenImageSizeCasing verifies that the Imagen :predict path sends uppercase imageSize.
+func TestImagenImageSizeCasing(t *testing.T) {
+	tests := []struct {
+		wxh           string
+		wantImageSize string
+	}{
+		{"1024x1024", "1K"},
+		{"2048x2048", "2K"},
+		{"4096x4096", "4K"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantImageSize, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Gemini,
+				Model:    "imagen-4.0-generate-preview-05-20",
+				Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+				Params:   &schemas.ImageGenerationParameters{Size: &tt.wxh},
+			}
+			imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+			require.NotNil(t, imagenReq)
+			require.NotNil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be set")
+			assert.Equal(t, tt.wantImageSize, *imagenReq.Parameters.SampleImageSize, "Imagen imageSize must be uppercase")
 		})
 	}
 }

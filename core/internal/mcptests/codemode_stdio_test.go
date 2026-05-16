@@ -18,6 +18,7 @@ import (
 )
 
 var initMCPServerPathsOnce sync.Once
+var stdioFixtureSemaphore = make(chan struct{}, 2)
 
 // =============================================================================
 // SETUP HELPERS FOR CODE MODE WITH STDIO SERVERS
@@ -39,6 +40,11 @@ func toCamelCase(s string) string {
 func setupCodeModeWithSTDIOServers(t *testing.T, serverNames ...string) (*mcp.MCPManager, *bifrost.Bifrost) {
 	t.Helper()
 
+	stdioFixtureSemaphore <- struct{}{}
+	t.Cleanup(func() {
+		<-stdioFixtureSemaphore
+	})
+
 	// Initialize MCP server paths (guarded against concurrent execution)
 	initMCPServerPathsOnce.Do(func() {
 		InitMCPServerPaths(t)
@@ -56,27 +62,27 @@ func setupCodeModeWithSTDIOServers(t *testing.T, serverNames ...string) (*mcp.MC
 			config = GetTemperatureMCPClientConfig(bifrostRoot)
 			config.IsCodeModeClient = true
 			config.ID = "temperature-client" // Match test expectations
-			config.Name = "temperature" // Use lowercase to match test code
+			config.Name = "temperature"      // Use lowercase to match test code
 			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
 		case "go-test-server":
 			config = GetGoTestServerConfig(bifrostRoot)
 			config.ID = "goTestServer-client" // Match test expectations
-			config.Name = "goTestServer" // Use camelCase to match test code
+			config.Name = "goTestServer"      // Use camelCase to match test code
 			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
 		case "edge-case-server":
 			config = GetEdgeCaseServerConfig(bifrostRoot)
 			config.ID = "edgeCaseServer-client" // Match test expectations
-			config.Name = "edgeCaseServer" // Use camelCase to match test code
+			config.Name = "edgeCaseServer"      // Use camelCase to match test code
 			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
 		case "error-test-server":
 			config = GetErrorTestServerConfig(bifrostRoot)
 			config.ID = "errorTestServer-client" // Match test expectations
-			config.Name = "errorTestServer" // Use camelCase to match test code
+			config.Name = "errorTestServer"      // Use camelCase to match test code
 			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
 		case "parallel-test-server":
 			config = GetParallelTestServerConfig(bifrostRoot)
 			config.ID = "parallelTestServer-client" // Match test expectations
-			config.Name = "parallelTestServer" // Use camelCase to match test code
+			config.Name = "parallelTestServer"      // Use camelCase to match test code
 			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
 		case "test-tools-server":
 			// test-tools-server doesn't have a fixture, set up manually
@@ -108,10 +114,54 @@ func setupCodeModeWithSTDIOServers(t *testing.T, serverNames ...string) (*mcp.MC
 	}
 
 	manager := setupMCPManager(t, clientConfigs...)
+	requireCodeModeClientsReady(t, manager, clientConfigs)
+
 	bifrost := setupBifrost(t)
 	bifrost.SetMCPManager(manager)
 
 	return manager, bifrost
+}
+
+func requireCodeModeClientsReady(t *testing.T, manager *mcp.MCPManager, configs []schemas.MCPClientConfig) {
+	t.Helper()
+
+	clientsByID := make(map[string]schemas.MCPClientState)
+	for _, client := range manager.GetClients() {
+		clientsByID[client.ExecutionConfig.ID] = client
+	}
+
+	for _, config := range configs {
+		client, ok := clientsByID[config.ID]
+		if !ok {
+			t.Fatalf("MCP client %q (%s) was not registered", config.Name, config.ID)
+		}
+		if client.State != schemas.MCPConnectionStateConnected {
+			t.Fatalf("MCP client %q (%s) is %s; expected connected", config.Name, config.ID, client.State)
+		}
+		if !client.ExecutionConfig.IsCodeModeClient {
+			t.Fatalf("MCP client %q (%s) is not configured as a code-mode client", config.Name, config.ID)
+		}
+		if countExecutableTools(client.ToolMap, client.ExecutionConfig.ToolsToExecute) == 0 {
+			t.Fatalf("MCP client %q (%s) has no executable code-mode tools; state=%s tool_count=%d tools_to_execute=%v", config.Name, config.ID, client.State, len(client.ToolMap), client.ExecutionConfig.ToolsToExecute)
+		}
+	}
+}
+
+func countExecutableTools(tools map[string]schemas.ChatTool, allowList schemas.WhiteList) int {
+	if allowList == nil || allowList.IsEmpty() {
+		return 0
+	}
+	if allowList.IsUnrestricted() {
+		return len(tools)
+	}
+
+	count := 0
+	for toolName := range tools {
+		if allowList.Contains(toolName) {
+			count++
+		}
+	}
+	return count
 }
 
 // =============================================================================
@@ -367,9 +417,9 @@ func TestCodeMode_STDIO_ServerFiltering(t *testing.T) {
 		expectedError    string
 	}{
 		{
-			name:           "allow_only_test_tools_server",
-			includeClients: []string{"testToolsServer"},
-			code:           `result = testToolsServer.echo(message="allowed")`,
+			name:             "allow_only_test_tools_server",
+			includeClients:   []string{"testToolsServer"},
+			code:             `result = testToolsServer.echo(message="allowed")`,
 			shouldSucceed:    true,
 			expectedInResult: "allowed",
 		},
@@ -377,13 +427,13 @@ func TestCodeMode_STDIO_ServerFiltering(t *testing.T) {
 			name:           "block_test_tools_server",
 			includeClients: []string{"temperature"},
 			code:           `result = testToolsServer.echo(message="blocked")`,
-			shouldSucceed: false,
-			expectedError: "undefined: testToolsServer",
+			shouldSucceed:  false,
+			expectedError:  "undefined: testToolsServer",
 		},
 		{
-			name:           "allow_only_temperature_server",
-			includeClients: []string{"temperature"},
-			code:           `result = temperature.get_temperature(location="Paris")`,
+			name:             "allow_only_temperature_server",
+			includeClients:   []string{"temperature"},
+			code:             `result = temperature.get_temperature(location="Paris")`,
 			shouldSucceed:    true,
 			expectedInResult: "Paris",
 		},
@@ -391,8 +441,8 @@ func TestCodeMode_STDIO_ServerFiltering(t *testing.T) {
 			name:           "block_temperature_server",
 			includeClients: []string{"testToolsServer"},
 			code:           `result = temperature.get_temperature(location="blocked")`,
-			shouldSucceed: false,
-			expectedError: "undefined: temperature",
+			shouldSucceed:  false,
+			expectedError:  "undefined: temperature",
 		},
 		{
 			name:           "allow_both_servers",
@@ -409,7 +459,7 @@ result = {"echo": echo, "temp": temp}`,
 		t.Run(tc.name, func(t *testing.T) {
 			// Create context with client filtering
 			baseCtx := context.Background()
-			baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, tc.includeClients)
+			baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, tc.includeClients)
 			ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
 			// Verify filtering is applied at tool listing level
@@ -524,7 +574,7 @@ result = {"echo": echo, "calc": calc}`,
 		t.Run(tc.name, func(t *testing.T) {
 			// Create context with tool filtering
 			baseCtx := context.Background()
-			baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, tc.includeTools)
+			baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, tc.includeTools)
 			ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
 			// Verify filtering is applied
@@ -622,10 +672,10 @@ result = {"echo": echo, "temp": temp}`,
 			// Create context with both client and tool filtering
 			baseCtx := context.Background()
 			if tc.includeClients != nil {
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, tc.includeClients)
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, tc.includeClients)
 			}
 			if tc.includeTools != nil {
-				baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, tc.includeTools)
+				baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, tc.includeTools)
 			}
 			ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
@@ -1692,7 +1742,7 @@ result = {"count": 3}`,
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			baseCtx := context.Background()
-			baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, tc.includeClients)
+			baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, tc.includeClients)
 			ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
 			toolCall := CreateExecuteToolCodeCall(fmt.Sprintf("call-%s", tc.name), tc.code)

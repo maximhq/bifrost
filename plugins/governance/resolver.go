@@ -4,7 +4,6 @@ package governance
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -24,6 +23,7 @@ const (
 	DecisionRequestLimited     Decision = "request_limited"
 	DecisionModelBlocked       Decision = "model_blocked"
 	DecisionProviderBlocked    Decision = "provider_blocked"
+	DecisionMCPToolBlocked     Decision = "mcp_tool_blocked"
 )
 
 // EvaluationRequest contains the context for evaluating a request
@@ -62,17 +62,19 @@ type UsageInfo struct {
 
 // BudgetResolver provides decision logic for the new hierarchical governance system
 type BudgetResolver struct {
-	store        GovernanceStore
-	logger       schemas.Logger
-	modelCatalog *modelcatalog.ModelCatalog
+	store                   GovernanceStore
+	logger                  schemas.Logger
+	modelCatalog            *modelcatalog.ModelCatalog
+	governanceInMemoryStore InMemoryStore
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver
-func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, logger schemas.Logger) *BudgetResolver {
+func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, logger schemas.Logger, governanceInMemoryStore InMemoryStore) *BudgetResolver {
 	return &BudgetResolver{
-		store:        store,
-		logger:       logger,
-		modelCatalog: modelCatalog,
+		store:                   store,
+		logger:                  logger,
+		modelCatalog:            modelCatalog,
+		governanceInMemoryStore: governanceInMemoryStore,
 	}
 }
 
@@ -86,34 +88,34 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 	}
 	// 1. Check provider-level rate limits FIRST (before model-level checks)
 	if provider != "" {
-		if err, decision := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil {
+		if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 			return &EvaluationResult{
 				Decision: decision,
-				Reason:   fmt.Sprintf("Provider-level rate limit check failed: %s", err.Error()),
+				Reason:   fmt.Sprintf("Provider-level rate limit check failed: %s", reasonFromErr(err, decision)),
 			}
 		}
 		// 2. Check provider-level budgets FIRST (before model-level checks)
-		if err := r.store.CheckProviderBudget(ctx, request, nil); err != nil {
+		if decision, err := r.store.CheckProviderBudget(ctx, request, nil); err != nil || isBudgetViolation(decision) {
 			return &EvaluationResult{
-				Decision: DecisionBudgetExceeded,
-				Reason:   fmt.Sprintf("Provider-level budget exceeded: %s", err.Error()),
+				Decision: decision,
+				Reason:   fmt.Sprintf("Provider-level budget exceeded: %s", reasonFromErr(err, decision)),
 			}
 		}
 	}
 	// 3. Check model-level rate limits (after provider-level checks)
 	if model != "" {
-		if err, decision := r.store.CheckModelRateLimit(ctx, request, nil, nil); err != nil {
+		if decision, err := r.store.CheckModelRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 			return &EvaluationResult{
 				Decision: decision,
-				Reason:   fmt.Sprintf("Model-level rate limit check failed: %s", err.Error()),
+				Reason:   fmt.Sprintf("Model-level rate limit check failed: %s", reasonFromErr(err, decision)),
 			}
 		}
 
 		// 4. Check model-level budgets (after provider-level checks)
-		if err := r.store.CheckModelBudget(ctx, request, nil); err != nil {
+		if decision, err := r.store.CheckModelBudget(ctx, request, nil); err != nil || isBudgetViolation(decision) {
 			return &EvaluationResult{
-				Decision: DecisionBudgetExceeded,
-				Reason:   fmt.Sprintf("Model-level budget exceeded: %s", err.Error()),
+				Decision: decision,
+				Reason:   fmt.Sprintf("Model-level budget exceeded: %s", reasonFromErr(err, decision)),
 			}
 		}
 	}
@@ -122,6 +124,67 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 		Decision: DecisionAllow,
 		Reason:   "Request allowed by governance policy (provider-level and model-level checks passed)",
 	}
+}
+
+func (r *BudgetResolver) EvaluateCustomerRequest(ctx *schemas.BifrostContext, customerID string, request *EvaluationRequest) *EvaluationResult {
+	// Skip if no customerID
+	if customerID == "" {
+		return &EvaluationResult{
+			Decision: DecisionAllow,
+			Reason:   "No customer ID provided, skipping customer-level checks",
+		}
+	}
+	// Check customer-level rate limits
+	if decision, err := r.store.CheckCustomerRateLimit(ctx, customerID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Customer-level rate limit exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	// Check customer-level budget
+	if decision, err := r.store.CheckCustomerBudget(ctx, customerID, request, nil); err != nil || isBudgetViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Customer-level budget exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	return &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "Customer-level checks passed",
+	}
+}
+
+func (r *BudgetResolver) EvaluateTeamRequest(ctx *schemas.BifrostContext, teamID string, request *EvaluationRequest) *EvaluationResult {
+	// Skip if no teamID
+	if teamID == "" {
+		return &EvaluationResult{
+			Decision: DecisionAllow,
+			Reason:   "No team ID provided, skipping team-level checks",
+		}
+	}
+	// Check team-level rate limits
+	if decision, err := r.store.CheckTeamRateLimit(ctx, teamID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Team-level rate limit exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	// Check team-level budget
+	if decision, err := r.store.CheckTeamBudget(ctx, teamID, request, nil); err != nil || isBudgetViolation(decision) {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("Team-level budget exceeded: %s", reasonFromErr(err, decision)),
+		}
+	}
+
+	return &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "Team-level checks passed",
+	}
+
 }
 
 // EvaluateUserRequest evaluates user-level rate limits and budgets (enterprise-only)
@@ -137,18 +200,18 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 	}
 
 	// Check user-level rate limits
-	if err, decision := r.store.CheckUserRateLimit(ctx, userID, request, nil, nil); err != nil {
+	if decision, err := r.store.CheckUserRateLimit(ctx, userID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 		return &EvaluationResult{
 			Decision: decision,
-			Reason:   fmt.Sprintf("User-level rate limit exceeded: %s", err.Error()),
+			Reason:   fmt.Sprintf("User-level rate limit exceeded: %s", reasonFromErr(err, decision)),
 		}
 	}
 
 	// Check user-level budget
-	if err := r.store.CheckUserBudget(ctx, userID, request, nil); err != nil {
+	if decision, err := r.store.CheckUserBudget(ctx, userID, request, nil); err != nil || isBudgetViolation(decision) {
 		return &EvaluationResult{
-			Decision: DecisionBudgetExceeded,
-			Reason:   fmt.Sprintf("User-level budget exceeded: %s", err.Error()),
+			Decision: decision,
+			Reason:   fmt.Sprintf("User-level budget exceeded: %s", reasonFromErr(err, decision)),
 		}
 	}
 
@@ -161,18 +224,19 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 // isModelRequired checks if the requested model is required for this request
 func (r *BudgetResolver) isModelRequired(requestType schemas.RequestType) bool {
 	// Here we will have to check for some requests which do not need model
-	// For example, batches, container, files requests
+	// For example, batches, container, files, videos, passthrough requests
 	// For these requests, we will only check for provider filtering
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest {
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
 		return false
 	}
 	return true
 }
 
 // EvaluateVirtualKeyRequest evaluates virtual key-specific checks including validation, filtering, rate limits, and budgets
-func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType) *EvaluationResult {
+// skipRateLimitsAndBudgets evaluates to true when we want to skip rate limits and budgets. This is used when user auth is present (user governance handles limits).
+func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType, skipRateLimitsAndBudgets bool) *EvaluationResult {
 	// 1. Validate virtual key exists and is active
-	vk, exists := r.store.GetVirtualKey(virtualKeyValue)
+	vk, exists := r.store.GetVirtualKey(ctx, virtualKeyValue)
 	if !exists {
 		return &EvaluationResult{
 			Decision: DecisionVirtualKeyNotFound,
@@ -194,7 +258,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
 	}
-	if !vk.IsActive {
+	if !vk.IsActiveValue() {
 		return &EvaluationResult{
 			Decision: DecisionVirtualKeyBlocked,
 			Reason:   "Virtual key is inactive",
@@ -224,23 +288,28 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 
 	// 4. Check rate limits hierarchy (VK level)
-	if rateLimitResult := r.checkRateLimitHierarchy(ctx, vk, evaluationRequest); rateLimitResult != nil {
-		return rateLimitResult
+	if !skipRateLimitsAndBudgets {
+		if rateLimitResult := r.checkRateLimitHierarchy(ctx, vk, evaluationRequest); rateLimitResult != nil {
+			return rateLimitResult
+		}
+
+		// 5. Check budget hierarchy (VK → Team → Customer)
+		if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest); budgetResult != nil {
+			return budgetResult
+		}
 	}
 
-	// 5. Check budget hierarchy (VK → Team → Customer)
-	if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest); budgetResult != nil {
-		return budgetResult
-	}
-
-	// Find the provider config that matches the request's provider and get its allowed keys
+	// Find the provider config that matches the request's provider and apply key filtering
 	for _, pc := range vk.ProviderConfigs {
-		if schemas.ModelProvider(pc.Provider) == provider && len(pc.Keys) > 0 {
-			includeOnlyKeys := make([]string, 0, len(pc.Keys))
-			for _, dbKey := range pc.Keys {
-				includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+		if schemas.ModelProvider(pc.Provider) == provider {
+			if !pc.AllowAllKeys {
+				// Restrict to specific keys (empty slice = no keys allowed)
+				includeOnlyKeys := make([]string, 0, len(pc.Keys))
+				for _, dbKey := range pc.Keys {
+					includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+				}
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
 			}
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
 			break
 		}
 	}
@@ -253,80 +322,11 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 }
 
-// EvaluateVirtualKeyFiltering evaluates virtual key checks for routing and model/provider filtering only,
-// skipping rate limits and budgets. Used when user auth is present (user governance handles limits).
-func (r *BudgetResolver) EvaluateVirtualKeyFiltering(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType) *EvaluationResult {
-	// 1. Validate virtual key exists and is active
-	vk, exists := r.store.GetVirtualKey(virtualKeyValue)
-	if !exists {
-		return &EvaluationResult{
-			Decision: DecisionVirtualKeyNotFound,
-			Reason:   "Virtual key not found",
-		}
-	}
-	// Set virtual key id and name in context
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
-	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
-		if vk.Team.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
-		}
-	}
-	if vk.Customer != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
-	}
-	if !vk.IsActive {
-		return &EvaluationResult{
-			Decision: DecisionVirtualKeyBlocked,
-			Reason:   "Virtual key is inactive",
-		}
-	}
-	// 2. Check provider filtering
-	if requestType != schemas.MCPToolExecutionRequest && !r.isProviderAllowed(vk, provider) {
-		return &EvaluationResult{
-			Decision:   DecisionProviderBlocked,
-			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", provider),
-			VirtualKey: vk,
-		}
-	}
-	// 3. Check model filtering
-	if r.isModelRequired(requestType) && !r.isModelAllowed(vk, provider, model) {
-		return &EvaluationResult{
-			Decision:   DecisionModelBlocked,
-			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
-			VirtualKey: vk,
-		}
-	}
-
-	// Set include-only keys for provider config routing
-	for _, pc := range vk.ProviderConfigs {
-		if schemas.ModelProvider(pc.Provider) == provider && len(pc.Keys) > 0 {
-			includeOnlyKeys := make([]string, 0, len(pc.Keys))
-			for _, dbKey := range pc.Keys {
-				includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
-			}
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
-			break
-		}
-	}
-
-	// Skip rate limits and budgets — user auth handles those
-	return &EvaluationResult{
-		Decision:   DecisionAllow,
-		Reason:     "Request allowed by governance policy (VK filtering only)",
-		VirtualKey: vk,
-	}
-}
-
 // isModelAllowed checks if the requested model is allowed for this VK
 func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string) bool {
-	// Empty ProviderConfigs means all models are allowed
+	// Empty ProviderConfigs means no models are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
-		return true
+		return false
 	}
 
 	for _, pc := range vk.ProviderConfigs {
@@ -334,14 +334,17 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 			// Delegate model allowance check to model catalog
 			// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
 			// and provider-prefixed allowed_models entries
-			if r.modelCatalog != nil {
-				return r.modelCatalog.IsModelAllowedForProvider(provider, model, pc.AllowedModels)
+			if r.modelCatalog != nil && r.governanceInMemoryStore != nil {
+				providerConfig, ok := r.governanceInMemoryStore.GetConfiguredProviders()[provider]
+				providerConfigPtr := &providerConfig
+				if !ok {
+					providerConfigPtr = nil
+				}
+				return r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels)
 			}
 			// Fallback when model catalog is not available: simple string matching
-			if len(pc.AllowedModels) == 0 {
-				return true
-			}
-			return slices.Contains(pc.AllowedModels, model)
+			// ["*"] = allow all models; [] = deny all models
+			return pc.AllowedModels.IsAllowed(model)
 		}
 	}
 
@@ -350,9 +353,9 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 
 // isProviderAllowed checks if the requested provider is allowed for this VK
 func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) bool {
-	// Empty AllowedProviders means all providers are allowed
+	// Empty ProviderConfigs means no providers are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
-		return true
+		return false
 	}
 
 	for _, pc := range vk.ProviderConfigs {
@@ -366,7 +369,7 @@ func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey
 
 // checkRateLimitHierarchy checks provider-level rate limits first, then VK rate limits using flexible approach
 func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
-	if decision, err := r.store.CheckRateLimit(ctx, vk, request, nil, nil); err != nil {
+	if decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 		// Check provider-level first (matching check order), then VK-level
 		var rateLimitInfo *configstoreTables.TableRateLimit
 		for _, pc := range vk.ProviderConfigs {
@@ -380,7 +383,7 @@ func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *config
 		}
 		return &EvaluationResult{
 			Decision:      decision,
-			Reason:        fmt.Sprintf("Rate limit check failed: %s", err.Error()),
+			Reason:        fmt.Sprintf("Rate limit check failed: %s", reasonFromErr(err, decision)),
 			VirtualKey:    vk,
 			RateLimitInfo: rateLimitInfo,
 		}
@@ -392,16 +395,14 @@ func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *config
 // checkBudgetHierarchy checks the budget hierarchy atomically (VK → Team → Customer)
 func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
-	if err := r.store.CheckBudget(ctx, vk, request, nil); err != nil {
-		r.logger.Debug(fmt.Sprintf("Atomic budget exceeded for VK %s: %s", vk.ID, err.Error()))
-
+	if decision, err := r.store.CheckVirtualKeyBudget(ctx, vk, request, nil); err != nil || isBudgetViolation(decision) {
+		r.logger.Debug(fmt.Sprintf("Atomic budget exceeded for VK %s: %s", vk.ID, reasonFromErr(err, decision)))
 		return &EvaluationResult{
-			Decision:   DecisionBudgetExceeded,
-			Reason:     fmt.Sprintf("Budget exceeded: %s", err.Error()),
+			Decision:   decision,
+			Reason:     fmt.Sprintf("Budget exceeded: %s", reasonFromErr(err, decision)),
 			VirtualKey: vk,
 		}
 	}
-
 	return nil // No budget violations
 }
 
@@ -412,16 +413,16 @@ func (r *BudgetResolver) isProviderBudgetViolated(ctx context.Context, vk *confi
 	request := &EvaluationRequest{Provider: schemas.ModelProvider(config.Provider)}
 
 	// 1. Check global provider-level budget first
-	if err := r.store.CheckProviderBudget(ctx, request, nil); err != nil {
+	if _, err := r.store.CheckProviderBudget(ctx, request, nil); err != nil {
 		r.logger.Debug(fmt.Sprintf("Global provider budget exceeded for provider %s: %s", config.Provider, err.Error()))
 		return true
 	}
 
 	// 2. Check VK-level provider config budget
-	if config.Budget == nil {
+	if len(config.Budgets) == 0 {
 		return false
 	}
-	if err := r.store.CheckBudget(ctx, vk, request, nil); err != nil {
+	if _, err := r.store.CheckVirtualKeyBudget(ctx, vk, request, nil); err != nil {
 		r.logger.Debug(fmt.Sprintf("VK provider config budget exceeded for VK %s: %s", vk.ID, err.Error()))
 		return true
 	}
@@ -433,7 +434,7 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 	request := &EvaluationRequest{Provider: schemas.ModelProvider(config.Provider)}
 
 	// 1. Check global provider-level rate limit first
-	if err, decision := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+	if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
 		r.logger.Debug(fmt.Sprintf("Global provider rate limit exceeded for provider %s", config.Provider))
 		return true
 	}
@@ -442,7 +443,7 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 	if config.RateLimit == nil {
 		return false
 	}
-	decision, err := r.store.CheckRateLimit(ctx, vk, request, nil, nil)
+	decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil)
 	if err != nil || isRateLimitViolation(decision) {
 		r.logger.Debug(fmt.Sprintf("VK provider config rate limit exceeded for VK %s, provider %s", vk.ID, config.Provider))
 		return true
@@ -453,4 +454,19 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 // isRateLimitViolation returns true if the decision indicates a rate limit violation
 func isRateLimitViolation(decision Decision) bool {
 	return decision == DecisionRateLimited || decision == DecisionTokenLimited || decision == DecisionRequestLimited
+}
+
+// isBudgetViolation returns true if the decision indicates a budget violation.
+func isBudgetViolation(decision Decision) bool {
+	return decision == DecisionBudgetExceeded
+}
+
+// reasonFromErr yields a non-nil-safe reason string. When the store returns a
+// non-allow decision without an accompanying error, err.Error() would panic —
+// fall back to a generic phrase that still names the decision.
+func reasonFromErr(err error, decision Decision) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("policy violation (%s)", decision)
 }

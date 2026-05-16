@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -64,6 +62,7 @@ export function AddProviderDropdown({
 					</DropdownMenuItem>
 				))}
 				{hasKnown && <DropdownMenuSeparator />}
+				{/* Add New Provider > Custom provider... — used by E2E (add-provider-option-custom) */}
 				<DropdownMenuItem data-testid="add-provider-option-custom" onSelect={onAddCustomProvider}>
 					<Settings2Icon className="h-4 w-4" />
 					<span>Custom provider...</span>

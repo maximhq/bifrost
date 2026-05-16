@@ -3,7 +3,6 @@ package anthropic
 import (
 	"fmt"
 
-	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -16,10 +15,10 @@ func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *Anthropic
 	}
 
 	// Safely extract type and message from nested error
-	errorType := ""
+	errorType := "api_error"
 	message := ""
 	if bifrostErr.Error != nil {
-		if bifrostErr.Error.Type != nil {
+		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" {
 			errorType = *bifrostErr.Error.Type
 		}
 		message = bifrostErr.Error.Message
@@ -46,7 +45,7 @@ func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
 	anthropicErr := ToAnthropicChatCompletionError(bifrostErr)
 
 	// Marshal to JSON
-	jsonData, err := sonic.Marshal(anthropicErr)
+	jsonData, err := providerUtils.MarshalSorted(anthropicErr)
 	if err != nil {
 		return ""
 	}
@@ -55,7 +54,7 @@ func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
 	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }
 
-func parseAnthropicError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+func parseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp AnthropicError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if errorResp.Error != nil {
@@ -64,11 +63,6 @@ func parseAnthropicError(resp *fasthttp.Response, meta *providerUtils.RequestMet
 		}
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Message = errorResp.Error.Message
-	}
-	if meta != nil {
-		bifrostErr.ExtraFields.Provider = meta.Provider
-		bifrostErr.ExtraFields.ModelRequested = meta.Model
-		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 	return bifrostErr
 }

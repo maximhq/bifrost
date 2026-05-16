@@ -3,12 +3,12 @@
 package handlers
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -21,6 +21,12 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// sseHeartbeatInterval is the cadence of SSE comment pings on the MCP SSE
+// stream. It must stay below typical proxy/load-balancer idle timeouts (60s on
+// most stacks) so connections aren't reaped, while being large enough to avoid
+// gratuitous wake-ups on idle clients.
+const sseHeartbeatInterval = 15 * time.Second
 
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
@@ -62,6 +68,12 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		vkMCPServers:    make(map[string]*server.MCPServer),
 	}
 
+	// Register per-request tool filter so x-bf-mcp-include-clients and x-bf-mcp-include-tools are respected on tools/list
+	server.WithToolFilter(handler.makeIncludeClientsFilter())(handler.globalMCPServer)
+
+	// Register per-request tool filter so x-bf-mcp-include-clients and x-bf-mcp-include-tools are respected on tools/list
+	server.WithToolFilter(handler.makeIncludeClientsFilter())(handler.globalMCPServer)
+
 	if err := handler.SyncAllMCPServers(ctx); err != nil {
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
 	}
@@ -77,16 +89,40 @@ func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schem
 }
 
 // handleMCPServer handles POST requests for MCP JSON-RPC 2.0 messages
+// injectMCPSessionIdentity sets the MCP gateway flag and, if a per-user OAuth
+// session exists, injects the session token and identity (VK / User ID) directly
+// into the BifrostContext. This avoids header-based identity propagation which
+// would be vulnerable to spoofing by upstream callers.
+//
+// Governance context keys are set here intentionally (bypassing governance plugin)
+// because in the MCP gateway path, identity is pre-authenticated via the OAuth session.
+func injectMCPSessionIdentity(bifrostCtx *schemas.BifrostContext, session *tables.TablePerUserOAuthSession) {
+	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+	if session != nil {
+		if session.AccessToken != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserSession, session.AccessToken)
+		}
+		if session.VirtualKeyID != nil && *session.VirtualKeyID != "" && session.VirtualKey != nil && session.VirtualKey.Value != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey.Value)
+		}
+		if session.UserID != nil && *session.UserID != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, *session.UserID)
+		}
+	}
+}
+
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
-	mcpServer, err := h.getMCPServerForRequest(ctx)
+	mcpServer, session, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
+
+	injectMCPSessionIdentity(bifrostCtx, session)
 
 	// Use mcp-go server to handle the request
 	// HandleMessage processes JSON-RPC messages and returns appropriate responses
@@ -94,7 +130,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 	// Check if response is nil (notification - no response needed)
 	if response == nil {
-		ctx.SetStatusCode(fasthttp.StatusOK)
+		ctx.SetStatusCode(fasthttp.StatusAccepted)
 		return
 	}
 
@@ -112,25 +148,106 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 // handleMCPServerSSE handles GET requests for MCP Server-Sent Events streaming
 func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
-	_, err := h.getMCPServerForRequest(ctx)
+	_, session, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
 	}
 
+	// Signal to transport-plugin and tracing middlewares that this is a streaming
+	// response. Without this, fasthttpResponseToHTTPResponse calls ctx.Response.Body()
+	// during post-hook processing, which materializes the SSE body stream and
+	// deadlocks waiting for an EOF that only arrives after the goroutine exits.
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+
+	// Pre-allocate atomic.Value slot for the transport post-hook completer.
+	// TransportInterceptorMiddleware stores the completer into this slot after next(ctx)
+	// returns. The goroutine reads from the closure-captured pointer, avoiding any ctx
+	// access after the handler returns (fasthttp recycles RequestCtx).
+	var completerSlot atomic.Value
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+
+	// Get the trace completer function for use in the streaming callback.
+	// Signature: func([]schemas.PluginLogEntry) — accepts transport plugin logs so it
+	// never needs to read from ctx.UserValue (ctx may be recycled).
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+
 	// Set SSE headers
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
+	ctx.Response.Header.Set("X-Accel-Buffering", "no")
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 
-	// Use streaming response writer
-	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+	injectMCPSessionIdentity(bifrostCtx, session)
+
+	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
+	reader := lib.NewSSEStreamReader()
+	ctx.Response.SetBodyStream(reader, -1)
+
+	go func() {
+		var transportLogs []schemas.PluginLogEntry
+		completerRan := false
+		// runCompleter invokes the transport post-hook completer at most once.
+		// sendSSEOnError=true emits plugin errors as SSE "event: error" frames so the
+		// client sees them; =false logs server-side only (defer fallback, after stream
+		// termination). The MCP SSE handler has no happy-path completion point, so it
+		// only ever invokes this from the defer with sendSSEOnError=false.
+		runCompleter := func(sendSSEOnError bool) {
+			if completerRan {
+				return
+			}
+			// Bounded wait for TransportInterceptorMiddleware to publish the completer.
+			// It calls slot.Store after next(ctx) returns, which races with this goroutine
+			// on fast/empty streams. 100ms is ample — the store runs a few instructions
+			// after the handler returns.
+			var loaded any
+			deadline := time.Now().Add(100 * time.Millisecond)
+			for {
+				if loaded = completerSlot.Load(); loaded != nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if loaded == nil {
+				return
+			}
+			postHookCompleter, ok := loaded.(func() ([]schemas.PluginLogEntry, error))
+			if !ok {
+				return
+			}
+			completerRan = true
+			logs, err := postHookCompleter()
+			if err != nil {
+				if sendSSEOnError {
+					errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
+					if marshalErr == nil {
+						reader.SendError(errorJSON)
+					}
+				} else {
+					logger.Warn("transport post-hook failed after stream terminated: %v", err)
+				}
+			}
+			transportLogs = logs
+		}
+
 		defer func() {
+			// Run the deferred transport post-hook completer before cancelling the
+			// context so plugins see a live context. Errors are logged server-side
+			// only — the stream is already closing.
+			runCompleter(false)
 			cancel()
-			_ = w.Flush()
+			reader.Done()
+			// Complete the trace after streaming finishes, passing transport plugin logs.
+			// This ensures all spans are properly ended before the trace is sent to OTEL.
+			if traceCompleter != nil {
+				traceCompleter(transportLogs)
+			}
 		}()
 
 		// Send initial connection message
@@ -139,13 +256,32 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 			"method":  "connection/opened",
 		}
 		if initJSON, err := sonic.Marshal(initMessage); err == nil {
-			fmt.Fprintf(w, "data: %s\n\n", initJSON)
-			w.Flush()
+			buf := make([]byte, 0, len(initJSON)+8)
+			buf = append(buf, "data: "...)
+			buf = append(buf, initJSON...)
+			buf = append(buf, '\n', '\n')
+			if !reader.Send(buf) {
+				return
+			}
 		}
 
-		// Wait for context cancellation (client disconnect or server-side cancel)
-		<-(*bifrostCtx).Done()
-	})
+		// Periodic SSE comment heartbeats keep idle connections alive through
+		// proxies and let us detect client disconnect via reader.Send() returning
+		// false — fasthttp.RequestCtx never cancels bifrostCtx on its own.
+		ticker := time.NewTicker(sseHeartbeatInterval)
+		defer ticker.Stop()
+		ping := []byte(": ping\n\n")
+		for {
+			select {
+			case <-ticker.C:
+				if !reader.Send(ping) {
+					return
+				}
+			case <-(*bifrostCtx).Done():
+				return
+			}
+		}
+	}()
 }
 
 // Sync methods for MCP servers
@@ -166,11 +302,13 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 		h.vkMCPServers = make(map[string]*server.MCPServer)
 		for i := range virtualKeys {
 			vk := &virtualKeys[i]
-			h.vkMCPServers[vk.Value] = server.NewMCPServer(
+			vkServer := server.NewMCPServer(
 				vk.Name,
 				version,
 				server.WithToolCapabilities(true),
 			)
+			server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
+			h.vkMCPServers[vk.Value] = vkServer
 			availableTools, toolFilter := h.fetchToolsForVK(vk)
 			h.syncServer(h.vkMCPServers[vk.Value], availableTools, toolFilter)
 			logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
@@ -190,6 +328,7 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) {
 			version,
 			server.WithToolCapabilities(true),
 		)
+		server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
 		h.vkMCPServers[vk.Value] = vkServer
 	}
 	availableTools, toolFilter := h.fetchToolsForVK(vk)
@@ -224,7 +363,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			// Inject tool filter into execution context if present
 			if toolFilter != nil {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), toolFilter)
+				ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, toolFilter)
 			}
 			// Convert to Bifrost tool call format
 			toolCallType := "function"
@@ -245,6 +384,12 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			// Execute the tool via tool executor
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
+				if err.ExtraFields.MCPAuthRequired != nil {
+					return mcp.NewToolResultError(fmt.Sprintf(
+						"Authentication required for %s. Open this URL to connect your account: %s",
+						err.ExtraFields.MCPAuthRequired.MCPClientName, err.ExtraFields.MCPAuthRequired.AuthorizeURL,
+					)), nil
+				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
 
@@ -296,11 +441,24 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			inputSchema.Properties = make(map[string]any)
 		}
 
+		// Map Bifrost annotations back to MCP tool annotations
+		var toolAnnotation mcp.ToolAnnotation
+		if tool.Annotations != nil {
+			toolAnnotation = mcp.ToolAnnotation{
+				Title:           tool.Annotations.Title,
+				ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
+				DestructiveHint: tool.Annotations.DestructiveHint,
+				IdempotentHint:  tool.Annotations.IdempotentHint,
+				OpenWorldHint:   tool.Annotations.OpenWorldHint,
+			}
+		}
+
 		// Register tool with the server
 		server.AddTool(mcp.Tool{
 			Name:        toolName,
 			Description: description,
 			InputSchema: inputSchema,
+			Annotations: toolAnnotation,
 		}, handler)
 	}
 }
@@ -312,41 +470,81 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 	ctx := context.Background()
 	var toolFilter []string
 
-	if len(vk.MCPConfigs) > 0 {
-		executeOnlyTools := make([]string, 0)
-		for _, vkMcpConfig := range vk.MCPConfigs {
-			if len(vkMcpConfig.ToolsToExecute) == 0 {
-				// No tools specified in virtual key config - skip this client entirely
-				continue
-			}
+	executeOnlyTools := make([]string, 0)
 
-			// Handle wildcard in virtual key config - allow all tools from this client
-			if slices.Contains(vkMcpConfig.ToolsToExecute, "*") {
-				// Virtual key uses wildcard - use client-specific wildcard
-				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
-				continue
-			}
+	// Build a lookup of AllowOnAllVirtualKeys clients: clientID -> clientName.
+	// Explicit VK MCPConfigs always take precedence over AllowOnAllVirtualKeys.
+	allowAllVKsClients := h.config.GetAllowOnAllVirtualKeysClients()
+	if allowAllVKsClients == nil {
+		allowAllVKsClients = make(map[string]string)
+	}
 
-			for _, tool := range vkMcpConfig.ToolsToExecute {
-				if tool != "" {
-					// Add the tool - client config filtering will be handled by mcp.go
-					// Note: Use '-' separator for individual tools (wildcard uses '-*' after client name, e.g., "client-*")
-					executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
-				}
+	// Process explicit VK MCPConfigs first.
+	handledClients := make(map[string]bool)
+	for _, vkMcpConfig := range vk.MCPConfigs {
+		clientID := vkMcpConfig.MCPClient.ClientID
+		if _, isAllowAll := allowAllVKsClients[clientID]; isAllowAll {
+			// Explicit config exists — it takes precedence; mark handled regardless of tool list.
+			handledClients[clientID] = true
+		}
+		if vkMcpConfig.ToolsToExecute.IsEmpty() {
+			continue
+		}
+		if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
+			continue
+		}
+		for _, tool := range vkMcpConfig.ToolsToExecute {
+			if tool != "" {
+				// Add the tool - client config filtering will be handled by mcp.go
+				// Note: Use '-' separator for individual tools (wildcard uses '-*' after client name, e.g., "client-*")
+				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
 			}
 		}
-
-		// Set even when empty to exclude tools when no tools are present in the virtual key config
-		ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), executeOnlyTools)
-		toolFilter = executeOnlyTools
 	}
+
+	// For AllowOnAllVirtualKeys clients with no explicit VK config, allow all their tools.
+	for clientID, clientName := range allowAllVKsClients {
+		if !handledClients[clientID] {
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", clientName))
+		}
+	}
+
+	// Always set the include-tools filter (empty = deny-all when no MCPConfigs and no AllowOnAllVirtualKeys clients)
+	ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, executeOnlyTools)
+	toolFilter = executeOnlyTools
 
 	return h.toolManager.GetAvailableMCPTools(ctx), toolFilter
 }
 
+// makeIncludeClientsFilter returns a ToolFilterFunc that dynamically filters the tools/list
+// response based on the x-bf-mcp-include-clients and x-bf-mcp-include-tools request headers.
+// When neither header is present the filter is a no-op, preserving existing behaviour.
+func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
+	return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+		if ctx.Value(schemas.MCPContextKeyIncludeClients) == nil && ctx.Value(schemas.MCPContextKeyIncludeTools) == nil {
+			return tools
+		}
+		allowed := h.toolManager.GetAvailableMCPTools(ctx)
+		allowedNames := make(map[string]bool, len(allowed))
+		for _, t := range allowed {
+			if t.Function != nil {
+				allowedNames[t.Function.Name] = true
+			}
+		}
+		result := make([]mcp.Tool, 0, len(tools))
+		for _, tool := range tools {
+			if allowedNames[tool.Name] {
+				result = append(result, tool)
+			}
+		}
+		return result
+	}
+}
+
 // Utility methods
 
-func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, error) {
+func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, *tables.TablePerUserOAuthSession, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -356,23 +554,87 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 
 	vk := getVKFromRequest(ctx)
 
+	// Check for Bifrost per-user OAuth Bearer token (not a VK)
+	userOauthSession, sessionErr := h.getPerUserOAuthSession(ctx)
+	if sessionErr != nil {
+		return nil, nil, fmt.Errorf("failed to look up OAuth session: %w", sessionErr)
+	}
+
+	// If per_user_oauth MCP clients are configured and no valid auth, return 401 with discovery
+	if clients := h.config.GetPerUserOAuthMCPClients(); len(clients) > 0 && userOauthSession == nil && vk == "" {
+		resourceMetadataURL := lib.BuildBaseURL(ctx, h.config.GetMCPExternalServerURL()) + "/.well-known/oauth-protected-resource"
+		ctx.Response.Header.Set("WWW-Authenticate",
+			fmt.Sprintf(`Bearer resource_metadata="%s"`, resourceMetadataURL))
+		return nil, nil, fmt.Errorf("oauth authentication required for mcp access")
+	}
+
+	if userOauthSession != nil {
+		if !enforceVK && (userOauthSession.VirtualKeyID == nil || *userOauthSession.VirtualKeyID == "") {
+			return h.globalMCPServer, userOauthSession, nil
+		}
+
+		if userOauthSession.VirtualKeyID == nil || *userOauthSession.VirtualKeyID == "" || userOauthSession.VirtualKey == nil {
+			return nil, nil, fmt.Errorf("virtual key required in oauth session to access mcp server, please re-authenticate with a virtual key")
+		}
+
+		vkServer, ok := h.vkMCPServers[userOauthSession.VirtualKey.Value]
+		if !ok {
+			return nil, nil, fmt.Errorf("virtual key not found")
+		}
+
+		return vkServer, userOauthSession, nil
+	}
+
 	// Return global MCP server if not enforcing virtual key header and no virtual key is provided
 	if !enforceVK && vk == "" {
-		return h.globalMCPServer, nil
+		return h.globalMCPServer, nil, nil
 	}
 
-	// Check if virtual key is provided
 	if vk == "" {
-		return nil, fmt.Errorf("virtual key header is required to access MCP server.")
+		return nil, nil, fmt.Errorf("virtual key header required to access mcp server")
 	}
 
-	// Check if vk exists in the map
 	vkServer, ok := h.vkMCPServers[vk]
 	if !ok {
-		return nil, fmt.Errorf("virtual key not found.")
+		return nil, nil, fmt.Errorf("virtual key not found")
 	}
 
-	return vkServer, nil
+	return vkServer, nil, nil
+}
+
+// getPerUserOAuthSession extracts and validates a Bifrost-issued per-user OAuth
+// token from the Authorization header. Returns the session if valid, nil otherwise.
+func (h *MCPServerHandler) getPerUserOAuthSession(ctx *fasthttp.RequestCtx) (*tables.TablePerUserOAuthSession, error) {
+	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
+	if authHeader == "" || !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		return nil, nil
+	}
+	token := strings.TrimSpace(authHeader[7:])
+	if token == "" || strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
+		return nil, nil // It's a virtual key, not a per-user OAuth token
+	}
+
+	if h.config.ConfigStore == nil {
+		return nil, nil
+	}
+
+	session, err := h.config.ConfigStore.GetPerUserOAuthSessionByAccessToken(ctx, token)
+	if err != nil {
+		logger.Warn("[mcp/auth] GetPerUserOAuthSessionByAccessToken error: %v", err)
+		return nil, err
+	}
+	if session == nil {
+		logger.Debug("[mcp/auth] Session not found for token")
+		return nil, nil
+	}
+
+	// Check expiry
+	if session.ExpiresAt.Before(time.Now()) {
+		logger.Debug("[mcp/auth] Session expired: session_id=%s expires_at=%v", session.ID, session.ExpiresAt)
+		return nil, nil
+	}
+
+	return session, nil
 }
 
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {

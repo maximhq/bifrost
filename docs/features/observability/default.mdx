@@ -24,11 +24,44 @@ Bifrost traces comprehensive information for every request, without any changes 
 - **Input Messages**: Complete conversation history and user prompts
 - **Model Parameters**: Temperature, max tokens, tools, and all other parameters
 - **Provider Context**: Which provider and model handled the request
+- **Prompt Tracking**: When the [Prompts plugin](/features/prompt-repository/prompts-plugin) is active, the log captures the selected prompt name, version number, and ID for full traceability
 
 ### **Response Data**
 - **Output Messages**: AI responses, tool calls, and function results
 - **Performance Metrics**: Latency and token usage
 - **Status Information**: Success or error details
+
+### **Retry & Key Selection** <sup>v1.5.0-prerelease4+</sup>
+
+When Bifrost retries a request (rate-limit or network error) the following fields are recorded:
+
+| Field | Meaning |
+|-------|---------|
+| `selected_key_id` / `selected_key_name` | The API key that **successfully** served the request. `null` when all attempts failed - use `attempt_trail` to see which keys were tried. |
+| `number_of_retries` | Total number of attempts minus one. **Does not indicate which key was used on each attempt.** |
+| `attempt_trail` | Ordered array of every attempt, with key used and failure reason. `fail_reason` is `null` on the final attempt. |
+
+**Example `attempt_trail`** - two rate-limit rotations then success on a third key:
+
+```json
+"attempt_trail": [
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error" },
+  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "fail_reason": "rate_limit_error" },
+  { "attempt": 2, "key_id": "key-c", "key_name": "Key C", "fail_reason": null }
+]
+```
+
+Network-error retries reuse the same key; only rate-limit errors rotate to a different key:
+
+```json
+"attempt_trail": [
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "network_error" },
+  { "attempt": 1, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error" },
+  { "attempt": 2, "key_id": "key-b", "key_name": "Key B", "fail_reason": null }
+]
+```
+
+`attempt_trail` is `null` / absent when the request succeeded on the first try without retries.
 
 ### **Custom Metadata**
 - **Logging Headers**: Capture configured request headers (e.g., `X-Tenant-ID`) into log metadata
@@ -86,8 +119,7 @@ curl --location 'http://localhost:8080/api/config' \
         "disable_content_logging": false,
         "drop_excess_requests": false,
         "initial_pool_size": 300,
-         "enforce_governance_header": false,
-        "allow_direct_keys": false,
+         "enforce_auth_on_inference": false,
         "prometheus_labels": [],
         "allowed_origins": []
     }
@@ -124,8 +156,7 @@ In your `config.json` file, you can enable logging and configure the log store:
         "enable_logging": true,
         "disable_content_logging": false,
         "drop_excess_requests": false,
-        "initial_pool_size": 300,
-        "allow_direct_keys": false
+        "initial_pool_size": 300
     },
     "logs_store": {
         "enabled": true,
@@ -207,7 +238,7 @@ func main() {
 
 Retrieve and analyze logs with powerful filtering capabilities via the UI, API, and WebSockets.
 
-![Advanced Log Filtering Interface](../../media/ui-log-filtering.gif)
+![Advanced Log Filtering Interface](/media/ui-log-filtering.gif)
 
 ### Web UI
 
@@ -376,9 +407,9 @@ Capture specific HTTP request headers into the **metadata** field of every LLM a
 
 There are two ways headers get captured into log metadata:
 
-**1. Configured Logging Headers** — Define a list of header names in the configuration. The logging plugin looks up each configured header (case-insensitive) and stores its value in the metadata.
+**1. Configured Logging Headers** - Define a list of header names in the configuration. The logging plugin looks up each configured header (case-insensitive) and stores its value in the metadata.
 
-**2. `x-bf-lh-*` Prefix (Automatic)** — Any request header with the `x-bf-lh-` prefix is automatically captured into metadata with no configuration needed. The prefix is stripped and the remainder becomes the metadata key.
+**2. `x-bf-lh-*` Prefix (Automatic)** - Any request header with the `x-bf-lh-` prefix is automatically captured into metadata with no configuration needed. The prefix is stripped and the remainder becomes the metadata key.
 
 | Request Header | Metadata Key | Metadata Value |
 |----------------|-------------|----------------|
@@ -386,7 +417,7 @@ There are two ways headers get captured into log metadata:
 | `x-bf-lh-env: production` | `env` | `production` |
 | `x-bf-lh-region: us-east-1` | `region` | `us-east-1` |
 
-Both methods can be used together — configured headers and `x-bf-lh-*` headers are merged into the same metadata map.
+Both methods can be used together - configured headers and `x-bf-lh-*` headers are merged into the same metadata map.
 
 ### Configuring Logging Headers
 
@@ -402,7 +433,7 @@ Both methods can be used together — configured headers and `x-bf-lh-*` headers
 4. Enter a comma-separated list of header names (e.g., `X-Tenant-ID, X-Correlation-ID`)
 5. Click **Save Changes**
 
-Changes take effect immediately — no restart required.
+Changes take effect immediately - no restart required.
 
 </Tab>
 <Tab title="API">
@@ -480,7 +511,7 @@ Metadata is displayed in the log detail view for both LLM and MCP logs as indivi
 | Feature | Purpose | Effect on Request |
 |---------|---------|-------------------|
 | **Required Headers** | Enforce header presence | Rejects request if missing (400) |
-| **Logging Headers** | Capture header values | No effect on request — only logs metadata |
+| **Logging Headers** | Capture header values | No effect on request - only logs metadata |
 
 A common pattern is to require a header **and** log it:
 
@@ -540,10 +571,27 @@ In benchmarks, the logging plugin adds **< 0.1ms overhead** to request processin
 
 ---
 
+## Connectors
+
+<CardGroup cols={2}>
+  <Card title="Maxim AI" icon="infinity" href="/features/observability/maxim">
+    Comprehensive LLM observability and evaluation.
+  </Card>
+  <Card title="OpenTelemetry" icon="bolt" href="/features/observability/otel">
+    OTLP integration for distributed tracing.
+  </Card>
+  <Card title="Prometheus" icon="chart-line" href="/features/observability/prometheus">
+    Native Prometheus metrics.
+  </Card>
+  <Card title="Datadog" icon="dog" href="/enterprise/datadog-connector">
+    Native APM, LLM Observability, and metrics.
+  </Card>
+</CardGroup>
+
+---
+
 ## Next Steps
 
-- **[Maxim Plugin](./maxim)** - Advanced observability with evaluation and monitoring
-- **[OTel Plugin](./otel)** - OpenTelemetry integration for distributed tracing
 - **[Gateway Setup](../../quickstart/gateway/setting-up)** - Get Bifrost running with tracing enabled
 - **[Provider Configuration](../../quickstart/gateway/provider-configuration)** - Configure multiple providers for better insights
 - **[Telemetry](../telemetry)** - Prometheus metrics and dashboards

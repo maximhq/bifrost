@@ -1,6 +1,7 @@
 package tables
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -53,6 +54,13 @@ func rawRow(t *testing.T, db *gorm.DB, table string, id any) map[string]any {
 	err := db.Table(table).Where("id = ?", id).Take(&row).Error
 	require.NoError(t, err)
 	return row
+}
+
+func envVarPtrValue(v *schemas.EnvVar) string {
+	if v == nil {
+		return ""
+	}
+	return v.GetValue()
 }
 
 // ============================================================================
@@ -175,12 +183,12 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 		Provider:   "bedrock",
 		KeyID:      "bedrock-uuid-1",
 		Value:      *schemas.NewEnvVar("bedrock-val"),
+		Aliases:    schemas.KeyAliases{"model-a": "profile-a"},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
-			AccessKey:   *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
-			SecretKey:   *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-			Region:      schemas.NewEnvVar("us-west-2"),
-			ARN:         schemas.NewEnvVar("arn:aws:iam::123456789:role/test"),
-			Deployments: map[string]string{"model-a": "profile-a"},
+			AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
+			SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+			Region:    schemas.NewEnvVar("us-west-2"),
+			ARN:       schemas.NewEnvVar("arn:aws:iam::123456789:role/test"),
 			BatchS3Config: &schemas.BatchS3Config{
 				Buckets: []schemas.S3BucketConfig{
 					{BucketName: "my-batch-bucket", Prefix: "jobs/", IsDefault: true},
@@ -197,9 +205,17 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", raw["bedrock_secret_key"])
 	assert.NotEqual(t, "us-west-2", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:iam::123456789:role/test", raw["bedrock_arn"])
-	if rawDeploy, ok := raw["bedrock_deployments_json"].(string); ok {
-		assert.NotContains(t, rawDeploy, "profile-a")
+	rawAliasesVal := raw["aliases_json"]
+	require.NotNil(t, rawAliasesVal, "aliases_json should be present in raw row")
+	var rawAliasesStr string
+	switch v := rawAliasesVal.(type) {
+	case string:
+		rawAliasesStr = v
+	case []byte:
+		rawAliasesStr = string(v)
 	}
+	require.NotEmpty(t, rawAliasesStr, "aliases_json should not be empty")
+	assert.NotContains(t, rawAliasesStr, "profile-a")
 	if rawBatch, ok := raw["bedrock_batch_s3_config_json"].(string); ok {
 		assert.NotContains(t, rawBatch, "my-batch-bucket")
 	}
@@ -213,7 +229,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:iam::123456789:role/test", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-a", found.BedrockKeyConfig.Deployments["model-a"])
+	assert.Equal(t, "profile-a", found.Aliases["model-a"])
 	require.NotNil(t, found.BedrockKeyConfig.BatchS3Config)
 	require.Len(t, found.BedrockKeyConfig.BatchS3Config.Buckets, 1)
 	assert.Equal(t, "my-batch-bucket", found.BedrockKeyConfig.BatchS3Config.Buckets[0].BucketName)
@@ -249,7 +265,7 @@ func TestTableProvider_ProxyConfigEncryptDecrypt(t *testing.T) {
 	db := setupTestDB(t)
 
 	proxyConfig := &schemas.ProxyConfig{
-		URL: "https://proxy.example.com",
+		URL: schemas.NewEnvVar("https://proxy.example.com"),
 	}
 
 	provider := &TableProvider{
@@ -269,7 +285,7 @@ func TestTableProvider_ProxyConfigEncryptDecrypt(t *testing.T) {
 	var found TableProvider
 	require.NoError(t, db.First(&found, provider.ID).Error)
 	require.NotNil(t, found.ProxyConfig)
-	assert.Equal(t, "https://proxy.example.com", found.ProxyConfig.URL)
+	assert.Equal(t, "https://proxy.example.com", envVarPtrValue(found.ProxyConfig.URL))
 }
 
 func TestTableProvider_NoProxyConfig_NoEncryption(t *testing.T) {
@@ -398,7 +414,7 @@ func TestTableVirtualKey_EncryptDecrypt(t *testing.T) {
 		ID:       "vk-1",
 		Name:     "test-vk",
 		Value:    "vk-secret-value-xyz",
-		IsActive: true,
+		IsActive: bifrost.Ptr(true),
 	}
 
 	require.NoError(t, db.Create(vk).Error)
@@ -424,7 +440,7 @@ func TestTableVirtualKey_HashComputedBeforeEncryption(t *testing.T) {
 		ID:       "vk-hash",
 		Name:     "hash-test",
 		Value:    "plaintext-value",
-		IsActive: true,
+		IsActive: bifrost.Ptr(true),
 	}
 
 	require.NoError(t, db.Create(vk).Error)
@@ -484,8 +500,8 @@ func TestTableOauthConfig_EncryptDecrypt(t *testing.T) {
 
 	config := &TableOauthConfig{
 		ID:           "oauth-cfg-1",
-		ClientID:     "client-id-public",
-		ClientSecret: "super-secret-client-secret",
+		ClientID:     schemas.NewEnvVar("client-id-public"),
+		ClientSecret: schemas.NewEnvVar("super-secret-client-secret"),
 		RedirectURI:  "https://example.com/callback",
 		State:        "csrf-state-token",
 		CodeVerifier: "pkce-code-verifier-secret",
@@ -501,10 +517,10 @@ func TestTableOauthConfig_EncryptDecrypt(t *testing.T) {
 
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-1").Error)
-	assert.Equal(t, "super-secret-client-secret", found.ClientSecret)
+	assert.Equal(t, "super-secret-client-secret", found.ClientSecret.GetValue())
 	assert.Equal(t, "pkce-code-verifier-secret", found.CodeVerifier)
 	// Non-sensitive fields should be unchanged
-	assert.Equal(t, "client-id-public", found.ClientID)
+	assert.Equal(t, "client-id-public", found.ClientID.GetValue())
 	assert.Equal(t, "https://example.com/callback", found.RedirectURI)
 }
 
@@ -522,7 +538,7 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-empty").Error)
-	assert.Equal(t, "", found.ClientSecret)
+	assert.Equal(t, "", found.ClientSecret.GetValue())
 	assert.Equal(t, "", found.CodeVerifier)
 }
 
@@ -538,7 +554,7 @@ func TestTableOauthToken_EncryptDecrypt(t *testing.T) {
 		AccessToken:  "access-token-secret-value",
 		RefreshToken: "refresh-token-secret-value",
 		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
+		ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 
 	require.NoError(t, db.Create(token).Error)
@@ -561,7 +577,7 @@ func TestTableOauthToken_EmptyRefreshToken(t *testing.T) {
 		ID:          "oauth-tok-norefresh",
 		AccessToken: "access-only-token",
 		TokenType:   "Bearer",
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ExpiresAt:   bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 
 	require.NoError(t, db.Create(token).Error)
@@ -882,7 +898,7 @@ func TestTableVirtualKey_UpdatePreservesDecryption(t *testing.T) {
 		ID:       "vk-update",
 		Name:     "update-vk",
 		Value:    "original-vk-value",
-		IsActive: true,
+		IsActive: bifrost.Ptr(true),
 	}
 	require.NoError(t, db.Create(vk).Error)
 
@@ -907,7 +923,7 @@ func TestTableOauthConfig_UpdatePreservesDecryption(t *testing.T) {
 
 	config := &TableOauthConfig{
 		ID:           "oauth-cfg-update",
-		ClientSecret: "original-secret",
+		ClientSecret: schemas.NewEnvVar("original-secret"),
 		RedirectURI:  "https://example.com/callback",
 		State:        "csrf-update",
 		ExpiresAt:    time.Now().Add(15 * time.Minute),
@@ -916,14 +932,14 @@ func TestTableOauthConfig_UpdatePreservesDecryption(t *testing.T) {
 
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-update").Error)
-	assert.Equal(t, "original-secret", found.ClientSecret)
+	assert.Equal(t, "original-secret", found.ClientSecret.GetValue())
 
-	found.ClientSecret = "rotated-secret"
+	found.ClientSecret = schemas.NewEnvVar("rotated-secret")
 	require.NoError(t, db.Save(&found).Error)
 
 	var found2 TableOauthConfig
 	require.NoError(t, db.First(&found2, "id = ?", "oauth-cfg-update").Error)
-	assert.Equal(t, "rotated-secret", found2.ClientSecret)
+	assert.Equal(t, "rotated-secret", found2.ClientSecret.GetValue())
 }
 
 func TestTableOauthToken_UpdatePreservesDecryption(t *testing.T) {
@@ -934,7 +950,7 @@ func TestTableOauthToken_UpdatePreservesDecryption(t *testing.T) {
 		AccessToken:  "original-access",
 		RefreshToken: "original-refresh",
 		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
+		ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 	require.NoError(t, db.Create(token).Error)
 
@@ -955,21 +971,22 @@ func TestTableProvider_UpdatePreservesDecryption(t *testing.T) {
 
 	provider := &TableProvider{
 		Name:        "update-provider",
-		ProxyConfig: &schemas.ProxyConfig{URL: "https://proxy-v1.example.com"},
+		ProxyConfig: &schemas.ProxyConfig{URL: schemas.NewEnvVar("https://proxy-v1.example.com")},
 	}
 	require.NoError(t, db.Create(provider).Error)
 
 	var found TableProvider
 	require.NoError(t, db.First(&found, provider.ID).Error)
-	assert.Equal(t, "https://proxy-v1.example.com", found.ProxyConfig.URL)
+	require.NotNil(t, found.ProxyConfig)
+	assert.Equal(t, "https://proxy-v1.example.com", envVarPtrValue(found.ProxyConfig.URL))
 
-	found.ProxyConfig = &schemas.ProxyConfig{URL: "https://proxy-v2.example.com"}
+	found.ProxyConfig = &schemas.ProxyConfig{URL: schemas.NewEnvVar("https://proxy-v2.example.com")}
 	require.NoError(t, db.Save(&found).Error)
 
 	var found2 TableProvider
 	require.NoError(t, db.First(&found2, provider.ID).Error)
 	require.NotNil(t, found2.ProxyConfig)
-	assert.Equal(t, "https://proxy-v2.example.com", found2.ProxyConfig.URL)
+	assert.Equal(t, "https://proxy-v2.example.com", envVarPtrValue(found2.ProxyConfig.URL))
 }
 
 func TestTablePlugin_UpdatePreservesDecryption(t *testing.T) {
@@ -1115,7 +1132,7 @@ func TestTableOauthToken_FindMultipleDecryptsAll(t *testing.T) {
 			AccessToken:  "access-" + id,
 			RefreshToken: "refresh-" + id,
 			TokenType:    "Bearer",
-			ExpiresAt:    time.Now().Add(time.Hour),
+			ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 		}
 		require.NoError(t, db.Create(token).Error)
 	}
@@ -1144,6 +1161,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 		Provider:   "custom",
 		KeyID:      "multi-uuid",
 		Value:      *schemas.NewEnvVar("multi-api-key"),
+		Aliases:    schemas.KeyAliases{"claude-3": "profile-claude"},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint:     *schemas.NewEnvVar("https://azure.endpoint.com"),
 			ClientID:     schemas.NewEnvVar("multi-azure-cid"),
@@ -1163,7 +1181,6 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 			SessionToken: sessionToken,
 			Region:       schemas.NewEnvVar("eu-west-1"),
 			ARN:          schemas.NewEnvVar("arn:aws:bedrock:eu-west-1:123:role"),
-			Deployments:  map[string]string{"claude-3": "profile-claude"},
 		},
 	}
 
@@ -1180,9 +1197,17 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "us-central1", raw["vertex_region"])
 	assert.NotEqual(t, "eu-west-1", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:bedrock:eu-west-1:123:role", raw["bedrock_arn"])
-	if rawDeploy, ok := raw["bedrock_deployments_json"].(string); ok {
-		assert.NotContains(t, rawDeploy, "profile-claude")
+	rawAliasesVal2 := raw["aliases_json"]
+	require.NotNil(t, rawAliasesVal2, "aliases_json should be present in raw row")
+	var rawAliasesStr2 string
+	switch v := rawAliasesVal2.(type) {
+	case string:
+		rawAliasesStr2 = v
+	case []byte:
+		rawAliasesStr2 = string(v)
 	}
+	require.NotEmpty(t, rawAliasesStr2, "aliases_json should not be empty")
+	assert.NotContains(t, rawAliasesStr2, "profile-claude")
 
 	var found TableKey
 	require.NoError(t, db.First(&found, key.ID).Error)
@@ -1214,7 +1239,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "eu-west-1", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-claude", found.BedrockKeyConfig.Deployments["claude-3"])
+	assert.Equal(t, "profile-claude", found.Aliases["claude-3"])
 }
 
 // ============================================================================
@@ -1268,9 +1293,9 @@ func TestTableMCPClient_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	db := setupTestDB(t)
 
 	client := &TableMCPClient{
-		ClientID:       "mcp-dis-1",
-		Name:           "disabled-mcp",
-		ConnectionType: "sse",
+		ClientID:         "mcp-dis-1",
+		Name:             "disabled-mcp",
+		ConnectionType:   "sse",
 		ConnectionString: schemas.NewEnvVar("https://mcp.example.com"),
 		Headers: map[string]schemas.EnvVar{
 			"Authorization": *schemas.NewEnvVar("Bearer secret-token"),
@@ -1300,7 +1325,7 @@ func TestTableVirtualKey_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 		ID:       "vk-dis-1",
 		Name:     "disabled-vk",
 		Value:    "vk-plaintext-value",
-		IsActive: true,
+		IsActive: bifrost.Ptr(true),
 	}
 
 	require.NoError(t, db.Create(vk).Error)
@@ -1347,7 +1372,7 @@ func TestTableOauthConfig_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 
 	cfg := &TableOauthConfig{
 		ID:           "cfg-dis-1",
-		ClientSecret: "client-secret-plain",
+		ClientSecret: schemas.NewEnvVar("client-secret-plain"),
 		CodeVerifier: "verifier-plain",
 		RedirectURI:  "https://example.com/cb",
 		State:        "csrf-state",
@@ -1367,7 +1392,7 @@ func TestTableOauthConfig_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	// GORM read should return same plaintext
 	var found TableOauthConfig
 	require.NoError(t, db.Where("id = ?", "cfg-dis-1").First(&found).Error)
-	assert.Equal(t, "client-secret-plain", found.ClientSecret)
+	assert.Equal(t, "client-secret-plain", found.ClientSecret.GetValue())
 	assert.Equal(t, "verifier-plain", found.CodeVerifier)
 }
 
@@ -1380,7 +1405,7 @@ func TestTableOauthToken_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 		AccessToken:  "access-plain",
 		RefreshToken: "refresh-plain",
 		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
+		ExpiresAt:    bifrost.Ptr(time.Now().Add(time.Hour)),
 	}
 
 	require.NoError(t, db.Create(token).Error)
@@ -1406,8 +1431,8 @@ func TestTableProvider_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	provider := &TableProvider{
 		Name: "disabled-provider",
 		ProxyConfig: &schemas.ProxyConfig{
-			URL:      "https://proxy.example.com",
-			Password: "proxy-secret",
+			URL:      schemas.NewEnvVar("https://proxy.example.com"),
+			Password: schemas.NewEnvVar("proxy-secret"),
 		},
 	}
 
@@ -1422,7 +1447,7 @@ func TestTableProvider_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	var found TableProvider
 	require.NoError(t, db.First(&found, provider.ID).Error)
 	require.NotNil(t, found.ProxyConfig)
-	assert.Equal(t, "proxy-secret", found.ProxyConfig.Password)
+	assert.Equal(t, "proxy-secret", envVarPtrValue(found.ProxyConfig.Password))
 }
 
 func TestTablePlugin_EncryptionDisabled_StoresPlaintext(t *testing.T) {
@@ -1707,4 +1732,259 @@ func TestPostgres_EncryptedColumns_AreText(t *testing.T) {
 				"column %s should be text", col)
 		})
 	}
+}
+
+// ============================================================================
+// Env-var-reference persistence regression tests
+//
+// These tests guard against a class of bugs where BeforeSave used GetValue() != ""
+// to decide whether to persist a config field. When a field was set via env var
+// reference (e.g. "env.AZURE_ENDPOINT") and the env var was not set on the server,
+// GetValue() would return "" and the field — including the env reference — would be
+// dropped from the DB. On the next reload the entire provider-specific config block
+// could vanish.
+//
+// IsSet() (which checks both Val and EnvVar) is the correct check, and AfterFind
+// reconstruction must consider all fields in the config, not just one.
+// ============================================================================
+
+// TestTableKey_VertexUnresolvedEnvVar_RoundTrip verifies that a Vertex key configured
+// with an env var reference for ProjectID survives the BeforeSave/AfterFind round-trip
+// even when the env var is NOT set on the server (so the resolved Val is empty).
+func TestTableKey_VertexUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	// Make sure the env var is NOT set so the resolved Val is empty.
+	require.NoError(t, os.Unsetenv("FAKE_VERTEX_PROJECT_ID_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "vertex-unresolved-env",
+		ProviderID: 1,
+		Provider:   "vertex",
+		KeyID:      "vertex-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_VERTEX_PROJECT_ID_FOR_TEST",
+				FromEnv: true,
+			},
+			Region: *schemas.NewEnvVar("us-central1"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	// Read back through GORM (triggers AfterFind reconstruction).
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	// VertexKeyConfig must NOT be wiped — this was the original bug.
+	require.NotNil(t, found.VertexKeyConfig, "VertexKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_VERTEX_PROJECT_ID_FOR_TEST", found.VertexKeyConfig.ProjectID.EnvVar,
+		"env var reference for ProjectID lost on round-trip")
+	assert.True(t, found.VertexKeyConfig.ProjectID.FromEnv,
+		"FromEnv flag for ProjectID lost on round-trip")
+	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue(),
+		"Plain Region value should survive round-trip unchanged")
+}
+
+// TestTableKey_AzureUnresolvedEnvVar_RoundTrip verifies the same property for Azure.
+// This also exercises the broadened AfterFind reconstruction condition: when only the
+// endpoint is set (and unresolved), the entire AzureKeyConfig must still be reconstructed.
+func TestTableKey_AzureUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_AZURE_ENDPOINT_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "azure-unresolved-env",
+		ProviderID: 1,
+		Provider:   "azure",
+		KeyID:      "azure-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_AZURE_ENDPOINT_FOR_TEST",
+				FromEnv: true,
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.AzureKeyConfig, "AzureKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_AZURE_ENDPOINT_FOR_TEST", found.AzureKeyConfig.Endpoint.EnvVar,
+		"env var reference for Endpoint lost on round-trip")
+	assert.True(t, found.AzureKeyConfig.Endpoint.FromEnv,
+		"FromEnv flag for Endpoint lost on round-trip")
+}
+
+// TestTableKey_AzureOnlyApiVersion_AfterFindReconstructs verifies that AzureKeyConfig
+// is reconstructed from the DB even when ONLY a non-endpoint Azure field is set.
+// Before the fix, AfterFind only checked AzureEndpoint != nil and would silently drop
+// the entire Azure config when only api_version (or any other Azure field) was present.
+func TestTableKey_AzureOnlyApiVersion_AfterFindReconstructs(t *testing.T) {
+	db := setupTestDB(t)
+
+	apiVersion := schemas.NewEnvVar("2024-10-21")
+	key := &TableKey{
+		Name:       "azure-only-apiversion",
+		ProviderID: 1,
+		Provider:   "azure",
+		KeyID:      "azure-apiver-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			// No endpoint, no client id — only api_version.
+			APIVersion: apiVersion,
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.AzureKeyConfig,
+		"AzureKeyConfig should be reconstructed when only api_version is present")
+	require.NotNil(t, found.AzureKeyConfig.APIVersion)
+	assert.Equal(t, "2024-10-21", found.AzureKeyConfig.APIVersion.GetValue())
+}
+
+// TestTableKey_BedrockUnresolvedEnvVar_RoundTrip verifies the same property for
+// Bedrock explicit credentials.
+func TestTableKey_BedrockUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_AWS_ACCESS_KEY_FOR_TEST"))
+	require.NoError(t, os.Unsetenv("FAKE_AWS_SECRET_KEY_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "bedrock-unresolved-env",
+		ProviderID: 1,
+		Provider:   "bedrock",
+		KeyID:      "bedrock-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_AWS_ACCESS_KEY_FOR_TEST",
+				FromEnv: true,
+			},
+			SecretKey: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_AWS_SECRET_KEY_FOR_TEST",
+				FromEnv: true,
+			},
+			Region: schemas.NewEnvVar("us-west-2"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.BedrockKeyConfig, "BedrockKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_AWS_ACCESS_KEY_FOR_TEST", found.BedrockKeyConfig.AccessKey.EnvVar,
+		"env var reference for AccessKey lost on round-trip")
+	assert.Equal(t, "env.FAKE_AWS_SECRET_KEY_FOR_TEST", found.BedrockKeyConfig.SecretKey.EnvVar,
+		"env var reference for SecretKey lost on round-trip")
+	require.NotNil(t, found.BedrockKeyConfig.Region)
+	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
+}
+
+// TestTableKey_OllamaUnresolvedEnvVar_RoundTrip and TestTableKey_SGLUnresolvedEnvVar_RoundTrip
+// verify the same property for the recently-added providers, which also use env-aware persistence.
+func TestTableKey_OllamaUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_OLLAMA_URL_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "ollama-unresolved-env",
+		ProviderID: 1,
+		Provider:   "ollama",
+		KeyID:      "ollama-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		OllamaKeyConfig: &schemas.OllamaKeyConfig{
+			URL: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_OLLAMA_URL_FOR_TEST",
+				FromEnv: true,
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.OllamaKeyConfig, "OllamaKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_OLLAMA_URL_FOR_TEST", found.OllamaKeyConfig.URL.EnvVar)
+	assert.True(t, found.OllamaKeyConfig.URL.FromEnv)
+}
+
+func TestTableKey_SGLUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_SGL_URL_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "sgl-unresolved-env",
+		ProviderID: 1,
+		Provider:   "sgl",
+		KeyID:      "sgl-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		SGLKeyConfig: &schemas.SGLKeyConfig{
+			URL: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_SGL_URL_FOR_TEST",
+				FromEnv: true,
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.SGLKeyConfig, "SGLKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_SGL_URL_FOR_TEST", found.SGLKeyConfig.URL.EnvVar)
+	assert.True(t, found.SGLKeyConfig.URL.FromEnv)
+}
+
+// TestTableKey_VertexPlainValue_RoundTrip is a sanity check ensuring that plain
+// (non-env-backed) values still round-trip cleanly through the persistence layer
+// after the IsSet() change. Both branches of the BeforeSave check matter.
+func TestTableKey_VertexPlainValue_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "vertex-plain",
+		ProviderID: 1,
+		Provider:   "vertex",
+		KeyID:      "vertex-plain-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewEnvVar("my-gcp-project"),
+			Region:    *schemas.NewEnvVar("us-central1"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.VertexKeyConfig)
+	assert.Equal(t, "my-gcp-project", found.VertexKeyConfig.ProjectID.GetValue())
+	assert.False(t, found.VertexKeyConfig.ProjectID.FromEnv)
+	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue())
 }

@@ -1,13 +1,23 @@
 package gemini
 
 import (
-	"slices"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func toGeminiModelResourceName(modelID string) string {
+	if strings.HasPrefix(modelID, "models/") {
+		return modelID
+	}
+	if idx := strings.Index(modelID, "/"); idx >= 0 && idx+1 < len(modelID) {
+		return "models/" + modelID[idx+1:]
+	}
+	return "models/" + modelID
+}
+
+func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -16,38 +26,46 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
-	includedModels := make(map[string]bool)
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
+		return bifrostResponse
+	}
+
+	included := make(map[string]bool)
+
 	for _, model := range response.Models {
-
 		contextLength := model.InputTokenLimit + model.OutputTokenLimit
-		// Remove prefix models/ from model.Name
+		// Gemini returns model names with a "models/" prefix — strip it before filtering
+		// so that allowedModels entries like "gemini-1.5-pro" match correctly.
 		modelName := strings.TrimPrefix(model.Name, "models/")
-		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, modelName) {
-			continue
+
+		for _, result := range pipeline.FilterModel(modelName) {
+			entry := schemas.Model{
+				ID:               string(providerKey) + "/" + result.ResolvedID,
+				Name:             schemas.Ptr(model.DisplayName),
+				Description:      schemas.Ptr(model.Description),
+				ContextLength:    schemas.Ptr(int(contextLength)),
+				MaxInputTokens:   schemas.Ptr(model.InputTokenLimit),
+				MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
+				SupportedMethods: model.SupportedGenerationMethods,
+			}
+			if result.AliasValue != "" {
+				entry.Alias = schemas.Ptr(result.AliasValue)
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, entry)
+			included[strings.ToLower(result.ResolvedID)] = true
 		}
-		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:               string(providerKey) + "/" + modelName,
-			Name:             schemas.Ptr(model.DisplayName),
-			Description:      schemas.Ptr(model.Description),
-			ContextLength:    schemas.Ptr(int(contextLength)),
-			MaxInputTokens:   schemas.Ptr(model.InputTokenLimit),
-			MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
-			SupportedMethods: model.SupportedGenerationMethods,
-		})
-		includedModels[modelName] = true
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
-		for _, allowedModel := range allowedModels {
-			if !includedModels[allowedModel] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   string(providerKey) + "/" + allowedModel,
-					Name: schemas.Ptr(allowedModel),
-				})
-			}
-		}
-	}
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
 }
@@ -64,7 +82,7 @@ func ToGeminiListModelsResponse(resp *schemas.BifrostListModelsResponse) *Gemini
 
 	for _, model := range resp.Data {
 		geminiModel := GeminiModel{
-			Name:                       model.ID,
+			Name:                       toGeminiModelResourceName(model.ID),
 			SupportedGenerationMethods: model.SupportedMethods,
 		}
 		if model.Name != nil {

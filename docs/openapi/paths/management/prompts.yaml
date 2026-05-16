@@ -1,0 +1,651 @@
+# Prompt Repository paths
+
+folders:
+  get:
+    operationId: listFolders
+    summary: List folders
+    description: Returns all prompt folders.
+    tags:
+      - Prompt Repository
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folders:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/prompts.yaml#/Folder'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createFolder
+    summary: Create folder
+    description: Creates a new prompt folder.
+    tags:
+      - Prompt Repository
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/CreateFolderRequest'
+    responses:
+      '200':
+        description: Folder created
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folder:
+                  $ref: '../../schemas/management/prompts.yaml#/Folder'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+folders-by-id:
+  get:
+    operationId: getFolder
+    summary: Get folder
+    description: Returns a folder by ID.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folder:
+                  $ref: '../../schemas/management/prompts.yaml#/Folder'
+      '404':
+        description: Folder not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateFolder
+    summary: Update folder
+    description: Updates a folder's name or description.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/UpdateFolderRequest'
+    responses:
+      '200':
+        description: Folder updated
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folder:
+                  $ref: '../../schemas/management/prompts.yaml#/Folder'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Folder not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteFolder
+    summary: Delete folder
+    description: Deletes a folder and cascades to contained prompts.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Folder deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Folder not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+prompts:
+  get:
+    operationId: listPrompts
+    summary: List prompts
+    description: Returns all prompts, optionally filtered by folder.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: folder_id
+        in: query
+        description: Filter by folder ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompts:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/prompts.yaml#/Prompt'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createPrompt
+    summary: Create prompt
+    description: Creates a new prompt.
+    tags:
+      - Prompt Repository
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/CreatePromptRequest'
+    responses:
+      '200':
+        description: Prompt created
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  $ref: '../../schemas/management/prompts.yaml#/Prompt'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+prompts-by-id:
+  get:
+    operationId: getPrompt
+    summary: Get prompt
+    description: Returns a prompt by ID with its latest version.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  $ref: '../../schemas/management/prompts.yaml#/Prompt'
+      '404':
+        description: Prompt not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updatePrompt
+    summary: Update prompt
+    description: Updates a prompt's name or folder.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/UpdatePromptRequest'
+    responses:
+      '200':
+        description: Prompt updated
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  $ref: '../../schemas/management/prompts.yaml#/Prompt'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deletePrompt
+    summary: Delete prompt
+    description: Deletes a prompt and all its versions and sessions.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Prompt deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Prompt not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+prompt-versions:
+  get:
+    operationId: listPromptVersions
+    summary: List prompt versions
+    description: Returns all versions for a prompt.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Prompt ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                versions:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/prompts.yaml#/PromptVersion'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createPromptVersion
+    summary: Create prompt version
+    description: Creates a new version for a prompt.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Prompt ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/CreateVersionRequest'
+    responses:
+      '200':
+        description: Version created
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  $ref: '../../schemas/management/prompts.yaml#/PromptVersion'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+versions-by-id:
+  get:
+    operationId: getPromptVersion
+    summary: Get prompt version
+    description: Returns a specific version by ID.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Version ID
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  $ref: '../../schemas/management/prompts.yaml#/PromptVersion'
+      '404':
+        description: Version not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deletePromptVersion
+    summary: Delete prompt version
+    description: Deletes a specific version.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Version ID
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: Version deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Version not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+prompt-sessions:
+  get:
+    operationId: listPromptSessions
+    summary: List prompt sessions
+    description: Returns all sessions for a prompt.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Prompt ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessions:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/prompts.yaml#/PromptSession'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createPromptSession
+    summary: Create prompt session
+    description: Creates a new playground session for a prompt.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Prompt ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/CreateSessionRequest'
+    responses:
+      '200':
+        description: Session created
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session:
+                  $ref: '../../schemas/management/prompts.yaml#/PromptSession'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+sessions-by-id:
+  get:
+    operationId: getPromptSession
+    summary: Get prompt session
+    description: Returns a specific session by ID.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Session ID
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session:
+                  $ref: '../../schemas/management/prompts.yaml#/PromptSession'
+      '404':
+        description: Session not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updatePromptSession
+    summary: Update prompt session
+    description: Updates a session's messages, model params, etc.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Session ID
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/UpdateSessionRequest'
+    responses:
+      '200':
+        description: Session updated
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session:
+                  $ref: '../../schemas/management/prompts.yaml#/PromptSession'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deletePromptSession
+    summary: Delete prompt session
+    description: Deletes a specific session.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Session ID
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: Session deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Session not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+sessions-rename:
+  put:
+    operationId: renamePromptSession
+    summary: Rename prompt session
+    description: Renames a session.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Session ID
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/RenameSessionRequest'
+    responses:
+      '200':
+        description: Session renamed
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session:
+                  $ref: '../../schemas/management/prompts.yaml#/PromptSession'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+sessions-commit:
+  post:
+    operationId: commitPromptSession
+    summary: Commit session as version
+    description: Commits the current session state as a new prompt version.
+    tags:
+      - Prompt Repository
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Session ID
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/prompts.yaml#/CommitSessionRequest'
+    responses:
+      '200':
+        description: Version created from session
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  $ref: '../../schemas/management/prompts.yaml#/PromptVersion'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

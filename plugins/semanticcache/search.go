@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -13,28 +14,34 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
-func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
-	// Generate hash for the request
+func (plugin *Plugin) prepareDirectCacheLookup(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (string, error) {
 	hash, err := plugin.generateRequestHash(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate request hash: %w", err)
+		return "", fmt.Errorf("failed to generate request hash: %w", err)
 	}
 
 	plugin.logger.Debug(PluginLoggerPrefix + " Generated Hash for Request: " + hash)
 
-	// Extract metadata for strict filtering
-	_, paramsHash, err := plugin.extractTextForEmbedding(req)
+	paramsHash, err := plugin.computeRequestParamsHash(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract metadata for filtering: %w", err)
+		return "", fmt.Errorf("failed to compute direct lookup params hash: %w", err)
 	}
 
-	// Store has and metadata in context
 	ctx.SetValue(requestHashKey, hash)
 	ctx.SetValue(requestParamsHashKey, paramsHash)
 
 	provider, model, _ := req.GetRequestFields()
+	directCacheID := plugin.generateDirectCacheID(provider, model, cacheKey, hash, paramsHash)
 
-	// Build strict filters for direct hash search
+	return directCacheID, nil
+}
+
+func (plugin *Plugin) performLegacyDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
+	hash, _ := ctx.Value(requestHashKey).(string)
+	paramsHash, _ := ctx.Value(requestParamsHashKey).(string)
+
+	provider, model, _ := req.GetRequestFields()
+
 	filters := []vectorstore.Query{
 		{Field: "request_hash", Operator: vectorstore.QueryOperatorEqual, Value: hash},
 		{Field: "cache_key", Operator: vectorstore.QueryOperatorEqual, Value: cacheKey},
@@ -49,9 +56,8 @@ func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *sche
 		filters = append(filters, vectorstore.Query{Field: "model", Operator: vectorstore.QueryOperatorEqual, Value: model})
 	}
 
-	plugin.logger.Debug(fmt.Sprintf("%s Searching for direct hash match with %d filters", PluginLoggerPrefix, len(filters)))
+	plugin.logger.Debug(fmt.Sprintf("%s Searching for legacy direct hash match with %d filters", PluginLoggerPrefix, len(filters)))
 
-	// Make a full copy so we don't mutate the original backing array
 	selectFields := append([]string(nil), SelectFields...)
 	if bifrost.IsStreamRequestType(req.RequestType) {
 		selectFields = removeField(selectFields, "response")
@@ -59,27 +65,60 @@ func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *sche
 		selectFields = removeField(selectFields, "stream_chunks")
 	}
 
-	// Search for entries with matching hash and all params
+	searchCtx := vectorstore.WithDisableScanFallback(ctx)
 	var cursor *string
-	results, _, err := plugin.store.GetAll(ctx, plugin.config.VectorStoreNamespace, filters, selectFields, cursor, 1)
+	results, _, err := plugin.store.GetAll(searchCtx, plugin.config.VectorStoreNamespace, filters, selectFields, cursor, 1)
 	if err != nil {
-		if errors.Is(err, vectorstore.ErrNotFound) {
+		if errors.Is(err, vectorstore.ErrNotFound) || errors.Is(err, vectorstore.ErrQuerySyntax) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to search for direct hash match: %w", err)
+		return nil, fmt.Errorf("failed to search for legacy direct hash match: %w", err)
 	}
 
 	if len(results) == 0 {
-		plugin.logger.Debug(PluginLoggerPrefix + " No direct hash match found")
+		plugin.logger.Debug(PluginLoggerPrefix + " No legacy direct hash match found")
 		return nil, nil
 	}
 
-	// Found a matching entry - extract the response
 	result := results[0]
-	plugin.logger.Debug(fmt.Sprintf("%s Found direct hash match with ID: %s", PluginLoggerPrefix, result.ID))
-
-	// Build response from cached result
+	plugin.logger.Debug(fmt.Sprintf("%s Found legacy direct hash match with ID: %s", PluginLoggerPrefix, result.ID))
 	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeDirect, 1.0, 0)
+}
+
+func (plugin *Plugin) performDirectChunkLookup(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
+	directCacheID, err := plugin.prepareDirectCacheLookup(ctx, req, cacheKey)
+	if err != nil {
+		return nil, err
+	}
+	ctx.SetValue(requestStorageIDKey, directCacheID)
+
+	result, err := plugin.store.GetChunk(ctx, plugin.config.VectorStoreNamespace, directCacheID)
+	if err != nil {
+		errMsg := strings.ToLower(err.Error())
+		isMiss := errors.Is(err, vectorstore.ErrNotFound) ||
+			strings.Contains(errMsg, "not found") ||
+			strings.Contains(errMsg, "status code: 404")
+		if isMiss {
+			plugin.logger.Debug(PluginLoggerPrefix + " No direct chunk match found")
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to fetch direct cache chunk: %w", err)
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Found direct chunk match with ID: %s", PluginLoggerPrefix, result.ID))
+	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeDirect, 1.0, 0)
+}
+
+func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
+	shortCircuit, err := plugin.performDirectChunkLookup(ctx, req, cacheKey)
+	if err != nil {
+		return nil, err
+	}
+	if shortCircuit != nil {
+		return shortCircuit, nil
+	}
+
+	return plugin.performLegacyDirectSearch(ctx, req, cacheKey)
 }
 
 // generateEmbeddingsForStorage generates embeddings and stores them in context for PostHook storage.
@@ -251,20 +290,22 @@ func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, req *
 		similarity = *result.Score
 	}
 
-	if hasValidStreamingResponse && !hasValidSingleResponse {
-		// Handle streaming response
-		return plugin.buildStreamingResponseFromResult(ctx, req, result, streamResponses, cacheType, threshold, similarity, inputTokens)
-	} else if hasValidSingleResponse && !hasValidStreamingResponse {
-		// Handle single response
+	isStreamRequest := bifrost.IsStreamRequestType(req.RequestType)
+
+	if isStreamRequest && hasValidStreamingResponse {
+		return plugin.buildStreamingResponseFromResult(ctx, req, result, streamChunks, cacheType, threshold, similarity, inputTokens)
+	} else if !isStreamRequest && hasValidSingleResponse {
 		return plugin.buildSingleResponseFromResult(ctx, req, result, singleResponse, cacheType, threshold, similarity, inputTokens)
 	} else {
-		return nil, fmt.Errorf("cached result has invalid response data: both or neither response/stream_chunks are present (response: %v, stream_chunks: %v)", singleResponse, streamResponses)
+		plugin.logger.Warn("%s Cache entry format mismatch for request %s (isStream=%t, hasSingle=%t, hasStream=%t), treating as miss",
+			PluginLoggerPrefix, result.ID, isStreamRequest, hasValidSingleResponse, hasValidStreamingResponse)
+		return nil, nil
 	}
 }
 
 // buildSingleResponseFromResult constructs a single response from cached data
 func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, responseData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
-	provider, _, _ := req.GetRequestFields()
+	requestedProvider, requestedModel, _ := req.GetRequestFields()
 
 	responseStr, ok := responseData.(string)
 	if !ok {
@@ -285,6 +326,8 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 	extraFields.CacheDebug.CacheHit = true
 	extraFields.CacheDebug.HitType = bifrost.Ptr(string(cacheType))
 	extraFields.CacheDebug.CacheID = bifrost.Ptr(result.ID)
+	extraFields.CacheDebug.RequestedProvider = bifrost.Ptr(string(requestedProvider))
+	extraFields.CacheDebug.RequestedModel = bifrost.Ptr(requestedModel)
 	if cacheType == CacheTypeSemantic {
 		extraFields.CacheDebug.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
 		extraFields.CacheDebug.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
@@ -299,8 +342,6 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 		extraFields.CacheDebug.InputTokens = nil
 	}
 
-	extraFields.Provider = provider
-
 	ctx.SetValue(isCacheHitKey, true)
 	ctx.SetValue(cacheHitTypeKey, cacheType)
 
@@ -310,14 +351,8 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 }
 
 // buildStreamingResponseFromResult constructs a streaming response from cached data
-func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
-	provider, _, _ := req.GetRequestFields()
-
-	// Parse stream_chunks
-	streamArray, err := plugin.parseStreamChunks(streamData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse stream_chunks: %w", err)
-	}
+func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamArray []interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
+	requestedProvider, requestedModel, _ := req.GetRequestFields()
 
 	// Mark cache-hit once to avoid concurrent ctx writes
 	ctx.SetValue(isCacheHitKey, true)
@@ -348,15 +383,22 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 				continue
 			}
 
-			extraFields := cachedResponse.GetExtraFields()
+			// Ensure RequestType is set on every chunk so downstream consumers
+			// (logging, telemetry, etc.) correctly identify this as a streaming response.
+			if ef := cachedResponse.GetExtraFields(); ef != nil && ef.RequestType == "" {
+				ef.RequestType = req.RequestType
+			}
 
-			// Add cache debug to only the last chunk and set stream end indicator
+			// Add cache debug to only the last chunk
 			if i == len(streamArray)-1 {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				extraFields := cachedResponse.GetExtraFields()
 				cacheDebug := schemas.BifrostCacheDebug{
-					CacheHit: true,
-					HitType:  bifrost.Ptr(string(cacheType)),
-					CacheID:  bifrost.Ptr(result.ID),
+					CacheHit:          true,
+					HitType:           bifrost.Ptr(string(cacheType)),
+					CacheID:           bifrost.Ptr(result.ID),
+					RequestedProvider: bifrost.Ptr(string(requestedProvider)),
+					RequestedModel:    bifrost.Ptr(requestedModel),
 				}
 				if cacheType == CacheTypeSemantic {
 					cacheDebug.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
@@ -373,9 +415,6 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 				}
 				extraFields.CacheDebug = &cacheDebug
 			}
-
-			// extraField is a pointer so it'll automatically reflect on the parent struct
-			extraFields.Provider = provider
 
 			// Send chunk to stream
 			streamChan <- &schemas.BifrostStreamChunk{

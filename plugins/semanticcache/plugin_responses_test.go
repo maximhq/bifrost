@@ -47,7 +47,7 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 	}
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical Responses API request (should be served from cache)...")
 
@@ -143,7 +143,7 @@ func TestResponsesAPIDifferentParameters(t *testing.T) {
 				return // Test will be skipped by retry function
 			}
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			// Make second request
 			response2, err2 := setup.Client.ResponsesRequest(ctx, tt.request2)
@@ -182,7 +182,7 @@ func TestResponsesAPISemanticMatching(t *testing.T) {
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test semantic match with similar but different text
 	semanticRequest := CreateBasicResponsesRequest("Can you explain machine learning concepts?", 0.5, 500)
@@ -223,7 +223,7 @@ func TestResponsesAPIWithInstructions(t *testing.T) {
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Make identical request
 	request2 := CreateResponsesRequestWithInstructions(
@@ -266,7 +266,7 @@ func TestResponsesAPICacheExpiration(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second Responses request before TTL expiration...")
 	response2, err2 := setup.Client.ResponsesRequest(ctx, responsesRequest)
@@ -331,7 +331,7 @@ func TestResponsesAPINoStoreFlag(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify not cached
 	response2, err2 := setup.Client.ResponsesRequest(ctx, responsesRequest)
@@ -361,7 +361,7 @@ func TestResponsesAPIStreaming(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Make streaming request with same prompt and parameters
 	t.Log("Making streaming Responses request with same prompt...")
@@ -425,7 +425,7 @@ func TestResponsesAPIComplexParameters(t *testing.T) {
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Create identical request
 	request2 := CreateBasicResponsesRequest("Test complex parameters", 0.8, 500)

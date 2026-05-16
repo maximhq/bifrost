@@ -22,6 +22,7 @@ data "aws_region" "current" {}
 # --- Locals ---
 
 locals {
+  is_ecs                 = var.service == "ecs"
   create_vpc             = var.existing_vpc_id == null
   create_subnets         = var.existing_subnet_ids == null
   create_security_groups = var.existing_security_group_ids == null
@@ -135,10 +136,13 @@ resource "aws_vpc_security_group_egress_rule" "all_outbound" {
 }
 
 # =============================================================================
-# Secrets Manager — stores Bifrost config.json
+# Secrets Manager — stores Bifrost config.json (ECS only)
+# EKS uses Kubernetes secrets directly and does not need Secrets Manager.
 # =============================================================================
 
 resource "aws_secretsmanager_secret" "bifrost_config" {
+  count = local.is_ecs ? 1 : 0
+
   name                    = "${var.name_prefix}/config"
   description             = "Bifrost configuration (config.json)"
   recovery_window_in_days = var.secret_recovery_window_days
@@ -149,28 +153,30 @@ resource "aws_secretsmanager_secret" "bifrost_config" {
 }
 
 resource "aws_secretsmanager_secret_version" "bifrost_config" {
-  secret_id     = aws_secretsmanager_secret.bifrost_config.id
+  count = local.is_ecs ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.bifrost_config[0].id
   secret_string = var.config_json
 }
 
 # =============================================================================
-# IAM — ECS task execution role
+# IAM — ECS task execution role (ECS only)
 # =============================================================================
 
-data "aws_iam_policy_document" "ecs_assume_role" {
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
-    }
-  }
-}
-
 resource "aws_iam_role" "ecs_execution" {
+  count = local.is_ecs ? 1 : 0
+
   name               = "${var.name_prefix}-ecs-execution"
-  assume_role_policy = data.aws_iam_policy_document.ecs_assume_role.json
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+    }]
+  })
 
   tags = merge(var.tags, {
     Name = "${var.name_prefix}-ecs-execution"
@@ -178,50 +184,43 @@ resource "aws_iam_role" "ecs_execution" {
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
-  role       = aws_iam_role.ecs_execution.name
+  count = local.is_ecs ? 1 : 0
+
+  role       = aws_iam_role.ecs_execution[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-data "aws_iam_policy_document" "bifrost_secrets" {
-  statement {
-    sid    = "AllowGetBifrostSecret"
-    effect = "Allow"
-
-    actions = [
-      "secretsmanager:GetSecretValue",
-    ]
-
-    resources = [
-      aws_secretsmanager_secret.bifrost_config.arn,
-    ]
-  }
-
-  statement {
-    sid    = "AllowCloudWatchLogs"
-    effect = "Allow"
-
-    actions = [
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
-
-    resources = [
-      "${aws_cloudwatch_log_group.bifrost.arn}:*",
-    ]
-  }
-}
-
 resource "aws_iam_role_policy" "bifrost_secrets" {
+  count = local.is_ecs ? 1 : 0
+
   name   = "${var.name_prefix}-secrets-access"
-  role   = aws_iam_role.ecs_execution.id
-  policy = data.aws_iam_policy_document.bifrost_secrets.json
+  role   = aws_iam_role.ecs_execution[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowGetBifrostSecret"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.bifrost_config[0].arn]
+      },
+      {
+        Sid    = "AllowCloudWatchLogs"
+        Effect = "Allow"
+        Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = ["${aws_cloudwatch_log_group.bifrost[0].arn}:*"]
+      }
+    ]
+  })
 }
 
 # =============================================================================
-# CloudWatch Log Group
+# CloudWatch Log Group (ECS only)
 # =============================================================================
 
 resource "aws_cloudwatch_log_group" "bifrost" {
+  count = local.is_ecs ? 1 : 0
+
   name              = "/ecs/${var.name_prefix}"
   retention_in_days = 30
 
@@ -259,13 +258,14 @@ module "ecs" {
   security_group_ids = local.security_group_ids
 
   # IAM & secrets
-  execution_role_arn = aws_iam_role.ecs_execution.arn
-  secret_arn         = aws_secretsmanager_secret.bifrost_config.arn
-  log_group_name     = aws_cloudwatch_log_group.bifrost.name
+  execution_role_arn = aws_iam_role.ecs_execution[0].arn
+  secret_arn         = aws_secretsmanager_secret.bifrost_config[0].arn
+  log_group_name     = aws_cloudwatch_log_group.bifrost[0].name
 
   # Features
   create_cluster               = var.create_cluster
   create_load_balancer         = var.create_load_balancer
+  assign_public_ip             = var.assign_public_ip
   enable_autoscaling           = var.enable_autoscaling
   min_capacity                 = var.min_capacity
   max_capacity                 = var.max_capacity
@@ -293,16 +293,15 @@ module "eks" {
   memory        = var.memory
 
   # Networking
-  vpc_id             = local.vpc_id
   subnet_ids         = local.subnet_ids
   security_group_ids = local.security_group_ids
 
-  # IAM & secrets
-  secret_arn  = aws_secretsmanager_secret.bifrost_config.arn
+  # Config
   config_json = var.config_json
 
   # Domain
-  domain_name = var.domain_name
+  domain_name     = var.domain_name
+  certificate_arn = var.certificate_arn
 
   # K8s-specific
   create_cluster       = var.create_cluster

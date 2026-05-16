@@ -59,6 +59,31 @@ def _create_base64_image(width: int = 64, height: int = 64) -> str:
     return base64.b64encode(img_bytes).decode('utf-8')
 
 BASE64_IMAGE = _create_base64_image(64, 64)
+BASE64_IMAGE_LARGE = _create_base64_image(512, 512)
+
+
+def _create_titan_mask_image(width: int = 512, height: int = 512) -> str:
+    """Create a base64-encoded grayscale PNG mask for Titan inpainting/outpainting.
+    Titan requires mask pixel values to be exactly 0 (preserve) or 255 (edit area)."""
+    from PIL import Image, ImageDraw
+    import io
+    import base64
+
+    # Grayscale image, all black (preserve) by default
+    mask = Image.new('L', (width, height), 0)
+
+    # White rectangle in center marks the area to edit
+    draw = ImageDraw.Draw(mask)
+    cx, cy = width // 2, height // 2
+    w, h = width // 3, height // 3
+    draw.rectangle([cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2], fill=255)
+
+    buffer = io.BytesIO()
+    mask.save(buffer, format='PNG')
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+
+BASE64_TITAN_MASK_IMAGE = _create_titan_mask_image(512, 512)
 
 # Common Test Data
 SIMPLE_CHAT_MESSAGES = [{"role": "user", "content": "Hello! How are you today?"}]
@@ -3222,6 +3247,349 @@ def validate_domain_filter(sources, allowed=None, blocked=None):
         if blocked:
             # Check if domain matches any blocked pattern
             for blocked_pattern in blocked:
-                is_blocked = (domain == blocked_pattern or 
+                is_blocked = (domain == blocked_pattern or
                             domain.endswith('.' + blocked_pattern))
                 assert not is_blocked, f"Domain {domain} should be blocked by {blocked_pattern}"
+
+
+# =========================================================================
+# WebSocket Responses API Helpers
+# =========================================================================
+
+# Simple input for WebSocket Responses tests
+WS_RESPONSES_SIMPLE_INPUT = [
+    {"role": "user", "content": "Say hello in exactly two words."}
+]
+
+
+def get_ws_base_url():
+    """Get the WebSocket base URL from config (converts http:// to ws://).
+
+    Returns:
+        WebSocket base URL, e.g. "ws://localhost:8080"
+    """
+    from .config_loader import get_config
+
+    config = get_config()
+    base_url = config._config["bifrost"]["base_url"]
+    return base_url.replace("https://", "wss://").replace("http://", "ws://")
+
+
+def run_ws_responses_test(
+    ws_url,
+    model,
+    api_key,
+    input_messages=None,
+    max_output_tokens=64,
+    timeout=30,
+    extra_headers=None,
+):
+    """Connect to a WebSocket Responses endpoint, send a response.create event,
+    and collect streaming events until a terminal event is received.
+
+    Follows the same protocol as the Go-side RunWebSocketResponsesTest:
+      1. Open WebSocket connection with auth headers
+      2. Send {"type": "response.create", "model": "provider/model", "input": [...]}
+      3. Read events until response.completed / response.failed / error
+
+    Args:
+        ws_url: Full WebSocket URL (e.g. ws://localhost:8080/openai/v1/responses)
+        model: Model string in provider/model format (e.g. openai/gpt-4o)
+        api_key: API key for Bearer auth
+        input_messages: Input messages list (defaults to WS_RESPONSES_SIMPLE_INPUT)
+        max_output_tokens: Max output tokens (default 64)
+        timeout: Connection and read timeout in seconds
+        extra_headers: Additional headers dict (e.g. {"x-bf-vk": "..."})
+
+    Returns:
+        dict with keys:
+            events (list): All received event dicts
+            got_delta (bool): Whether a response.output_text.delta was received
+            got_completed (bool): Whether a terminal event was received
+            event_count (int): Total number of events received
+            content (str): Concatenated text deltas
+            error (dict|None): Error event if one was received
+    """
+    import time
+    import websocket as ws_client
+
+    if input_messages is None:
+        input_messages = WS_RESPONSES_SIMPLE_INPUT
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    # websocket-client expects headers as list of "Key: Value" strings
+    header_list = [f"{k}: {v}" for k, v in headers.items()]
+
+    conn = ws_client.create_connection(ws_url, header=header_list, timeout=timeout)
+
+    try:
+        event_payload = {
+            "type": "response.create",
+            "model": model,
+            "input": input_messages,
+            "max_output_tokens": max_output_tokens,
+        }
+        conn.send(json.dumps(event_payload))
+
+        events = []
+        got_delta = False
+        got_completed = False
+        content = ""
+        error = None
+
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"WebSocket stream did not reach terminal event within {timeout}s"
+                )
+
+            conn.settimeout(remaining)
+            result = conn.recv()
+            data = json.loads(result)
+            events.append(data)
+
+            event_type = data.get("type", "")
+
+            if event_type == "response.output_text.delta":
+                got_delta = True
+                content += data.get("delta", "")
+            elif event_type in (
+                "response.completed",
+                "response.failed",
+                "response.incomplete",
+            ):
+                got_completed = True
+                break
+            elif event_type in ("error", "response.error"):
+                error = data
+                break
+
+        return {
+            "events": events,
+            "got_delta": got_delta,
+            "got_completed": got_completed,
+            "event_count": len(events),
+            "content": content,
+            "error": error,
+        }
+    finally:
+        conn.close()
+
+
+def get_realtime_test_model(provider: str) -> str:
+    """Get a Realtime test model for the given provider."""
+    env_var = f"{provider.upper()}_REALTIME_MODEL"
+    if provider == "openai":
+        return os.getenv(env_var, "gpt-realtime")
+    return os.getenv(env_var, "")
+
+
+def run_ws_realtime_test(
+    ws_url,
+    api_key,
+    timeout=30,
+    extra_headers=None,
+):
+    """Connect to a Realtime websocket endpoint and drive a text-only round trip."""
+    import time
+    import websocket as ws_client
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    header_list = [f"{k}: {v}" for k, v in headers.items()]
+    conn = ws_client.create_connection(ws_url, header=header_list, timeout=timeout)
+
+    try:
+        events = []
+        got_session_created = False
+        got_session_updated = False
+        got_text_delta = False
+        got_response_done = False
+        content = ""
+        error = None
+
+        deadline = time.monotonic() + timeout
+
+        def recv_event():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Realtime websocket did not reach terminal state within {timeout}s"
+                )
+            conn.settimeout(remaining)
+            raw = conn.recv()
+            data = json.loads(raw)
+            events.append(data)
+            return data
+
+        while not got_session_created and error is None:
+            data = recv_event()
+            event_type = data.get("type", "")
+            if event_type == "session.created":
+                got_session_created = True
+            elif event_type == "error":
+                error = data
+
+        if got_session_created and error is None:
+            conn.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {
+                            "type": "realtime",
+                            "output_modalities": ["text"],
+                        },
+                    }
+                )
+            )
+
+            while True:
+                data = recv_event()
+                event_type = data.get("type", "")
+                if event_type == "session.updated":
+                    got_session_updated = True
+                    break
+                if event_type == "error":
+                    error = data
+                    break
+
+        if got_session_updated and error is None:
+            conn.send(
+                json.dumps(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Say hello in exactly two words.",
+                                }
+                            ],
+                        },
+                    }
+                )
+            )
+            conn.send(json.dumps({"type": "response.create"}))
+
+            while True:
+                data = recv_event()
+                event_type = data.get("type", "")
+
+                if event_type == "response.output_text.delta":
+                    delta = data.get("delta", "")
+                    if isinstance(delta, dict):
+                        content += delta.get("text", "")
+                    elif isinstance(delta, str):
+                        content += delta
+                    got_text_delta = True
+                elif event_type == "response.done":
+                    response_status = data.get("response", {}).get("status")
+                    if response_status == "completed":
+                        got_response_done = True
+                    else:
+                        error = data
+                    break
+                elif event_type == "error":
+                    error = data
+                    break
+
+        return {
+            "events": events,
+            "event_count": len(events),
+            "got_session_created": got_session_created,
+            "got_session_updated": got_session_updated,
+            "got_text_delta": got_text_delta,
+            "got_response_done": got_response_done,
+            "content": content,
+            "error": error,
+        }
+    finally:
+        conn.close()
+
+
+def run_realtime_client_secret_request(
+    url,
+    api_key,
+    request_body,
+    extra_headers=None,
+    timeout=30,
+):
+    """POST a realtime client-secret/session request and return status + body."""
+    import requests
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    response = requests.post(url, headers=headers, json=request_body, timeout=timeout)
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"raw_body": response.text}
+
+    return {
+        "status_code": response.status_code,
+        "body": body,
+        "headers": dict(response.headers),
+    }
+
+
+def run_openai_base_url_client_secret_request(
+    base_url,
+    api_key,
+    request_body,
+    timeout=30,
+    default_headers=None,
+):
+    """Exercise the OpenAI client constructor base_url using the SDK's public request surface."""
+    import httpx
+    from openai import OpenAI
+
+    merged_headers = {}
+    if default_headers:
+        merged_headers.update(default_headers)
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        default_headers=merged_headers,
+    )
+
+    try:
+        response = client.post(
+            "v1/realtime/client_secrets",
+            cast_to=httpx.Response,
+            body=request_body,
+        )
+
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"raw_body": response.text}
+
+        return {
+            "status_code": response.status_code,
+            "body": body,
+            "headers": dict(response.headers),
+        }
+    finally:
+        client.close()

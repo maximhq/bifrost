@@ -91,6 +91,12 @@ variable "create_load_balancer" {
   type        = bool
 }
 
+variable "assign_public_ip" {
+  description = "Assign a public IP to the ECS Fargate task. Set to false for private subnet deployments."
+  type        = bool
+  default     = true
+}
+
 variable "enable_autoscaling" {
   description = "Enable autoscaling for the service."
   type        = bool
@@ -124,6 +130,12 @@ variable "secret_recovery_window_days" {
 
 variable "domain_name" {
   description = "Custom domain name for the service (optional)."
+  type        = string
+  default     = null
+}
+
+variable "certificate_arn" {
+  description = "ACM certificate ARN for HTTPS on the ALB Ingress (EKS). Required when using HTTPS."
   type        = string
   default     = null
 }

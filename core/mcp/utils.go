@@ -65,7 +65,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	var includeClients []string
 
 	// Extract client filtering from request context
-	if existingIncludeClients, ok := ctx.Value(MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
+	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
 		includeClients = existingIncludeClients
 	}
 
@@ -78,6 +78,12 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		clientID := client.ExecutionConfig.ID
 
 		m.logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
+
+		// Skip intentionally disabled clients
+		if client.State == schemas.MCPConnectionStateDisabled {
+			m.logger.Debug("%s Skipping disabled MCP client %s", MCPLogPrefix, clientName)
+			continue
+		}
 
 		// Apply client filtering logic - check both ID and Name for compatibility
 		if !shouldIncludeClient(clientName, includeClients, m.logger) {
@@ -282,10 +288,21 @@ func ExecuteWithRetry(
 	return lastErr
 }
 
-// retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
-// Uses exponential backoff retry logic (5 retries, 1-30 seconds) for tool retrieval.
-// Returns both the tools map and a name mapping (sanitized_name -> original_mcp_name) for tool execution.
-func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (map[string]schemas.ChatTool, map[string]string, error) {
+// listToolsResult captures the full outcome of retrieveExternalToolsDetailed so the
+// plugin gate can expose RawToolCount and SkippedTools to plugins.
+type listToolsResult struct {
+	tools           map[string]schemas.ChatTool
+	toolNameMapping map[string]string
+	rawCount        int
+	skipped         []schemas.SkippedMCPTool
+}
+
+// retrieveExternalToolsDetailed retrieves and filters tools from an external MCP server
+// without holding locks. Uses exponential backoff retry logic (5 retries, 1-30 seconds)
+// for tool retrieval. Returns the full result so the plugin gate can surface RawToolCount
+// and SkippedTools. All callers should go through MCPManager.runListToolsWithHooks rather
+// than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
+func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
@@ -308,15 +325,19 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		logger,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
+		return nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
 	}
 
 	if toolsResponse == nil {
-		return make(map[string]schemas.ChatTool), make(map[string]string), nil // No tools available
+		return &listToolsResult{
+			tools:           make(map[string]schemas.ChatTool),
+			toolNameMapping: make(map[string]string),
+		}, nil
 	}
 
 	tools := make(map[string]schemas.ChatTool)
 	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
+	var skipped []schemas.SkippedMCPTool
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
@@ -324,6 +345,10 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		validationName := strings.ReplaceAll(mcpTool.Name, "-", "_")
 		if err := validateNormalizedToolName(validationName); err != nil {
 			logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+			skipped = append(skipped, schemas.SkippedMCPTool{
+				OriginalName: mcpTool.Name,
+				Reason:       err.Error(),
+			})
 			continue
 		}
 
@@ -343,7 +368,12 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
-	return tools, toolNameMapping, nil
+	return &listToolsResult{
+		tools:           tools,
+		toolNameMapping: toolNameMapping,
+		rawCount:        len(toolsResponse.Tools),
+		skipped:         skipped,
+	}, nil
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.
@@ -381,12 +411,12 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 	// If ToolsToExecute is specified (not nil), apply filtering
 	if config.ToolsToExecute != nil {
 		// Handle empty array [] - means no tools are allowed
-		if len(config.ToolsToExecute) == 0 {
+		if config.ToolsToExecute.IsEmpty() {
 			return true // No tools allowed
 		}
 
 		// Handle wildcard "*" - if present, all tools are allowed
-		if slices.Contains(config.ToolsToExecute, "*") {
+		if config.ToolsToExecute.IsUnrestricted() {
 			return false // All tools allowed
 		}
 
@@ -396,7 +426,7 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the allowed list
-		return !slices.Contains(config.ToolsToExecute, unprefixedToolName) // Tool not in allowed list
+		return !config.ToolsToExecute.Contains(unprefixedToolName) // Tool not in allowed list
 	}
 
 	return true // Tool is skipped (nil is treated as [] - no tools)
@@ -413,12 +443,12 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// If ToolsToAutoExecute is specified (not nil), apply filtering
 	if config.ToolsToAutoExecute != nil {
 		// Handle empty array [] - means no tools are auto-executed
-		if len(config.ToolsToAutoExecute) == 0 {
+		if config.ToolsToAutoExecute.IsEmpty() {
 			return false // No tools auto-executed
 		}
 
 		// Handle wildcard "*" - if present, all tools are auto-executed
-		if slices.Contains(config.ToolsToAutoExecute, "*") {
+		if config.ToolsToAutoExecute.IsUnrestricted() {
 			return true // All tools auto-executed
 		}
 
@@ -428,7 +458,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the auto-execute list
-		return slices.Contains(config.ToolsToAutoExecute, unprefixedToolName)
+		return config.ToolsToAutoExecute.Contains(unprefixedToolName)
 	}
 
 	return false // Tool is not auto-executed (nil is treated as [] - no tools)
@@ -439,7 +469,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 // Context filtering can only NARROW the tools available, NOT expand beyond client configuration.
 // This is checked AFTER client-level filtering (shouldSkipToolForConfig).
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
-	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+	includeTools := ctx.Value(schemas.MCPContextKeyIncludeTools)
 
 	if includeTools != nil {
 		// Try []string first (preferred type)
@@ -487,6 +517,28 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// object schemas to always have a properties field, even if empty
 		properties = schemas.NewOrderedMap()
 	}
+
+	// Preserve MCP tool annotations if any are set.
+	// Clone bool pointers so Bifrost's copy is independent of the upstream mcp.Tool lifetime.
+	var annotations *schemas.MCPToolAnnotations
+	a := mcpTool.Annotations
+	if a.Title != "" || a.ReadOnlyHint != nil || a.DestructiveHint != nil || a.IdempotentHint != nil || a.OpenWorldHint != nil {
+		cloneBool := func(b *bool) *bool {
+			if b == nil {
+				return nil
+			}
+			v := *b
+			return &v
+		}
+		annotations = &schemas.MCPToolAnnotations{
+			Title:           a.Title,
+			ReadOnlyHint:    cloneBool(a.ReadOnlyHint),
+			DestructiveHint: cloneBool(a.DestructiveHint),
+			IdempotentHint:  cloneBool(a.IdempotentHint),
+			OpenWorldHint:   cloneBool(a.OpenWorldHint),
+		}
+	}
+
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
@@ -498,6 +550,7 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Required:   mcpTool.InputSchema.Required,
 			},
 		},
+		Annotations: annotations,
 	}
 }
 
@@ -521,7 +574,7 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
 		default:
 			// Fallback: try to extract from map structure
-			if jsonBytes, err := json.Marshal(contentBlock); err == nil {
+			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
 				var contentMap map[string]interface{}
 				if json.Unmarshal(jsonBytes, &contentMap) == nil {
 					if text, ok := contentMap["text"].(string); ok {
@@ -559,7 +612,7 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	if strings.TrimSpace(config.ID) == "" {
 		return fmt.Errorf("id is required for MCP client config")
 	}
-	if err := validateMCPClientName(config.Name); err != nil {
+	if err := ValidateMCPClientName(config.Name); err != nil {
 		return fmt.Errorf("invalid name for MCP client: %w", err)
 	}
 	if config.ConnectionType == "" {
@@ -586,7 +639,9 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	return nil
 }
 
-func validateMCPClientName(name string) error {
+// ValidateMCPClientName validates an MCP client name.
+// Names must be ASCII-only, cannot contain spaces or hyphens, and cannot start with a number.
+func ValidateMCPClientName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("name is required for MCP client")
 	}
@@ -747,25 +802,23 @@ func hasToolCallsForChatResponse(response *schemas.BifrostChatResponse) bool {
 		return false
 	}
 
-	choice := response.Choices[0]
+	for _, choice := range response.Choices {
+		// Check finish reason - "tool_calls" explicitly signals tool execution
+		if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
+			return true
+		}
 
-	// If finish_reason is "stop", this indicates non-auto-executable tools that require user approval.
-	// Don't return true even if tool calls are present, as the agent loop should not process them.
-	if choice.FinishReason != nil && *choice.FinishReason == "stop" {
-		return false
-	}
-
-	// Check finish reason
-	if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
-		return true
-	}
-
-	// Check if message has tool calls
-	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.ChatNonStreamResponseChoice.Message != nil &&
-		choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
-		len(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls) > 0 {
-		return true
+		// Check if message has tool calls regardless of finish_reason.
+		// Some providers (e.g. Gemini) return finish_reason "stop" even when tool calls are present,
+		// so we cannot rely solely on finish_reason to detect tool calls.
+		// Also, when converting from Responses API format, text and tool calls may be split
+		// across separate choices, so we must check all choices.
+		if choice.ChatNonStreamResponseChoice != nil &&
+			choice.ChatNonStreamResponseChoice.Message != nil &&
+			choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
+			len(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls) > 0 {
+			return true
+		}
 	}
 
 	return false

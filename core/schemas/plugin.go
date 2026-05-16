@@ -226,6 +226,8 @@ type HTTPTransportPlugin interface {
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Works with both native .so plugins and WASM plugins due to serializable types.
 	// NOTE: This hook is NOT called for streaming responses. Use HTTPTransportStreamChunkHook instead.
+	// NOTE: For large streamed responses (non-streaming APIs that switch to body streaming for memory safety),
+	// resp.Body may be nil by design while StatusCode and Headers remain populated.
 	//
 	// Return values:
 	// - nil: Continue to next plugin/handler, response modifications are applied
@@ -266,14 +268,67 @@ type MCPPlugin interface {
 	PostMCPHook(ctx *BifrostContext, resp *BifrostMCPResponse, bifrostErr *BifrostError) (*BifrostMCPResponse, *BifrostError, error)
 }
 
+// MCPConnectionPlugin is an optional, typed extension interface for handling MCP
+// Connect events. Connect is morally separate from the other MCP lifecycle ops
+// (Ping/ListTools/ExecuteTool) — it establishes the transport before a usable
+// client exists, and carries transport-level inputs (URL, headers, stdio args)
+// that don't apply post-connection. Plugins implementing this interface receive
+// Connect events via the typed methods; their generic PreMCPHook/PostMCPHook
+// (if also implemented) is NOT called for Connect requests.
+//
+// Plugins registered via MCPPlugins must still satisfy MCPPlugin. To write a
+// plugin that only handles Connect events, embed MCPPluginNoOpHooks for free
+// no-op implementations of the generic Pre/PostMCPHook.
+//
+// NOTE (backwards compat): keeping the Connect hooks on a separate optional
+// interface — and the MCPPluginNoOpHooks helper — is purely a backwards-compat
+// shim so existing MCPPlugin implementations don't break with the addition of
+// Connect hooks. In a future major release these two methods will move onto
+// MCPPlugin directly and every MCP plugin will be required to implement them.
+type MCPConnectionPlugin interface {
+	MCPPlugin
+
+	PreMCPConnectionHook(ctx *BifrostContext, req *BifrostMCPConnectRequest) (*BifrostMCPConnectRequest, *MCPConnectionShortCircuit, error)
+	PostMCPConnectionHook(ctx *BifrostContext, resp *BifrostMCPConnectResponse, bifrostErr *BifrostError) (*BifrostMCPConnectResponse, *BifrostError, error)
+}
+
+// MCPPluginNoOpHooks provides no-op implementations of PreMCPHook and PostMCPHook.
+// Embed this in plugins that only want to implement an extension interface
+// (e.g. MCPConnectionPlugin) and don't need to observe the generic hook surface.
+//
+// The plugin must still provide its own GetName and Cleanup (from BasePlugin).
+type MCPPluginNoOpHooks struct{}
+
+// PreMCPHook returns the request unchanged with no short-circuit.
+func (MCPPluginNoOpHooks) PreMCPHook(_ *BifrostContext, req *BifrostMCPRequest) (*BifrostMCPRequest, *MCPPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+// PostMCPHook returns the response and error unchanged.
+func (MCPPluginNoOpHooks) PostMCPHook(_ *BifrostContext, resp *BifrostMCPResponse, bifrostErr *BifrostError) (*BifrostMCPResponse, *BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// Plugin placement constants control where custom plugins execute relative to built-in plugins.
+type PluginPlacement string
+
+const (
+	PluginPlacementPostBuiltin PluginPlacement = "post_builtin"
+	PluginPlacementPreBuiltin  PluginPlacement = "pre_builtin"
+	PluginPlacementBuiltin     PluginPlacement = "builtin"
+	PluginPlacementDefault     PluginPlacement = PluginPlacementPostBuiltin
+)
+
 // PluginConfig is the configuration for a plugin.
 // It contains the name of the plugin, whether it is enabled, and the configuration for the plugin.
 type PluginConfig struct {
-	Enabled bool    `json:"enabled"`
-	Name    string  `json:"name"`
-	Path    *string `json:"path,omitempty"`
-	Version *int16  `json:"version,omitempty"`
-	Config  any     `json:"config,omitempty"`
+	Enabled   bool             `json:"enabled"`
+	Name      string           `json:"name"`
+	Path      *string          `json:"path,omitempty"`
+	Version   *int16           `json:"version,omitempty"`
+	Config    any              `json:"config,omitempty"`
+	Placement *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
+	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
 }
 
 // ObservabilityPlugin is an interface for plugins that receive completed traces
@@ -299,9 +354,15 @@ type ObservabilityPlugin interface {
 	//
 	// Implementations should:
 	// - Convert the trace to their backend's format
-	// - Send the trace to the backend (can be async)
+	// - Send the trace to the backend (can be async, but see retention note below)
 	// - Handle errors gracefully (log and continue)
 	//
 	// The context passed is a fresh background context, not the request context.
+	//
+	// Retention: implementations MUST NOT retain the *Trace pointer after Inject
+	// returns. The caller releases the trace back to a sync.Pool immediately after
+	// Inject completes, so any background goroutine that still references it will
+	// race with pool reuse. If a plugin needs to forward the trace asynchronously,
+	// it must copy the data it needs before returning.
 	Inject(ctx context.Context, trace *Trace) error
 }

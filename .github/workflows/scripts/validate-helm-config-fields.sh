@@ -39,12 +39,10 @@ report_result() {
 # Usage: render_config <values-file>
 render_config() {
   local values_file=$1
-  helm template bifrost "$CHART_DIR" \
-    --set image.tag=v1.0.0 \
-    -f "$values_file" \
-    > "$TMPDIR/rendered.yaml" 2>"$TMPDIR/render-err.txt"
-  local rc=$?
-  if [ "$rc" -ne 0 ]; then
+  if ! helm template bifrost "$CHART_DIR" \
+       --set image.tag=v1.0.0 \
+       -f "$values_file" \
+       > "$TMPDIR/rendered.yaml" 2>"$TMPDIR/render-err.txt"; then
     echo -e "${RED}    Render failed:${NC}"
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
     return 1
@@ -160,11 +158,14 @@ bifrost:
     enableLogging: true
     disableContentLogging: true
     disableDbPingsInHealth: true
-    logRetentionDays: 30    
+    logRetentionDays: 30
     enforceGovernanceHeader: true
-    allowDirectKeys: true
     maxRequestBodySizeMb: 50
-    enableLitellmFallbacks: true
+    compat:
+      convertTextToChat: true
+      convertChatToResponses: true
+      shouldDropParams: true
+      shouldConvertParams: true
     prometheusLabels:
       - "team"
       - "env"
@@ -173,6 +174,18 @@ bifrost:
         - "x-custom-header"
       denylist:
         - "x-blocked"
+    asyncJobResultTTL: 300
+    requiredHeaders:
+      - "X-Request-ID"
+    loggingHeaders:
+      - "X-Trace-ID"
+    allowedHeaders:
+      - "Authorization"
+    mcpAgentDepth: 5
+    mcpToolExecutionTimeout: 30
+    mcpCodeModeBindingLevel: "server"
+    mcpToolSyncInterval: 60
+    hideDeletedVirtualKeysInFilters: true
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -186,12 +199,25 @@ assert_field_value 'client.disable_content_logging' '.client.disable_content_log
 assert_field_value 'client.disable_db_pings_in_health' '.client.disable_db_pings_in_health' 'true'
 assert_field_value 'client.log_retention_days' '.client.log_retention_days' '30'
 assert_field_value 'client.enforce_governance_header' '.client.enforce_governance_header' 'true'
-assert_field_value 'client.allow_direct_keys' '.client.allow_direct_keys' 'true'
 assert_field_value 'client.max_request_body_size_mb' '.client.max_request_body_size_mb' '50'
-assert_field_value 'client.enable_litellm_fallbacks' '.client.enable_litellm_fallbacks' 'true'
+assert_field_value 'client.compat.convert_text_to_chat' '.client.compat.convert_text_to_chat' 'true'
+assert_field_value 'client.compat.convert_chat_to_responses' '.client.compat.convert_chat_to_responses' 'true'
+assert_field_value 'client.compat.should_drop_params' '.client.compat.should_drop_params' 'true'
+assert_field_value 'client.compat.should_convert_params' '.client.compat.should_convert_params' 'true'
 assert_field 'client.prometheus_labels' '.client.prometheus_labels'
 assert_field 'client.header_filter_config.allowlist' '.client.header_filter_config.allowlist'
 assert_field 'client.header_filter_config.denylist' '.client.header_filter_config.denylist'
+
+# Gap 1+2: New client properties
+assert_field_value 'client.async_job_result_ttl' '.client.async_job_result_ttl' '300'
+assert_field 'client.required_headers' '.client.required_headers'
+assert_field 'client.logging_headers' '.client.logging_headers'
+assert_field 'client.allowed_headers' '.client.allowed_headers'
+assert_field_value 'client.mcp_agent_depth' '.client.mcp_agent_depth' '5'
+assert_field_value 'client.mcp_tool_execution_timeout' '.client.mcp_tool_execution_timeout' '30'
+assert_field_value 'client.mcp_code_mode_binding_level' '.client.mcp_code_mode_binding_level' '"server"'
+assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interval' '60'
+assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
 
 ###############################################################################
 # 2. Framework (Pricing)
@@ -299,8 +325,8 @@ assert_field_value 'providers.openai.network_config.base_url' '.providers.openai
 assert_field 'providers.openai.network_config.extra_headers' '.providers.openai.network_config.extra_headers'
 assert_field_value 'providers.openai.network_config.default_request_timeout_in_seconds' '.providers.openai.network_config.default_request_timeout_in_seconds' '120'
 assert_field_value 'providers.openai.network_config.max_retries' '.providers.openai.network_config.max_retries' '5'
-assert_field_value 'providers.openai.network_config.retry_backoff_initial_ms' '.providers.openai.network_config.retry_backoff_initial_ms' '200'
-assert_field_value 'providers.openai.network_config.retry_backoff_max_ms' '.providers.openai.network_config.retry_backoff_max_ms' '10000'
+assert_field_value 'providers.openai.network_config.retry_backoff_initial' '.providers.openai.network_config.retry_backoff_initial' '200'
+assert_field_value 'providers.openai.network_config.retry_backoff_max' '.providers.openai.network_config.retry_backoff_max' '10000'
 
 # Concurrency config
 assert_field_value 'providers.openai.concurrency_and_buffer_size.concurrency' '.providers.openai.concurrency_and_buffer_size.concurrency' '50'
@@ -349,6 +375,10 @@ bifrost:
       - id: "budget-1"
         max_limit: 100
         reset_duration: "1M"
+      - id: "budget-vk-1"
+        max_limit: 50
+        reset_duration: "1M"
+        virtual_key_id: "vk-1"
     rateLimits:
       - id: "rl-1"
         token_max_limit: 50000
@@ -380,14 +410,12 @@ bifrost:
         is_active: true
         team_id: "team-1"
         customer_id: "cust-1"
-        budget_id: "budget-1"
         rate_limit_id: "rl-1"
         provider_configs:
           - provider: "openai"
             weight: 1.0
             allowed_models:
               - "gpt-4o"
-            budget_id: "budget-1"
             rate_limit_id: "rl-1"
             keys:
               - key_id: "key-uuid-1"
@@ -398,22 +426,40 @@ bifrost:
             tools_to_execute:
               - "search"
               - "compute"
+    modelConfigs:
+      - id: "mc-1"
+        model_name: "gpt-4o"
+        provider: "openai"
+        budget_id: "budget-1"
+        rate_limit_id: "rl-1"
+    providers:
+      - name: "openai"
+        budget_id: "budget-1"
+        rate_limit_id: "rl-1"
+        send_back_raw_request: false
+        send_back_raw_response: false
     routingRules:
       - id: "route-1"
         name: "Route GPT to Azure"
         description: "Redirect GPT models to Azure"
         enabled: true
         cel_expression: "request.model.startsWith('gpt-')"
-        provider: "azure"
-        model: "gpt-4o"
-        fallbacks:
-          - "openai"
+        targets:
+          - provider: "azure"
+            model: "gpt-4o"
+            weight: 0.8
+          - provider: "openai"
+            model: "gpt-4o"
+            weight: 0.2
         scope: "global"
         priority: 10
       - id: "route-2"
         name: "Team-scoped route"
         enabled: true
         cel_expression: "true"
+        targets:
+          - provider: "openai"
+            weight: 1
         scope: "team"
         scope_id: "team-1"
         priority: 0
@@ -430,6 +476,8 @@ render_config "$TMPDIR/values-governance.yaml"
 assert_field_value 'governance.budgets[0].id' '.governance.budgets.[0].id' '"budget-1"'
 assert_field_value 'governance.budgets[0].max_limit' '.governance.budgets.[0].max_limit' '100'
 assert_field_value 'governance.budgets[0].reset_duration' '.governance.budgets.[0].reset_duration' '"1M"'
+assert_field_value 'governance.budgets[1].id' '.governance.budgets.[1].id' '"budget-vk-1"'
+assert_field_value 'governance.budgets[1].virtual_key_id' '.governance.budgets.[1].virtual_key_id' '"vk-1"'
 
 # Rate limits
 assert_field_value 'governance.rate_limits[0].id' '.governance.rate_limits.[0].id' '"rl-1"'
@@ -462,7 +510,6 @@ assert_field_value 'governance.virtual_keys[0].description' '.governance.virtual
 assert_field_value 'governance.virtual_keys[0].is_active' '.governance.virtual_keys.[0].is_active' 'true'
 assert_field_value 'governance.virtual_keys[0].team_id' '.governance.virtual_keys.[0].team_id' '"team-1"'
 assert_field_value 'governance.virtual_keys[0].customer_id' '.governance.virtual_keys.[0].customer_id' '"cust-1"'
-assert_field_value 'governance.virtual_keys[0].budget_id' '.governance.virtual_keys.[0].budget_id' '"budget-1"'
 assert_field_value 'governance.virtual_keys[0].rate_limit_id' '.governance.virtual_keys.[0].rate_limit_id' '"rl-1"'
 assert_field 'governance.virtual_keys[0].provider_configs' '.governance.virtual_keys.[0].provider_configs'
 assert_field_value 'governance.virtual_keys[0].provider_configs[0].provider' '.governance.virtual_keys.[0].provider_configs.[0].provider' '"openai"'
@@ -478,13 +525,31 @@ assert_field_value 'governance.routing_rules[0].name' '.governance.routing_rules
 assert_field_value 'governance.routing_rules[0].description' '.governance.routing_rules.[0].description' '"Redirect GPT models to Azure"'
 assert_field_value 'governance.routing_rules[0].enabled' '.governance.routing_rules.[0].enabled' 'true'
 assert_field_value 'governance.routing_rules[0].cel_expression' '.governance.routing_rules.[0].cel_expression' '"request.model.startsWith('\''gpt-'\'')"'
-assert_field_value 'governance.routing_rules[0].provider' '.governance.routing_rules.[0].provider' '"azure"'
-assert_field_value 'governance.routing_rules[0].model' '.governance.routing_rules.[0].model' '"gpt-4o"'
-assert_field 'governance.routing_rules[0].fallbacks' '.governance.routing_rules.[0].fallbacks'
+assert_field 'governance.routing_rules[0].targets' '.governance.routing_rules.[0].targets'
+assert_field_value 'governance.routing_rules[0].targets[0].provider' '.governance.routing_rules.[0].targets.[0].provider' '"azure"'
+assert_field_value 'governance.routing_rules[0].targets[0].model' '.governance.routing_rules.[0].targets.[0].model' '"gpt-4o"'
+assert_field_value 'governance.routing_rules[0].targets[0].weight' '.governance.routing_rules.[0].targets.[0].weight' '0.8'
+assert_field_value 'governance.routing_rules[0].targets[1].provider' '.governance.routing_rules.[0].targets.[1].provider' '"openai"'
+assert_field_value 'governance.routing_rules[0].targets[1].weight' '.governance.routing_rules.[0].targets.[1].weight' '0.2'
 assert_field_value 'governance.routing_rules[0].scope' '.governance.routing_rules.[0].scope' '"global"'
 assert_field_value 'governance.routing_rules[0].priority' '.governance.routing_rules.[0].priority' '10'
 assert_field_value 'governance.routing_rules[1].scope' '.governance.routing_rules.[1].scope' '"team"'
 assert_field_value 'governance.routing_rules[1].scope_id' '.governance.routing_rules.[1].scope_id' '"team-1"'
+assert_field 'governance.routing_rules[1].targets' '.governance.routing_rules.[1].targets'
+
+# Model configs (Gap 5a)
+assert_field 'governance.model_configs' '.governance.model_configs'
+assert_field_value 'governance.model_configs[0].id' '.governance.model_configs.[0].id' '"mc-1"'
+assert_field_value 'governance.model_configs[0].model_name' '.governance.model_configs.[0].model_name' '"gpt-4o"'
+assert_field_value 'governance.model_configs[0].provider' '.governance.model_configs.[0].provider' '"openai"'
+assert_field_value 'governance.model_configs[0].budget_id' '.governance.model_configs.[0].budget_id' '"budget-1"'
+assert_field_value 'governance.model_configs[0].rate_limit_id' '.governance.model_configs.[0].rate_limit_id' '"rl-1"'
+
+# Providers (Gap 5b)
+assert_field 'governance.providers' '.governance.providers'
+assert_field_value 'governance.providers[0].name' '.governance.providers.[0].name' '"openai"'
+assert_field_value 'governance.providers[0].budget_id' '.governance.providers.[0].budget_id' '"budget-1"'
+assert_field_value 'governance.providers[0].rate_limit_id' '.governance.providers.[0].rate_limit_id' '"rl-1"'
 
 # Auth config
 assert_field_value 'governance.auth_config.admin_username' '.governance.auth_config.admin_username' '"admin"'
@@ -547,6 +612,9 @@ bifrost:
       enabled: true
       config:
         is_vk_mandatory: true
+        required_headers:
+          - "X-Team-ID"
+        is_enterprise: true
     maxim:
       enabled: true
       config:
@@ -576,11 +644,15 @@ bifrost:
       config:
         service_name: "bifrost-test"
         collector_url: "otel-collector:4317"
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
         metrics_enabled: true
         metrics_endpoint: "otel-collector:4317"
         metrics_push_interval: 30
+        headers:
+          Authorization: "Bearer token"
+        tls_ca_cert: "/certs/ca.pem"
+        insecure: true
     datadog:
       enabled: true
       config:
@@ -618,6 +690,8 @@ assert_field_value 'plugins: logging name' '.plugins.[1].name' '"logging"'
 # Governance plugin
 assert_field_value 'plugins: governance name' '.plugins.[2].name' '"governance"'
 assert_field_value 'plugins: governance is_vk_mandatory' '.plugins.[2].config.is_vk_mandatory' 'true'
+assert_field 'plugins: governance required_headers' '.plugins.[2].config.required_headers'
+assert_field_value 'plugins: governance is_enterprise' '.plugins.[2].config.is_enterprise' 'true'
 
 # Maxim plugin
 assert_field_value 'plugins: maxim name' '.plugins.[3].name' '"maxim"'
@@ -643,11 +717,14 @@ assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4
 assert_field_value 'plugins: otel name' '.plugins.[5].name' '"otel"'
 assert_field_value 'plugins: otel service_name' '.plugins.[5].config.service_name' '"bifrost-test"'
 assert_field_value 'plugins: otel collector_url' '.plugins.[5].config.collector_url' '"otel-collector:4317"'
-assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"otel"'
+assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"genai_extension"'
 assert_field_value 'plugins: otel protocol' '.plugins.[5].config.protocol' '"grpc"'
 assert_field_value 'plugins: otel metrics_enabled' '.plugins.[5].config.metrics_enabled' 'true'
 assert_field_value 'plugins: otel metrics_endpoint' '.plugins.[5].config.metrics_endpoint' '"otel-collector:4317"'
 assert_field_value 'plugins: otel metrics_push_interval' '.plugins.[5].config.metrics_push_interval' '30'
+assert_field 'plugins: otel headers' '.plugins.[5].config.headers'
+assert_field_value 'plugins: otel tls_ca_cert' '.plugins.[5].config.tls_ca_cert' '"/certs/ca.pem"'
+assert_field_value 'plugins: otel insecure' '.plugins.[5].config.insecure' 'true'
 
 # Datadog plugin
 assert_field_value 'plugins: datadog name' '.plugins.[6].name' '"datadog"'
@@ -677,9 +754,16 @@ image:
 bifrost:
   mcp:
     enabled: true
+    toolSyncInterval: "10m"
     clientConfigs:
       - name: "stdio-server"
         connectionType: "stdio"
+        clientId: "client-1"
+        isCodeModeClient: true
+        toolSyncInterval: "5m"
+        isPingAvailable: false
+        toolPricing:
+          search: 0.05
         stdioConfig:
           command: "/usr/bin/mcp-server"
           args:
@@ -698,6 +782,7 @@ bifrost:
     toolManagerConfig:
       toolExecutionTimeout: 60
       maxAgentDepth: 5
+      codeModeBindingLevel: "server"
 VALS
 
 render_config "$TMPDIR/values-mcp.yaml"
@@ -724,11 +809,25 @@ assert_field_value 'mcp client[2] connection_string' '.mcp.client_configs.[2].co
 assert_field_value 'mcp tool_manager_config.tool_execution_timeout' '.mcp.tool_manager_config.tool_execution_timeout' '60'
 assert_field_value 'mcp tool_manager_config.max_agent_depth' '.mcp.tool_manager_config.max_agent_depth' '5'
 
+# Gap 6a: Global tool sync interval
+assert_field_value 'mcp tool_sync_interval' '.mcp.tool_sync_interval' '"10m"'
+
+# Gap 6b: Per-client new fields
+assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
+assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
+assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
+assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'
+assert_field 'mcp client[0] tool_pricing' '.mcp.client_configs.[0].tool_pricing'
+assert_field_value 'mcp client[0] tool_pricing.search' '.mcp.client_configs.[0].tool_pricing.search' '0.05'
+
+# Gap 6c: Tool manager codeModeBindingLevel
+assert_field_value 'mcp tool_manager_config.code_mode_binding_level' '.mcp.tool_manager_config.code_mode_binding_level' '"server"'
+
 ###############################################################################
-# 8. Cluster, SAML, Load Balancer, Guardrails, Audit Logs
+# 8. Cluster, SCIM, Load Balancer, Guardrails, Audit Logs
 ###############################################################################
 echo ""
-echo -e "${CYAN}🌐 8/10 - Cluster, SAML, LB, Guardrails, Audit Logs${NC}"
+echo -e "${CYAN}🌐 8/10 - Cluster, SCIM, LB, Guardrails, Audit Logs${NC}"
 echo "-----------------------------------------------------"
 
 cat > "$TMPDIR/values-cluster.yaml" << 'VALS'
@@ -737,6 +836,7 @@ image:
 bifrost:
   cluster:
     enabled: true
+    region: "us-east-1"
     peers:
       - "bifrost-0.bifrost-headless:7946"
       - "bifrost-1.bifrost-headless:7946"
@@ -768,35 +868,40 @@ assert_field 'cluster_config.discovery.allowed_address_space' '.cluster_config.d
 assert_field_value 'cluster_config.discovery.k8s_namespace' '.cluster_config.discovery.k8s_namespace' '"bifrost"'
 assert_field_value 'cluster_config.discovery.k8s_label_selector' '.cluster_config.discovery.k8s_label_selector' '"app=bifrost"'
 
-# SAML - Okta
-cat > "$TMPDIR/values-saml-okta.yaml" << 'VALS'
+# Gap 7: Cluster region
+assert_field_value 'cluster_config.region' '.cluster_config.region' '"us-east-1"'
+
+# SCIM - Okta
+cat > "$TMPDIR/values-scim-okta.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "okta"
     config:
       issuerUrl: "https://dev-123.okta.com/oauth2/default"
       clientId: "okta-client-id"
       clientSecret: "okta-client-secret"
+      apiToken: "okta-api-token"
       audience: "api://default"
       userIdField: "sub"
       teamIdsField: "groups"
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-okta.yaml"
-assert_field_value 'saml_config.enabled' '.saml_config.enabled' 'true'
-assert_field_value 'saml_config.provider' '.saml_config.provider' '"okta"'
-assert_field 'saml_config.config' '.saml_config.config'
-
-# SAML - Entra
-cat > "$TMPDIR/values-saml-entra.yaml" << 'VALS'
+render_config "$TMPDIR/values-scim-okta.yaml"
+assert_field_value 'scim_config.enabled' '.scim_config.enabled' 'true'
+assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
+assert_field 'scim_config.config' '.scim_config.config'
+assert_field 'scim_config.config.apiToken' '.scim_config.config.apiToken'
+assert_field 'scim_config.config.clientSecret' '.scim_config.config.clientSecret'
+# SCIM - Entra
+cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "entra"
     config:
@@ -810,9 +915,12 @@ bifrost:
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-entra.yaml"
-assert_field_value 'saml_config (entra) provider' '.saml_config.provider' '"entra"'
-assert_field 'saml_config (entra) config' '.saml_config.config'
+render_config "$TMPDIR/values-scim-entra.yaml"
+assert_field_value 'scim_config (entra) provider' '.scim_config.provider' '"entra"'
+assert_field 'scim_config (entra) config' '.scim_config.config'
+assert_field_value 'scim_config (entra) enabled' '.scim_config.enabled' 'true'
+assert_field 'scim_config (entra) config.tenantId' '.scim_config.config.tenantId'
+assert_field 'scim_config (entra) config.clientId' '.scim_config.config.clientId'
 
 # Load Balancer
 cat > "$TMPDIR/values-lb.yaml" << 'VALS'
@@ -856,6 +964,7 @@ bifrost:
         provider_name: "bedrock"
         policy_name: "content-filter"
         enabled: true
+        timeout: 5000
         config:
           guardrailId: "abc"
 VALS
@@ -876,6 +985,7 @@ assert_field_value 'guardrails provider[0].id' '.guardrails_config.guardrail_pro
 assert_field_value 'guardrails provider[0].provider_name' '.guardrails_config.guardrail_providers.[0].provider_name' '"bedrock"'
 assert_field_value 'guardrails provider[0].policy_name' '.guardrails_config.guardrail_providers.[0].policy_name' '"content-filter"'
 assert_field_value 'guardrails provider[0].enabled' '.guardrails_config.guardrail_providers.[0].enabled' 'true'
+assert_field_value 'guardrails provider[0].timeout' '.guardrails_config.guardrail_providers.[0].timeout' '5000'
 assert_field 'guardrails provider[0].config' '.guardrails_config.guardrail_providers.[0].config'
 
 # Audit Logs
@@ -1077,6 +1187,97 @@ assert_field_value 'config_store.config.max_open_conns' '.config_store.config.ma
 assert_field_value 'logs_store.type (postgres)' '.logs_store.type' '"postgres"'
 assert_field_value 'logs_store.config.max_idle_conns' '.logs_store.config.max_idle_conns' '5'
 assert_field_value 'logs_store.config.max_open_conns' '.logs_store.config.max_open_conns' '50'
+
+###############################################################################
+# Object Storage (logsStore.objectStorage)
+###############################################################################
+
+# S3 with inline credentials — exercises camelCase → snake_case mapping in _helpers.tpl
+cat > "$TMPDIR/values-objstore-s3.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      prefix: "prod"
+      compress: true
+      region: "us-east-1"
+      endpoint: "https://minio.internal:9000"
+      accessKeyId: "AKIA..."
+      secretAccessKey: "secret"
+      roleArn: "arn:aws:iam::123:role/bifrost"
+      forcePathStyle: true
+VALS
+
+render_config "$TMPDIR/values-objstore-s3.yaml"
+assert_field_value 'logs_store.object_storage.type (s3)' '.logs_store.object_storage.type' '"s3"'
+assert_field_value 'logs_store.object_storage.bucket' '.logs_store.object_storage.bucket' '"bifrost-logs"'
+assert_field_value 'logs_store.object_storage.prefix' '.logs_store.object_storage.prefix' '"prod"'
+assert_field_value 'logs_store.object_storage.compress' '.logs_store.object_storage.compress' 'true'
+assert_field_value 'logs_store.object_storage.region' '.logs_store.object_storage.region' '"us-east-1"'
+assert_field_value 'logs_store.object_storage.endpoint' '.logs_store.object_storage.endpoint' '"https://minio.internal:9000"'
+assert_field_value 'logs_store.object_storage.access_key_id' '.logs_store.object_storage.access_key_id' '"AKIA..."'
+assert_field_value 'logs_store.object_storage.secret_access_key' '.logs_store.object_storage.secret_access_key' '"secret"'
+assert_field_value 'logs_store.object_storage.role_arn' '.logs_store.object_storage.role_arn' '"arn:aws:iam::123:role/bifrost"'
+assert_field_value 'logs_store.object_storage.force_path_style' '.logs_store.object_storage.force_path_style' 'true'
+
+# S3 with existingSecret — exercises env.BIFROST_OBJECT_STORAGE_* substitution path
+cat > "$TMPDIR/values-objstore-s3-secret.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      existingSecret: "bifrost-os-creds"
+      accessKeyIdKey: "access-key-id"
+      secretAccessKeyKey: "secret-access-key"
+      sessionTokenKey: "session-token"
+      roleArnKey: "role-arn"
+VALS
+
+render_config "$TMPDIR/values-objstore-s3-secret.yaml"
+assert_field_value 'logs_store.object_storage.access_key_id (env)' '.logs_store.object_storage.access_key_id' '"env.BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID"'
+assert_field_value 'logs_store.object_storage.secret_access_key (env)' '.logs_store.object_storage.secret_access_key' '"env.BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY"'
+assert_field_value 'logs_store.object_storage.session_token (env)' '.logs_store.object_storage.session_token' '"env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN"'
+assert_field_value 'logs_store.object_storage.role_arn (env)' '.logs_store.object_storage.role_arn' '"env.BIFROST_OBJECT_STORAGE_ROLE_ARN"'
+
+# GCS — exercises project_id + credentials_json mapping
+cat > "$TMPDIR/values-objstore-gcs.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: gcs
+      bucket: "bifrost-gcs-bucket"
+      projectId: "my-gcp-project"
+      credentialsJson: "/etc/gcs/creds.json"
+VALS
+
+render_config "$TMPDIR/values-objstore-gcs.yaml"
+assert_field_value 'logs_store.object_storage.type (gcs)' '.logs_store.object_storage.type' '"gcs"'
+assert_field_value 'logs_store.object_storage.bucket (gcs)' '.logs_store.object_storage.bucket' '"bifrost-gcs-bucket"'
+assert_field_value 'logs_store.object_storage.project_id' '.logs_store.object_storage.project_id' '"my-gcp-project"'
+assert_field_value 'logs_store.object_storage.credentials_json' '.logs_store.object_storage.credentials_json' '"/etc/gcs/creds.json"'
 
 ###############################################################################
 # Summary

@@ -7,7 +7,7 @@ import (
 
 // OauthProvider interface defines OAuth operations
 type OAuth2Provider interface {
-	// GetAccessToken retrieves the access token for a given oauth_config_id
+	// GetAccessToken retrieves the access token for a given oauth_config_id (server-level OAuth)
 	GetAccessToken(ctx context.Context, oauthConfigID string) (string, error)
 
 	// RefreshAccessToken refreshes the access token for a given oauth_config_id
@@ -18,6 +18,31 @@ type OAuth2Provider interface {
 
 	// RevokeToken revokes the OAuth token
 	RevokeToken(ctx context.Context, oauthConfigID string) error
+
+	// Per-user OAuth methods
+
+	// GetUserAccessToken retrieves the access token for a per-user OAuth session.
+	// If the token is expired, it automatically attempts a refresh.
+	GetUserAccessToken(ctx context.Context, sessionToken string) (string, error)
+
+	// GetUserAccessTokenByIdentity retrieves the upstream access token for a user
+	// identified by virtualKeyID, userID, or sessionToken (fallback), for a specific
+	// MCP client. Tokens looked up by identity persist across sessions.
+	GetUserAccessTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (string, error)
+
+	// InitiateUserOAuthFlow creates a per-user OAuth session and returns the authorization URL.
+	// Returns (flow initiation details, session ID for polling, error).
+	InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string) (*OAuth2FlowInitiation, string, error)
+
+	// CompleteUserOAuthFlow handles the OAuth callback for a per-user flow.
+	// Returns the session token that the user should send on subsequent requests.
+	CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error)
+
+	// RefreshUserAccessToken refreshes a per-user OAuth access token.
+	RefreshUserAccessToken(ctx context.Context, sessionToken string) error
+
+	// RevokeUserToken revokes a per-user OAuth token and marks the session as revoked.
+	RevokeUserToken(ctx context.Context, sessionToken string) error
 }
 
 // OauthConfig represents OAuth client configuration

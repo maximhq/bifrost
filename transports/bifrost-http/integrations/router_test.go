@@ -1,7 +1,9 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -10,6 +12,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	fileWriter, err := writer.CreateFormFile("file", "sample.mp3")
+	require.NoError(t, err)
+	_, err = fileWriter.Write([]byte("audio-bytes"))
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("model", "openai/whisper-1"))
+	require.NoError(t, writer.WriteField("stream", "true"))
+	require.NoError(t, writer.Close())
+
+	model, stream := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	assert.Equal(t, "openai/whisper-1", model)
+	assert.True(t, stream)
+}
 
 func TestRequestWithSettableExtraParams_OpenAIChatRequest(t *testing.T) {
 	t.Run("SetExtraParams populates both standalone and embedded ExtraParams", func(t *testing.T) {
@@ -85,7 +104,7 @@ func TestRequestWithSettableExtraParams_AllOpenAIRequestTypes(t *testing.T) {
 }
 
 func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 
 	var chatRoute *RouteConfig
@@ -294,7 +313,7 @@ func TestExtraParamsPassthrough_NoExtraParamsKey(t *testing.T) {
 // passes req to config.RequestConverter after the extra params block -- both
 // variables must reference the same underlying struct via pointer semantics.
 func TestExtraParamsSetViaInterfaceMutatesOriginalReq(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 
 	var chatRoute *RouteConfig

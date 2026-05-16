@@ -1,0 +1,32 @@
+{
+    "name": "@maximhq/bifrost-cli",
+    "version": "1.0.1",
+    "description": "Bifrost CLI - Use any harness + any models through Bifrost gateway with full observability and governance",
+    "keywords": [
+        "ai",
+        "gateway",
+        "openai",
+        "anthropic",
+        "cli",
+        "bifrost",
+        "ai-gateway"
+    ],
+    "homepage": "https://github.com/maximhq/bifrost",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/maximhq/bifrost.git"
+    },
+    "license": "Apache-2.0",
+    "author": "Maxim HQ",
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "bin": {
+        "bifrost": "bin.js"
+    },
+    "type": "module",
+    "dependencies": {}
+}

@@ -99,24 +99,24 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 		}
 
 		if message.ResponsesReasoning != nil {
-			// According to OpenAI's Responses API format specification, for non-gpt-oss models, a message
-			// with ResponsesReasoning != nil and non-empty Content.ContentBlocks but empty Summary and
-			// nil EncryptedContent represents a reasoning-only message that should be skipped, as these
-			// models do not support reasoning content blocks in the output. This constraint ensures
-			// compatibility with OpenAI's intended responses format behavior where reasoning-only messages
-			// without summaries are not included in the request payload for non-gpt-oss models.
+			isGptOss := strings.Contains(bifrostReq.Model, "gpt-oss")
+			isReasoning := isOpenAIReasoningModel(bifrostReq.Model)
+
+			// For non-gpt-oss models, skip reasoning-only messages that have content blocks but no summaries.
+			// For non-reasoning models (e.g., gpt-4o), also skip when EncryptedContent is present since
+			// these models don't produce encrypted reasoning — any encrypted content is cross-provider
+			// (e.g., Gemini ThoughtSignatures) and cannot be decrypted by OpenAI.
 			if len(message.ResponsesReasoning.Summary) == 0 &&
 				message.Content != nil &&
 				len(message.Content.ContentBlocks) > 0 &&
-				!strings.Contains(bifrostReq.Model, "gpt-oss") &&
-				message.ResponsesReasoning.EncryptedContent == nil {
+				!isGptOss &&
+				(message.ResponsesReasoning.EncryptedContent == nil || !isReasoning) {
 				continue
 			}
 
 			// If the message has summaries but no content blocks and the model is gpt-oss, then convert the summaries to content blocks
-			if len(message.ResponsesReasoning.Summary) > 0 &&
-				strings.Contains(bifrostReq.Model, "gpt-oss") &&
-				message.Content == nil {
+			if len(message.ResponsesReasoning.Summary) > 0 && isGptOss &&
+				(message.Content == nil || len(message.Content.ContentBlocks) == 0) {
 				var newMessage schemas.ResponsesMessage
 				newMessage.ID = message.ID
 				newMessage.Type = message.Type
@@ -136,6 +136,16 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				}
 				messages = append(messages, newMessage)
 			} else {
+				// Clone the embedded pointer to avoid mutating the original input
+				reasoningCopy := *message.ResponsesReasoning
+				message.ResponsesReasoning = &reasoningCopy
+				// OpenAI's Responses API does not accept 'role' on reasoning items
+				message.Role = nil
+				// Strip cross-provider encrypted content that non-reasoning models cannot decrypt.
+				// Reasoning models (o1/o3/o4/GPT-5) may use EncryptedContent for multi-turn state.
+				if !isReasoning {
+					message.ResponsesReasoning.EncryptedContent = nil
+				}
 				messages = append(messages, message)
 			}
 		} else if message.ResponsesToolMessage != nil &&
@@ -185,19 +195,19 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 		// Handle reasoning parameter: OpenAI uses effort-based reasoning
 		// Priority: effort (native) > max_tokens (estimated)
 		if req.ResponsesParameters.Reasoning != nil {
+			// Clone the Reasoning pointer to avoid mutating the original params
+			reasoningCopy := *req.ResponsesParameters.Reasoning
+			req.ResponsesParameters.Reasoning = &reasoningCopy
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				// Convert "minimal" to "low" for non-OpenAI providers
-				if effort == "minimal" {
-					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("low")
-				}
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(req.Model, effort))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
 				// Estimate effort from max_tokens
 				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
-				maxOutputTokens := DefaultCompletionMaxTokens
+				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
 				if req.ResponsesParameters.MaxOutputTokens != nil {
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
 				}
@@ -205,6 +215,11 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
+			}
+
+			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
+			if req.ResponsesParameters.Reasoning.Summary != nil && *req.ResponsesParameters.Reasoning.Summary == "none" {
+				req.ResponsesParameters.Reasoning.Summary = nil
 			}
 
 			// Handle xAI-specific parameter filtering
@@ -215,6 +230,55 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
+
+			// Handle OpenAI-specific parameter filtering
+			// Only o1/o3 series models support reasoning.effort
+			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
+			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(bifrostReq.Model) {
+				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
+				req.ResponsesParameters.Reasoning = nil
+			}
+		}
+
+		// Strip top_p for OpenAI reasoning models (o1/o3 series) which reject it
+		// GPT-5.x accept top_p when reasoning.effort is "none" (defaults to "none" when omitted)
+		if isOpenAIReasoningModel(bifrostReq.Model) {
+			stripTopP := true
+			_, parsedModel := schemas.ParseModelString(bifrostReq.Model, schemas.OpenAI)
+			modelLower := strings.ToLower(parsedModel)
+			effort := ""
+			if req.ResponsesParameters.Reasoning != nil &&
+				req.ResponsesParameters.Reasoning.Effort != nil {
+				effort = *req.ResponsesParameters.Reasoning.Effort
+			}
+			// GPT-5.x: reasoning defaults to "none" when omitted, and top_p is allowed in that case
+			// Exception: -pro and -codex variants always reason (no "none" mode), so top_p must be stripped
+			if strings.HasPrefix(modelLower, "gpt-5.") &&
+				(effort == "" || effort == "none") &&
+				!strings.Contains(modelLower, "-pro") &&
+				!strings.Contains(modelLower, "-codex") {
+				stripTopP = false
+			}
+			if stripTopP {
+				req.ResponsesParameters.TopP = nil
+			}
+		}
+
+		// Normalize function tool parameters for deterministic JSON serialization.
+		// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
+		if len(req.Tools) > 0 {
+			normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
+			copy(normalizedTools, req.Tools)
+			for i, tool := range normalizedTools {
+				if tool.Type == schemas.ResponsesToolTypeFunction &&
+					tool.ResponsesToolFunction != nil &&
+					tool.ResponsesToolFunction.Parameters != nil {
+					funcCopy := *tool.ResponsesToolFunction
+					funcCopy.Parameters = tool.ResponsesToolFunction.Parameters.Normalized()
+					normalizedTools[i].ResponsesToolFunction = &funcCopy
+				}
+			}
+			req.Tools = normalizedTools
 		}
 
 		// Filter out tools that OpenAI doesn't support
@@ -239,12 +303,16 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 		schemas.ResponsesToolTypeFileSearch:         true,
 		schemas.ResponsesToolTypeComputerUsePreview: true,
 		schemas.ResponsesToolTypeWebSearch:          true,
+		schemas.ResponsesToolTypeWebFetch:           true,
 		schemas.ResponsesToolTypeMCP:                true,
 		schemas.ResponsesToolTypeCodeInterpreter:    true,
 		schemas.ResponsesToolTypeImageGeneration:    true,
 		schemas.ResponsesToolTypeLocalShell:         true,
 		schemas.ResponsesToolTypeCustom:             true,
 		schemas.ResponsesToolTypeWebSearchPreview:   true,
+		schemas.ResponsesToolTypeMemory:             true,
+		schemas.ResponsesToolTypeToolSearch:         true,
+		schemas.ResponsesToolTypeNamespace:          true,
 	}
 
 	// Filter tools to only include supported types
@@ -281,6 +349,14 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 						}
 					}
 					// If only blocked domains or both empty, Filters stays nil
+				}
+
+				if tool.ResponsesToolWebSearch.ExternalWebAccess != nil {
+					externalWebAccess := *tool.ResponsesToolWebSearch.ExternalWebAccess
+					newWebSearch.ExternalWebAccess = &externalWebAccess
+				}
+				if len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+					newWebSearch.SearchContentTypes = append([]string(nil), tool.ResponsesToolWebSearch.SearchContentTypes...)
 				}
 
 				// Copy other fields if they exist

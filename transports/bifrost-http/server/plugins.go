@@ -6,11 +6,12 @@ import (
 	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/litellmcompat"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
@@ -53,14 +54,25 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		telConfig := &telemetry.Config{
 			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
 		}
-		// Merge push gateway config if provided (e.g., from config file or UI update)
+		// Merge persisted config if provided.
 		if pluginConfig != nil {
 			extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
-			if err == nil && extraConfig != nil && extraConfig.PushGateway != nil {
-				telConfig.PushGateway = extraConfig.PushGateway
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal telemetry plugin config: %w", err)
+			}
+			if extraConfig != nil {
+				if extraConfig.PushGateway != nil {
+					telConfig.PushGateway = extraConfig.PushGateway
+				}
+				if extraConfig.MetricsEnabled != nil {
+					telConfig.MetricsEnabled = extraConfig.MetricsEnabled
+				}
 			}
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
+
+	case prompts.PluginName:
+		return prompts.Init(ctx, bifrostConfig.ConfigStore, logger)
 
 	case logging.PluginName:
 		loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
@@ -101,12 +113,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		}
 		return otel.Init(ctx, otelConfig, logger, bifrostConfig.ModelCatalog, handlers.GetVersion())
 
-	case litellmcompat.PluginName:
-		litellmConfig, err := MarshalPluginConfig[litellmcompat.Config](pluginConfig)
+	case compat.PluginName:
+		compatConfig, err := MarshalPluginConfig[compat.Config](pluginConfig)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal litellmcompat plugin config: %w", err)
+			return nil, fmt.Errorf("failed to marshal compat plugin config: %w", err)
 		}
-		return litellmcompat.Init(*litellmConfig, logger)
+		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
@@ -134,6 +146,8 @@ func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	if err := s.loadCustomPlugins(ctx); err != nil {
 		return err
 	}
+	// Sort all plugins by placement group and order
+	s.Config.SortAndRebuildPlugins()
 	return nil
 }
 
@@ -149,13 +163,33 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 
 // loadBuiltinPlugins loads required built-in plugins in specific order
 func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
-	// 1. Telemetry (always first - tracks everything)
-	if err := s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, nil, true); err != nil {
-		return err
-	}
+	builtinPlacement := schemas.Ptr(schemas.PluginPlacementBuiltin)
 
-	// 2. Logging (if enabled)
-	if s.Config.ClientConfig.EnableLogging && s.Config.LogsStore != nil {
+	// 1. Telemetry (always first - tracks everything).
+	// Default-on: absent PluginConfig entry is treated as enabled, matching pre-#3269 behavior
+	// so upgraders don't silently lose /metrics. Only an explicit Enabled=false disables it.
+	telemetryPluginConfig := s.getPluginConfig(telemetry.PluginName)
+	var pluginConfig any
+	if telemetryPluginConfig != nil {
+		pluginConfig = telemetryPluginConfig.Config
+	}
+	if telemetryPluginConfig == nil || telemetryPluginConfig.Enabled {
+		s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, pluginConfig, false)
+	} else {
+		s.markPluginDisabled(telemetry.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(telemetry.PluginName, builtinPlacement, schemas.Ptr(1))
+
+	// 2. Prompts (requires config store for prompt repository; disabled in enterprise)
+	if s.Config.ConfigStore != nil && ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
+		s.registerPluginWithStatus(ctx, prompts.PluginName, nil, nil, false)
+	} else {
+		s.markPluginDisabled(prompts.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(prompts.PluginName, builtinPlacement, schemas.Ptr(2))
+
+	// 3. Logging (if enabled)
+	if (s.Config.ClientConfig.EnableLogging == nil || *s.Config.ClientConfig.EnableLogging) && s.Config.LogsStore != nil {
 		config := &logging.Config{
 			DisableContentLogging: &s.Config.ClientConfig.DisableContentLogging,
 			LoggingHeaders:        &s.Config.ClientConfig.LoggingHeaders,
@@ -164,49 +198,59 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	} else {
 		s.markPluginDisabled(logging.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(logging.PluginName, builtinPlacement, schemas.Ptr(3))
 
-	// 3. Governance (if enabled and not enterprise)
+	// 4. Governance (if enabled and not enterprise)
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		config := &governance.Config{
-			IsVkMandatory:   &s.Config.ClientConfig.EnforceAuthOnInference,
-			RequiredHeaders: &s.Config.ClientConfig.RequiredHeaders,
+			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
+			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
+			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
+			RoutingChainMaxDepth:  &s.Config.ClientConfig.RoutingChainMaxDepth,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(governance.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(governance.PluginName, builtinPlacement, schemas.Ptr(4))
 
-	// 4. OTEL (if configured in PluginConfigs)
+	// 5. OTEL (if configured in PluginConfigs)
 	otelConfig := s.getPluginConfig(otel.PluginName)
 	if otelConfig != nil && otelConfig.Enabled {
 		s.registerPluginWithStatus(ctx, otel.PluginName, nil, otelConfig.Config, false)
 	} else {
 		s.markPluginDisabled(otel.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(otel.PluginName, builtinPlacement, schemas.Ptr(5))
 
-	// 5. Semantic Cache (if configured in PluginConfigs)
+	// 6. Semantic Cache (if configured in PluginConfigs)
 	semanticCacheConfig := s.getPluginConfig(semanticcache.PluginName)
 	if semanticCacheConfig != nil && semanticCacheConfig.Enabled {
 		s.registerPluginWithStatus(ctx, semanticcache.PluginName, nil, semanticCacheConfig.Config, false)
 	} else {
 		s.markPluginDisabled(semanticcache.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(6))
 
-	// 6. Litellmcompat (if configured in PluginConfigs)
-	litellmcompatConfig := s.getPluginConfig(litellmcompat.PluginName)
-	if litellmcompatConfig != nil && litellmcompatConfig.Enabled {
-		s.registerPluginWithStatus(ctx, litellmcompat.PluginName, nil, litellmcompatConfig.Config, false)
-	} else {
-		s.markPluginDisabled(litellmcompat.PluginName)
+	// 7. Compat (if any compat feature is enabled in ClientConfig)
+	cc := s.Config.ClientConfig.Compat
+	compatCfg := &compat.Config{
+		ConvertTextToChat:      cc.ConvertTextToChat,
+		ConvertChatToResponses: cc.ConvertChatToResponses,
+		ShouldDropParams:       cc.ShouldDropParams,
+		ShouldConvertParams:    cc.ShouldConvertParams,
 	}
+	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
+	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(7))
 
-	// 7. Maxim (if configured in PluginConfigs)
+	// 8. Maxim (if configured in PluginConfigs)
 	maximConfig := s.getPluginConfig(maxim.PluginName)
 	if maximConfig != nil && maximConfig.Enabled {
 		s.registerPluginWithStatus(ctx, maxim.PluginName, nil, maximConfig.Config, false)
 	} else {
 		s.markPluginDisabled(maxim.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(8))
 
 	return nil
 }
@@ -263,6 +307,7 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 
 		// Register enabled plugin and mark as active
 		s.Config.ReloadPlugin(plugin)
+		s.Config.SetPluginOrderInfo(plugin.GetName(), cfg.Placement, cfg.Order)
 		s.Config.UpdatePluginOverallStatus(plugin.GetName(), cfg.Name, schemas.PluginStatusActive,
 			[]string{fmt.Sprintf("plugin %s initialized successfully", cfg.Name)}, InferPluginTypes(plugin))
 	}

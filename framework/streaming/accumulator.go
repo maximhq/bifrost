@@ -152,6 +152,7 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		MaxResponsesChunkIndex:     -1,
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
+		TerminalErrorChunkIndex:    -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
@@ -186,6 +187,7 @@ func (a *Accumulator) getOrCreateStreamAccumulator(requestID string) *StreamAccu
 		MaxResponsesChunkIndex:     -1,
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
+		TerminalErrorChunkIndex:    -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
@@ -378,135 +380,27 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string) {
 	}
 }
 
-// accumulateToolCallsInMessage efficiently accumulates tool calls in a message
-func (a *Accumulator) accumulateToolCallsInMessage(message *schemas.ChatMessage, deltaToolCalls []schemas.ChatAssistantMessageToolCall) {
-	if message == nil {
-		return
-	}
-	if message.ChatAssistantMessage == nil {
-		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
-	}
-	existingToolCalls := message.ChatAssistantMessage.ToolCalls
-	if len(existingToolCalls) == 0 {
-		existingToolCalls = []schemas.ChatAssistantMessageToolCall{}
-	}
-
-	// Build lookup maps for existing tool calls to support interleaved/parallel deltas
-	idToIndex := make(map[string]int, len(existingToolCalls))
-	indexToIndex := make(map[uint16]int, len(existingToolCalls))
-	for i, toolCall := range existingToolCalls {
-		if toolCall.ID != nil && *toolCall.ID != "" {
-			idToIndex[*toolCall.ID] = i
-		}
-		indexToIndex[toolCall.Index] = i
-	}
-
-	for _, deltaToolCall := range deltaToolCalls {
-		index := -1
-		if deltaToolCall.ID != nil && *deltaToolCall.ID != "" {
-			if existingIndex, ok := idToIndex[*deltaToolCall.ID]; ok {
-				index = existingIndex
-			}
-		}
-		if index == -1 {
-			if existingIndex, ok := indexToIndex[deltaToolCall.Index]; ok {
-				index = existingIndex
-			}
-		}
-
-		if index == -1 {
-			// Cannot place a delta without a tool name or known identifier
-			if deltaToolCall.Function.Name == nil {
-				a.logger.Warn("received tool call delta without name, but no existing tool calls to append to")
-				continue
-			}
-			// Creating a new tool call
-			// Only set arguments if they're not empty or just empty braces
-			args := deltaToolCall.Function.Arguments
-			if args == "{}" {
-				args = "" // Reset empty braces to empty string to avoid duplication
-			}
-			newToolCall := schemas.ChatAssistantMessageToolCall{
-				Index: deltaToolCall.Index,
-				Type:  deltaToolCall.Type,
-				ID:    deltaToolCall.ID,
-				Function: schemas.ChatAssistantMessageToolCallFunction{
-					Name:      deltaToolCall.Function.Name,
-					Arguments: args,
-				},
-			}
-			existingToolCalls = append(existingToolCalls, newToolCall)
-			index = len(existingToolCalls) - 1
-			indexToIndex[newToolCall.Index] = index
-			if newToolCall.ID != nil && *newToolCall.ID != "" {
-				idToIndex[*newToolCall.ID] = index
-			}
-			continue
-		}
-
-		// Update existing tool call
-		if deltaToolCall.Type != nil {
-			existingToolCalls[index].Type = deltaToolCall.Type
-		}
-		if deltaToolCall.ID != nil && *deltaToolCall.ID != "" {
-			existingToolCalls[index].ID = deltaToolCall.ID
-			idToIndex[*deltaToolCall.ID] = index
-		}
-		if deltaToolCall.Function.Name != nil && *deltaToolCall.Function.Name != "" {
-			existingToolCalls[index].Function.Name = deltaToolCall.Function.Name
-		}
-		if deltaToolCall.Function.Arguments != "" {
-			existingToolCalls[index].Function.Arguments += deltaToolCall.Function.Arguments
-		}
-	}
-	message.ChatAssistantMessage.ToolCalls = existingToolCalls
-}
-
-// appendContentToMessage efficiently appends content to a message
-func (a *Accumulator) appendContentToMessage(message *schemas.ChatMessage, newContent string) {
-	if message == nil {
-		return
-	}
-	if message.Content != nil && message.Content.ContentStr != nil {
-		// Append to existing string content
-		*message.Content.ContentStr += newContent
-	} else if message.Content != nil && message.Content.ContentBlocks != nil {
-		// Find the last text block and append, or create new one
-		blocks := message.Content.ContentBlocks
-		if len(blocks) > 0 && blocks[len(blocks)-1].Type == schemas.ChatContentBlockTypeText && blocks[len(blocks)-1].Text != nil {
-			// Append to last text block
-			*blocks[len(blocks)-1].Text += newContent
-		} else {
-			// Create new text block
-			blocks = append(blocks, schemas.ChatContentBlock{
-				Type: schemas.ChatContentBlockTypeText,
-				Text: &newContent,
-			})
-			message.Content.ContentBlocks = blocks
-		}
-	} else {
-		if message.Content == nil {
-			message.Content = &schemas.ChatMessageContent{}
-		}
-		// Initialize with string content
-		message.Content.ContentStr = &newContent
-	}
-}
-
 // ProcessStreamingResponse processes a streaming response
 // It handles chat, audio, and responses streaming responses
 func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*ProcessedStreamResponse, error) {
-	// Check if this is a streaming response
-	if result == nil {
-		return nil, fmt.Errorf("result is nil")
+	// Check if at least one of result or error is provided
+	if result == nil && bifrostErr == nil {
+		return nil, fmt.Errorf("result and error are nil")
 	}
-	extraFields := result.GetExtraFields()
-	requestType := extraFields.RequestType
+
+	var requestType schemas.RequestType
+	if result != nil {
+		requestType = result.GetExtraFields().RequestType
+	} else if bifrostErr != nil {
+		requestType = bifrostErr.ExtraFields.RequestType
+	}
+
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
-	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest
+	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest
 	// Edit images/ Image variation requests will be added here
 	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest || requestType == schemas.ImageEditStreamRequest
+	isPassthroughStreaming := requestType == schemas.PassthroughStreamRequest
 
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
@@ -525,6 +419,9 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	} else if isImageStreaming {
 		// Handle image streaming
 		return a.processImageStreamingResponse(ctx, result, bifrostErr)
+	} else if isPassthroughStreaming {
+		// Handle passthrough streaming with raw body accumulation
+		return a.processPassthroughStreamingResponse(ctx, result, bifrostErr)
 	}
 	return nil, fmt.Errorf("request type missing/invalid for accumulator: %s", requestType)
 }

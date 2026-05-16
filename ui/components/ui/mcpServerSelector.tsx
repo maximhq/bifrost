@@ -1,145 +1,141 @@
-"use client"
-
-import { ExternalLink, X } from "lucide-react"
-import { useCallback, useMemo } from "react"
-import { AsyncMultiSelect } from "./asyncMultiselect"
-import { Badge } from "./badge"
-import { Button } from "./button"
-import { Option } from "./multiselectUtils"
-import { cn } from "./utils"
+import { ExternalLink, X } from "lucide-react";
+import { useCallback, useMemo } from "react";
+import { AsyncMultiSelect } from "./asyncMultiselect";
+import { Badge } from "./badge";
+import { Button } from "./button";
+import { Option } from "./multiselectUtils";
+import { cn } from "./utils";
 
 // Types
 export interface MCPServerInfo {
-  config: {
-    client_id: string
-    name: string
-    connection_type?: string
-  }
-  tools?: { name: string }[]
-  state?: string
+	config: {
+		client_id: string;
+		name: string;
+		connection_type?: string;
+	};
+	tools?: { name: string }[];
+	state?: string;
 }
 
 interface ServerOptionMeta {
-  clientId: string
-  name: string
-  connectionType?: string
-  toolCount: number
-  state?: string
+	clientId: string;
+	name: string;
+	connectionType?: string;
+	toolCount: number;
+	state?: string;
 }
 
 interface MCPServerSelectorProps {
-  value: string[]
-  onChange: (serverIds: string[]) => void
-  mcpClients: MCPServerInfo[]
-  placeholder?: string
-  disabled?: boolean
-  className?: string
-  /** Base URL path for the MCP registry page (default: /workspace/mcp-registry) */
-  registryPath?: string
+	value: string[];
+	onChange: (serverIds: string[]) => void;
+	mcpClients: MCPServerInfo[];
+	placeholder?: string;
+	disabled?: boolean;
+	className?: string;
+	/** Base URL path for the MCP registry page (default: /workspace/mcp-registry) */
+	registryPath?: string;
 }
 
 export function MCPServerSelector({
-  value,
-  onChange,
-  mcpClients,
-  placeholder = "Search and select MCP servers...",
-  disabled = false,
-  className,
-  registryPath = "/workspace/mcp-registry",
+	value,
+	onChange,
+	mcpClients,
+	placeholder = "Search and select MCP servers...",
+	disabled = false,
+	className,
+	registryPath = "/workspace/mcp-registry",
 }: MCPServerSelectorProps) {
-  // Create options from MCP clients using meta for complex data
-  const allServerOptions = useMemo((): Option<ServerOptionMeta>[] => {
-    return mcpClients.map((client) => ({
-      label: client.config.name,
-      value: client.config.client_id,
-      meta: {
-        clientId: client.config.client_id,
-        name: client.config.name,
-        connectionType: client.config.connection_type,
-        toolCount: client.tools?.length || 0,
-        state: client.state,
-      },
-    }))
-  }, [mcpClients])
+	// Create options from MCP clients using meta for complex data
+	const allServerOptions = useMemo((): Option<ServerOptionMeta>[] => {
+		return mcpClients.map((client) => ({
+			label: client.config.name,
+			value: client.config.client_id,
+			meta: {
+				clientId: client.config.client_id,
+				name: client.config.name,
+				connectionType: client.config.connection_type,
+				toolCount: client.tools?.length || 0,
+				state: client.state,
+			},
+		}));
+	}, [mcpClients]);
 
-  // Get full server info for selected servers
-  const selectedServersWithInfo = useMemo(() => {
-    return value.map((serverId) => {
-      const client = mcpClients.find((c) => c.config.client_id === serverId)
-      return {
-        clientId: serverId,
-        name: client?.config.name || serverId,
-        connectionType: client?.config.connection_type,
-        toolCount: client?.tools?.length || 0,
-        state: client?.state,
-      }
-    })
-  }, [value, mcpClients])
+	// Get full server info for selected servers
+	const selectedServersWithInfo = useMemo(() => {
+		return value.map((serverId) => {
+			const client = mcpClients.find((c) => c.config.client_id === serverId);
+			return {
+				clientId: serverId,
+				name: client?.config.name || serverId,
+				connectionType: client?.config.connection_type,
+				toolCount: client?.tools?.length || 0,
+				state: client?.state,
+			};
+		});
+	}, [value, mcpClients]);
 
-  // Filter out already selected servers from options
-  const availableOptions = useMemo(() => {
-    const selectedSet = new Set(value)
-    return allServerOptions.filter((opt) => !selectedSet.has(opt.value))
-  }, [allServerOptions, value])
+	// Filter out already selected servers from options
+	const availableOptions = useMemo(() => {
+		const selectedSet = new Set(value);
+		return allServerOptions.filter((opt) => !selectedSet.has(opt.value));
+	}, [allServerOptions, value]);
 
-  const handleSelectServer = useCallback(
-    (selected: Option<ServerOptionMeta>[]) => {
-      if (selected.length === 0) return
+	const handleSelectServer = useCallback(
+		(selected: Option<ServerOptionMeta>[]) => {
+			if (selected.length === 0) return;
 
-      const newServer = selected[selected.length - 1]
-      if (!newServer?.meta) return
+			const newServer = selected[selected.length - 1];
+			if (!newServer?.meta) return;
 
-      // Check if already selected
-      if (!value.includes(newServer.meta.clientId)) {
-        onChange([...value, newServer.meta.clientId])
-      }
-    },
-    [value, onChange]
-  )
+			// Check if already selected
+			if (!value.includes(newServer.meta.clientId)) {
+				onChange([...value, newServer.meta.clientId]);
+			}
+		},
+		[value, onChange],
+	);
 
-  const handleRemoveServer = useCallback(
-    (serverId: string) => {
-      onChange(value.filter((id) => id !== serverId))
-    },
-    [value, onChange]
-  )
+	const handleRemoveServer = useCallback(
+		(serverId: string) => {
+			onChange(value.filter((id) => id !== serverId));
+		},
+		[value, onChange],
+	);
 
-  const reload = useCallback(
-    (query: string, callback: (options: Option<ServerOptionMeta>[]) => void) => {
-      const lowerQuery = query.toLowerCase()
-      const filtered = availableOptions.filter((opt) =>
-        opt.label.toLowerCase().includes(lowerQuery)
-      )
-      callback(filtered)
-    },
-    [availableOptions]
-  )
+	const reload = useCallback(
+		(query: string, callback: (options: Option<ServerOptionMeta>[]) => void) => {
+			const lowerQuery = query.toLowerCase();
+			const filtered = availableOptions.filter((opt) => opt.label.toLowerCase().includes(lowerQuery));
+			callback(filtered);
+		},
+		[availableOptions],
+	);
 
-  const getConnectionTypeBadgeVariant = (type?: string) => {
-    switch (type) {
-      case "http":
-        return "default"
-      case "stdio":
-        return "secondary"
-      case "sse":
-        return "outline"
-      default:
-        return "outline"
-    }
-  }
+	const getConnectionTypeBadgeVariant = (type?: string) => {
+		switch (type) {
+			case "http":
+				return "default";
+			case "stdio":
+				return "secondary";
+			case "sse":
+				return "outline";
+			default:
+				return "outline";
+		}
+	};
 
-  const getStateBadgeVariant = (state?: string) => {
-    switch (state) {
-      case "connected":
-        return "success"
-      case "error":
-        return "destructive"
-      default:
-        return "secondary"
-    }
-  }
+	const getStateBadgeVariant = (state?: string) => {
+		switch (state) {
+			case "connected":
+				return "success";
+			case "error":
+				return "destructive";
+			default:
+				return "secondary";
+		}
+	};
 
-  return (
+	return (
 		<div className={cn("space-y-3", className)}>
 			{/* Search dropdown */}
 			<AsyncMultiSelect<ServerOptionMeta>

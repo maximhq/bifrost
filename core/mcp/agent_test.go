@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -75,6 +77,9 @@ func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return make(map[string][]schemas.ChatTool)
 }
 
+func (m *MockClientManager) GetPluginPipeline() PluginPipeline                { return nil }
+func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline)    {}
+
 func TestHasToolCallsForChatResponse(t *testing.T) {
 	// Test nil response
 	if hasToolCallsForChatResponse(nil) {
@@ -125,7 +130,9 @@ func TestHasToolCallsForChatResponse(t *testing.T) {
 		t.Error("Should return true for response with tool calls in message")
 	}
 
-	// Test response with stop finish reason (should return false even with tool calls)
+	// Test response with stop finish reason AND tool calls — should return true.
+	// Some providers (e.g. Gemini) use "stop" even when returning tool calls, so
+	// finish_reason alone is not sufficient to determine whether tool calls are present.
 	responseWithStopReason := &schemas.BifrostChatResponse{
 		Choices: []schemas.BifrostResponseChoice{
 			{
@@ -146,8 +153,56 @@ func TestHasToolCallsForChatResponse(t *testing.T) {
 			},
 		},
 	}
-	if hasToolCallsForChatResponse(responseWithStopReason) {
-		t.Error("Should return false for response with stop finish reason even with tool calls")
+	if !hasToolCallsForChatResponse(responseWithStopReason) {
+		t.Error("Should return true for response with tool calls even when finish_reason is stop")
+	}
+
+	// Test response with stop finish reason and NO tool calls — should return false.
+	responseWithStopNoTools := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: schemas.Ptr("stop"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{},
+				},
+			},
+		},
+	}
+	if hasToolCallsForChatResponse(responseWithStopNoTools) {
+		t.Error("Should return false for response with stop finish reason and no tool calls")
+	}
+
+	// Test response where tool calls are in a non-first choice (Responses API conversion scenario).
+	// ToBifrostChatResponse() splits text and tool calls across separate choices when a model
+	// returns both text content and tool calls (e.g. Claude via the /v1/responses endpoint).
+	responseWithToolCallsInSecondChoice := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				// First choice: text message only
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{},
+				},
+			},
+			{
+				// Second choice: tool calls
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name: schemas.Ptr("youtube_search"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if !hasToolCallsForChatResponse(responseWithToolCallsInSecondChoice) {
+		t.Error("Should return true when tool calls appear in a non-first choice (Responses API conversion)")
 	}
 }
 
@@ -479,6 +534,158 @@ func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T
 	// Verify that no LLM calls were made (since tools are non-auto-executable)
 	if llmCaller.responsesCallCount != 0 {
 		t.Errorf("Expected 0 LLM calls for non-auto-executable tools, got %d", llmCaller.responsesCallCount)
+	}
+}
+
+// MockAutoClientManager returns a client state that marks all tools as auto-executable.
+type MockAutoClientManager struct{}
+
+func (m *MockAutoClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+	return &schemas.MCPClientState{
+		Name: "test-client",
+		ExecutionConfig: &schemas.MCPClientConfig{
+			Name:               "test-client",
+			ToolsToExecute:     []string{"*"},
+			ToolsToAutoExecute: []string{"*"},
+		},
+	}
+}
+
+func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	return nil
+}
+
+func (m *MockAutoClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
+	return make(map[string][]schemas.ChatTool)
+}
+
+func (m *MockAutoClientManager) GetPluginPipeline() PluginPipeline             { return nil }
+func (m *MockAutoClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
+
+// TestParallelToolCallsHaveUniqueMCPLogIDs verifies that parallel tool calls within a
+// single LLM response each receive a unique BifrostContextKeyMCPLogID in their context.
+//
+// The logging plugin uses this ID as the primary key for MCPToolLog entries, so each
+// parallel tool call must have a distinct value to avoid PK conflicts and input/output
+// mismatches caused by multiple goroutines racing to update the same row.
+func TestParallelToolCallsHaveUniqueMCPLogIDs(t *testing.T) {
+	const requestID = "test-request-id-123"
+	const numTools = 4
+
+	// Collect the MCP log IDs seen by executeToolFunc across all parallel calls.
+	var mu sync.Mutex
+	seenMCPLogIDs := make([]string, 0, numTools)
+
+	// Build a response with 4 parallel is_prime tool calls.
+	toolCalls := make([]schemas.ChatAssistantMessageToolCall, numTools)
+	for i := range toolCalls {
+		id := fmt.Sprintf("call_%d", i)
+		name := "is_prime"
+		toolCalls[i] = schemas.ChatAssistantMessageToolCall{
+			ID: &id,
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &name,
+				Arguments: fmt.Sprintf(`{"n": %d}`, i+2),
+			},
+		}
+	}
+
+	initialResponse := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: schemas.Ptr("tool_calls"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: toolCalls,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// makeReq returns a final non-tool response to terminate the agent loop.
+	makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		return &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					FinishReason: schemas.Ptr("stop"),
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("2, 3, and 5 are prime; 4 is not.")},
+						},
+					},
+				},
+			},
+		}, nil
+	}
+
+	executeToolFunc := func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		mcpLogID, ok := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
+		if !ok || mcpLogID == "" {
+			return nil, fmt.Errorf("missing mcp log id in tool context")
+		}
+		mu.Lock()
+		seenMCPLogIDs = append(seenMCPLogIDs, mcpLogID)
+		mu.Unlock()
+
+		toolCallID := ""
+		if req.ChatAssistantMessageToolCall != nil && req.ChatAssistantMessageToolCall.ID != nil {
+			toolCallID = *req.ChatAssistantMessageToolCall.ID
+		}
+		return &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{
+					ToolCallID: &toolCallID,
+				},
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("true"),
+				},
+			},
+		}, nil
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+
+	originalReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("check if 2,3,4,5 are prime")},
+			},
+		},
+	}
+
+	agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
+	_, err := agentModeExecutor.ExecuteAgentForChatRequest(
+		ctx, 10, originalReq, initialResponse, makeReq, nil, executeToolFunc, &MockAutoClientManager{},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(seenMCPLogIDs) != numTools {
+		t.Fatalf("expected executeToolFunc to be called %d times, got %d", numTools, len(seenMCPLogIDs))
+	}
+
+	// Each parallel tool call must have a unique MCP log ID so the logging plugin
+	// can create separate MCPToolLog entries without primary key conflicts.
+	uniqueIDs := make(map[string]struct{})
+	for _, id := range seenMCPLogIDs {
+		uniqueIDs[id] = struct{}{}
+	}
+	if len(uniqueIDs) != numTools {
+		t.Errorf(
+			"expected %d unique MCP log IDs (one per parallel tool call), got %d",
+			numTools, len(uniqueIDs),
+		)
 	}
 }
 

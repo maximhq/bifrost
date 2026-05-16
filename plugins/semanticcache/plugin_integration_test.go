@@ -18,7 +18,7 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
-	
+
 	// Test request
 	request := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -75,9 +75,9 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -100,7 +100,7 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	}
 
 	// Wait for async caching to complete
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 	t.Log("✅ Response cached successfully")
 
 	// Second request - should be a cache hit
@@ -213,9 +213,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -225,7 +225,7 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 	t.Log("✅ First response cached")
 
 	// Second request with different temperature - should be cache miss
@@ -309,7 +309,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)		
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
 
 	request := &schemas.BifrostRequest{
@@ -375,10 +375,10 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 					},
 				},
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					Provider:       schemas.OpenAI,
-					ModelRequested: "gpt-4o-mini",
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					ChunkIndex:     i,
+					Provider:               schemas.OpenAI,
+					OriginalModelRequested: "gpt-4o-mini",
+					RequestType:            schemas.ChatCompletionStreamRequest,
+					ChunkIndex:             i,
 				},
 			},
 		}
@@ -389,7 +389,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 		}
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 	t.Log("✅ Streaming response chunks cached")
 
 	// Test cache retrieval for streaming
@@ -524,9 +524,9 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -536,7 +536,7 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("✅ Custom TTL configuration test passed!")
 }
@@ -547,7 +547,7 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 	defer setup.Cleanup()
 
 	// Configure plugin with custom threshold key
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)	
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
 	ctx.SetValue(CacheThresholdKey, 0.95) // Very high threshold
 
@@ -635,9 +635,9 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -647,7 +647,7 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request with different provider - should potentially hit cache since provider is not considered
 	request2 := &schemas.BifrostRequest{

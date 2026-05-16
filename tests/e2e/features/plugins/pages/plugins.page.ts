@@ -54,7 +54,8 @@ export class PluginsPage extends BasePage {
     await waitForNetworkIdle(this.page)
     // Wait for create button or empty state to be visible (indicates page loaded).
     // Use .first() so the locator resolves to one element when both are visible (strict mode).
-    await this.createBtn.or(this.page.getByText(/No plugins installed/i))
+    await this.page.getByTestId('plugins-create-button')
+      .or(this.page.getByTestId('plugins-empty-state'))
       .first()
       .waitFor({ state: 'visible', timeout: 10000 })
     // Ensure sheet is closed (in case it was left open from previous test)
@@ -113,15 +114,15 @@ export class PluginsPage extends BasePage {
    * Get the count of plugins in the sidebar
    */
   async getPluginCount(): Promise<number> {
-    const buttons = this.pluginList
-    const count = await buttons.count()
-
-    // Check if it's empty state
-    const emptyMessage = this.page.getByText(/No plugins installed/i)
-    const isEmptyVisible = await emptyMessage.isVisible().catch(() => false)
+    // Check if it's empty state (no plugin list, only empty state is shown)
+    const emptyState = this.page.getByTestId('plugins-empty-state')
+    const isEmptyVisible = await emptyState.isVisible().catch(() => false)
     if (isEmptyVisible) {
       return 0
     }
+
+    const buttons = this.page.getByTestId('plugin-list-item')
+    const count = await buttons.count()
 
     return count
   }

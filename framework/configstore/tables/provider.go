@@ -21,9 +21,10 @@ type TableProvider struct {
 	ConcurrencyBufferJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
 	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
-	PricingOverridesJSON     string    `gorm:"type:text" json:"-"`                                // JSON serialized []schemas.ProviderPricingOverride
+	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
+	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
 	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -36,8 +37,8 @@ type TableProvider struct {
 	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
 
 	// Custom provider fields
-	CustomProviderConfig *schemas.CustomProviderConfig     `gorm:"-" json:"custom_provider_config,omitempty"`
-	PricingOverrides     []schemas.ProviderPricingOverride `gorm:"-" json:"pricing_overrides,omitempty"`
+	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
+	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -99,16 +100,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		}
 		p.CustomProviderConfigJSON = string(data)
 	}
-	if p.PricingOverrides != nil {
-		data, err := json.Marshal(p.PricingOverrides)
+	if p.OpenAIConfig != nil {
+		data, err := json.Marshal(p.OpenAIConfig)
 		if err != nil {
 			return err
 		}
-		p.PricingOverridesJSON = string(data)
+		p.OpenAIConfigJSON = string(data)
 	} else {
-		p.PricingOverridesJSON = ""
+		p.OpenAIConfigJSON = ""
 	}
-
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
 		return fmt.Errorf("budget_id cannot be an empty string")
@@ -172,12 +172,12 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 		p.CustomProviderConfig = &customConfig
 	}
 
-	if p.PricingOverridesJSON != "" {
-		var overrides []schemas.ProviderPricingOverride
-		if err := json.Unmarshal([]byte(p.PricingOverridesJSON), &overrides); err != nil {
+	if p.OpenAIConfigJSON != "" {
+		var openaiConfig schemas.OpenAIConfig
+		if err := json.Unmarshal([]byte(p.OpenAIConfigJSON), &openaiConfig); err != nil {
 			return err
 		}
-		p.PricingOverrides = overrides
+		p.OpenAIConfig = &openaiConfig
 	}
 
 	return nil

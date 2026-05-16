@@ -1,52 +1,96 @@
 package tables
 
+import "github.com/maximhq/bifrost/core/schemas"
+
 // TableModelPricing represents pricing information for AI models
 type TableModelPricing struct {
-	ID                 uint    `gorm:"primaryKey;autoIncrement" json:"id"`
-	Model              string  `gorm:"type:varchar(255);not null;uniqueIndex:idx_model_provider_mode" json:"model"`
-	BaseModel          string  `gorm:"type:varchar(255);default:null" json:"base_model,omitempty"`
-	Provider           string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"provider"`
-	InputCostPerToken  float64 `gorm:"not null" json:"input_cost_per_token"`
-	OutputCostPerToken float64 `gorm:"not null" json:"output_cost_per_token"`
-	Mode               string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"mode"`
+	ID              uint                  `gorm:"primaryKey;autoIncrement" json:"id"`
+	Model           string                `gorm:"type:varchar(255);not null;uniqueIndex:idx_model_provider_mode" json:"model"`
+	BaseModel       string                `gorm:"type:varchar(255);default:null" json:"base_model,omitempty"`
+	Provider        string                `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"provider"`
+	Mode            string                `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"mode"`
+	ContextLength   *int                  `gorm:"default:null" json:"context_length,omitempty"`
+	MaxInputTokens  *int                  `gorm:"default:null" json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                  `gorm:"default:null" json:"max_output_tokens,omitempty"`
+	Architecture    *schemas.Architecture `gorm:"type:text;serializer:json;default:null" json:"architecture,omitempty"`
 
-	// Additional pricing for media
-	InputCostPerVideoPerSecond  *float64 `gorm:"default:null" json:"input_cost_per_video_per_second,omitempty"`
-	OutputCostPerVideoPerSecond *float64 `gorm:"default:null" json:"output_cost_per_video_per_second,omitempty"`
-	OutputCostPerSecond         *float64 `gorm:"default:null" json:"output_cost_per_second,omitempty"`
-	InputCostPerAudioPerSecond  *float64 `gorm:"default:null" json:"input_cost_per_audio_per_second,omitempty"`
+	// Costs - Text
+	InputCostPerToken          *float64 `gorm:"default:null" json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken         *float64 `gorm:"default:null" json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches   *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches  *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority  *float64 `gorm:"default:null;column:input_cost_per_token_priority" json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority *float64 `gorm:"default:null;column:output_cost_per_token_priority" json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenFlex      *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
+	OutputCostPerTokenFlex     *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
+	InputCostPerCharacter      *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
+	// Costs - 128k Tier
+	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
+	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`
+	InputCostPerVideoPerSecondAbove128kTokens *float64 `gorm:"default:null;column:input_cost_per_video_per_second_above_128k_tokens" json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+	InputCostPerAudioPerSecondAbove128kTokens *float64 `gorm:"default:null;column:input_cost_per_audio_per_second_above_128k_tokens" json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+	OutputCostPerTokenAbove128kTokens         *float64 `gorm:"default:null;column:output_cost_per_token_above_128k_tokens" json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	// Costs - 200k Tier
+	InputCostPerTokenAbove200kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens" json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	InputCostPerTokenAbove200kTokensPriority  *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens_priority" json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove200kTokens         *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens" json:"output_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokensPriority *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens_priority" json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
+	// Costs - 272k Tier
+	InputCostPerTokenAbove272kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens" json:"input_cost_per_token_above_272k_tokens,omitempty"`
+	InputCostPerTokenAbove272kTokensPriority  *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens_priority" json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
+	OutputCostPerTokenAbove272kTokens         *float64 `gorm:"default:null;column:output_cost_per_token_above_272k_tokens" json:"output_cost_per_token_above_272k_tokens,omitempty"`
+	OutputCostPerTokenAbove272kTokensPriority *float64 `gorm:"default:null;column:output_cost_per_token_above_272k_tokens_priority" json:"output_cost_per_token_above_272k_tokens_priority,omitempty"`
 
-	// Character-based pricing
-	InputCostPerCharacter  *float64 `gorm:"default:null" json:"input_cost_per_character,omitempty"`
-	OutputCostPerCharacter *float64 `gorm:"default:null" json:"output_cost_per_character,omitempty"`
+	// Costs - Cache
+	CacheCreationInputTokenCost                        *float64 `gorm:"default:null;column:cache_creation_input_token_cost" json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadInputTokenCost                            *float64 `gorm:"default:null;column:cache_read_input_token_cost" json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_200k_tokens" json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens             *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_200k_tokens" json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokensPriority     *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_200k_tokens_priority" json:"cache_read_input_token_cost_above_200k_tokens_priority,omitempty"`
+	CacheCreationInputTokenCostAbove1hr                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr" json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_above_200k_tokens" json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+	CacheCreationInputAudioTokenCost                   *float64 `gorm:"default:null;column:cache_creation_input_audio_token_cost" json:"cache_creation_input_audio_token_cost,omitempty"`
+	CacheReadInputTokenCostPriority                    *float64 `gorm:"default:null;column:cache_read_input_token_cost_priority" json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostFlex                        *float64 `gorm:"default:null;column:cache_read_input_token_cost_flex" json:"cache_read_input_token_cost_flex,omitempty"`
+	CacheReadInputImageTokenCost                       *float64 `gorm:"default:null;column:cache_read_input_image_token_cost" json:"cache_read_input_image_token_cost,omitempty"`
+	CacheReadInputTokenCostAbove272kTokens             *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens" json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens_priority" json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
 
-	// Pricing above 128k tokens
-	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null" json:"input_cost_per_token_above_128k_tokens,omitempty"`
-	InputCostPerCharacterAbove128kTokens      *float64 `gorm:"default:null" json:"input_cost_per_character_above_128k_tokens,omitempty"`
-	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null" json:"input_cost_per_image_above_128k_tokens,omitempty"`
-	InputCostPerVideoPerSecondAbove128kTokens *float64 `gorm:"default:null" json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
-	InputCostPerAudioPerSecondAbove128kTokens *float64 `gorm:"default:null" json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
-	OutputCostPerTokenAbove128kTokens         *float64 `gorm:"default:null" json:"output_cost_per_token_above_128k_tokens,omitempty"`
-	OutputCostPerCharacterAbove128kTokens     *float64 `gorm:"default:null" json:"output_cost_per_character_above_128k_tokens,omitempty"`
+	// Costs - Image
+	InputCostPerImage                             *float64 `gorm:"default:null;column:input_cost_per_image" json:"input_cost_per_image,omitempty"`
+	InputCostPerPixel                             *float64 `gorm:"default:null;column:input_cost_per_pixel" json:"input_cost_per_pixel,omitempty"`
+	OutputCostPerImage                            *float64 `gorm:"default:null;column:output_cost_per_image" json:"output_cost_per_image,omitempty"`
+	OutputCostPerPixel                            *float64 `gorm:"default:null;column:output_cost_per_pixel" json:"output_cost_per_pixel,omitempty"`
+	OutputCostPerImagePremiumImage                *float64 `gorm:"default:null;column:output_cost_per_image_premium_image" json:"output_cost_per_image_premium_image,omitempty"`
+	OutputCostPerImageAbove512x512Pixels          *float64 `gorm:"default:null;column:output_cost_per_image_above_512_and_512_pixels" json:"output_cost_per_image_above_512_and_512_pixels,omitempty"`
+	OutputCostPerImageAbove512x512PixelsPremium   *float64 `gorm:"default:null;column:output_cost_per_image_above_512x512_pixels_premium" json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1024Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_1024_and_1024_pixels" json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_premium" json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove2048x2048Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_2048_and_2048_pixels" json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
+	OutputCostPerImageAbove4096x4096Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_4096_and_4096_pixels" json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageLowQuality                  *float64 `gorm:"default:null;column:output_cost_per_image_low_quality" json:"output_cost_per_image_low_quality,omitempty"`
+	OutputCostPerImageMediumQuality               *float64 `gorm:"default:null;column:output_cost_per_image_medium_quality" json:"output_cost_per_image_medium_quality,omitempty"`
+	OutputCostPerImageHighQuality                 *float64 `gorm:"default:null;column:output_cost_per_image_high_quality" json:"output_cost_per_image_high_quality,omitempty"`
+	OutputCostPerImageAutoQuality                 *float64 `gorm:"default:null;column:output_cost_per_image_auto_quality" json:"output_cost_per_image_auto_quality,omitempty"`
+	InputCostPerImageToken                        *float64 `gorm:"default:null;column:input_cost_per_image_token" json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken                       *float64 `gorm:"default:null;column:output_cost_per_image_token" json:"output_cost_per_image_token,omitempty"`
 
-	//Pricing above 200k tokens (for gemini and claude models)
-	InputCostPerTokenAbove200kTokens           *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens" json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	OutputCostPerTokenAbove200kTokens          *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens" json:"output_cost_per_token_above_200k_tokens,omitempty"`
-	CacheCreationInputTokenCostAbove200kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_200k_tokens" json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove200kTokens     *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_200k_tokens" json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+	// Costs - Audio/Video
+	InputCostPerAudioToken      *float64 `gorm:"default:null;column:input_cost_per_audio_token" json:"input_cost_per_audio_token,omitempty"`
+	InputCostPerAudioPerSecond  *float64 `gorm:"default:null;column:input_cost_per_audio_per_second" json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerSecond          *float64 `gorm:"default:null;column:input_cost_per_second" json:"input_cost_per_second,omitempty"` // Only for transcription models
+	InputCostPerVideoPerSecond  *float64 `gorm:"default:null;column:input_cost_per_video_per_second" json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerAudioToken     *float64 `gorm:"default:null;column:output_cost_per_audio_token" json:"output_cost_per_audio_token,omitempty"`
+	OutputCostPerVideoPerSecond *float64 `gorm:"default:null;column:output_cost_per_video_per_second" json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `gorm:"default:null;column:output_cost_per_second" json:"output_cost_per_second,omitempty"` // For both speech and video models
 
-	// Cache and batch pricing
-	CacheReadInputTokenCost     *float64 `gorm:"default:null;column:cache_read_input_token_cost" json:"cache_read_input_token_cost,omitempty"`
-	CacheCreationInputTokenCost *float64 `gorm:"default:null;column:cache_creation_input_token_cost" json:"cache_creation_input_token_cost,omitempty"`
-	InputCostPerTokenBatches    *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches   *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
+	// Costs - Other
+	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
+	CodeInterpreterCostPerSession *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
 
-	// Image generation pricing
-	InputCostPerImageToken       *float64 `gorm:"default:null;column:input_cost_per_image_token" json:"input_cost_per_image_token,omitempty"`
-	OutputCostPerImageToken      *float64 `gorm:"default:null;column:output_cost_per_image_token" json:"output_cost_per_image_token,omitempty"`
-	InputCostPerImage            *float64 `gorm:"default:null;column:input_cost_per_image" json:"input_cost_per_image,omitempty"`
-	OutputCostPerImage           *float64 `gorm:"default:null;column:output_cost_per_image" json:"output_cost_per_image,omitempty"`
-	CacheReadInputImageTokenCost *float64 `gorm:"default:null;column:cache_read_input_image_token_cost" json:"cache_read_input_image_token_cost,omitempty"`
+	// Costs - OCR
+	OCRCostPerPage        *float64 `gorm:"default:null;column:ocr_cost_per_page" json:"ocr_cost_per_page,omitempty"`
+	AnnotationCostPerPage *float64 `gorm:"default:null;column:annotation_cost_per_page" json:"annotation_cost_per_page,omitempty"`
 }
 
 // TableName sets the table name for each model

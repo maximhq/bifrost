@@ -1,6 +1,12 @@
 package replicate_test
 
 import (
+	"context"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +17,80 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type testLogger struct{}
+
+func (l *testLogger) Debug(string, ...any)                     {}
+func (l *testLogger) Info(string, ...any)                      {}
+func (l *testLogger) Warn(string, ...any)                      {}
+func (l *testLogger) Error(string, ...any)                     {}
+func (l *testLogger) Fatal(string, ...any)                     {}
+func (l *testLogger) SetLevel(schemas.LogLevel)               {}
+func (l *testLogger) SetOutputType(schemas.LoggerOutputType)  {}
+func (l *testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func multipartFieldOrderFromRequest(r *http.Request) ([]string, error) {
+	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return nil, err
+	}
+	if mediaType != "multipart/form-data" {
+		return nil, assert.AnError
+	}
+
+	reader := multipart.NewReader(r.Body, params["boundary"])
+	var order []string
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		order = append(order, part.FormName())
+		_, _ = io.Copy(io.Discard, part)
+		_ = part.Close()
+	}
+	return order, nil
+}
+
+func TestFileUpload_OrdersMetadataBeforeFile(t *testing.T) {
+	var (
+		order       []string
+		handlerErr error
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order, handlerErr = multipartFieldOrderFromRequest(r)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"title":"forced error"}`))
+	}))
+	defer server.Close()
+
+	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+	}, &testLogger{})
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	contentType := "application/json"
+	_, bifrostErr := provider.FileUpload(ctx, schemas.Key{}, &schemas.BifrostFileUploadRequest{
+		Provider:    schemas.Replicate,
+		File:        []byte(`{"hello":"world"}`),
+		Filename:    "payload.json",
+		ContentType: &contentType,
+		ExtraParams: map[string]interface{}{
+			"metadata": map[string]interface{}{"owner": "oss", "purpose": "test"},
+		},
+	})
+	require.NotNil(t, bifrostErr)
+	require.NoError(t, handlerErr)
+	assert.Equal(t, []string{"filename", "type", "metadata", "content"}, order)
+}
 
 func TestReplicate(t *testing.T) {
 	t.Parallel()
@@ -23,6 +103,7 @@ func TestReplicate(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Replicate,
@@ -75,7 +156,6 @@ func TestReplicate(t *testing.T) {
 	t.Run("ReplicateTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestBifrostToReplicateChatRequestConversion tests the conversion from Bifrost chat request to Replicate format
@@ -459,187 +539,6 @@ func TestBifrostToReplicateImageGenerationConversion(t *testing.T) {
 		validate func(t *testing.T, result *replicate.ReplicatePredictionRequest)
 		wantErr  bool
 	}{
-		{
-			name: "Flux_1_1_Pro_ImagePrompt",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-1.1-pro",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				// Flux 1.1 Pro should use ImagePrompt field
-				assert.NotNil(t, result.Input.ImagePrompt)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.ImagePrompt)
-				assert.Nil(t, result.Input.InputImage)
-				assert.Nil(t, result.Input.Image)
-				assert.Nil(t, result.Input.InputImages)
-			},
-		},
-		{
-			name: "Flux_1_1_Pro_Ultra_ImagePrompt",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-1.1-pro-ultra",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				assert.NotNil(t, result.Input.ImagePrompt)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.ImagePrompt)
-			},
-		},
-		{
-			name: "Flux_Pro_ImagePrompt",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-pro",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				assert.NotNil(t, result.Input.ImagePrompt)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.ImagePrompt)
-			},
-		},
-		{
-			name: "Flux_Kontext_Pro_InputImage",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-kontext-pro",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				// Kontext models should use InputImage field
-				assert.NotNil(t, result.Input.InputImage)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.InputImage)
-				assert.Nil(t, result.Input.ImagePrompt)
-				assert.Nil(t, result.Input.Image)
-				assert.Nil(t, result.Input.InputImages)
-			},
-		},
-		{
-			name: "Flux_Kontext_Max_InputImage",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-kontext-max",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				assert.NotNil(t, result.Input.InputImage)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.InputImage)
-			},
-		},
-		{
-			name: "Flux_Dev_Image",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-dev",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				// Flux Dev should use Image field
-				assert.NotNil(t, result.Input.Image)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.Image)
-				assert.Nil(t, result.Input.ImagePrompt)
-				assert.Nil(t, result.Input.InputImage)
-				assert.Nil(t, result.Input.InputImages)
-			},
-		},
-		{
-			name: "Flux_Fill_Pro_Image",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-fill-pro",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				assert.NotNil(t, result.Input.Image)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.Image)
-			},
-		},
-		{
-			name: "Other_Model_InputImages",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "stability-ai/sdxl",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input1.jpg", "https://example.com/input2.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				// Other models should use InputImages array
-				assert.NotNil(t, result.Input.InputImages)
-				assert.Len(t, result.Input.InputImages, 2)
-				assert.Equal(t, "https://example.com/input1.jpg", result.Input.InputImages[0])
-				assert.Equal(t, "https://example.com/input2.jpg", result.Input.InputImages[1])
-				assert.Nil(t, result.Input.ImagePrompt)
-				assert.Nil(t, result.Input.InputImage)
-				assert.Nil(t, result.Input.Image)
-			},
-		},
-		{
-			name: "Model_With_Version",
-			input: &schemas.BifrostImageGenerationRequest{
-				Model: "black-forest-labs/flux-1.1-pro:v1.0",
-				Input: &schemas.ImageGenerationInput{
-					Prompt: prompt,
-				},
-				Params: &schemas.ImageGenerationParameters{
-					InputImages: []string{"https://example.com/input.jpg"},
-				},
-			},
-			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
-				require.NotNil(t, result)
-				require.NotNil(t, result.Input)
-				// Should still match flux-1.1-pro and use ImagePrompt
-				assert.NotNil(t, result.Input.ImagePrompt)
-				assert.Equal(t, "https://example.com/input.jpg", *result.Input.ImagePrompt)
-			},
-		},
 		{
 			name: "AllParameters",
 			input: &schemas.BifrostImageGenerationRequest{

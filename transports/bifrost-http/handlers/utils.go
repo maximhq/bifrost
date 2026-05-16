@@ -7,10 +7,36 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// resolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
+// start/end time pointers computed from the current server time. Returns nil, nil for
+// unrecognised values. When used in filter parsing, period takes precedence over any explicit
+// start_time/end_time query parameters so every poll always covers the intended window.
+func resolvePeriod(period string) (start, end *time.Time) {
+	now := time.Now().UTC()
+	var from time.Time
+	switch period {
+	case "1h":
+		from = now.Add(-time.Hour)
+	case "6h":
+		from = now.Add(-6 * time.Hour)
+	case "24h":
+		from = now.Add(-24 * time.Hour)
+	case "7d":
+		from = now.AddDate(0, 0, -7)
+	case "30d":
+		from = now.AddDate(0, 0, -30)
+	default:
+		return nil, nil
+	}
+	return &from, &now
+}
 
 // pluginDisabledKey is a dedicated context key type for marking a plugin as disabled
 // rather than removed. Using a named type instead of a raw string follows Go best practices.
@@ -18,6 +44,13 @@ type pluginDisabledKey struct{}
 
 // PluginDisabledKey is the context key used to indicate a plugin is being disabled.
 var PluginDisabledKey pluginDisabledKey
+
+// badRequestError wraps a client input validation error so that outer handlers
+// can distinguish it from internal server errors and return HTTP 400.
+type badRequestError struct{ err error }
+
+func (e *badRequestError) Error() string { return e.err.Error() }
+func (e *badRequestError) Unwrap() error { return e.err }
 
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
@@ -66,6 +99,20 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 	}
+}
+
+// streamLargeResponseIfActive checks if large response mode was activated by the provider
+// and streams the response directly to the client. Returns true if the response was handled
+// (caller should return), false if normal response handling should continue.
+func streamLargeResponseIfActive(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) bool {
+	isLargeResponse, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	if !ok || !isLargeResponse {
+		return false
+	}
+	if !lib.StreamLargeResponseBody(ctx, bifrostCtx) {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Large response reader not available")
+	}
+	return true
 }
 
 // SendSSEError sends an error in Server-Sent Events format
@@ -164,6 +211,20 @@ func ParseModel(model string) (string, string, error) {
 		return "", "", fmt.Errorf("model must be in the format 'provider/model' with non-empty provider and model")
 	}
 	return provider, name, nil
+}
+
+// ClampPaginationParams applies default/max bounds to limit and offset so that
+// the handler response matches the values the store actually uses.
+func ClampPaginationParams(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
 }
 
 // fuzzyMatch checks if all characters in query appear in text in order (case-insensitive)

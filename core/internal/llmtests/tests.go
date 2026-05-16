@@ -66,6 +66,9 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunListModelsErrorMarshalTest,
 		RunListModelsPaginationTest,
 		RunPromptCachingTest,
+		RunPromptCachingToolBlocksTest,
+		RunPromptCachingMultipleToolCallsTest,
+		RunPromptCachingMultiTurnTest,
 		RunImageGenerationTest,
 		RunImageGenerationStreamTest,
 		RunImageEditTest,
@@ -110,6 +113,15 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunContainerFileDeleteTest,
 		RunContainerFileUnsupportedTest,
 		RunPassthroughExtraParamsTest,
+		RunStreamErrorStatusCodeTest,
+		RunPassthroughAPITest,
+		RunWebSocketResponsesTest,
+		RunRealtimeTest,
+		RunCompactionTest,
+		RunInterleavedThinkingTest,
+		RunFastModeTest,
+		RunEagerInputStreamingTest,
+		RunServerToolsViaOpenAIEndpointTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -119,7 +131,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 
 	// Execute all test scenarios WITH raw request/response enabled
 	t.Run("WithRawRequestResponse", func(t *testing.T) {
-		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawRequest, true)
 		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawResponse, true)
 		rawConfig := testConfig
 		rawConfig.ExpectRawRequestResponse = true
@@ -169,6 +182,9 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ListModelsResponseMarshal", testConfig.Scenarios.ListModels},
 		{"ListModelsErrorMarshal", testConfig.Scenarios.ListModels},
 		{"PromptCaching", testConfig.Scenarios.SimpleChat && testConfig.PromptCachingModel != ""},
+		{"PromptCachingToolBlocks", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
+		{"PromptCachingMultipleToolCalls", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
+		{"PromptCachingMultiTurn", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
 		{"ImageGeneration", testConfig.Scenarios.ImageGeneration && testConfig.ImageGenerationModel != ""},
 		{"ImageGenerationStream", testConfig.Scenarios.ImageGenerationStream && testConfig.ImageGenerationModel != ""},
 		{"ImageEdit", testConfig.Scenarios.ImageEdit && testConfig.ImageEditModel != ""},
@@ -219,6 +235,15 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ContainerFileDelete", testConfig.Scenarios.ContainerFileDelete},
 		{"ContainerFileUnsupported", !testConfig.Scenarios.ContainerFileCreate && !testConfig.Scenarios.ContainerFileList && !testConfig.Scenarios.ContainerFileRetrieve && !testConfig.Scenarios.ContainerFileContent && !testConfig.Scenarios.ContainerFileDelete},
 		{"PassThroughExtraParams", testConfig.Scenarios.PassThroughExtraParams},
+		{"StreamErrorStatusCode", testConfig.Scenarios.CompletionStream},
+		{"PassthroughAPI", testConfig.Scenarios.PassthroughAPI},
+		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
+		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
+		{"Compaction", testConfig.Scenarios.Compaction},
+		{"InterleavedThinking", testConfig.Scenarios.InterleavedThinking},
+		{"FastMode", testConfig.Scenarios.FastMode},
+		{"EagerInputStreaming", testConfig.Scenarios.EagerInputStreaming},
+		{"ServerToolsViaOpenAIEndpoint", testConfig.Scenarios.ServerToolsViaOpenAIEndpoint},
 	}
 
 	supported := 0

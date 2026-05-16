@@ -2,7 +2,6 @@ package semanticcache
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +43,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical request (should be served from cache)...")
 
@@ -139,7 +138,7 @@ func TestSemanticSearch(t *testing.T) {
 	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written (async PostLLMHook needs time to complete)
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request - very similar text to test semantic matching
 	secondRequest := CreateBasicChatRequest(
@@ -207,6 +206,44 @@ func TestSemanticSearch(t *testing.T) {
 	t.Log("✅ Semantic search test completed successfully!")
 }
 
+func TestToFloat32Embedding(t *testing.T) {
+	input := []float64{0.12345678901234568, -0.875, 1.5}
+
+	got := toFloat32Embedding(input)
+
+	if len(got) != len(input) {
+		t.Fatalf("expected %d elements, got %d", len(input), len(got))
+	}
+
+	for i, want := range input {
+		if got[i] != float32(want) {
+			t.Fatalf("expected element %d to be %v, got %v", i, float32(want), got[i])
+		}
+	}
+}
+
+func TestFlattenToFloat32Embedding(t *testing.T) {
+	input := [][]float64{
+		{0.25, 0.5},
+		{-0.75},
+		{},
+		{1.25, 2.5},
+	}
+
+	got := flattenToFloat32Embedding(input)
+	want := []float32{0.25, 0.5, -0.75, 1.25, 2.5}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d elements, got %d", len(want), len(got))
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected element %d to be %v, got %v", i, want[i], got[i])
+		}
+	}
+}
+
 // TestDirectVsSemanticSearch tests the difference between direct hash matching and semantic search
 func TestDirectVsSemanticSearch(t *testing.T) {
 	setup := NewTestSetup(t)
@@ -232,7 +269,7 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making exact same request (should hit direct cache)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, exactRequest)
@@ -310,7 +347,7 @@ func TestNoCacheScenarios(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request with different temperature
 	request2 := CreateBasicChatRequest(basePrompt, 0.9, 50) // Different temperature
@@ -351,9 +388,6 @@ func TestCacheConfiguration(t *testing.T) {
 				EmbeddingModel: "text-embedding-3-small",
 				Dimension:      1536,
 				Threshold:      0.95, // Very high threshold
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: []string{}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "strict_matching",
 		},
@@ -364,9 +398,6 @@ func TestCacheConfiguration(t *testing.T) {
 				EmbeddingModel: "text-embedding-3-small",
 				Dimension:      1536,
 				Threshold:      0.1, // Very low threshold
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: []string{}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "loose_matching",
 		},
@@ -378,9 +409,6 @@ func TestCacheConfiguration(t *testing.T) {
 				Dimension:      1536,
 				Threshold:      0.8,
 				TTL:            1 * time.Hour, // Custom TTL
-				Keys: []schemas.Key{
-					{Value: *schemas.NewEnvVar("env.OPENAI_API_KEY"), Models: []string{}, Weight: 1.0},
-				},
 			},
 			expectedBehavior: "custom_ttl",
 		},
@@ -401,7 +429,7 @@ func TestCacheConfiguration(t *testing.T) {
 				return // Test will be skipped by retry function
 			}
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			_, err2 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 			if err2 != nil {
@@ -425,7 +453,7 @@ func (m *MockUnsupportedStore) Ping(ctx context.Context) error {
 }
 
 func (m *MockUnsupportedStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
-	return vectorstore.ErrNotSupported
+	return nil
 }
 
 func (m *MockUnsupportedStore) DeleteNamespace(ctx context.Context, namespace string) error {
@@ -509,23 +537,13 @@ func TestInvalidProviderRejection(t *testing.T) {
 				Dimension:         1536,
 				Threshold:         0.8,
 				CleanUpOnShutdown: false,
-				Keys: []schemas.Key{
-					{
-						Value:  *schemas.NewEnvVar("env.TEST_API_KEY"),
-						Models: []string{},
-						Weight: 1.0,
-					},
-				},
 			}
 
+			// Provider validation was moved to request time (global client handles it).
+			// Init itself should succeed regardless of the provider set in config.
 			_, err := Init(ctx, config, logger, mockStore)
-			if err == nil {
-				t.Errorf("Expected error for provider '%s' but got none", provider)
-			}
-
-			expectedErrSubstring := "does not support embedding operations"
-			if err != nil && !strings.Contains(err.Error(), expectedErrSubstring) {
-				t.Errorf("Expected error message to contain '%s', but got: %v", expectedErrSubstring, err)
+			if err != nil {
+				t.Errorf("Init should succeed for provider '%s' (validation happens at request time), but got: %v", provider, err)
 			}
 		})
 	}
@@ -546,18 +564,11 @@ func TestValidProviderAccepted(t *testing.T) {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: false,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 
-	// Should fail due to namespace creation, not provider validation
+	// Init should succeed; provider validation happens at request time via the global client.
 	_, err := Init(ctx, config, logger, mockStore)
-	if err != nil && strings.Contains(err.Error(), "does not support embedding operations") {
-		t.Errorf("Valid provider OpenAI should not be rejected for embedding support, but got: %v", err)
+	if err != nil {
+		t.Errorf("Valid provider OpenAI should be accepted at Init, but got: %v", err)
 	}
 }

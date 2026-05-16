@@ -38,7 +38,7 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 		Scheme:  scheme,
 		Host:    host,
 		APIKey:  apiKey,
-		Timeout: time.Duration(timeout) * time.Second,
+		Timeout: schemas.Duration(time.Duration(timeout) * time.Second),
 	}
 }
 
@@ -66,7 +66,7 @@ func getRedisConfigFromEnv() vectorstore.RedisConfig {
 		Username:       username,
 		Password:       password,
 		DB:             db,
-		ContextTimeout: timeout,
+		ContextTimeout: schemas.Duration(timeout),
 	}
 }
 
@@ -122,7 +122,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-			Models: []string{}, // Empty models array means it supports ALL models
+			Models: schemas.WhiteList{"*"}, // "*" means allow all models
 			Weight: 1.0,
 		},
 	}, nil
@@ -371,13 +371,6 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: true,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	})
 }
 
@@ -426,6 +419,9 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 
 	// Get a mocked Bifrost client
 	client := getMockedBifrostClient(t, ctx, logger, plugin)
+
+	// Wire the global client as the embedding executor so semantic search works.
+	pluginImpl.SetEmbeddingRequestExecutor(client.EmbeddingRequest)
 
 	return &TestSetup{
 		Logger: logger,
@@ -539,8 +535,12 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 }
 
 // WaitForCache waits for async cache operations to complete
-func WaitForCache() {
-	time.Sleep(2 * time.Second)
+func WaitForCache(plugin schemas.LLMPlugin) {
+	if p, ok := plugin.(*Plugin); ok {
+		p.WaitForPendingOperations()
+	}
+	// Small buffer for Weaviate index consistency
+	time.Sleep(500 * time.Millisecond)
 }
 
 // CreateEmbeddingRequest creates an embedding request for testing
@@ -644,13 +644,6 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -665,13 +658,6 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		CleanUpOnShutdown:   true,
 		Threshold:           0.8,
 		ExcludeSystemPrompt: &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)
@@ -687,13 +673,6 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
 		ExcludeSystemPrompt:          &excludeSystem,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 
 	return NewTestSetupWithConfig(t, config)

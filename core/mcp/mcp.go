@@ -21,13 +21,6 @@ const (
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
 	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
-
-	// Context keys for client filtering in requests
-	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
-	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
-	// Request context filtering takes priority over client config - context can override client exclusions.
-	MCPContextKeyIncludeClients schemas.BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
-	MCPContextKeyIncludeTools   schemas.BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 )
 
 // ============================================================================
@@ -48,6 +41,13 @@ type MCPManager struct {
 	serverRunning        bool                               // Track whether local MCP server is running
 	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
 	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
+	reconnectingClients  sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
+
+	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
+	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
+	// existing execute-tool hooks.
+	pluginPipelineProvider func() PluginPipeline
+	releasePluginPipeline  func(pipeline PluginPipeline)
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -78,7 +78,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 	// Set default values
 	if config.ToolManagerConfig == nil {
 		config.ToolManagerConfig = &schemas.MCPToolManagerConfig{
-			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
+			ToolExecutionTimeout: schemas.Duration(schemas.DefaultToolExecutionTimeout),
 			MaxAgentDepth:        schemas.DefaultMaxAgentDepth,
 		}
 	}
@@ -109,7 +109,9 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		}
 	}
 
-	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline, logger)
+	manager.pluginPipelineProvider = pluginPipelineProvider
+	manager.releasePluginPipeline = releasePluginPipeline
+	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, oauth2Provider, logger)
 
 	// Set up CodeMode if provided - inject dependencies after manager is created
 	if codeMode != nil {
@@ -128,6 +130,32 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 				defer wg.Done()
 				if err := manager.AddClient(clientConfig); err != nil {
 					manager.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
+					// Retain the entry in Disconnected state and start a health monitor to
+					// recover it automatically. On startup, a connection failure is likely
+					// transient (e.g. autoscaling cold start) — the client was previously
+					// configured and should be recovered without user intervention.
+					manager.mu.Lock()
+					if _, exists := manager.clientMap[clientConfig.ID]; !exists {
+						manager.clientMap[clientConfig.ID] = &schemas.MCPClientState{
+							Name:            clientConfig.Name,
+							ExecutionConfig: clientConfig,
+							State:           schemas.MCPConnectionStateDisconnected,
+							ToolMap:         make(map[string]schemas.ChatTool),
+							ToolNameMapping: make(map[string]string),
+							ConnectionInfo: &schemas.MCPClientConnectionInfo{
+								Type: clientConfig.ConnectionType,
+							},
+						}
+					} else {
+						manager.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
+					}
+					manager.mu.Unlock()
+					isPingAvailable := true
+					if clientConfig.IsPingAvailable != nil {
+						isPingAvailable = *clientConfig.IsPingAvailable
+					}
+					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, manager.logger)
+					manager.healthMonitorManager.StartMonitoring(monitor)
 				}
 			}(clientConfig)
 		}
@@ -135,6 +163,29 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 	}
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
+}
+
+// SetPluginPipeline updates the plugin pipeline provider and release function on the manager's
+// ToolsManager and CodeMode. Call this after attaching an externally-created MCPManager to a Bifrost
+// instance so that nested tool calls in code mode can run through Bifrost's plugin hooks.
+func (manager *MCPManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
+	manager.pluginPipelineProvider = provider
+	manager.releasePluginPipeline = release
+}
+
+// GetPluginPipeline returns a plugin pipeline from the provider, or nil if no provider is configured.
+func (manager *MCPManager) GetPluginPipeline() PluginPipeline {
+	if manager.pluginPipelineProvider != nil {
+		return manager.pluginPipelineProvider()
+	}
+	return nil
+}
+
+// ReleasePluginPipeline releases a plugin pipeline back to the pool via the configured release function.
+func (manager *MCPManager) ReleasePluginPipeline(pipeline PluginPipeline) {
+	if manager.releasePluginPipeline != nil {
+		manager.releasePluginPipeline(pipeline)
+	}
 }
 
 // AddToolsToRequest parses available MCP tools from the context and adds them to the request.
@@ -147,11 +198,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 //
 // Returns:
 //   - *schemas.BifrostRequest: The request with tools added
-func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *MCPManager) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	return m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
 }
 
-func (m *MCPManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 
@@ -208,7 +259,6 @@ func (m *MCPManager) CheckAndExecuteAgentForChatRequest(
 	req *schemas.BifrostChatRequest,
 	response *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
-	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if makeReq == nil {
 		return nil, &schemas.BifrostError{
@@ -223,8 +273,9 @@ func (m *MCPManager) CheckAndExecuteAgentForChatRequest(
 		m.logger.Debug("No tool calls detected, returning response")
 		return response, nil
 	}
-	// Execute agent mode
-	return m.toolsManager.ExecuteAgentForChatRequest(ctx, req, response, makeReq, executeTool)
+	// Execute agent mode. The agent's tool executions go through the plugin gate
+	// internally via m.executeToolForAgent — no external callback injection needed.
+	return m.toolsManager.ExecuteAgentForChatRequest(ctx, req, response, makeReq, m.executeToolForAgent)
 }
 
 // CheckAndExecuteAgentForResponsesRequest checks if the responses response contains tool calls,
@@ -260,7 +311,6 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 	req *schemas.BifrostResponsesRequest,
 	response *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
-	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if makeReq == nil {
 		return nil, &schemas.BifrostError{
@@ -275,8 +325,8 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 		m.logger.Debug("No tool calls detected, returning response")
 		return response, nil
 	}
-	// Execute agent mode
-	return m.toolsManager.ExecuteAgentForResponsesRequest(ctx, req, response, makeReq, executeTool)
+	// Execute agent mode. Tool executions go through the plugin gate internally.
+	return m.toolsManager.ExecuteAgentForResponsesRequest(ctx, req, response, makeReq, m.executeToolForAgent)
 }
 
 // Cleanup performs cleanup of all MCP resources including clients and local server.

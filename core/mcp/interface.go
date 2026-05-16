@@ -14,35 +14,44 @@ import (
 type MCPManagerInterface interface {
 	// Tool Operations
 	// AddToolsToRequest parses available MCP tools and adds them to the request
-	AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest
+	AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest
 
 	// GetAvailableTools returns all available MCP tools for the given context
-	GetAvailableTools(ctx context.Context) []schemas.ChatTool
+	GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool
 
 	// ExecuteToolCall executes a single tool call and returns the result
 	ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
-	// UpdateToolManagerConfig updates the configuration for the tool manager
+	// UpdateToolManagerConfig updates the configuration for the tool manager.
+	// DisableAutoToolInject in the config controls auto injection — pass the
+	// current value whenever only other fields change so it is never silently reset.
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
 
 	// Agent Mode Operations
-	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API
+	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API.
+	// Tool executions inside the agent loop go through the plugin gate internally —
+	// callers no longer inject an executeTool function.
 	CheckAndExecuteAgentForChatRequest(
 		ctx *schemas.BifrostContext,
 		req *schemas.BifrostChatRequest,
 		response *schemas.BifrostChatResponse,
 		makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
-		executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	) (*schemas.BifrostChatResponse, *schemas.BifrostError)
 
-	// CheckAndExecuteAgentForResponsesRequest handles agent mode for Responses API
+	// CheckAndExecuteAgentForResponsesRequest handles agent mode for Responses API.
+	// Tool executions inside the agent loop go through the plugin gate internally.
 	CheckAndExecuteAgentForResponsesRequest(
 		ctx *schemas.BifrostContext,
 		req *schemas.BifrostResponsesRequest,
 		response *schemas.BifrostResponsesResponse,
 		makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
-		executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
+
+	// ExecuteChatTool / ExecuteResponsesTool run a single MCP tool call through the
+	// plugin gate and return the result in the appropriate API format. Bifrost's
+	// ExecuteChatMCPTool / ExecuteResponsesMCPTool delegate here.
+	ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
+	ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 
 	// Client Management
 	// GetClients returns all MCP clients
@@ -57,8 +66,26 @@ type MCPManagerInterface interface {
 	// UpdateClient updates an existing MCP client configuration
 	UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error
 
+	// UpdateClientConnection reconnects an existing MCP client using updated
+	// auth-related connection fields (for example, headers and OAuth config).
+	UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) error
+
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
+
+	// DisableClient shuts down a client's connection and workers without removing it
+	DisableClient(id string) error
+
+	// EnableClient reconnects a disabled client and restarts its workers
+	EnableClient(id string) error
+
+	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
+	// test access token to verify connectivity and discover tools. The connection
+	// is closed after verification.
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+
+	// SetClientTools updates the tool map and name mapping for an existing client.
+	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 
 	// Tool Registration
 	// RegisterTool registers a local tool with the MCP server

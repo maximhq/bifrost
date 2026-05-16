@@ -131,7 +131,7 @@ npx playwright install --with-deps chromium
 # Forward MCP_SSE_HEADERS so the mcp-registry SSE test can use it (set in workflow env).
 echo "🎭 Running Playwright E2E tests..."
 CI=true SKIP_WEB_SERVER=1 BASE_URL=http://localhost:18080 BIFROST_BASE_URL=http://localhost:18080 \
-  MCP_SSE_HEADERS=${MCP_SSE_HEADERS:-} \
+  MCP_SSE_HEADERS="${MCP_SSE_HEADERS:-}" \
   npx playwright test --workers=4
 PLAYWRIGHT_EXIT=$?
 

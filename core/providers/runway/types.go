@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 type Reference struct {
@@ -36,13 +37,13 @@ func (pi PromptImage) MarshalJSON() ([]byte, error) {
 	}
 
 	if pi.PromptImageStr != nil {
-		return sonic.Marshal(*pi.PromptImageStr)
+		return providerUtils.MarshalSorted(*pi.PromptImageStr)
 	}
 	if pi.PromptImageObject != nil {
-		return sonic.Marshal(pi.PromptImageObject)
+		return providerUtils.MarshalSorted(pi.PromptImageObject)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return []byte("null"), nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for PromptImage.

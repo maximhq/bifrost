@@ -3,6 +3,9 @@ package tracing
 
 import (
 	"context"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -18,6 +21,9 @@ type Tracer struct {
 	store          *TraceStore
 	accumulator    *streaming.Accumulator
 	pricingManager *modelcatalog.ModelCatalog
+	logger         schemas.Logger
+	obsPlugins     atomic.Pointer[[]schemas.ObservabilityPlugin]
+	flushWG        sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -28,12 +34,22 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 		store:          store,
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		pricingManager: pricingManager,
+		logger:         logger,
+		obsPlugins:     atomic.Pointer[[]schemas.ObservabilityPlugin]{},
 	}
 }
 
+// SetObservabilityPlugins updates the plugins that receive completed traces.
+func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+	if t == nil {
+		return
+	}
+	t.obsPlugins.Store(&obsPlugins)
+}
+
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
-func (t *Tracer) CreateTrace(parentID string) string {
-	return t.store.CreateTrace(parentID)
+func (t *Tracer) CreateTrace(parentID string, requestID ...string) string {
+	return t.store.CreateTrace(parentID, requestID...)
 }
 
 // EndTrace completes a trace and returns the trace data for observation/export.
@@ -123,6 +139,28 @@ func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) 
 	}
 }
 
+// GetSpanHandleByID retrieves a span handle for the given trace and span ID.
+// If spanID is nil, it returns a handle for the trace's root span.
+func (t *Tracer) GetSpanHandleByID(traceID string, spanID *string) schemas.SpanHandle {
+	if traceID == "" {
+		return nil
+	}
+	trace := t.store.GetTrace(traceID)
+	if trace == nil {
+		return nil
+	}
+	if spanID == nil {
+		if trace.RootSpan == nil {
+			return nil
+		}
+		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID}
+	}
+	if *spanID == "" || trace.GetSpan(*spanID) == nil {
+		return nil
+	}
+	return &spanHandle{traceID: traceID, spanID: *spanID}
+}
+
 // AddEvent adds a timestamped event to the span identified by the handle.
 func (t *Tracer) AddEvent(handle schemas.SpanHandle, name string, attrs map[string]any) {
 	h, ok := handle.(*spanHandle)
@@ -158,13 +196,43 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 		return
 	}
 
-	for k, v := range PopulateRequestAttributes(req) {
+	attrs := PopulateRequestAttributes(req)
+	for k, v := range attrs {
 		span.SetAttribute(k, v)
+	}
+
+	// Propagate input messages and request model to root span so observability backends (e.g. Langfuse)
+	// can display Input and model name at the top-level trace without requiring users to drill into llm.call.
+	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
+		var inputText string
+		switch req.RequestType {
+		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+			if req.ChatRequest != nil && len(req.ChatRequest.Input) > 0 {
+				last := req.ChatRequest.Input[len(req.ChatRequest.Input)-1]
+				inputText = extractMessageContent(last.Content)
+			}
+		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+			if req.ResponsesRequest != nil && len(req.ResponsesRequest.Input) > 0 {
+				last := req.ResponsesRequest.Input[len(req.ResponsesRequest.Input)-1]
+				inputText = extractResponsesMessageTextContent(&last)
+			}
+		}
+		if inputText != "" {
+			rootSpan.SetAttribute(schemas.AttrInputMessages, inputText)
+		} else if v, ok := attrs[schemas.AttrInputMessages]; ok {
+			rootSpan.SetAttribute(schemas.AttrInputMessages, v)
+		}
+		if v, ok := attrs[schemas.AttrRequestModel]; ok {
+			rootSpan.SetAttribute(schemas.AttrRequestModel, v)
+		}
+		if v, ok := attrs[schemas.AttrProviderName]; ok {
+			rootSpan.SetAttribute(schemas.AttrProviderName, v)
+		}
 	}
 }
 
 // PopulateLLMResponseAttributes populates all LLM-specific response attributes on the span.
-func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
 		return
@@ -176,8 +244,16 @@ func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *
 	span := trace.GetSpan(h.spanID)
 	if span == nil {
 		return
-	}	
-	for k, v := range PopulateResponseAttributes(resp) {
+	}
+	respAttrs := PopulateResponseAttributes(resp)
+	for k, v := range respAttrs {
+		if k == schemas.AttrFinishReasons {
+			// llm.call span gets the singular finish_reason (first element only)
+			if reasons, ok := v.([]string); ok && len(reasons) > 0 {
+				span.SetAttribute(schemas.AttrFinishReason, reasons[0])
+			}
+			continue
+		}
 		span.SetAttribute(k, v)
 	}
 	for k, v := range PopulateErrorAttributes(err) {
@@ -185,8 +261,40 @@ func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *
 	}
 	// Populate cost attribute using pricing manager
 	if t.pricingManager != nil && resp != nil {
-		cost := t.pricingManager.CalculateCostWithCacheDebug(resp)
+		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
 		span.SetAttribute(schemas.AttrUsageCost, cost)
+	}
+
+	// Propagate output messages, response model, and finish reasons to root span so observability backends (e.g. Langfuse)
+	// can display Output and model name at the top-level trace without requiring users to drill into llm.call.
+	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
+		var outputText string
+		if resp != nil {
+			if resp.ChatResponse != nil && len(resp.ChatResponse.Choices) > 0 {
+				choice := resp.ChatResponse.Choices[0]
+				if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+					outputText = extractMessageContent(choice.ChatNonStreamResponseChoice.Message.Content)
+				}
+			} else if resp.ResponsesResponse != nil {
+				for _, msg := range extractResponsesOutputMessages(resp.ResponsesResponse) {
+					if msg.Content != "" {
+						outputText = msg.Content
+						break
+					}
+				}
+			}
+		}
+		if outputText != "" {
+			rootSpan.SetAttribute(schemas.AttrOutputMessages, outputText)
+		} else if v, ok := respAttrs[schemas.AttrOutputMessages]; ok {
+			rootSpan.SetAttribute(schemas.AttrOutputMessages, v)
+		}
+		if v, ok := respAttrs[schemas.AttrResponseModel]; ok {
+			rootSpan.SetAttribute(schemas.AttrResponseModel, v)
+		}
+		if v, ok := respAttrs[schemas.AttrFinishReasons]; ok {
+			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
+		}
 	}
 }
 
@@ -236,13 +344,14 @@ func (t *Tracer) AddStreamingChunk(traceID string, response *schemas.BifrostResp
 	t.store.AppendStreamingChunk(traceID, response)
 }
 
-// GetAccumulatedChunks returns TTFT and chunk count for the deferred span.
-// The response is always nil — span attributes are populated from the final chunk
-// in completeDeferredSpan. Full content accumulation for plugins is handled by
-// the embedded streaming.Accumulator via ProcessStreamingChunk.
+// GetAccumulatedChunks returns the accumulated response, TTFT, and chunk count for the deferred span.
+// The response is built from the streaming accumulator during the final ProcessStreamingChunk call
+// and stored on the DeferredSpanInfo. Returns nil response if no accumulated data is available
+// (e.g., when no plugin calls ProcessStreamingChunk).
 func (t *Tracer) GetAccumulatedChunks(traceID string) (*schemas.BifrostResponse, int64, int) {
-	ttftMs, chunkCount := t.store.GetAccumulatedData(traceID)
-	return nil, ttftMs, chunkCount
+	ttftNs, chunkCount := t.store.GetAccumulatedData(traceID)
+	resp := t.store.GetAccumulatedResponse(traceID)
+	return resp, ttftNs, chunkCount
 }
 
 // CreateStreamAccumulator creates a new stream accumulator for the given trace ID.
@@ -289,11 +398,26 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 		return nil
 	}
 
+	// On final chunk, store the accumulated BifrostResponse on the deferred span
+	// so that completeDeferredSpan can populate span attributes (e.g., gen_ai.output.messages)
+	if isFinalChunk {
+		if bifrostResp := processedResp.ToBifrostResponse(); bifrostResp != nil &&
+			(bifrostResp.ChatResponse != nil ||
+				bifrostResp.TextCompletionResponse != nil ||
+				bifrostResp.SpeechResponse != nil ||
+				bifrostResp.TranscriptionResponse != nil ||
+				bifrostResp.ImageGenerationResponse != nil ||
+				bifrostResp.ResponsesResponse != nil) {
+			t.store.SetAccumulatedResponse(traceID, bifrostResp)
+		}
+	}
+
 	// Convert ProcessedStreamResponse to StreamAccumulatorResult
 	accResult := &schemas.StreamAccumulatorResult{
-		RequestID: processedResp.RequestID,
-		Model:     processedResp.Model,
-		Provider:  processedResp.Provider,
+		RequestID:      processedResp.RequestID,
+		RequestedModel: processedResp.RequestedModel,
+		ResolvedModel:  processedResp.ResolvedModel,
+		Provider:       processedResp.Provider,
 	}
 
 	if processedResp.Data != nil {
@@ -304,10 +428,12 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 		accResult.OutputMessages = processedResp.Data.OutputMessages
 		accResult.TokenUsage = processedResp.Data.TokenUsage
 		accResult.Cost = processedResp.Data.Cost
+		accResult.CacheDebug = processedResp.Data.CacheDebug
 		accResult.ErrorDetails = processedResp.Data.ErrorDetails
 		accResult.AudioOutput = processedResp.Data.AudioOutput
 		accResult.TranscriptionOutput = processedResp.Data.TranscriptionOutput
 		accResult.ImageGenerationOutput = processedResp.Data.ImageGenerationOutput
+		accResult.PassthroughOutput = processedResp.Data.PassthroughOutput
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 
@@ -329,15 +455,79 @@ func (t *Tracer) GetAccumulator() *streaming.Accumulator {
 	return t.accumulator
 }
 
+// AttachPluginLogs appends plugin log entries to the trace identified by traceID.
+func (t *Tracer) AttachPluginLogs(traceID string, logs []schemas.PluginLogEntry) {
+	if len(logs) == 0 || traceID == "" {
+		return
+	}
+	trace := t.store.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.AppendPluginLogs(logs)
+}
+
 // Stop stops the tracer and releases its resources.
 // This stops the internal TraceStore's cleanup goroutine.
 func (t *Tracer) Stop() {
+	t.flushWG.Wait()
 	if t.store != nil {
 		t.store.Stop()
 	}
 	if t.accumulator != nil {
 		t.accumulator.Cleanup()
 	}
+}
+
+// CompleteAndFlushTrace ends a trace and forwards it to any observability
+// plugins asynchronously. Realtime transports need this explicit flush because
+// they bypass the HTTP tracing middleware that normally injects completed traces.
+func (t *Tracer) CompleteAndFlushTrace(traceID string) {
+	if t == nil {
+		return
+	}
+	if strings.TrimSpace(traceID) == "" {
+		return
+	}
+	t.flushWG.Go(func() {
+		completedTrace := t.EndTrace(strings.TrimSpace(traceID))
+		if completedTrace == nil {
+			return
+		}
+		// Defer release so the pooled trace is returned even if a plugin panics;
+		// otherwise an unrecovered panic in this detached goroutine leaks the
+		// trace object and takes down the whole process.
+		defer t.ReleaseTrace(completedTrace)
+
+		var obsPlugins []schemas.ObservabilityPlugin
+		if loaded := t.obsPlugins.Load(); loaded != nil {
+			obsPlugins = *loaded
+		}
+		seen := make(map[string]struct{}, len(obsPlugins))
+		for _, plugin := range obsPlugins {
+			if plugin == nil {
+				continue
+			}
+			// Isolate each plugin callback — one bad observability backend should
+			// not crash the server or prevent other plugins from receiving the trace.
+			func(plugin schemas.ObservabilityPlugin) {
+				name := "<unknown>"
+				defer func() {
+					if r := recover(); r != nil && t.logger != nil {
+						t.logger.Error("observability plugin %s panicked during trace injection: %v", name, r)
+					}
+				}()
+				name = plugin.GetName()
+				if _, exists := seen[name]; exists {
+					return
+				}
+				seen[name] = struct{}{}
+				if err := plugin.Inject(context.Background(), completedTrace); err != nil && t.logger != nil {
+					t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
+				}
+			}(plugin)
+		}
+	})
 }
 
 // Ensure Tracer implements schemas.Tracer at compile time

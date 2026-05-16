@@ -29,7 +29,7 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify it was cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request1)
@@ -57,7 +57,7 @@ func TestConversationHistoryThresholdBasic(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}) // Should not cache
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify it was NOT cached
 	t.Log("Verifying conversation exceeding threshold was not cached...")
@@ -93,7 +93,7 @@ func TestConversationHistoryThresholdWithSystemPrompt(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Should not cache (exceeds threshold)
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify not cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
@@ -137,7 +137,7 @@ func TestConversationHistoryThresholdWithExcludeSystemPrompt(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request, should not hit cache
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request should hit cache (3 non-system messages <= 3 threshold)
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
@@ -198,7 +198,7 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 			}
 			AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Always fresh first time
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
 			if err2 != nil {
@@ -245,7 +245,7 @@ func TestExcludeSystemPromptBasic(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Testing conversation with different system prompt (should hit cache due to ExcludeSystemPrompt=true)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
@@ -290,7 +290,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup1.Plugin)
 
 	response2, err2 := setup1.Client.ChatCompletionRequest(ctx1, request2)
 	if err2 != nil {
@@ -324,7 +324,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
-	WaitForCache()
+	WaitForCache(setup2.Plugin)
 
 	response4, err4 := setup2.Client.ChatCompletionRequest(ctx2, request2)
 	if err4 != nil {
@@ -392,7 +392,7 @@ func TestExcludeSystemPromptWithMultipleSystemMessages(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Testing conversation with different multiple system messages...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request2)
@@ -437,7 +437,7 @@ func TestExcludeSystemPromptWithNoSystemMessages(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Should cache normally
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)

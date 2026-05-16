@@ -8,3 +8,8 @@ HealthResponse:
       type: string
       enum: [ok]
       example: ok
+    components:
+      type: object
+      description: Health status of individual components (config_store, log_store, vector_store)
+      additionalProperties:
+        type: string

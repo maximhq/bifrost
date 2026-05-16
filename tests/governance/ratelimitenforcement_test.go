@@ -230,8 +230,10 @@ func TestProviderConfigTokenRateLimitEnforcement(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						TokenMaxLimit:      &providerTokenLimit,
 						TokenResetDuration: &tokenResetDuration,
@@ -357,8 +359,10 @@ func TestProviderConfigRequestRateLimitEnforcement(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						RequestMaxLimit:      &providerRequestLimit,
 						RequestResetDuration: &requestResetDuration,
@@ -452,8 +456,10 @@ func TestProviderAndVKRateLimitBothEnforced(t *testing.T) {
 			},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						RequestMaxLimit:      &providerRequestLimit,
 						RequestResetDuration: &requestResetDuration,

@@ -3,6 +3,14 @@ set -euo pipefail
 
 # Upload builds to R2 with retry logic
 # Usage: ./upload-to-r2.sh <transport-version>
+#
+# Environment variables:
+#   R2_ENDPOINT          - Required. R2 endpoint URL
+#   R2_BUCKET            - Required. R2 bucket name
+#   R2_AWS_PROFILE       - Optional. AWS CLI profile (default: R2)
+#   SKIP_LATEST_UPLOAD   - Optional. Set to "true" to skip latest/ upload
+#                          (used when multiple jobs upload in parallel and
+#                          the finalize job handles latest/ separately)
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 <transport-version> (e.g., transports/v1.2.3)"
@@ -24,6 +32,8 @@ R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"
 echo "📤 Uploading binaries for version: $CLI_VERSION"
 
 # Function to upload with retry
+# Uses aws s3 cp --recursive instead of s3 sync --delete so that
+# parallel upload jobs don't wipe each other's files.
 upload_with_retry() {
   local source_path="$1"
   local dest_path="$2"
@@ -32,11 +42,11 @@ upload_with_retry() {
   for attempt in $(seq 1 $max_retries); do
     echo "🔄 Attempt $attempt/$max_retries: Uploading to $dest_path"
 
-    if aws s3 sync "$source_path" "$dest_path" \
+    if aws s3 cp "$source_path" "$dest_path" \
        --endpoint-url "$R2_ENDPOINT" \
        --profile "${R2_AWS_PROFILE:-R2}" \
        --no-progress \
-       --delete; then
+       --recursive; then
       echo "✅ Upload successful to $dest_path"
       return 0
     else
@@ -56,6 +66,13 @@ upload_with_retry() {
 # Upload to versioned path
 if ! upload_with_retry "./dist/" "s3://$R2_BUCKET/bifrost/$CLI_VERSION/"; then
   exit 1
+fi
+
+# Skip latest/ upload if requested (finalize job handles it after all builds complete)
+if [[ "${SKIP_LATEST_UPLOAD:-false}" == "true" ]]; then
+  echo "⏭️ Skipping latest/ upload (will be handled by finalize job)"
+  echo "🎉 Binaries uploaded successfully to R2 (versioned path)"
+  exit 0
 fi
 
 # Check if this is a prerelease version (semver: presence of a hyphen denotes pre-release)

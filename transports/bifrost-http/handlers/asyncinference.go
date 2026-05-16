@@ -35,6 +35,7 @@ var AsyncPathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/async/images/edits":         schemas.ImageEditRequest,
 	"/v1/async/images/variations":    schemas.ImageVariationRequest,
 	"/v1/async/rerank":               schemas.RerankRequest,
+	"/v1/async/ocr":                  schemas.OCRRequest,
 }
 
 // RegisterAsyncRequestTypeMiddleware handles exact path matching for non-parameterized routes
@@ -79,6 +80,7 @@ func (h *AsyncHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 	r.POST("/v1/async/images/edits", lib.ChainMiddlewares(h.asyncImageEdit, baseMiddlewares...))
 	r.POST("/v1/async/images/variations", lib.ChainMiddlewares(h.asyncImageVariation, baseMiddlewares...))
 	r.POST("/v1/async/rerank", lib.ChainMiddlewares(h.asyncRerank, baseMiddlewares...))
+	r.POST("/v1/async/ocr", lib.ChainMiddlewares(h.asyncOCR, baseMiddlewares...))
 
 	// Async job retrieval endpoints
 	r.GET("/v1/async/completions/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.TextCompletionRequest), middlewares...))
@@ -91,13 +93,14 @@ func (h *AsyncHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 	r.GET("/v1/async/images/edits/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.ImageEditRequest), middlewares...))
 	r.GET("/v1/async/images/variations/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.ImageVariationRequest), middlewares...))
 	r.GET("/v1/async/rerank/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.RerankRequest), middlewares...))
+	r.GET("/v1/async/ocr/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.OCRRequest), middlewares...))
 }
 
 // --- Async submission handlers ---
 
 // asyncTextCompletion handles POST /v1/async/completions
 func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
-	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx)
+	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -108,18 +111,17 @@ func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.TextCompletionRequest(bgCtx, bifrostTextReq)
@@ -135,7 +137,7 @@ func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
 
 // asyncChatCompletion handles POST /v1/async/chat/completions
 func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
-	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx)
+	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -146,18 +148,17 @@ func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ChatCompletionRequest(bgCtx, bifrostChatReq)
@@ -173,7 +174,7 @@ func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
 
 // asyncResponses handles POST /v1/async/responses
 func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
-	req, bifrostResponsesReq, err := prepareResponsesRequest(ctx)
+	req, bifrostResponsesReq, err := prepareResponsesRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -184,18 +185,17 @@ func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ResponsesRequest(bgCtx, bifrostResponsesReq)
@@ -212,24 +212,23 @@ func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
 
 // asyncEmbeddings handles POST /v1/async/embeddings
 func (h *AsyncHandler) asyncEmbeddings(ctx *fasthttp.RequestCtx) {
-	_, bifrostEmbeddingReq, err := prepareEmbeddingRequest(ctx)
+	_, bifrostEmbeddingReq, err := prepareEmbeddingRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.EmbeddingRequest(bgCtx, bifrostEmbeddingReq)
@@ -245,7 +244,7 @@ func (h *AsyncHandler) asyncEmbeddings(ctx *fasthttp.RequestCtx) {
 
 // asyncSpeech handles POST /v1/async/audio/speech
 func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
-	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx)
+	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -256,18 +255,17 @@ func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.SpeechRequest(bgCtx, bifrostSpeechReq)
@@ -283,7 +281,7 @@ func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
 
 // asyncTranscription handles POST /v1/async/audio/transcriptions
 func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
-	bifrostTranscriptionReq, stream, err := prepareTranscriptionRequest(ctx)
+	bifrostTranscriptionReq, stream, err := prepareTranscriptionRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -294,18 +292,17 @@ func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.TranscriptionRequest(bgCtx, bifrostTranscriptionReq)
@@ -321,7 +318,7 @@ func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
 
 // asyncImageGeneration handles POST /v1/async/images/generations
 func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
-	req, bifrostReq, err := prepareImageGenerationRequest(ctx)
+	req, bifrostReq, err := prepareImageGenerationRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -332,18 +329,17 @@ func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageGenerationRequest(bgCtx, bifrostReq)
@@ -359,7 +355,7 @@ func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
 
 // asyncImageEdit handles POST /v1/async/images/edits
 func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
-	req, bifrostReq, err := prepareImageEditRequest(ctx)
+	req, bifrostReq, err := prepareImageEditRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -370,18 +366,17 @@ func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageEditRequest(bgCtx, bifrostReq)
@@ -397,24 +392,23 @@ func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
 
 // asyncImageVariation handles POST /v1/async/images/variations
 func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
-	bifrostReq, err := prepareImageVariationRequest(ctx)
+	bifrostReq, err := prepareImageVariationRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.ImageVariationRequest(bgCtx, bifrostReq)
@@ -430,29 +424,60 @@ func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
 
 // asyncRerank handles POST /v1/async/rerank
 func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
-	_, bifrostReq, err := prepareRerankRequest(ctx)
+	_, bifrostReq, err := prepareRerankRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
 	defer cancel()
 
-	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
 	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
 
 	job, err := h.executor.SubmitJob(
-		virtualKeyValue,
+		bifrostCtx,
 		resultTTL,
 		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 			return h.client.RerankRequest(bgCtx, bifrostReq)
 		},
 		schemas.RerankRequest,
+	)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		return
+	}
+	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
+}
+
+// asyncOCR handles POST /v1/async/ocr
+func (h *AsyncHandler) asyncOCR(ctx *fasthttp.RequestCtx) {
+	_, bifrostReq, err := prepareOCRRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
+
+	job, err := h.executor.SubmitJob(
+		bifrostCtx,
+		resultTTL,
+		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+			return h.client.OCRRequest(bgCtx, bifrostReq)
+		},
+		schemas.OCRRequest,
 	)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
@@ -473,7 +498,7 @@ func (h *AsyncHandler) getJob(operationType schemas.RequestType) fasthttp.Reques
 		}
 
 		// Get the requesting user's VK for auth check
-		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 		if bifrostCtx == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 			return

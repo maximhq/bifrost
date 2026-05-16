@@ -3,11 +3,15 @@ package bifrost
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +50,8 @@ var rateLimitPatterns = []string{
 	"api rate limit",
 	"usage limit",
 	"concurrent requests limit",
+	"burst_rate",
+	"rate increased",
 }
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
@@ -81,19 +87,19 @@ func Ptr[T any](v T) *T {
 }
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
-// Some providers like Ollama, SGL, and vLLM are keyless and don't require API keys.
-func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) bool {
+func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 	// Keyless custom providers are not allowed for Bedrock.
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
-	return !IsKeylessProvider(providerKey)
+	return true
 }
 
-// canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
-// Some providers like Vertex and Bedrock have their credentials in additional key configs..
+// CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
+// Some providers like Vertex and Bedrock have their credentials in additional key configs.
+// Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
@@ -122,6 +128,51 @@ func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	}
 	if isModelRequired(req.RequestType) && model == "" {
 		return newBifrostErrorFromMsg("model is required")
+	}
+	return nil
+}
+
+// validateKey validates the given key.
+func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
+	// Validate the key for the provider
+	switch providerKey {
+	case schemas.Azure:
+		if key.AzureKeyConfig == nil {
+			return fmt.Errorf("azure_key_config is required")
+		}
+		if key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			return fmt.Errorf("azure_key_config.endpoint is required")
+		}
+	case schemas.Bedrock:
+		// BedrockKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.BedrockKeyConfig == nil {
+			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		}
+	case schemas.Vertex:
+		if key.VertexKeyConfig == nil {
+			return fmt.Errorf("vertex_key_config is required")
+		}
+	case schemas.VLLM:
+		if key.VLLMKeyConfig == nil {
+			return fmt.Errorf("vllm_key_config is required")
+		}
+		if key.VLLMKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("vllm_key_config.url is required")
+		}
+	case schemas.Ollama:
+		if key.OllamaKeyConfig == nil {
+			return fmt.Errorf("ollama_key_config is required")
+		}
+		if key.OllamaKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("ollama_key_config.url is required")
+		}
+	case schemas.SGL:
+		if key.SGLKeyConfig == nil {
+			return fmt.Errorf("sgl_key_config is required")
+		}
+		if key.SGLKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("sgl_key_config.url is required")
+		}
 	}
 	return nil
 }
@@ -168,6 +219,35 @@ func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 	}
 }
 
+// newBifrostCtxDoneError creates a BifrostError from a cancelled/expired context.
+// It distinguishes DeadlineExceeded (504 RequestTimedOut) from Canceled (499 RequestCancelled).
+func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.BifrostError {
+	var statusCode int
+	var errorType string
+	var message string
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		statusCode = 504
+		errorType = schemas.RequestTimedOut
+		message = fmt.Sprintf("request timed out %s: %v", stage, ctx.Err())
+	} else {
+		statusCode = 499
+		errorType = schemas.RequestCancelled
+		message = fmt.Sprintf("request cancelled %s: %v", stage, ctx.Err())
+	}
+
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		AllowFallbacks: new(false),
+		Error: &schemas.ErrorField{
+			Type:    &errorType,
+			Message: message,
+			Error:   ctx.Err(),
+		},
+	}
+}
+
 // newBifrostMessageChan creates a channel that sends a bifrost response.
 // It is used to send a bifrost response to the client.
 func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.BifrostStreamChunk {
@@ -185,6 +265,17 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	}()
 
 	return ch
+}
+
+// clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
+func clearCtxForFallback(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
+	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -216,14 +307,9 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	return ok
 }
 
-// IsKeylessProvider reports whether providerKey is a keyless provider.
-func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Ollama || providerKey == schemas.SGL
-}
-
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest
+	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.RealtimeRequest
 }
 
 func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, error) {
@@ -240,12 +326,19 @@ func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, 
 
 // isBatchRequestType returns true if the given request type is a batch API operation.
 func isBatchRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchResultsRequest
+	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchDeleteRequest || reqType == schemas.BatchResultsRequest
 }
 
 // isFileRequestType returns true if the given request type is a file API operation.
 func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
+}
+
+// isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.
+func isCachedContentRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.CachedContentCreateRequest || reqType == schemas.CachedContentListRequest ||
+		reqType == schemas.CachedContentRetrieveRequest || reqType == schemas.CachedContentUpdateRequest ||
+		reqType == schemas.CachedContentDeleteRequest
 }
 
 // isContainerRequestType returns true if the given request type is a container API operation.
@@ -268,6 +361,11 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	}
 }
 
+// isPassthroughRequestType returns true if the given request type is a passthrough request.
+func isPassthroughRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
+}
+
 // IsFinalChunk returns true if the given context is a final chunk.
 func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	if ctx == nil {
@@ -286,13 +384,16 @@ func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
-// GetResponseFields extracts the request type, provider, and model from the result or error
-func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, model string) {
+// GetResponseFields extracts the request type, provider, original model, and resolved model from the result or error.
+func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, originalModel string, resolvedModel string) {
 	if result != nil {
 		extraFields := result.GetExtraFields()
-		return extraFields.RequestType, extraFields.Provider, extraFields.ModelRequested
+		return extraFields.RequestType, extraFields.Provider, extraFields.OriginalModelRequested, extraFields.ResolvedModelUsed
 	}
-	return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+	if err != nil {
+		return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.OriginalModelRequested, err.ExtraFields.ResolvedModelUsed
+	}
+	return
 }
 
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
@@ -309,43 +410,9 @@ func MarshalUnsafe(v any) string {
 	return strings.TrimSpace(buf.String())
 }
 
+// // [Deprecated] use err.GetErrorString() instead. Will be removed in a future release.
 func GetErrorMessage(err *schemas.BifrostError) string {
-	if err == nil {
-		return ""
-	}
-	if err.StatusCode != nil {
-		switch *err.StatusCode {
-		case 401:
-			return "unauthorized"
-		case 403:
-			return "forbidden"
-		case 404:
-			return "endpoint not found"
-		case 405:
-			return "method not allowed"
-		case 429:
-			return "rate limit exceeded"
-		case 500:
-			return "internal server error"
-		case 502:
-			return "bad gateway"
-		case 503:
-			return "service unavailable"
-		case 504:
-			return "gateway timeout"
-		default:
-			if err.Error != nil && err.Error.Message != "" {
-				return err.Error.Message
-			}
-			return fmt.Sprintf("HTTP %d error", *err.StatusCode)
-		}
-	} else if err.Error != nil && err.Error.Message != "" {
-		return err.Error.Message
-	} else if err.Type != nil {
-		return *err.Type
-	} else {
-		return "unknown error"
-	}
+	return err.GetErrorString()
 }
 
 // GetStringFromContext safely extracts a string value from context
@@ -474,4 +541,61 @@ func sanitizeSpanName(name string) string {
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
 func IsCodemodeTool(toolName string) bool {
 	return mcp.IsCodeModeTool(toolName)
+}
+
+// hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
+func hashSHA256(value string) string {
+	h := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(h[:])
+}
+
+func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model string) string {
+	// Hash session ID to prevent PII leakage and ensure bounded key size
+	hashedSessionID := hashSHA256(sessionID)
+	discriminator := model
+	if discriminator == "" {
+		discriminator = "__modelless__"
+	}
+	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
+}
+
+// isPromptOptionalImageEditType returns true for edit task types that do not require a text prompt.
+// It normalises hyphenated variants (e.g. "erase-object") to underscore form before matching.
+func isPromptOptionalImageEditType(t *string) bool {
+	if t == nil {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(*t))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	return slices.Contains(
+		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale_fast"},
+		normalized,
+	)
+}
+
+// wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming
+// responses produced by a type-converted request are converted back to the
+// caller's original type before the post-hook runs.
+func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result != nil {
+			switch targetType {
+			case schemas.ChatCompletionRequest:
+				// text→chat: convert chat stream chunk back to text completion
+				if result.ChatResponse != nil {
+					if converted := result.ChatResponse.ToBifrostTextCompletionResponse(); converted != nil {
+						result = &schemas.BifrostResponse{TextCompletionResponse: converted}
+					}
+				}
+			case schemas.ResponsesRequest:
+				// chat→responses: convert responses stream chunk back to chat
+				if result.ResponsesStreamResponse != nil {
+					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+						result = &schemas.BifrostResponse{ChatResponse: converted}
+					}
+				}
+			}
+		}
+		return postHookRunner(ctx, result, bifrostErr)
+	}
 }

@@ -1,0 +1,104 @@
+---
+title: "AWS Bedrock Guardrails"
+description: "Integrate AWS Bedrock Guardrails with Bifrost for enterprise-grade content filtering, PII protection, prompt attack detection, and image content analysis."
+icon: "aws"
+---
+
+Bifrost integrates with **Amazon Bedrock Guardrails** to provide enterprise-grade content filtering and safety features with deep AWS integration. This page covers the configuration and capabilities of the AWS Bedrock guardrail provider.
+
+![AWS Bedrock Guardrails configuration form](/media/guardrails/bedrock-guardrails-provider-details.png)
+
+## Capabilities
+
+- **Content Filters**: Hate speech, insults, sexual content, violence, misconduct
+- **Denied Topics**: Block specific topics or categories
+- **Word Filters**: Custom profanity and sensitive word blocking
+- **PII Protection**: Detect and redact 50+ PII entity types
+- **Contextual Grounding**: Verify responses against source documents
+- **Prompt Attack Detection**: Identify injection and jailbreak attempts
+- **Image Content Support**: Analyze images in addition to text (PNG, JPEG)
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `access_key` | string | Yes | - | AWS Access Key ID |
+| `secret_key` | string | Yes | - | AWS Secret Access Key |
+| `guardrail_arn` | string | Yes | - | ARN of the Bedrock guardrail |
+| `guardrail_version` | string | Yes | - | Version of the guardrail (e.g., "1", "DRAFT") |
+| `region` | string | Yes | - | AWS region |
+
+## Authentication
+
+Uses AWS SDK with static credentials:
+```json
+{
+  "access_key": "AKIAXXXXXXXXXXXXXXXXXX",
+  "secret_key": "your-secret-access-key",
+  "guardrail_arn": "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123",
+  "guardrail_version": "1",
+  "region": "us-east-1"
+}
+```
+
+## Supported AWS Regions
+
+| Region Code | Region Name |
+|-------------|-------------|
+| `us-east-1` | US East (N. Virginia) |
+| `us-east-2` | US East (Ohio) |
+| `us-west-1` | US West (N. California) |
+| `us-west-2` | US West (Oregon) |
+| `ap-south-1` | Asia Pacific (Mumbai) |
+| `ap-northeast-1` | Asia Pacific (Tokyo) |
+| `ap-northeast-2` | Asia Pacific (Seoul) |
+| `ap-southeast-1` | Asia Pacific (Singapore) |
+| `ap-southeast-2` | Asia Pacific (Sydney) |
+| `eu-central-1` | Europe (Frankfurt) |
+| `eu-west-1` | Europe (Ireland) |
+| `eu-west-2` | Europe (London) |
+| `eu-west-3` | Europe (Paris) |
+
+## Supported Content Types
+
+- Text content
+- Images (PNG, JPEG formats)
+
+## Usage Metrics Returned
+
+Bedrock guardrails return detailed usage metrics for cost tracking and monitoring:
+
+| Metric | Description |
+|--------|-------------|
+| `content_policy_units` | Units consumed by content policy evaluation |
+| `contextual_grounding_policy_units` | Units for grounding checks |
+| `sensitive_information_policy_units` | Units for PII detection |
+| `topic_policy_units` | Units for topic filtering |
+| `word_policy_units` | Units for word filtering |
+| `automated_reasoning_policy_units` | Units for reasoning checks |
+| `content_policy_image_units` | Units for image content analysis |
+
+## Supported PII Types
+
+- Personal identifiers (SSN, passport, driver's license)
+- Financial information (credit cards, bank accounts)
+- Contact information (email, phone, address)
+- Medical information (health records, insurance)
+- Device identifiers (IP addresses, MAC addresses)
+
+## Provider Capabilities Comparison
+
+| Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
+|------------|-------------|---------------------|----------|-------------|
+| PII Detection | Yes | No | No | Yes |
+| Content Filtering | Yes | Yes | Yes | Yes |
+| Prompt Injection | Yes | Yes | Yes | Yes |
+| Hallucination Detection | No | No | No | Yes |
+| Toxicity Screening | Yes | Yes | Yes | Yes |
+| Custom Policies | Yes | Yes | Yes | Yes |
+| Custom Natural Language Rules | No | No | Yes | No |
+| Image Support | Yes | No | No | No |
+| IPI Detection | No | Yes | Yes | No |
+| Mutation Detection | No | No | Yes | No |
+
+For information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -24,6 +26,9 @@ type OpenAITextCompletionRequest struct {
 
 	schemas.TextCompletionParameters
 	Stream *bool `json:"stream,omitempty"`
+
+	// PromptCacheIsolationKey is the Fireworks completions field for cache isolation.
+	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
@@ -75,7 +80,10 @@ type OpenAIChatRequest struct {
 	schemas.ChatParameters
 	Stream *bool `json:"stream,omitempty"`
 
-	//NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
+	// PromptCacheIsolationKey is the Fireworks chat-completions field for cache isolation.
+	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
+
+	// NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
 
@@ -110,7 +118,7 @@ type OpenAIMessage struct {
 // OpenAIChatAssistantMessage represents an OpenAI chat assistant message
 type OpenAIChatAssistantMessage struct {
 	Refusal     *string                                  `json:"refusal,omitempty"`
-	Reasoning   *string                                  `json:"reasoning,omitempty"`
+	Reasoning   *string                                  `json:"reasoning_content,omitempty"`
 	Annotations []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls   []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
 }
@@ -177,27 +185,42 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		processedMessages = req.Messages
 	}
 
-	// Process tools if needed
+	// Process tools if needed.
+	// On outbound to OpenAI we need to:
+	//   (a) Strip CacheControl (Anthropic-only, existing behavior).
+	//   (b) Drop Anthropic server tools entirely (Function == nil && Custom == nil);
+	//       OpenAI won't accept web_search_20260209 etc.
+	//   (c) Strip Anthropic-native per-tool flags (DeferLoading, AllowedCallers,
+	//       InputExamples, EagerInputStreaming) when they're set on function tools.
 	var processedTools []schemas.ChatTool
 	if len(req.Tools) > 0 {
-		needsToolCopy := false
+		needsToolChange := false
 		for _, tool := range req.Tools {
-			if tool.CacheControl != nil {
-				needsToolCopy = true
+			if tool.CacheControl != nil || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
+				needsToolChange = true
 				break
 			}
 		}
 
-		if needsToolCopy {
-			processedTools = make([]schemas.ChatTool, len(req.Tools))
-			for i, tool := range req.Tools {
-				if tool.CacheControl != nil {
-					toolCopy := tool
-					toolCopy.CacheControl = nil
-					processedTools[i] = toolCopy
-				} else {
-					processedTools[i] = tool
+		if needsToolChange {
+			processedTools = make([]schemas.ChatTool, 0, len(req.Tools))
+			for _, tool := range req.Tools {
+				// Drop Anthropic server tools (no function/custom payload).
+				// OpenAI would reject the request if we forwarded them.
+				if isAnthropicServerToolShape(tool) {
+					continue
 				}
+				if tool.CacheControl == nil && !hasAnthropicOnlyToolFlags(tool) {
+					processedTools = append(processedTools, tool)
+					continue
+				}
+				toolCopy := tool
+				toolCopy.CacheControl = nil
+				toolCopy.DeferLoading = nil
+				toolCopy.AllowedCallers = nil
+				toolCopy.InputExamples = nil
+				toolCopy.EagerInputStreaming = nil
+				processedTools = append(processedTools, toolCopy)
 			}
 		} else {
 			processedTools = req.Tools
@@ -234,7 +257,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		aux.ReasoningEffort = req.Reasoning.Effort
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for OpenAIChatRequest.
@@ -244,11 +267,12 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	// Unmarshal the request-specific fields directly
 	type baseFields struct {
-		Model     string          `json:"model"`
-		Messages  []OpenAIMessage `json:"messages"`
-		Stream    *bool           `json:"stream,omitempty"`
-		MaxTokens *int            `json:"max_tokens,omitempty"`
-		Fallbacks []string        `json:"fallbacks,omitempty"`
+		Model                   string          `json:"model"`
+		Messages                []OpenAIMessage `json:"messages"`
+		Stream                  *bool           `json:"stream,omitempty"`
+		MaxTokens               *int            `json:"max_tokens,omitempty"`
+		PromptCacheIsolationKey *string         `json:"prompt_cache_isolation_key,omitempty"`
+		Fallbacks               []string        `json:"fallbacks,omitempty"`
 	}
 	var base baseFields
 	if err := sonic.Unmarshal(data, &base); err != nil {
@@ -258,6 +282,7 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	req.Messages = base.Messages
 	req.Stream = base.Stream
 	req.MaxTokens = base.MaxTokens
+	req.PromptCacheIsolationKey = base.PromptCacheIsolationKey
 	req.Fallbacks = base.Fallbacks
 
 	// Unmarshal ChatParameters (which has its own custom unmarshaller)
@@ -301,7 +326,7 @@ func (r *OpenAIResponsesRequestInput) UnmarshalJSON(data []byte) error {
 // MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequestInput
 func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 	if r.OpenAIResponsesRequestInputStr != nil {
-		return sonic.Marshal(*r.OpenAIResponsesRequestInputStr)
+		return providerUtils.MarshalSorted(*r.OpenAIResponsesRequestInputStr)
 	}
 	if r.OpenAIResponsesRequestInputArray != nil {
 		// First pass: check if we need to modify anything
@@ -315,7 +340,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 		// If no CacheControl found anywhere, marshal as-is
 		if !needsCopy {
-			return sonic.Marshal(r.OpenAIResponsesRequestInputArray)
+			return providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
 		}
 
 		// Only copy messages that have CacheControl
@@ -329,6 +354,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 			// Copy only this message
 			messagesCopy[i] = msg
+			// Strip message-level CacheControl (used by Anthropic for function_call/function_call_output)
+			messagesCopy[i].CacheControl = nil
 
 			// Strip CacheControl, FileType, and filter unsupported citation types from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
@@ -416,8 +443,23 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					}
 				}
 
-				// Strip CacheControl and FileType from tool message output blocks if needed
-				if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				// Collapse text-only tool output blocks into a single string.
+				// OpenAI's Responses API defines function_call_output.output as
+				// a string; Anthropic's multi-turn tool_result content arrives
+				// as an array of content blocks and has to be flattened here.
+				// Strict upstream implementations (e.g. Ollama Cloud) return a
+				// 400 otherwise.
+				if msg.ResponsesToolMessage.Output != nil &&
+					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
+					isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
+					flattened := flattenFunctionCallOutputBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+					outputCopy := *msg.ResponsesToolMessage.Output
+					outputCopy.ResponsesToolCallOutputStr = &flattened
+					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
+					toolMsgCopy.Output = &outputCopy
+					toolMsgModified = true
+				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := false
 					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 						if block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
@@ -456,12 +498,58 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				}
 			}
 		}
-		return sonic.Marshal(messagesCopy)
+		return providerUtils.MarshalSorted(messagesCopy)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
+// isAnthropicServerToolShape reports whether the tool carries the Anthropic
+// server-tool shape (Function and Custom both nil). On outbound to OpenAI,
+// these must be dropped — OpenAI doesn't accept tool types like
+// web_search_20260209, computer_20251124, mcp_toolset, etc.
+func isAnthropicServerToolShape(t schemas.ChatTool) bool {
+	return t.Function == nil && t.Custom == nil
+}
+
+// hasAnthropicOnlyToolFlags reports whether the tool carries any of the
+// Anthropic-native flags that OpenAI would reject (DeferLoading,
+// AllowedCallers, InputExamples, EagerInputStreaming). Strip these when
+// forwarding to OpenAI.
+func hasAnthropicOnlyToolFlags(t schemas.ChatTool) bool {
+	return t.DeferLoading != nil ||
+		len(t.AllowedCallers) > 0 ||
+		len(t.InputExamples) > 0 ||
+		t.EagerInputStreaming != nil
+}
+
+// hasAnthropicOnlyResponsesToolFlags is the ResponsesTool-typed parallel of
+// hasAnthropicOnlyToolFlags. The four flags were promoted onto ResponsesTool
+// in core/schemas/responses.go for the Anthropic-via-Responses path; the
+// OpenAI Responses serializer must strip them so they don't leak to OpenAI
+// and trigger a 400 on unknown fields.
+func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool) bool {
+	return t.DeferLoading != nil ||
+		len(t.AllowedCallers) > 0 ||
+		len(t.InputExamples) > 0 ||
+		t.EagerInputStreaming != nil
+}
+
+// isAnthropicOnlyResponsesToolType reports whether the tool type exists only
+// in Anthropic's taxonomy and is not part of OpenAI's Responses API Tool union
+// (per OpenAI's OpenAPI spec component.schemas.Tool, which enumerates function,
+// file_search, computer[_use_preview], web_search[_preview], mcp,
+// code_interpreter, image_generation, local_shell, custom, tool_search, and
+// related shell/namespace/apply_patch variants). Forwarding web_fetch or
+// memory to OpenAI guarantees a 400 on schema discriminator validation, so
+// these get dropped in the Responses→OpenAI serializer — mirroring the Chat
+// path's isAnthropicServerToolShape drop behavior for schema parity across
+// both endpoints.
+func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
+	return t.Type == schemas.ResponsesToolTypeWebFetch ||
+		t.Type == schemas.ResponsesToolTypeMemory
+}
+
 func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
@@ -481,6 +569,10 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 
 // Helper function to check if a responses message has any CacheControl fields or FileType in file blocks
 func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
+	// Check message-level CacheControl (used by Anthropic for function_call/function_call_output messages)
+	if msg.CacheControl != nil {
+		return true
+	}
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.CacheControl != nil {
@@ -512,6 +604,12 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 		}
 		// Check output blocks
 		if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+			// Text-only block arrays must be flattened to a string — OpenAI's
+			// Responses API defines function_call_output.output as a string
+			// and strict upstreams reject the array form.
+			if isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
+				return true
+			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 				if block.CacheControl != nil {
 					return true
@@ -523,6 +621,41 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 		}
 	}
 	return false
+}
+
+// isFunctionCallOutputBlocksFlattenable reports whether a function_call_output
+// content block slice contains only text blocks and can therefore be collapsed
+// into a single string for the OpenAI Responses API wire format.
+func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageContentBlock) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesInputMessageContentBlockTypeText &&
+			block.Type != schemas.ResponsesOutputMessageContentTypeText {
+			return false
+		}
+		if block.Text == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// flattenFunctionCallOutputBlocks concatenates the text of every block in the
+// slice. Callers must first verify flattenability via
+// isFunctionCallOutputBlocksFlattenable.
+func flattenFunctionCallOutputBlocks(blocks []schemas.ResponsesMessageContentBlock) string {
+	var b strings.Builder
+	for i, block := range blocks {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if block.Text != nil {
+			b.WriteString(*block.Text)
+		}
+	}
+	return b.String()
 }
 
 // filterSupportedAnnotations filters out unsupported (non-OpenAI native) citation types
@@ -589,27 +722,45 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
-	// Process tools if needed
+	// Process tools if needed.
+	// Mirrors the Chat path (see ChatRequest.MarshalJSON) so the same
+	// Anthropic-flavored tool payload doesn't leak via the Responses serializer:
+	//   (a) Drop Anthropic-only tool TYPES entirely (web_fetch, memory) since
+	//       OpenAI's Responses Tool union doesn't include them — forwarding
+	//       would 400 on the discriminator.
+	//   (b) Strip CacheControl (Anthropic-only schema field).
+	//   (c) Strip the four Anthropic-native per-tool flags (DeferLoading,
+	//       AllowedCallers, InputExamples, EagerInputStreaming).
 	var processedTools []schemas.ResponsesTool
 	if len(resp.Tools) > 0 {
-		needsToolCopy := false
+		needsReshape := false
 		for _, tool := range resp.Tools {
-			if tool.CacheControl != nil {
-				needsToolCopy = true
+			if isAnthropicOnlyResponsesToolType(tool) ||
+				tool.CacheControl != nil ||
+				hasAnthropicOnlyResponsesToolFlags(tool) {
+				needsReshape = true
 				break
 			}
 		}
 
-		if needsToolCopy {
-			processedTools = make([]schemas.ResponsesTool, len(resp.Tools))
-			for i, tool := range resp.Tools {
-				if tool.CacheControl != nil {
-					toolCopy := tool
-					toolCopy.CacheControl = nil
-					processedTools[i] = toolCopy
-				} else {
-					processedTools[i] = tool
+		if needsReshape {
+			processedTools = make([]schemas.ResponsesTool, 0, len(resp.Tools))
+			for _, tool := range resp.Tools {
+				if isAnthropicOnlyResponsesToolType(tool) {
+					// Drop — OpenAI Responses has no web_fetch or memory.
+					continue
 				}
+				if tool.CacheControl == nil && !hasAnthropicOnlyResponsesToolFlags(tool) {
+					processedTools = append(processedTools, tool)
+					continue
+				}
+				toolCopy := tool
+				toolCopy.CacheControl = nil
+				toolCopy.DeferLoading = nil
+				toolCopy.AllowedCallers = nil
+				toolCopy.InputExamples = nil
+				toolCopy.EagerInputStreaming = nil
+				processedTools = append(processedTools, toolCopy)
 			}
 		} else {
 			processedTools = resp.Tools
@@ -647,7 +798,7 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

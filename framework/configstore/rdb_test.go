@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -35,6 +36,16 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableVirtualKeyMCPConfig{},
+		&tables.TableFolder{},
+		&tables.TablePrompt{},
+		&tables.TablePromptVersion{},
+		&tables.TablePromptVersionMessage{},
+		&tables.TablePromptSession{},
+		&tables.TablePromptSessionMessage{},
+		&tables.TablePerUserOAuthPendingFlow{},
+		&tables.TablePerUserOAuthSession{},
+		&tables.TableOauthUserSession{},
+		&tables.TableOauthUserToken{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
@@ -42,10 +53,13 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	err = db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{})
 	require.NoError(t, err, "Failed to setup join table")
 
-	return &RDBConfigStore{
-		db:     db,
-		logger: nil,
+	s := &RDBConfigStore{logger: nil}
+	s.db.Store(db)
+	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, s.DB())
 	}
+	s.refreshPoolFn = func(ctx context.Context) error { return nil }
+	return s
 }
 
 // =============================================================================
@@ -192,6 +206,86 @@ func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	assert.Len(t, result, 2)
 	assert.Len(t, result["openai"].Keys, 2)
 	assert.Len(t, result["anthropic"].Keys, 1)
+}
+
+func TestProviderKeyCRUD(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {},
+	})
+	require.NoError(t, err)
+
+	keys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+
+	key := schemas.Key{
+		ID:     "key-uuid-1",
+		Name:   "openai-primary",
+		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Weight: 1.0,
+	}
+
+	err = store.CreateProviderKey(ctx, "openai", key)
+	require.NoError(t, err)
+
+	keys, err = store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.Equal(t, "openai-primary", keys[0].Name)
+
+	storedKey, err := store.GetProviderKey(ctx, "openai", key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedKey)
+	assert.Equal(t, "sk-test-key-v1", storedKey.Value.Val)
+
+	key.Value = *schemas.NewEnvVar("sk-test-key-v2")
+	key.Weight = 2.0
+
+	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
+	require.NoError(t, err)
+
+	storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedKey)
+	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
+	assert.Equal(t, 2.0, storedKey.Weight)
+
+	err = store.DeleteProviderKey(ctx, "openai", key.ID)
+	require.NoError(t, err)
+
+	keys, err = store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	key := schemas.Key{
+		ID:     "key-uuid-1",
+		Name:   "openai-primary",
+		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Weight: 1.0,
+	}
+
+	err := store.CreateProviderKey(ctx, "openai", key)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	_, err = store.GetProviderKeys(ctx, "openai")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	_, err = store.GetProviderKey(ctx, "openai", key.ID)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	err = store.DeleteProviderKey(ctx, "openai", key.ID)
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 // =============================================================================
@@ -394,7 +488,7 @@ func TestCreateVirtualKey(t *testing.T) {
 		ID:       "vk-test",
 		Name:     "Test Virtual Key",
 		Value:    "vk-test-value-123",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 
 	err := store.CreateVirtualKey(ctx, vk)
@@ -405,7 +499,7 @@ func TestCreateVirtualKey(t *testing.T) {
 	assert.Equal(t, "vk-test", result.ID)
 	assert.Equal(t, "Test Virtual Key", result.Name)
 	assert.Equal(t, "vk-test-value-123", result.Value)
-	assert.True(t, result.IsActive)
+	assert.True(t, result.IsActiveValue())
 }
 
 func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
@@ -433,24 +527,28 @@ func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create virtual key with references
-	budgetID := "budget-for-vk"
 	rateLimitID := "rate-limit-for-vk"
+	vkID := "vk-with-refs"
 	vk := &tables.TableVirtualKey{
-		ID:          "vk-with-refs",
+		ID:          vkID,
 		Name:        "VK With References",
 		Value:       "vk-refs-value",
-		IsActive:    true,
-		BudgetID:    &budgetID,
+		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
 
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
+	// Link the existing budget to the VK via FK
+	budget.VirtualKeyID = &vkID
+	err = store.UpdateBudget(ctx, budget)
+	require.NoError(t, err)
+
 	result, err := store.GetVirtualKey(ctx, "vk-with-refs")
 	require.NoError(t, err)
-	assert.NotNil(t, result.BudgetID)
-	assert.Equal(t, "budget-for-vk", *result.BudgetID)
+	assert.Len(t, result.Budgets, 1)
+	assert.Equal(t, "budget-for-vk", result.Budgets[0].ID)
 	assert.NotNil(t, result.RateLimitID)
 	assert.Equal(t, "rate-limit-for-vk", *result.RateLimitID)
 }
@@ -463,7 +561,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 		ID:       "vk-1",
 		Name:     "Same Name",
 		Value:    "vk-value-1",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk1)
 	require.NoError(t, err)
@@ -472,7 +570,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 		ID:       "vk-2",
 		Name:     "Same Name", // Duplicate name
 		Value:    "vk-value-2",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk2)
 	assert.Error(t, err, "Should fail with duplicate name")
@@ -486,7 +584,7 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 		ID:       "vk-lookup",
 		Name:     "Lookup Key",
 		Value:    "vk-unique-value-xyz",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -504,21 +602,21 @@ func TestUpdateVirtualKey(t *testing.T) {
 		ID:       "vk-update",
 		Name:     "Original Name",
 		Value:    "vk-update-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
 	// Update
 	vk.Name = "Updated Name"
-	vk.IsActive = false
+	vk.IsActive = schemas.Ptr(false)
 	err = store.UpdateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
 	result, err := store.GetVirtualKey(ctx, "vk-update")
 	require.NoError(t, err)
 	assert.Equal(t, "Updated Name", result.Name)
-	assert.False(t, result.IsActive)
+	assert.False(t, result.IsActiveValue())
 }
 
 func TestDeleteVirtualKey(t *testing.T) {
@@ -529,7 +627,7 @@ func TestDeleteVirtualKey(t *testing.T) {
 		ID:       "vk-delete",
 		Name:     "Delete Me",
 		Value:    "vk-delete-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -554,7 +652,7 @@ func TestCreateVirtualKeyProviderConfig(t *testing.T) {
 		ID:       "vk-for-pc",
 		Name:     "VK For Provider Config",
 		Value:    "vk-pc-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -597,7 +695,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 		ID:       "vk-with-keys",
 		Name:     "VK With Keys",
 		Value:    "vk-keys-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -623,7 +721,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 
 	// Load with keys
 	var configWithKeys tables.TableVirtualKeyProviderConfig
-	err = store.db.Preload("Keys").First(&configWithKeys, "id = ?", configs[0].ID).Error
+	err = store.DB().Preload("Keys").First(&configWithKeys, "id = ?", configs[0].ID).Error
 	require.NoError(t, err)
 	assert.Len(t, configWithKeys.Keys, 1)
 }
@@ -637,7 +735,7 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 		ID:       "vk-unresolved",
 		Name:     "VK Unresolved",
 		Value:    "vk-unresolved-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -660,6 +758,96 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 	assert.ErrorAs(t, err, &unresolvedErr, "Should be ErrUnresolvedKeys")
 }
 
+func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+				{ID: "key-b", Name: "openai-key-b", Value: *schemas.NewEnvVar("sk-b"), Weight: 1.0},
+			},
+		},
+	}
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err)
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-update-provider-cleanup",
+		Name:     "VK Update Provider Cleanup",
+		Value:    "vk-update-provider-cleanup-value",
+		IsActive: schemas.Ptr(true),
+	}
+	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	weight := 1.0
+	pc := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-update-provider-cleanup",
+		Provider:     "openai",
+		Weight:       &weight,
+		Keys: []tables.TableKey{
+			{Name: "openai-key-b"},
+		},
+	}
+	err = store.CreateVirtualKeyProviderConfig(ctx, pc)
+	require.NoError(t, err)
+
+	updatedProviderConfig := ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+		},
+	}
+	err = store.UpdateProvider(ctx, "openai", updatedProviderConfig)
+	require.NoError(t, err)
+
+	result, err := store.GetVirtualKey(ctx, "vk-update-provider-cleanup")
+	require.NoError(t, err)
+	require.Len(t, result.ProviderConfigs, 1)
+	assert.Equal(t, "openai", result.ProviderConfigs[0].Provider)
+	assert.False(t, result.ProviderConfigs[0].AllowAllKeys)
+	assert.Empty(t, result.ProviderConfigs[0].Keys)
+}
+
+func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{{ID: "key-delete", Name: "openai-key-delete", Value: *schemas.NewEnvVar("sk-delete"), Weight: 1.0}},
+		},
+	}
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err)
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-delete-provider-cleanup",
+		Name:     "VK Delete Provider Cleanup",
+		Value:    "vk-delete-provider-cleanup-value",
+		IsActive: schemas.Ptr(true),
+	}
+	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	weight := 1.0
+	pc := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-delete-provider-cleanup",
+		Provider:     "openai",
+		Weight:       &weight,
+	}
+	err = store.CreateVirtualKeyProviderConfig(ctx, pc)
+	require.NoError(t, err)
+
+	err = store.DeleteProvider(ctx, "openai")
+	require.NoError(t, err)
+
+	result, err := store.GetVirtualKey(ctx, "vk-delete-provider-cleanup")
+	require.NoError(t, err)
+	assert.Empty(t, result.ProviderConfigs)
+}
+
 // =============================================================================
 // Client Config Tests
 // =============================================================================
@@ -669,8 +857,7 @@ func TestUpdateClientConfig(t *testing.T) {
 	ctx := context.Background()
 
 	config := &ClientConfig{
-		EnableLogging:        true,
-		AllowDirectKeys:      true,
+		EnableLogging:        new(true),
 		InitialPoolSize:      100,
 		LogRetentionDays:     30,
 		MaxRequestBodySizeMB: 50,
@@ -681,7 +868,7 @@ func TestUpdateClientConfig(t *testing.T) {
 
 	result, err := store.GetClientConfig(ctx)
 	require.NoError(t, err)
-	assert.True(t, result.EnableLogging)
+	assert.True(t, result.EnableLogging != nil && *result.EnableLogging)
 	assert.Equal(t, 100, result.InitialPoolSize)
 }
 
@@ -912,17 +1099,21 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	// Step 4: Create virtual key
-	budgetID := "integration-budget"
 	rateLimitID := "integration-rate-limit"
+	integrationVKID := "integration-vk"
 	vk := &tables.TableVirtualKey{
-		ID:          "integration-vk",
+		ID:          integrationVKID,
 		Name:        "Integration Virtual Key",
 		Value:       "vk-integration-xyz",
-		IsActive:    true,
-		BudgetID:    &budgetID,
+		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
 	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	// Link the existing budget to the VK via FK
+	budget.VirtualKeyID = &integrationVKID
+	err = store.UpdateBudget(ctx, budget)
 	require.NoError(t, err)
 
 	// Step 5: Create provider config with key reference
@@ -942,7 +1133,7 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	result, err := store.GetVirtualKey(ctx, "integration-vk")
 	require.NoError(t, err)
 	assert.Equal(t, "Integration Virtual Key", result.Name)
-	assert.NotNil(t, result.BudgetID)
+	assert.Len(t, result.Budgets, 1)
 	assert.NotNil(t, result.RateLimitID)
 
 	configs, err := store.GetVirtualKeyProviderConfigs(ctx, "integration-vk")
@@ -1041,4 +1232,273 @@ func TestRateLimitDurationFormats(t *testing.T) {
 		err := store.CreateRateLimit(ctx, rateLimit)
 		assert.NoError(t, err, "Duration %s should be valid", duration)
 	}
+}
+
+// =============================================================================
+// Prompt Deletion Tests
+// =============================================================================
+
+// testPromptTree holds IDs of entities created by createTestPromptTree for verification
+type testPromptTree struct {
+	FolderID   string
+	PromptIDs  []string
+	VersionIDs []uint
+	SessionIDs []uint
+}
+
+// createTestPromptTree creates a folder with 2 prompts, each having 2 versions (with messages) and 1 session (with messages).
+func createTestPromptTree(t *testing.T, store *RDBConfigStore, ctx context.Context) testPromptTree {
+	t.Helper()
+
+	tree := testPromptTree{}
+
+	// Create folder
+	folder := &tables.TableFolder{ID: "folder-1", Name: "Test Folder"}
+	require.NoError(t, store.CreateFolder(ctx, folder))
+	tree.FolderID = folder.ID
+
+	for i, promptID := range []string{"prompt-1", "prompt-2"} {
+		_ = i
+		prompt := &tables.TablePrompt{ID: promptID, Name: "Prompt " + promptID, FolderID: &tree.FolderID}
+		require.NoError(t, store.CreatePrompt(ctx, prompt))
+		tree.PromptIDs = append(tree.PromptIDs, promptID)
+
+		// Create 2 versions with messages
+		for v := 0; v < 2; v++ {
+			version := &tables.TablePromptVersion{
+				PromptID:      promptID,
+				CommitMessage: "version commit",
+				Messages: []tables.TablePromptVersionMessage{
+					{PromptID: promptID, Message: json.RawMessage(`{"role":"user","content":"hello"}`)},
+				},
+			}
+			require.NoError(t, store.CreatePromptVersion(ctx, version))
+			tree.VersionIDs = append(tree.VersionIDs, version.ID)
+		}
+
+		// Create 1 session with messages
+		session := &tables.TablePromptSession{
+			PromptID: promptID,
+			Name:     "Session " + promptID,
+			Messages: []tables.TablePromptSessionMessage{
+				{PromptID: promptID, Message: json.RawMessage(`{"role":"user","content":"hi"}`)},
+			},
+		}
+		require.NoError(t, store.CreatePromptSession(ctx, session))
+		tree.SessionIDs = append(tree.SessionIDs, session.ID)
+	}
+
+	return tree
+}
+
+// countRows returns the number of rows in a table
+func countRows(t *testing.T, store *RDBConfigStore, model interface{}) int64 {
+	t.Helper()
+	var count int64
+	require.NoError(t, store.DB().Model(model).Count(&count).Error)
+	return count
+}
+
+func TestDeleteFolder(t *testing.T) {
+	t.Run("NotFound", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		err := store.DeleteFolder(ctx, "nonexistent")
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("Empty", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		folder := &tables.TableFolder{ID: "folder-empty", Name: "Empty"}
+		require.NoError(t, store.CreateFolder(ctx, folder))
+
+		require.NoError(t, store.DeleteFolder(ctx, "folder-empty"))
+
+		_, err := store.GetFolderByID(ctx, "folder-empty")
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("CascadesAll", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		// Verify entities exist before deletion
+		assert.Greater(t, countRows(t, store, &tables.TablePrompt{}), int64(0))
+		assert.Greater(t, countRows(t, store, &tables.TablePromptVersion{}), int64(0))
+		assert.Greater(t, countRows(t, store, &tables.TablePromptVersionMessage{}), int64(0))
+		assert.Greater(t, countRows(t, store, &tables.TablePromptSession{}), int64(0))
+		assert.Greater(t, countRows(t, store, &tables.TablePromptSessionMessage{}), int64(0))
+
+		require.NoError(t, store.DeleteFolder(ctx, tree.FolderID))
+
+		// All child entities should be deleted
+		assert.Equal(t, int64(0), countRows(t, store, &tables.TableFolder{}))
+		assert.Equal(t, int64(0), countRows(t, store, &tables.TablePrompt{}))
+		assert.Equal(t, int64(0), countRows(t, store, &tables.TablePromptVersion{}))
+		assert.Equal(t, int64(0), countRows(t, store, &tables.TablePromptVersionMessage{}))
+		assert.Equal(t, int64(0), countRows(t, store, &tables.TablePromptSession{}))
+		assert.Equal(t, int64(0), countRows(t, store, &tables.TablePromptSessionMessage{}))
+	})
+}
+
+func TestDeletePrompt(t *testing.T) {
+	t.Run("NotFound", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		err := store.DeletePrompt(ctx, "nonexistent")
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("CascadesAll", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		require.NoError(t, store.DeletePrompt(ctx, tree.PromptIDs[0]))
+
+		// First prompt and its children should be gone
+		_, err := store.GetPromptByID(ctx, tree.PromptIDs[0])
+		assert.ErrorIs(t, err, ErrNotFound)
+
+		// Second prompt should still exist
+		p2, err := store.GetPromptByID(ctx, tree.PromptIDs[1])
+		require.NoError(t, err)
+		assert.Equal(t, tree.PromptIDs[1], p2.ID)
+	})
+
+	t.Run("LeavesFolder", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		require.NoError(t, store.DeletePrompt(ctx, tree.PromptIDs[0]))
+
+		// Folder should still exist
+		folder, err := store.GetFolderByID(ctx, tree.FolderID)
+		require.NoError(t, err)
+		assert.Equal(t, tree.FolderID, folder.ID)
+	})
+
+	t.Run("LeavesSiblings", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		require.NoError(t, store.DeletePrompt(ctx, tree.PromptIDs[0]))
+
+		// Sibling prompt's versions and sessions should be unaffected
+		versions, err := store.GetPromptVersions(ctx, tree.PromptIDs[1])
+		require.NoError(t, err)
+		assert.Len(t, versions, 2)
+
+		sessions, err := store.GetPromptSessions(ctx, tree.PromptIDs[1])
+		require.NoError(t, err)
+		assert.Len(t, sessions, 1)
+	})
+}
+
+func TestDeletePromptVersion(t *testing.T) {
+	t.Run("NotFound", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		err := store.DeletePromptVersion(ctx, 99999)
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("NonLatest", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		// Version at index 0 is v1 (non-latest), index 1 is v2 (latest) for prompt-1
+		nonLatestID := tree.VersionIDs[0]
+		latestID := tree.VersionIDs[1]
+
+		require.NoError(t, store.DeletePromptVersion(ctx, nonLatestID))
+
+		// Non-latest version should be gone
+		_, err := store.GetPromptVersionByID(ctx, nonLatestID)
+		assert.ErrorIs(t, err, ErrNotFound)
+
+		// Latest version should still be latest
+		latest, err := store.GetPromptVersionByID(ctx, latestID)
+		require.NoError(t, err)
+		assert.True(t, latest.IsLatest)
+	})
+
+	t.Run("LatestPromotesPrevious", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		// Delete the latest version (index 1 = v2 for prompt-1)
+		latestID := tree.VersionIDs[1]
+		prevID := tree.VersionIDs[0]
+
+		require.NoError(t, store.DeletePromptVersion(ctx, latestID))
+
+		// Previous version should now be latest
+		prev, err := store.GetPromptVersionByID(ctx, prevID)
+		require.NoError(t, err)
+		assert.True(t, prev.IsLatest)
+	})
+
+	t.Run("LeavesPrompt", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		require.NoError(t, store.DeletePromptVersion(ctx, tree.VersionIDs[0]))
+
+		// Prompt should still exist
+		prompt, err := store.GetPromptByID(ctx, tree.PromptIDs[0])
+		require.NoError(t, err)
+		assert.Equal(t, tree.PromptIDs[0], prompt.ID)
+	})
+}
+
+func TestDeletePromptSession(t *testing.T) {
+	t.Run("NotFound", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		err := store.DeletePromptSession(ctx, 99999)
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("CascadesMessages", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		sessionID := tree.SessionIDs[0]
+		require.NoError(t, store.DeletePromptSession(ctx, sessionID))
+
+		// Session should be gone
+		_, err := store.GetPromptSessionByID(ctx, sessionID)
+		assert.ErrorIs(t, err, ErrNotFound)
+
+		// Session messages for that session should be gone
+		var msgCount int64
+		require.NoError(t, store.DB().Model(&tables.TablePromptSessionMessage{}).Where("session_id = ?", sessionID).Count(&msgCount).Error)
+		assert.Equal(t, int64(0), msgCount)
+	})
+
+	t.Run("LeavesPrompt", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		tree := createTestPromptTree(t, store, ctx)
+
+		require.NoError(t, store.DeletePromptSession(ctx, tree.SessionIDs[0]))
+
+		// Prompt and versions should still exist
+		prompt, err := store.GetPromptByID(ctx, tree.PromptIDs[0])
+		require.NoError(t, err)
+		assert.Equal(t, tree.PromptIDs[0], prompt.ID)
+
+		versions, err := store.GetPromptVersions(ctx, tree.PromptIDs[0])
+		require.NoError(t, err)
+		assert.Len(t, versions, 2)
+	})
 }

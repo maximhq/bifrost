@@ -3,12 +3,12 @@
 package maxim
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/maximhq/maxim-go"
 	"github.com/maximhq/maxim-go/logging"
+	maximSchemas "github.com/maximhq/maxim-go/schemas"
 )
 
 // PluginName is the canonical name for the maxim plugin.
@@ -114,12 +115,15 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 		streamType = streaming.StreamTypeTranscription
 	} else if len(accResult.OutputMessages) > 0 {
 		streamType = streaming.StreamTypeResponses
+	} else if accResult.ImageGenerationOutput != nil {
+		streamType = streaming.StreamTypeImage
 	}
 	return &streaming.ProcessedStreamResponse{
-		RequestID:  accResult.RequestID,
-		StreamType: streamType,
-		Model:      accResult.Model,
-		Provider:   accResult.Provider,
+		RequestID:      accResult.RequestID,
+		StreamType:     streamType,
+		RequestedModel: accResult.RequestedModel,
+		ResolvedModel:  accResult.ResolvedModel,
+		Provider:       accResult.Provider,
 		Data: &streaming.AccumulatedData{
 			Status:              accResult.Status,
 			Latency:             accResult.Latency,
@@ -133,6 +137,7 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 			TranscriptionOutput: accResult.TranscriptionOutput,
 			FinishReason:        accResult.FinishReason,
 			RawResponse:         accResult.RawResponse,
+			CacheDebug:          accResult.CacheDebug,
 		},
 		RawRequest: &accResult.RawRequest,
 	}
@@ -243,6 +248,10 @@ func (plugin *Plugin) getOrCreateLogger(logRepoID string) (*logging.Logger, erro
 //   - *schemas.BifrostRequest: The original request, unmodified
 //   - error: Any error that occurred during trace/generation creation
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req != nil && req.RequestType == schemas.RealtimeRequest {
+		return req, nil, nil
+	}
+
 	var traceID string
 	var traceName string
 	var sessionID string
@@ -284,14 +293,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	provider, model, _ := req.GetRequestFields()
 
 	// Determine request type and set appropriate tags
-	var messages []logging.CompletionRequest
+	var messages []maximSchemas.CompletionRequest
 	var latestMessage string
 
 	modelParams := make(map[string]interface{})
 
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		messages = append(messages, logging.CompletionRequest{
+		messages = append(messages, maximSchemas.CompletionRequest{
 			Role:    string(schemas.ChatMessageRoleUser),
 			Content: req.TextCompletionRequest.Input,
 		})
@@ -307,14 +316,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 		if req.TextCompletionRequest.Params != nil {
 			// Convert the struct to a map using reflection or JSON marshaling
-			jsonData, err := json.Marshal(req.TextCompletionRequest.Params)
+			jsonData, err := sonic.Marshal(req.TextCompletionRequest.Params)
 			if err == nil {
-				json.Unmarshal(jsonData, &modelParams)
+				sonic.Unmarshal(jsonData, &modelParams)
 			}
 		}
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		for _, message := range req.ChatRequest.Input {
-			messages = append(messages, logging.CompletionRequest{
+			messages = append(messages, maximSchemas.CompletionRequest{
 				Role:    string(message.Role),
 				Content: message.Content,
 			})
@@ -341,19 +350,19 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 		if req.ChatRequest.Params != nil {
 			// Convert the struct to a map using reflection or JSON marshaling
-			jsonData, err := json.Marshal(req.ChatRequest.Params)
+			jsonData, err := sonic.Marshal(req.ChatRequest.Params)
 			if err == nil {
-				json.Unmarshal(jsonData, &modelParams)
+				sonic.Unmarshal(jsonData, &modelParams)
 			}
 		}
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		for _, message := range req.ResponsesRequest.Input {
 			if message.Content != nil {
 				role := schemas.ChatMessageRoleUser
 				if message.Role != nil {
 					role = schemas.ChatMessageRole(*message.Role)
 				}
-				messages = append(messages, logging.CompletionRequest{
+				messages = append(messages, maximSchemas.CompletionRequest{
 					Role:    string(role),
 					Content: message.Content,
 				})
@@ -384,9 +393,39 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 		if req.ResponsesRequest.Params != nil {
 			// Convert the struct to a map using reflection or JSON marshaling
-			jsonData, err := json.Marshal(req.ResponsesRequest.Params)
+			jsonData, err := sonic.Marshal(req.ResponsesRequest.Params)
 			if err == nil {
-				json.Unmarshal(jsonData, &modelParams)
+				sonic.Unmarshal(jsonData, &modelParams)
+			}
+		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if req.ImageGenerationRequest == nil || req.ImageGenerationRequest.Input == nil {
+			break
+		}
+		messages = append(messages, maximSchemas.CompletionRequest{
+			Role:    string(schemas.ChatMessageRoleUser),
+			Content: req.ImageGenerationRequest.Input.Prompt,
+		})
+		latestMessage = req.ImageGenerationRequest.Input.Prompt
+		if req.ImageGenerationRequest.Params != nil {
+			jsonData, err := sonic.Marshal(req.ImageGenerationRequest.Params)
+			if err == nil {
+				sonic.Unmarshal(jsonData, &modelParams)
+			}
+		}
+	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+		if req.ImageEditRequest == nil || req.ImageEditRequest.Input == nil {
+			break
+		}
+		messages = append(messages, maximSchemas.CompletionRequest{
+			Role:    string(schemas.ChatMessageRoleUser),
+			Content: req.ImageEditRequest.Input.Prompt,
+		})
+		latestMessage = req.ImageEditRequest.Input.Prompt
+		if req.ImageEditRequest.Params != nil {
+			jsonData, err := sonic.Marshal(req.ImageEditRequest.Params)
+			if err == nil {
+				sonic.Unmarshal(jsonData, &modelParams)
 			}
 		}
 	}
@@ -435,6 +474,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	// Add generation to the effective log repository
 	logger.AddGenerationToTrace(traceID, &generationConfig)
 
+	// Extract and log attachments from message content
+	for _, att := range ExtractAttachmentsFromRequest(req) {
+		if att != nil {
+			logger.GenerationAddAttachment(generationID, att)
+		}
+	}
+
 	if ctx != nil {
 		if _, ok := ctx.Value(TraceIDKey).(string); !ok {
 			ctx.SetValue(TraceIDKey, traceID)
@@ -482,9 +528,17 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 //   - *schemas.BifrostError: The original error, unmodified
 //   - error: Never returns an error as it handles missing IDs gracefully
 func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	requestType, _, _, _ := bifrost.GetResponseFields(result, bifrostErr)
+	if requestType == schemas.RealtimeRequest {
+		return result, bifrostErr, nil
+	}
+
 	// Get effective log repo ID for this request
 	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctx)
 	if effectiveLogRepoID == "" {
+		return result, bifrostErr, nil
+	}
+	if ctx == nil {
 		return result, bifrostErr, nil
 	}
 
@@ -498,11 +552,17 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 	generationID, hasGenerationID := ctx.Value(GenerationIDKey).(string)
 	traceID, hasTraceID := ctx.Value(TraceIDKey).(string)
 	tags, hasTags := ctx.Value(TagsKey).(map[string]string)
+	// Also capture x-bf-dim-* dimensions to forward as tags
+	dims, hasDims := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
 	go func() {
-		requestType, _, model := bifrost.GetResponseFields(result, bifrostErr)
+		requestType, _, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
+		modelTag := resolvedModel
+		if modelTag == "" {
+			modelTag = originalModel
+		}
 
 		var streamResponse *streaming.ProcessedStreamResponse
 		if bifrost.IsStreamRequestType(requestType) {
@@ -515,8 +575,9 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 				}
 			}
 
-			// Return if no stream response or it's a delta response
-			if streamResponse == nil || !isFinalChunk {
+			// For streaming: only process on final chunk. Skip intermediate chunks.
+			// When there's an error, streamResponse may be nil but we must still log bifrostErr.
+			if !isFinalChunk {
 				return
 			}
 		}
@@ -540,7 +601,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 						errorType = *bifrostErr.Error.Type
 					}
 				}
-				genErr := logging.GenerationError{
+				genErr := maximSchemas.GenerationError{
 					Message: message,
 					Code:    &code,
 					Type:    &errorType,
@@ -568,11 +629,18 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 					} else {
 						logger.AddResultToGeneration(generationID, result.ChatResponse)
 					}
-				case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+				case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 					if streamResponse != nil {
 						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
 					} else {
 						logger.AddResultToGeneration(generationID, result.ResponsesResponse)
+					}
+				case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest,
+					schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+					if streamResponse != nil {
+						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ImageGenerationResponse)
+					} else if result != nil {
+						logger.AddResultToGeneration(generationID, result.ImageGenerationResponse)
 					}
 				}
 				if streamResponse != nil && isFinalChunk {
@@ -583,8 +651,6 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 					}
 				}
 			}
-
-			logger.EndGeneration(generationID)
 		}
 		if hasTraceID {
 			logger.EndTrace(traceID)
@@ -601,8 +667,26 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 				}
 			}
 		}
-		logger.AddTagToGeneration(generationID, "model", string(model))
-		logger.AddTagToTrace(traceID, "model", string(model))
+		// add x-bf-dim-* dimensions as tags (lower priority than explicit x-bf-maxim-* tags)
+		if hasDims {
+			for key, value := range dims {
+				// Only add if not already set by x-bf-maxim-* (to avoid overriding explicit tags)
+				if _, alreadyInTags := tags[key]; !alreadyInTags {
+					if generationID != "" {
+						logger.AddTagToGeneration(generationID, key, value)
+					}
+					if traceID != "" {
+						logger.AddTagToTrace(traceID, key, value)
+					}
+				}
+			}
+		}
+		if hasGenerationID && generationID != "" && modelTag != "" {
+			logger.AddTagToGeneration(generationID, "model", string(modelTag))
+		}
+		if hasTraceID && traceID != "" && modelTag != "" {
+			logger.AddTagToTrace(traceID, "model", string(modelTag))
+		}
 		// Flush only the effective logger that was used for this request
 		logger.Flush()
 	}()

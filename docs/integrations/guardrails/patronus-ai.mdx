@@ -1,0 +1,40 @@
+---
+title: "Patronus AI"
+description: "Integrate Patronus AI with Bifrost for LLM security and safety including hallucination detection, PII identification, toxicity screening, and custom evaluators."
+icon: "brain"
+---
+
+Bifrost integrates with **Patronus AI** to provide specialized LLM security and safety with advanced evaluation capabilities. This page covers the configuration and capabilities of the Patronus AI guardrail provider.
+
+## Capabilities
+
+- **Hallucination Detection**: Identify factually incorrect responses
+- **PII Detection**: Comprehensive personal data identification
+- **Toxicity Screening**: Multi-language toxic content detection
+- **Prompt Injection Defense**: Advanced attack pattern recognition
+- **Custom Evaluators**: Build organization-specific safety checks
+- **Real-Time Monitoring**: Continuous safety validation
+
+## Advanced Features
+
+- Context-aware evaluation
+- Multi-turn conversation analysis
+- Custom policy templates
+- Integration with existing safety workflows
+
+## Provider Capabilities Comparison
+
+| Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
+|------------|-------------|---------------------|----------|-------------|
+| PII Detection | Yes | No | No | Yes |
+| Content Filtering | Yes | Yes | Yes | Yes |
+| Prompt Injection | Yes | Yes | Yes | Yes |
+| Hallucination Detection | No | No | No | Yes |
+| Toxicity Screening | Yes | Yes | Yes | Yes |
+| Custom Policies | Yes | Yes | Yes | Yes |
+| Custom Natural Language Rules | No | No | Yes | No |
+| Image Support | Yes | No | No | No |
+| IPI Detection | No | Yes | Yes | No |
+| Mutation Detection | No | No | Yes | No |
+
+For information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).

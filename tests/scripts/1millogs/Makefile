@@ -11,46 +11,62 @@ help:
 	@echo "  populate-large     - Large dataset with 2M rows (~35 GB)"
 	@echo "  clean             - Remove generated SQLite database"
 	@echo ""
+	@echo "Options:"
+	@echo "  TYPE=llm|mcp       - Log type to generate (default: llm)"
+	@echo "  INVALID_META=1     - Generate all logs with invalid JSON metadata"
+	@echo ""
 	@echo "Examples:"
 	@echo "  make populate-sqlite"
 	@echo "  make populate-postgres POSTGRES_PASSWORD=yourpassword"
+	@echo "  make populate-postgres TYPE=mcp ROWS=100000"
+	@echo "  make populate-postgres INVALID_META=1"
 	@echo ""
 
 # Default values
+TYPE ?= llm
 ROWS ?= 1000000
 SIZE ?= 17.5
 BATCH ?= 1000
 DB_PATH ?= ../../tests/configs/default/logs.db
+INVALID_META ?=
+
+# Derive flag from INVALID_META
+INVALID_META_FLAG = $(if $(INVALID_META),-invalid-metadata,)
 
 POSTGRES_HOST ?= localhost
 POSTGRES_PORT ?= 5432
-POSTGRES_USER ?= postgres
-POSTGRES_PASSWORD ?= 
-POSTGRES_DB ?= bifrost_logs
+POSTGRES_USER ?= bifrost
+POSTGRES_PASSWORD ?= bifrost_password
+POSTGRES_DB ?= bifrost
 
 # Populate SQLite database (default)
 populate-sqlite:
 	@echo "🚀 Populating SQLite database..."
+	@echo "   Type: $(TYPE)"
 	@echo "   Rows: $(ROWS)"
 	@echo "   Target size: $(SIZE) GB"
 	@echo "   Database: $(DB_PATH)"
 	@echo ""
 	go run main.go \
+		-type $(TYPE) \
 		-db sqlite \
 		-path $(DB_PATH) \
 		-rows $(ROWS) \
 		-size $(SIZE) \
-		-batch 50
+		-batch 50 \
+		$(INVALID_META_FLAG)
 
 # Populate PostgreSQL database
 populate-postgres:
 	@echo "🚀 Populating PostgreSQL database..."
+	@echo "   Type: $(TYPE)"
 	@echo "   Rows: $(ROWS)"
 	@echo "   Target size: $(SIZE) GB"
 	@echo "   Host: $(POSTGRES_HOST):$(POSTGRES_PORT)"
 	@echo "   Database: $(POSTGRES_DB)"
 	@echo ""
 	go run main.go \
+		-type $(TYPE) \
 		-db postgres \
 		-host $(POSTGRES_HOST) \
 		-port $(POSTGRES_PORT) \
@@ -59,7 +75,8 @@ populate-postgres:
 		-dbname $(POSTGRES_DB) \
 		-rows $(ROWS) \
 		-size $(SIZE) \
-		-batch $(BATCH)
+		-batch $(BATCH) \
+		$(INVALID_META_FLAG)
 
 # Quick test with small dataset
 populate-small:
@@ -89,13 +106,16 @@ clean:
 	rm -f $(DB_PATH)-wal
 	@echo "✅ Done!"
 
+# Derive table name from TYPE
+TABLE_NAME = $(if $(filter mcp,$(TYPE)),mcp_tool_logs,logs)
+
 # Get database stats
 stats:
 	@if [ -f "$(DB_PATH)" ]; then \
 		echo "📊 Database Statistics"; \
 		echo "======================"; \
 		du -h $(DB_PATH) | awk '{print "Size: " $$1}'; \
-		sqlite3 $(DB_PATH) "SELECT COUNT(*) FROM logs" | awk '{print "Rows: " $$1}'; \
+		sqlite3 $(DB_PATH) "SELECT COUNT(*) FROM $(TABLE_NAME)" | awk '{print "Rows: " $$1}'; \
 	else \
 		echo "❌ Database not found at: $(DB_PATH)"; \
 	fi

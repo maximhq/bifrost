@@ -4,24 +4,51 @@
 package schemas
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 // OAuth-related errors
 var (
-	ErrOAuth2ConfigNotFound       = errors.New("oauth2 config not found")
-	ErrOAuth2ProviderNotAvailable = errors.New("oauth2 provider not available")
-	ErrOAuth2TokenExpired         = errors.New("oauth2 token expired")
-	ErrOAuth2TokenInvalid         = errors.New("oauth2 token invalid")
-	ErrOAuth2RefreshFailed        = errors.New("oauth2 token refresh failed")
+	ErrOAuth2ConfigNotFound           = errors.New("oauth2 config not found")
+	ErrOAuth2ProviderNotAvailable     = errors.New("oauth2 provider not available")
+	ErrOAuth2TokenExpired             = errors.New("oauth2 token expired")
+	ErrOAuth2TokenInvalid             = errors.New("oauth2 token invalid")
+	ErrOAuth2RefreshFailed            = errors.New("oauth2 token refresh failed")
+	ErrOAuth2NotPerUserSession        = errors.New("state does not match a per-user oauth session")
+	ErrOAuth2TokenNotFound            = errors.New("per-user oauth token not found for this identity and mcp server")
+	ErrPerUserOAuthPendingFlowExpired = errors.New("per-user oauth pending flow has expired")
+	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
+	// meaningful for this client type — e.g. per-user OAuth clients, where
+	// each user manages their own auth and there is no shared upstream
+	// connection to "reconnect". Distinct from "not implemented".
+	ErrMCPReconnectNotApplicable = errors.New("reconnect is not applicable for this client type")
 )
+
+// MCPUserOAuthRequiredError is returned when a per-user OAuth MCP server requires
+// the user to authenticate before tool execution can proceed.
+type MCPUserOAuthRequiredError struct {
+	MCPClientID   string `json:"mcp_client_id"`
+	MCPClientName string `json:"mcp_client_name"`
+	AuthorizeURL  string `json:"authorize_url"`
+	SessionID     string `json:"session_id"`
+	Message       string `json:"message"`
+}
+
+func (e *MCPUserOAuthRequiredError) Error() string {
+	return e.Message
+}
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
@@ -46,10 +73,93 @@ type MCPConfig struct {
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
 }
 
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
+// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+func (c *MCPConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPConfig
+	aux := &struct {
+		ToolSyncInterval *json.Number `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(aux); err == nil {
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return errors.New("trailing JSON data")
+		}
+		if aux.ToolSyncInterval == nil {
+			return nil
+		}
+		dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
+		if parseErr != nil {
+			return parseErr
+		}
+		c.ToolSyncInterval = dur
+		return nil
+	}
+
+	// Allow Go duration strings while keeping numeric tokens as json.Number.
+	auxStr := &struct {
+		ToolSyncInterval *string `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, auxStr); err != nil {
+		return err
+	}
+	if auxStr.ToolSyncInterval == nil {
+		return nil
+	}
+	dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
+	if err != nil {
+		return err
+	}
+	c.ToolSyncInterval = dur
+	return nil
+}
+
 type MCPToolManagerConfig struct {
-	ToolExecutionTimeout time.Duration        `json:"tool_execution_timeout"`
-	MaxAgentDepth        int                  `json:"max_agent_depth"`
-	CodeModeBindingLevel CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"` // How tools are exposed in VFS: "server" or "tool"
+	// ToolExecutionTimeout accepts a Go duration string (e.g. "30s", "2m") or a
+	// bare integer treated as seconds (e.g. 30 → 30s). This intentionally differs
+	// from schemas.Duration, which treats bare integers as nanoseconds.
+	ToolExecutionTimeout  Duration             `json:"tool_execution_timeout"`
+	MaxAgentDepth         int                  `json:"max_agent_depth"`
+	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
+	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+}
+
+// UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
+// bare integers as seconds (matching the schema description and user expectation)
+// rather than the nanosecond interpretation used by the underlying Duration type.
+func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
+	// Use an alias to avoid infinite recursion, then fix up ToolExecutionTimeout.
+	type alias MCPToolManagerConfig
+	aux := &struct {
+		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if aux.ToolExecutionTimeout == nil {
+		return nil
+	}
+
+	raw := *aux.ToolExecutionTimeout
+	// If it's a quoted string, delegate to the normal Duration parser ("30s", "2m", etc.)
+	if len(raw) > 0 && raw[0] == '"' {
+		return json.Unmarshal(raw, &c.ToolExecutionTimeout)
+	}
+
+	// Bare integer: treat as seconds (not nanoseconds).
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+	}
+	c.ToolExecutionTimeout = Duration(time.Duration(n) * time.Second)
+	return nil
 }
 
 const (
@@ -69,51 +179,157 @@ const (
 type MCPAuthType string
 
 const (
-	MCPAuthTypeNone    MCPAuthType = "none"    // No authentication
-	MCPAuthTypeHeaders MCPAuthType = "headers" // Header-based authentication (API keys, etc.)
-	MCPAuthTypeOauth   MCPAuthType = "oauth"   // OAuth 2.0 authentication
+	MCPAuthTypeNone         MCPAuthType = "none"           // No authentication
+	MCPAuthTypeHeaders      MCPAuthType = "headers"        // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth        MCPAuthType = "oauth"          // OAuth 2.0 authentication (server-level, admin authenticates once)
+	MCPAuthTypePerUserOauth MCPAuthType = "per_user_oauth" // Per-user OAuth 2.0 authentication (each user authenticates individually)
 )
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID               string            `json:"client_id"`                          // Client ID
-	Name             string            `json:"name"`                        // Client name
-	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
-	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString *EnvVar           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
-	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)
-	AuthType         MCPAuthType       `json:"auth_type"`                   // Authentication type (none, headers, or oauth)
-	OauthConfigID    *string           `json:"oauth_config_id,omitempty"`   // OAuth config ID (references oauth_configs table)
-	State            string            `json:"state,omitempty"`             // Connection state (connected, disconnected, error)
-	Headers          map[string]EnvVar `json:"headers,omitempty"`           // Headers to send with the request (for headers auth type)
-	InProcessServer  *server.MCPServer `json:"-"`                           // MCP server instance for in-process connections (Go package only)
-	ToolsToExecute   []string          `json:"tools_to_execute,omitempty"`  // Include-only list.
+	ID                  string            `json:"client_id"`                       // Client ID
+	Name                string            `json:"name"`                            // Client name
+	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
+	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
+	ConnectionString    *EnvVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
+	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
+	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
+	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
+	OauthClientID       *EnvVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
+	OauthClientSecret   *EnvVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
+	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
+	Headers             map[string]EnvVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	AllowedExtraHeaders WhiteList         `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
+	InProcessServer     *server.MCPServer `json:"-"`                               // MCP server instance for in-process connections (Go package only)
+	ToolsToExecute      WhiteList         `json:"tools_to_execute,omitempty"`      // Include-only list.
 	// ToolsToExecute semantics:
 	// - ["*"] => all tools are included
 	// - []    => no tools are included (deny-by-default)
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => include only the specified tools
-	ToolsToAutoExecute []string `json:"tools_to_auto_execute,omitempty"` // Auto-execute list.
+	ToolsToAutoExecute WhiteList `json:"tools_to_auto_execute,omitempty"` // Auto-execute list.
 	// ToolsToAutoExecute semantics:
 	// - ["*"] => all tools are auto-executed
 	// - []    => no tools are auto-executed (deny-by-default)
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable  bool               `json:"is_ping_available"`            // Whether the MCP server supports ping for health checks (default: true). If false, uses listTools for health checks.
-	ToolSyncInterval time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolPricing      map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
-	ConfigHash       string             `json:"-"`                            // Config hash for reconciliation (not serialized)
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`  // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
+	Disabled              bool               `json:"disabled"`                     // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash            string             `json:"-"`                            // Config hash for reconciliation (not serialized)
+	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`    // Whether to allow the MCP client to run on all virtual keys
+
+	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
+	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
+	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+}
+
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
+// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPClientConfig
+	aux := &struct {
+		ToolSyncInterval *json.Number `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(aux); err == nil {
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return errors.New("trailing JSON data")
+		}
+		if aux.ToolSyncInterval == nil {
+			return nil
+		}
+		dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
+		if parseErr != nil {
+			return parseErr
+		}
+		c.ToolSyncInterval = dur
+		return nil
+	}
+
+	// Allow Go duration strings while keeping numeric tokens as json.Number.
+	auxStr := &struct {
+		ToolSyncInterval *string `json:"tool_sync_interval,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, auxStr); err != nil {
+		return err
+	}
+	if auxStr.ToolSyncInterval == nil {
+		return nil
+	}
+	dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
+	if err != nil {
+		return err
+	}
+	c.ToolSyncInterval = dur
+	return nil
+}
+
+func parseFlexibleDurationField(v any, fieldName string) (time.Duration, error) {
+	switch t := v.(type) {
+	case string:
+		d, err := time.ParseDuration(strings.TrimSpace(t))
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s duration %q: %w", fieldName, t, err)
+		}
+		return d, nil
+	case json.Number:
+		raw := strings.TrimSpace(t.String())
+		if raw == "" {
+			return 0, fmt.Errorf("invalid %s: empty numeric value", fieldName)
+		}
+		if strings.Contains(raw, ".") {
+			return 0, fmt.Errorf("invalid %s value %q: fractional numeric values are not allowed; use an integer nanosecond value or a duration string like \"10m\"", fieldName, raw)
+		}
+
+		// Keep parity with JavaScript-safe integer range for config interchange.
+		const maxSafeJSONInt int64 = 9007199254740991
+		const minSafeJSONInt int64 = -9007199254740991
+
+		var ns int64
+		if strings.ContainsAny(raw, "eE") {
+			rat := new(big.Rat)
+			if _, ok := rat.SetString(raw); !ok {
+				return 0, fmt.Errorf("invalid %s value %q: expected an integer nanosecond value", fieldName, raw)
+			}
+			if rat.Denom().Cmp(big.NewInt(1)) != 0 {
+				return 0, fmt.Errorf("invalid %s value %q: fractional numeric values are not allowed; use an integer nanosecond value or a duration string like \"10m\"", fieldName, raw)
+			}
+			if !rat.Num().IsInt64() {
+				return 0, fmt.Errorf("invalid %s value %q: out of int64 range for nanoseconds", fieldName, raw)
+			}
+			ns = rat.Num().Int64()
+		} else {
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid %s value %q: expected an integer nanosecond value", fieldName, raw)
+			}
+			ns = parsed
+		}
+
+		if ns < minSafeJSONInt || ns > maxSafeJSONInt {
+			return 0, fmt.Errorf("invalid %s value %q: exceeds safe integer range", fieldName, raw)
+		}
+		return time.Duration(ns), nil
+	default:
+		return 0, fmt.Errorf("invalid %s type %T: expected duration string (e.g. \"10m\") or number", fieldName, v)
+	}
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
 func NewMCPClientConfigFromMap(configMap map[string]any) *MCPClientConfig {
 	var config MCPClientConfig
-	data, err := sonic.Marshal(configMap)
+	data, err := MarshalSorted(configMap)
 	if err != nil {
 		return nil
 	}
-	if err := sonic.Unmarshal(data, &config); err != nil {
+	if err := Unmarshal(data, &config); err != nil {
 		return nil
 	}
 	return &config
@@ -148,6 +364,9 @@ func (c *MCPClientConfig) HttpHeaders(ctx context.Context, oauth2Provider OAuth2
 		for key, value := range c.Headers {
 			headers[key] = value.GetValue()
 		}
+	case MCPAuthTypePerUserOauth:
+		// Per-user OAuth: headers are injected per-call in executeToolInternal, not at connection level
+		return headers, nil
 	case MCPAuthTypeNone:
 		// No headers to add
 	default:
@@ -180,9 +399,11 @@ type MCPStdioConfig struct {
 type MCPConnectionState string
 
 const (
-	MCPConnectionStateConnected    MCPConnectionState = "connected"    // Client is connected and ready to use
-	MCPConnectionStateDisconnected MCPConnectionState = "disconnected" // Client is not connected
-	MCPConnectionStateError        MCPConnectionState = "error"        // Client is in an error state, and cannot be used
+	MCPConnectionStateConnected    MCPConnectionState = "connected"     // Client is connected and ready to use
+	MCPConnectionStateDisconnected MCPConnectionState = "disconnected"  // Client is not connected
+	MCPConnectionStateError        MCPConnectionState = "error"         // Client is in an error state, and cannot be used
+	MCPConnectionStatePendingTools MCPConnectionState = "pending_tools" // Connected but tools not yet populated
+	MCPConnectionStateDisabled     MCPConnectionState = "disabled"      // Client is intentionally disabled by the user
 )
 
 // MCPClientState represents a connected MCP client with its configuration and tools.

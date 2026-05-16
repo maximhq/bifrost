@@ -8,7 +8,6 @@ import (
 	"mime/multipart"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -131,7 +130,7 @@ func WriteMultipartField(writer *multipart.Writer, name string, val any) error {
 	case string:
 		return writer.WriteField(name, v)
 	case []string:
-		encoded, err := sonic.Marshal(v)
+		encoded, err := schemas.MarshalSorted(v)
 		if err != nil {
 			return err
 		}
@@ -158,7 +157,7 @@ func SerializePayloadToRequest(req *schemas.HTTPRequest, payload map[string]any,
 		req.Headers["Content-Type"] = newCT
 		return nil
 	}
-	body, err := sonic.Marshal(payload)
+	body, err := schemas.MarshalSorted(payload)
 	if err != nil {
 		return err
 	}

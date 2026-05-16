@@ -9,6 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
@@ -29,11 +30,11 @@ const (
 
 // AsyncOperation represents a function that can be executed asynchronously.
 // It returns the response and an optional BifrostError.
-type AsyncOperation func(ctx *schemas.BifrostContext) (interface{}, *schemas.BifrostError)
+type AsyncOperation func(ctx *schemas.BifrostContext) (any, *schemas.BifrostError)
 
 // GovernanceStore is an interface that provides access to the governance store.
 type GovernanceStore interface {
-	GetVirtualKey(vkValue string) (*configstoreTables.TableVirtualKey, bool)
+	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
 }
 
 // AsyncJobExecutor manages async job creation and background execution.
@@ -59,13 +60,13 @@ func (e *AsyncJobExecutor) RetrieveJob(ctx context.Context, jobID string, vkValu
 		if errors.Is(err, ErrNotFound) {
 			return nil, fmt.Errorf("job not found or expired")
 		}
-		return nil, fmt.Errorf("failed to retrieve async job: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrJobInternal, err)
 	}
 	if job.VirtualKeyID != nil {
 		if vkValue == nil {
 			return nil, fmt.Errorf("virtual key is required")
 		}
-		vk, ok := e.governanceStore.GetVirtualKey(*vkValue)
+		vk, ok := e.governanceStore.GetVirtualKey(ctx, *vkValue)
 		if !ok {
 			return nil, fmt.Errorf("virtual key not found")
 		}
@@ -80,14 +81,16 @@ func (e *AsyncJobExecutor) RetrieveJob(ctx context.Context, jobID string, vkValu
 }
 
 // SubmitJob creates a pending job, starts background execution, and returns the job record.
-func (e *AsyncJobExecutor) SubmitJob(virtualKeyValue *string, resultTTL int, operation AsyncOperation, operationType schemas.RequestType) (*AsyncJob, error) {
+func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultTTL int, operation AsyncOperation, operationType schemas.RequestType) (*AsyncJob, error) {
 	if resultTTL <= 0 {
 		resultTTL = DefaultAsyncJobResultTTL
 	}
 
+	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
+
 	var virtualKeyID *string
 	if virtualKeyValue != nil {
-		vk, ok := e.governanceStore.GetVirtualKey(*virtualKeyValue)
+		vk, ok := e.governanceStore.GetVirtualKey(bifrostCtx, *virtualKeyValue)
 		if !ok {
 			return nil, fmt.Errorf("virtual key not found")
 		}
@@ -109,14 +112,53 @@ func (e *AsyncJobExecutor) SubmitJob(virtualKeyValue *string, resultTTL int, ope
 		return nil, fmt.Errorf("failed to create async job: %w", err)
 	}
 
-	go e.executeJob(job.ID, job.ResultTTL, operation)
+	var contextValues map[any]any
+	if bifrostCtx != nil {
+		contextValues = bifrostCtx.GetUserValues()
+	}
+	go e.executeJob(job.ID, job.ResultTTL, operation, contextValues)
 
 	return job, nil
 }
 
 // executeJob runs the operation in the background and updates the job record.
-func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation AsyncOperation) {
+func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation AsyncOperation, contextValues map[any]any) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Restore original request context values (virtual key, tracing headers, etc.)
+	for k, v := range contextValues {
+		ctx.SetValue(k, v)
+	}
+
+	// Clear trace context inherited from the original HTTP request.
+	ctx.ClearValue(schemas.BifrostContextKeyTraceID)
+	ctx.ClearValue(schemas.BifrostContextKeyParentSpanID)
+	ctx.ClearValue(schemas.BifrostContextKeySpanID)
+
+	markFailed := func(msg string) {
+		now := time.Now().UTC()
+		expiresAt := now.Add(time.Duration(resultTTL) * time.Second)
+		errJSON, _ := sonic.Marshal(&schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}})
+		if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]any{
+			"status":       schemas.AsyncJobStatusFailed,
+			"status_code":  fasthttp.StatusInternalServerError,
+			"error":        string(errJSON),
+			"completed_at": now,
+			"expires_at":   expiresAt,
+		}); err != nil {
+			e.logger.Warn("failed to update async job to failed: %v", err)
+		}
+	}
+
+	// The bifrost execution flow is very stable and panics are not expected.
+	// This recover is purely defensive to ensure the job always reaches a terminal
+	// state rather than being stuck in "processing" if an unexpected panic occurs.
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Warn("async job %s panicked: %v", jobID, r)
+			markFailed(fmt.Sprintf("internal error: %v", r))
+		}
+	}()
 
 	// Mark as processing
 	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
@@ -137,6 +179,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 		errJSON, err := sonic.Marshal(bifrostErr)
 		if err != nil {
 			e.logger.Warn("failed to marshal bifrost error: %v", err)
+			markFailed(fmt.Sprintf("failed to serialize error response: %v", err))
 			return
 		}
 		statusCode := fasthttp.StatusInternalServerError
@@ -158,6 +201,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 	respJSON, err := sonic.Marshal(resp)
 	if err != nil {
 		e.logger.Warn("failed to marshal result: %v", err)
+		markFailed(fmt.Sprintf("failed to serialize result: %v", err))
 		return
 	}
 	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
@@ -256,4 +300,19 @@ func (c *AsyncJobCleaner) cleanupExpiredJobs(ctx context.Context) {
 	} else if staleDeleted > 0 {
 		c.logger.Warn("async job cleanup: deleted %d stale processing jobs (stuck > %dh)", staleDeleted, asyncJobStaleProcessingHours)
 	}
+}
+
+// getVirtualKeyFromContext extracts the virtual key value from context.
+// Returns nil if no VK is present (e.g., direct key mode or no governance),
+// or if the context itself is nil (callers like SubmitJob may be invoked with
+// a nil ctx by background paths that don't carry a VK).
+func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
+	if ctx == nil {
+		return nil
+	}
+	vkValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if vkValue == "" {
+		return nil
+	}
+	return &vkValue
 }

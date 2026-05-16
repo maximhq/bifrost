@@ -122,7 +122,7 @@ Bifrost supports per-Virtual Key MCP servers, allowing you to expose different t
 
 ### Global Server (No Virtual Key)
 
-When `enforce_governance_header` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
+When `enforce_auth_on_inference` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
 
 ### Virtual Key-Specific Servers
 
@@ -289,6 +289,35 @@ The MCP Server dynamically updates its tool registry from the tool manager.
 
 ---
 
+## Per-User OAuth for MCP Clients
+
+When at least one MCP server is configured with `per_user_oauth`, the `/mcp` endpoint automatically advertises OAuth support via standard discovery headers. OAuth-capable MCP clients (Claude Code, Cursor, and others) detect this automatically - no manual configuration is needed on the client side.
+
+When an unauthenticated client connects, Bifrost responds with a `401` that points to the discovery endpoints:
+
+```
+WWW-Authenticate: Bearer resource_metadata="https://your-bifrost-domain/.well-known/oauth-protected-resource"
+```
+
+The client then fetches the OAuth metadata and kicks off a consent flow where the user can attach an identity and connect their upstream services. Subsequent requests use a Bifrost-issued session token as the Bearer credential.
+
+See [Per-User OAuth →](./per-user-oauth) for the full flow and identity options.
+
+### Public URL configuration when behind a proxy
+
+The `WWW-Authenticate` URL above and the `redirect_uri` Bifrost hands to upstream OAuth providers (Notion, Jira, etc.) are both built from the request's `Host` header by default. Behind a reverse proxy that's the proxy's internal address, not its public one. Two settings override this:
+
+- `mcp_external_server_url` - what Bifrost advertises in `.well-known` metadata and `WWW-Authenticate` (read by downstream MCP clients).
+- `mcp_external_client_url` - what Bifrost registers as the `redirect_uri` with upstream OAuth providers.
+
+In most setups both are the same public URL. They can differ when the management/discovery surface and the OAuth callback surface live behind different proxies. See [Reverse Proxy configuration →](../deployment-guides/config-json/client#reverse-proxy) for the full reference and examples.
+
+<Warning>
+**Changing `mcp_external_client_url` breaks already-connected MCP clients.** Upstream OAuth providers lock the `redirect_uri` to whatever was registered during Dynamic Client Registration (RFC 7591). If you change this URL afterwards, existing clients fail with **"Invalid redirect URI"** at the authorize step. To recover, clear the stored OAuth client credentials for the affected MCP server and re-authorize so Bifrost re-registers with the new URL.
+</Warning>
+
+---
+
 ## Security Considerations
 
 <Warning>
@@ -297,12 +326,12 @@ The MCP Gateway exposes tools to external clients. Consider these security measu
 
 ### 1. Enable Virtual Key Enforcement
 
-Always enable `enforce_governance_header` in production:
+Always enable `enforce_auth_on_inference` in production:
 
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   }
 }
 ```
@@ -346,7 +375,7 @@ Consider network-level restrictions to limit which IPs can access the MCP endpoi
   <Accordion title="Virtual Key authentication failing">
     1. Ensure the Virtual Key exists and is active
     2. Check the header format (Bearer prefix for Authorization)
-    3. Verify `enforce_governance_header` setting matches your setup
+    3. Verify `enforce_auth_on_inference` setting matches your setup
   </Accordion>
 </AccordionGroup>
 

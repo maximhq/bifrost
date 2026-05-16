@@ -8,6 +8,7 @@ import (
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
+	RequestID  string         // Request ID for the trace
 	TraceID    string         // Unique identifier for this trace
 	ParentID   string         // Parent trace ID from incoming W3C traceparent header
 	RootSpan   *Span          // The root span of this trace
@@ -15,6 +16,7 @@ type Trace struct {
 	StartTime  time.Time      // When the trace started
 	EndTime    time.Time      // When the trace completed
 	Attributes map[string]any // Additional attributes for the trace
+	PluginLogs []PluginLogEntry // Plugin log entries accumulated during request processing
 	mu         sync.Mutex     // Mutex for thread-safe span operations
 }
 
@@ -37,15 +39,49 @@ func (t *Trace) GetSpan(spanID string) *Span {
 	return nil
 }
 
+// GetRequestID retrieves the request ID from the trace
+func (t *Trace) GetRequestID() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.RequestID
+}
+
+// SetRequestID sets the request ID for the trace
+func (t *Trace) SetRequestID(requestID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RequestID = requestID
+}
+
 // Reset clears the trace for reuse from pool
 func (t *Trace) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RequestID = ""
 	t.TraceID = ""
 	t.ParentID = ""
 	t.RootSpan = nil
+	for i := range t.Spans {
+		t.Spans[i] = nil
+	}
 	t.Spans = t.Spans[:0]
 	t.StartTime = time.Time{}
 	t.EndTime = time.Time{}
 	t.Attributes = nil
+	for i := range t.PluginLogs {
+		t.PluginLogs[i] = PluginLogEntry{}
+	}
+	t.PluginLogs = t.PluginLogs[:0]
+}
+
+// AppendPluginLogs appends plugin log entries to the trace in a thread-safe manner.
+func (t *Trace) AppendPluginLogs(logs []PluginLogEntry) {
+	if len(logs) == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.PluginLogs = append(t.PluginLogs, logs...)
+	t.mu.Unlock()
 }
 
 // Span represents a single operation within a trace
@@ -128,6 +164,9 @@ const (
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
+	// SpanKindMCPClient represents an MCP client lifecycle operation (connect/ping/list_tools).
+	// These run in the background per-client and are not part of an LLM request flow.
+	SpanKindMCPClient SpanKind = "mcp.client"
 	// SpanKindRetry represents a retry attempt
 	SpanKindRetry SpanKind = "retry"
 	// SpanKindFallback represents a fallback to another provider
@@ -196,6 +235,7 @@ const (
 	AttrResponseID       = "gen_ai.response.id"
 	AttrResponseModel    = "gen_ai.response.model"
 	AttrFinishReason     = "gen_ai.response.finish_reason"
+	AttrFinishReasons    = "gen_ai.response.finish_reasons"
 	AttrSystemFprint     = "gen_ai.response.system_fingerprint"
 	AttrServiceTier      = "gen_ai.response.service_tier"
 	AttrCreated          = "gen_ai.response.created"
@@ -216,6 +256,22 @@ const (
 	AttrInputTokens      = "gen_ai.usage.input_tokens"
 	AttrOutputTokens     = "gen_ai.usage.output_tokens"
 	AttrUsageCost        = "gen_ai.usage.cost"
+	// Chat completion usage detail attributes
+	AttrPromptTokenDetailsText        = "gen_ai.usage.prompt_token_details.text_tokens"
+	AttrPromptTokenDetailsAudio       = "gen_ai.usage.prompt_token_details.audio_tokens"
+	AttrPromptTokenDetailsImage       = "gen_ai.usage.prompt_token_details.image_tokens"
+	AttrPromptTokenDetailsCachedRead    = "gen_ai.usage.prompt_token_details.cached_read_tokens"
+	AttrPromptTokenDetailsCachedWrite   = "gen_ai.usage.prompt_token_details.cached_write_tokens"
+	AttrPromptTokenDetailsCachedWrite5m = "gen_ai.usage.prompt_token_details.cached_write_tokens_5m"
+	AttrPromptTokenDetailsCachedWrite1h = "gen_ai.usage.prompt_token_details.cached_write_tokens_1h"
+	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
+	AttrCompletionTokenDetailsAudio   = "gen_ai.usage.completion_token_details.audio_tokens"
+	AttrCompletionTokenDetailsImage   = "gen_ai.usage.completion_token_details.image_tokens"
+	AttrCompletionTokenDetailsReason  = "gen_ai.usage.completion_token_details.reasoning_tokens"
+	AttrCompletionTokenDetailsAccept  = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
+	AttrCompletionTokenDetailsReject  = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
+	AttrCompletionTokenDetailsCite    = "gen_ai.usage.completion_token_details.citation_tokens"
+	AttrCompletionTokenDetailsSearch  = "gen_ai.usage.completion_token_details.num_search_queries"
 
 	// Error Attributes
 	AttrError     = "gen_ai.error"
@@ -230,6 +286,7 @@ const (
 	AttrOutputMessages = "gen_ai.output.messages"
 
 	// Bifrost Context Attributes
+	AttrRequestID       = "gen_ai.request_id"
 	AttrVirtualKeyID    = "gen_ai.virtual_key_id"
 	AttrVirtualKeyName  = "gen_ai.virtual_key_name"
 	AttrSelectedKeyID   = "gen_ai.selected_key_id"
@@ -319,6 +376,21 @@ const (
 	// Transcription Response Attributes
 	AttrInputTokenDetailsText  = "gen_ai.usage.input_token_details.text_tokens"
 	AttrInputTokenDetailsAudio = "gen_ai.usage.input_token_details.audio_tokens"
+
+	// Responses API usage detail attributes
+	AttrInputTokenDetailsImage        = "gen_ai.usage.input_token_details.image_tokens"
+	AttrInputTokenDetailsCachedRead   = "gen_ai.usage.input_token_details.cached_read_tokens"
+	AttrInputTokenDetailsCachedWrite  = "gen_ai.usage.input_token_details.cached_write_tokens"
+	AttrInputTokenDetailsCachedWrite5m = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
+	AttrInputTokenDetailsCachedWrite1h = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
+	AttrOutputTokenDetailsText        = "gen_ai.usage.output_token_details.text_tokens"
+	AttrOutputTokenDetailsAudio       = "gen_ai.usage.output_token_details.audio_tokens"
+	AttrOutputTokenDetailsImage       = "gen_ai.usage.output_token_details.image_tokens"
+	AttrOutputTokenDetailsReason      = "gen_ai.usage.output_token_details.reasoning_tokens"
+	AttrOutputTokenDetailsAccept      = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
+	AttrOutputTokenDetailsReject      = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
+	AttrOutputTokenDetailsCite        = "gen_ai.usage.output_token_details.citation_tokens"
+	AttrOutputTokenDetailsSearch      = "gen_ai.usage.output_token_details.num_search_queries"
 
 	// File Operation Attributes
 	AttrFileID             = "gen_ai.file.id"

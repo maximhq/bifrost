@@ -1,0 +1,70 @@
+---
+title: "GraySwan Cygnal"
+description: "Integrate GraySwan Cygnal Monitor with Bifrost for AI safety monitoring with natural language rule definitions, violation scoring, and advanced threat detection."
+icon: "shield-check"
+---
+
+Bifrost integrates with **GraySwan Cygnal Monitor** to provide AI safety monitoring with natural language rule definitions and advanced threat detection capabilities. This page covers the configuration and capabilities of the GraySwan Cygnal guardrail provider.
+
+![GraySwan configuration form](/media/guardrails/gray-swan-config-on-bifrost.png)
+
+## Capabilities
+
+- **Violation Scoring**: Continuous 0-1 scale violation detection with configurable thresholds
+- **Custom Natural Language Rules**: Define safety rules in plain English without code
+- **Policy Management**: Use pre-built policies from GraySwan platform or create custom ones
+- **Indirect Prompt Injection (IPI) Detection**: Identify hidden instructions in user inputs
+- **Mutation Detection**: Detect attempts to manipulate or alter content
+- **Reasoning Modes**: Choose from fast ("off"), balanced ("hybrid"), or thorough ("thinking") analysis
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `api_key` | string | Yes | - | GraySwan API key |
+| `violation_threshold` | number | No | 0.5 | Score threshold (0-1) for triggering intervention. Lower values are more strict. |
+| `reasoning_mode` | enum | No | "off" | Analysis depth: `off` (fastest), `hybrid` (balanced), or `thinking` (most thorough) |
+| `policy_id` | string | No | - | Single custom policy ID from GraySwan platform |
+| `policy_ids` | array | No | - | Multiple policy IDs for aggregated rule evaluation |
+| `rules` | object | No | - | Custom natural language rules as key-value pairs |
+
+## Custom Rules Example
+
+![GraySwan custom rules](/media/guardrails/gray-swan-custom-rule.png)
+
+Rules are defined as key-value pairs where the key is the rule name and the value is a natural language description:
+
+```json
+{
+  "rules": {
+    "no_profanity": "Do not allow profanity or vulgar language",
+    "no_pii": "Do not allow personally identifiable information",
+    "professional_tone": "Ensure all responses maintain a professional tone"
+  }
+}
+```
+
+## Detection Features
+
+- Real-time violation scoring
+- Multi-rule evaluation
+- IPI attack detection
+- Content mutation monitoring
+- Detailed violation descriptions with rule attribution
+
+## Provider Capabilities Comparison
+
+| Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
+|------------|-------------|---------------------|----------|-------------|
+| PII Detection | Yes | No | No | Yes |
+| Content Filtering | Yes | Yes | Yes | Yes |
+| Prompt Injection | Yes | Yes | Yes | Yes |
+| Hallucination Detection | No | No | No | Yes |
+| Toxicity Screening | Yes | Yes | Yes | Yes |
+| Custom Policies | Yes | Yes | Yes | Yes |
+| Custom Natural Language Rules | No | No | Yes | No |
+| Image Support | Yes | No | No | No |
+| IPI Detection | No | Yes | Yes | No |
+| Mutation Detection | No | No | Yes | No |
+
+For information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).

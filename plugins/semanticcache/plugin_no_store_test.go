@@ -22,7 +22,7 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1}) // Fresh request
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify it got cached
 	t.Log("Verifying normal caching worked...")
@@ -45,7 +45,7 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}) // Fresh request
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify it was NOT cached
 	t.Log("Verifying no-store request was not cached...")
@@ -64,7 +64,7 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response5}) // Fresh request
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify it got cached
 	t.Log("Verifying no-store=false request was cached...")
@@ -95,7 +95,7 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify not cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, chatRequest)
@@ -115,7 +115,7 @@ func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response3})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify not cached
 	response4, err4 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
@@ -150,7 +150,7 @@ func TestCacheNoStoreWithConversationHistory(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify not cached (same conversation should not hit cache)
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, request)
@@ -181,7 +181,7 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Should not be cached
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
@@ -202,7 +202,7 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Should not be cached
 	response4, err4 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
@@ -232,7 +232,7 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Should be cached (invalid value should be ignored)
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
@@ -256,7 +256,7 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Should be cached (nil should be treated as normal caching)
 	response4, err4 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
@@ -284,7 +284,7 @@ func TestCacheNoStoreReadButNoWrite(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Step 2: Try to read with no-store enabled (should still read from cache)
 	ctx2 := CreateContextWithCacheKeyAndNoStore("test-no-store-read", true)
@@ -311,7 +311,7 @@ func TestCacheNoStoreReadButNoWrite(t *testing.T) {
 	// Should get semantic cache hit (no-store allows reads, just prevents writes)
 	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "semantic")
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Step 4: Repeat similar request with no-store (should still get semantic hit)
 	t.Log("Repeating similar request with no-store (should still get semantic hit)...")
