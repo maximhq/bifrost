@@ -786,7 +786,10 @@ type ResponsesMessage struct {
 	ID     *string               `json:"id,omitempty"` // Common ID field for most item types
 	Type   *ResponsesMessageType `json:"type,omitempty"`
 	Status *string               `json:"status,omitempty"` // "in_progress" | "completed" | "incomplete" | "interpreting" | "failed"
-	Phase  *string               `json:"phase,omitempty"`  // OpenAI emits this for multi-phase message items, e.g. "final_answer"
+	// Phase labels an assistant message as intermediate "commentary" or completed "final_answer".
+	// Required on gpt-5.3-codex+ history replay; dropping it causes significant performance degradation.
+	// See https://developers.openai.com/api/docs/guides/prompt-guidance
+	Phase *string `json:"phase,omitempty"`
 
 	Role    *ResponsesMessageRoleType `json:"role,omitempty"`
 	Content *ResponsesMessageContent  `json:"content,omitempty"`
@@ -2476,16 +2479,23 @@ type BifrostResponsesStreamResponse struct {
 
 	Response *BifrostResponsesResponse `json:"response,omitempty"`
 
-	OutputIndex  *int              `json:"output_index,omitempty"`
-	Item         *ResponsesMessage `json:"item"`
-	SummaryIndex *int              `json:"summary_index,omitempty"`
+	OutputIndex *int              `json:"output_index,omitempty"`
+	Item        *ResponsesMessage `json:"item"`
+	// SummaryIndex identifies which summary block within an item a delta belongs to.
+	// Emitted on response.reasoning_summary_text.{delta,done} and
+	// response.reasoning_summary_part.{added,done}.
+	// See https://platform.openai.com/docs/api-reference/responses-streaming
+	SummaryIndex *int `json:"summary_index,omitempty"`
 
 	ContentIndex *int                          `json:"content_index,omitempty"`
 	ItemID       *string                       `json:"item_id,omitempty"`
 	Part         *ResponsesMessageContentBlock `json:"part,omitempty"`
 
-	Delta       *string                                    `json:"delta,omitempty"`
-	Signature   *string                                    `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	Delta     *string `json:"delta,omitempty"`
+	Signature *string `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	// Obfuscation is random padding added to delta events to normalize payload size as a
+	// side-channel mitigation. Toggle via StreamOptions.IncludeObfuscation.
+	// See https://platform.openai.com/docs/api-reference/responses-streaming
 	Obfuscation *string                                    `json:"obfuscation,omitempty"`
 	LogProbs    []ResponsesOutputMessageContentTextLogProb `json:"logprobs"`
 

@@ -180,7 +180,11 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	// Listen for postMessage from OAuth callback popup
 	useEffect(() => {
 		const handleMessage = (event: MessageEvent) => {
-			// Verify message is from OAuth callback
+			// Only accept messages from the popup we opened and our own callback origin.
+			if (event.source !== popupRef.current || event.origin !== window.location.origin) {
+				return
+			}
+
 			if (event.data?.type === "oauth_success") {
 				// Trigger immediate status check; stopPolling is called inside
 				// checkOAuthStatus only after a confirmed terminal state, so

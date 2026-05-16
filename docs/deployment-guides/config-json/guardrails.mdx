@@ -185,7 +185,9 @@ For `auth_type: "default_credential"` (managed identity / Azure CLI - no credent
 `analyze_severity_threshold` accepts `"low"`, `"medium"`, or `"high"`.
 
 </Tab>
-<Tab title="Patronus AI">
+<Tab title="CrowdStrike AIDR">
+
+Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI threat detection, blocking, and redaction.
 
 ```json
 {
@@ -193,6 +195,33 @@ For `auth_type: "default_credential"` (managed identity / Azure CLI - no credent
     "guardrail_providers": [
       {
         "id": 4,
+        "provider_name": "crowdstrike-aidr",
+        "policy_name": "crowdstrike-aidr-prod",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.CS_AIDR_TOKEN",
+          "base_url": "env.CS_AIDR_BASE_URL",
+          "app_id": "bifrost-production",
+          "collector_instance_id": "prod-us-east-1"
+        }
+      }
+    ]
+  }
+}
+```
+
+`base_url` is optional and defaults to `https://api.crowdstrike.com/aidr/aiguard`. Bifrost appends `/v1/guard_chat_completions`, so the base URL can be the collector base URL rather than the full endpoint URL.
+
+</Tab>
+<Tab title="Patronus AI">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 5,
         "provider_name": "patronus-ai",
         "policy_name": "patronus-eval",
         "enabled": true,
@@ -227,7 +256,7 @@ For `auth_type: "default_credential"` (managed identity / Azure CLI - no credent
   "guardrails_config": {
     "guardrail_providers": [
       {
-        "id": 5,
+        "id": 6,
         "provider_name": "grayswan",
         "policy_name": "grayswan-jailbreak",
         "enabled": true,
@@ -256,7 +285,7 @@ For `auth_type: "default_credential"` (managed identity / Azure CLI - no credent
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
-| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"bedrock"`, `"azure"`, `"patronus-ai"`, `"grayswan"` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"bedrock"`, `"azure"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |
 | `timeout` | No | Execution timeout in seconds |
@@ -306,6 +335,16 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `blocklist_names` | No | **Plain only** | Blocklist names to apply (string array) |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### CrowdStrike AIDR
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | AIDR collector token |
+| `base_url` | No | Yes | AIDR base URL. Defaults to `https://api.crowdstrike.com/aidr/aiguard` |
+| `app_id` | No | **Plain only** | Application or service identifier shown in AIDR logs |
+| `collector_instance_id` | No | **Plain only** | Deployment or collector instance label shown in AIDR logs |
+| `timeout` | No | **Plain only** | Provider execution timeout in seconds |
 
 ### Patronus AI
 
