@@ -2848,7 +2848,7 @@ func (m *ToolCallStateManager) RegisterToolCall(callID, toolName, arguments stri
 
 // RegisterToolResult registers a tool result
 func (m *ToolCallStateManager) RegisterToolResult(callID string, content []BedrockContentBlock, status string, cacheControl *schemas.CacheControl) {
-	// Attemp to deduplicate the result similar to tool call. Need to check in 2 places, since after moving
+	// Attempt to deduplicate the result similar to tool call. Need to check in 2 places, since after moving
 	// on from pendingResults into a completed toolCall, the same ID might come again.
 	if _, ok := m.pendingResults[callID]; ok {
 		return

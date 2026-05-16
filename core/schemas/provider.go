@@ -226,7 +226,7 @@ var DefaultNetworkConfig = NetworkConfig{
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
 type ConcurrencyAndBufferSize struct {
-	Concurrency int `json:"concurrency"` // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
+	Concurrency int `json:"concurrency"` // Number of concurrent operations. Also used as the initial pool size for the provider responses.
 	BufferSize  int `json:"buffer_size"` // Size of the buffer
 }
 
