@@ -2271,6 +2271,7 @@ func HandleStreamCancellation(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 	jsonBody []byte,
+	usage *schemas.BifrostLLMUsage,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2291,6 +2292,8 @@ func HandleStreamCancellation(
 		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
+	cancelErr.ExtraFields.Usage = usage // append usage to passed error
+
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
 }
@@ -2310,6 +2313,7 @@ func HandleStreamTimeout(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 	jsonBody []byte,
+	usage *schemas.BifrostLLMUsage,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2330,6 +2334,7 @@ func HandleStreamTimeout(
 		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
+	timeoutErr.ExtraFields.Usage = usage // append usage to passed error
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
 }

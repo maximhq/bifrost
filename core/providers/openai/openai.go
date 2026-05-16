@@ -533,12 +533,13 @@ func HandleOpenAITextCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -567,7 +568,7 @@ func HandleOpenAITextCompletionStreaming(
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
 		chunkIndex := -1
-		usage := &schemas.BifrostLLMUsage{}
+		usage = &schemas.BifrostLLMUsage{}
 
 		var finishReason *string
 		var messageID string
@@ -1074,12 +1075,13 @@ func HandleOpenAIChatCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			// Release the responses stream state if it was acquired (for ResponsesToChatCompletions fallback)
 			schemas.ReleaseChatToResponsesStreamState(responsesStreamState)
@@ -1110,7 +1112,7 @@ func HandleOpenAIChatCompletionStreaming(
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
 		chunkIndex := -1
-		usage := &schemas.BifrostLLMUsage{}
+		usage = &schemas.BifrostLLMUsage{}
 
 		lastChunkTime := startTime
 
@@ -1715,12 +1717,13 @@ func HandleOpenAIResponsesStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -2325,12 +2328,13 @@ func HandleOpenAISpeechStreamRequest(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -2766,12 +2770,13 @@ func HandleOpenAITranscriptionStreamRequest(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 			}
 			close(responseChan)
 		}()
@@ -3204,12 +3209,13 @@ func HandleOpenAIImageGenerationStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -4442,12 +4448,13 @@ func HandleOpenAIImageEditStreamRequest(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 			}
 			close(responseChan)
 		}()
@@ -7076,12 +7083,13 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body))
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body))
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
 			}
 			close(ch)
 		}()

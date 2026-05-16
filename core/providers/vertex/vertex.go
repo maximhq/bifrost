@@ -3195,12 +3195,14 @@ func (provider *VertexProvider) PassthroughStream(
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
+
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body))
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body))
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
 			}
 			close(ch)
 		}()

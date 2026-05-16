@@ -945,12 +945,13 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData, usage)
 			}
 			close(responseChan)
 		}()
@@ -1180,12 +1181,13 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData, usage)
 			}
 			close(responseChan)
 		}()
@@ -1200,7 +1202,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		defer stopCancellation()
 
 		// Process AWS Event Stream format
-		usage := &schemas.BifrostLLMUsage{}
+		usage = &schemas.BifrostLLMUsage{}
 		var finishReason *string
 		chunkIndex := 0
 
@@ -1561,12 +1563,13 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData, usage)
 			}
 			close(responseChan)
 		}()
@@ -1582,7 +1585,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		defer stopCancellation()
 
 		// Process AWS Event Stream format
-		usage := &schemas.ResponsesResponseUsage{}
+		responseUsage := &schemas.ResponsesResponseUsage{}
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions
@@ -1616,7 +1619,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 				if err == io.EOF {
 					// End of stream - finalize any open items
-					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage)
+					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, responseUsage)
 					for i, finalResponse := range finalResponses {
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
@@ -1702,41 +1705,41 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
 					// In some cases usage comes in multiple events, so we need to take the maximum values
-					if streamEvent.Usage.InputTokens > usage.InputTokens {
-						usage.InputTokens = streamEvent.Usage.InputTokens
+					if streamEvent.Usage.InputTokens > responseUsage.InputTokens {
+						responseUsage.InputTokens = streamEvent.Usage.InputTokens
 					}
-					if streamEvent.Usage.OutputTokens > usage.OutputTokens {
-						usage.OutputTokens = streamEvent.Usage.OutputTokens
+					if streamEvent.Usage.OutputTokens > responseUsage.OutputTokens {
+						responseUsage.OutputTokens = streamEvent.Usage.OutputTokens
 					}
 					if streamEvent.Usage.TotalTokens > usage.TotalTokens {
 						usage.TotalTokens = streamEvent.Usage.TotalTokens
 					}
 					// Handle cached tokens if present
 					if streamEvent.Usage.CacheReadInputTokens > 0 {
-						if usage.InputTokensDetails == nil {
-							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+						if responseUsage.InputTokensDetails == nil {
+							responseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 						}
-						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
-							usage.InputTokensDetails.CachedReadTokens = streamEvent.Usage.CacheReadInputTokens
+						if streamEvent.Usage.CacheReadInputTokens > responseUsage.InputTokensDetails.CachedReadTokens {
+							responseUsage.InputTokensDetails.CachedReadTokens = streamEvent.Usage.CacheReadInputTokens
 						}
 					}
 					if streamEvent.Usage.CacheWriteInputTokens > 0 {
-						if usage.InputTokensDetails == nil {
-							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+						if responseUsage.InputTokensDetails == nil {
+							responseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 						}
-						if streamEvent.Usage.CacheWriteInputTokens > usage.InputTokensDetails.CachedWriteTokens {
-							usage.InputTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
+						if streamEvent.Usage.CacheWriteInputTokens > responseUsage.InputTokensDetails.CachedWriteTokens {
+							responseUsage.InputTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
 						if streamEvent.Usage.CacheDetails != nil {
-							if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
-								usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+							if responseUsage.InputTokensDetails.CachedWriteTokenDetails == nil {
+								responseUsage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
 							}
 							for _, cacheDetail := range *streamEvent.Usage.CacheDetails {
 								if cacheDetail.TTL == BedrockCacheWriteTTL5m {
-									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+									responseUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
 								}
 								if cacheDetail.TTL == BedrockCacheWriteTTL1h {
-									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+									responseUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
 								}
 							}
 						}

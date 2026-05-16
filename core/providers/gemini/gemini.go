@@ -468,12 +468,13 @@ func HandleGeminiChatCompletionStream(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -967,12 +968,13 @@ func HandleGeminiResponsesStream(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -1458,12 +1460,14 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
+
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -1485,7 +1489,8 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
-		usage := &schemas.SpeechUsage{}
+		speechUsage := &schemas.SpeechUsage{}
+		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for {
@@ -1559,9 +1564,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			if len(geminiResponse.Candidates) > 0 && (geminiResponse.Candidates[0].FinishReason != "" || geminiResponse.UsageMetadata != nil) {
 				// Extract usage metadata using shared function
 				inputTokens, outputTokens, totalTokens := extractGeminiUsageMetadata(geminiResponse)
-				usage.InputTokens = inputTokens
-				usage.OutputTokens = outputTokens
-				usage.TotalTokens = totalTokens
+				speechUsage.InputTokens = inputTokens
+				speechUsage.OutputTokens = outputTokens
+				speechUsage.TotalTokens = totalTokens
 			}
 
 			// Only send response if we have actual audio content
@@ -1589,7 +1594,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		}
 		response := &schemas.BifrostSpeechStreamResponse{
 			Type:  schemas.SpeechStreamResponseTypeDone,
-			Usage: usage,
+			Usage: speechUsage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				ChunkIndex: chunkIndex + 1,
 				Latency:    time.Since(startTime).Milliseconds(),
@@ -1748,12 +1753,14 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
+
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -1773,7 +1780,8 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
-		usage := &schemas.TranscriptionUsage{}
+		transcriptionUsage := &schemas.TranscriptionUsage{}
+		startTime := time.Now()
 		lastChunkTime := startTime
 
 		var fullTranscriptionText string
@@ -1842,9 +1850,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			if len(geminiResponse.Candidates) > 0 && (geminiResponse.Candidates[0].FinishReason != "" || geminiResponse.UsageMetadata != nil) {
 				// Extract usage metadata from Gemini response
 				inputTokens, outputTokens, totalTokens := extractGeminiUsageMetadata(geminiResponse)
-				usage.InputTokens = schemas.Ptr(inputTokens)
-				usage.OutputTokens = schemas.Ptr(outputTokens)
-				usage.TotalTokens = schemas.Ptr(totalTokens)
+				transcriptionUsage.InputTokens = schemas.Ptr(inputTokens)
+				transcriptionUsage.OutputTokens = schemas.Ptr(outputTokens)
+				transcriptionUsage.TotalTokens = schemas.Ptr(totalTokens)
 			}
 
 			// Only send response if we have actual text content
@@ -1875,9 +1883,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			Text: fullTranscriptionText,
 			Usage: &schemas.TranscriptionUsage{
 				Type:         "tokens",
-				InputTokens:  usage.InputTokens,
-				OutputTokens: usage.OutputTokens,
-				TotalTokens:  usage.TotalTokens,
+				InputTokens:  transcriptionUsage.InputTokens,
+				OutputTokens: transcriptionUsage.OutputTokens,
+				TotalTokens:  transcriptionUsage.TotalTokens,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				ChunkIndex: chunkIndex + 1,
@@ -4235,12 +4243,14 @@ func (provider *GeminiProvider) PassthroughStream(
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
+
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body))
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body))
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
 			}
 			close(ch)
 		}()

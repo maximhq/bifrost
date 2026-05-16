@@ -530,12 +530,14 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		// Start streaming in a goroutine
 		go func() {
+			usage := &schemas.BifrostLLMUsage{}
+
 			defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 			defer func() {
 				if ctx.Err() == context.Canceled {
-					providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+					providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 				} else if ctx.Err() == context.DeadlineExceeded {
-					providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+					providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 				}
 				close(responseChan)
 			}()
