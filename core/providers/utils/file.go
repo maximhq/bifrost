@@ -27,6 +27,24 @@ var downloadClient = &fasthttp.Client{
 	ReadTimeout:         20 * time.Second,
 	WriteTimeout:        10 * time.Second,
 	MaxResponseBodySize: 25 * 1024 * 1024,
+	Dial: func(addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.LookupIP(host)
+		if err != nil || len(ips) == 0 {
+			return nil, fmt.Errorf("failed to resolve %q", host)
+		}
+		if !allowPrivateAudioURLs {
+			for _, ip := range ips {
+				if isPrivateOrInternalIP(ip) {
+					return nil, fmt.Errorf("resolved to private/internal address %s", ip)
+				}
+			}
+		}
+		return net.DialTimeout("tcp", net.JoinHostPort(ips[0].String(), port), 10*time.Second)
+	},
 }
 
 // allowPrivateAudioURLs is a test-only override. Production code never sets it.
@@ -65,21 +83,6 @@ func validateRequestURL(rawURL string) error {
 	host := u.Hostname()
 	if host == "" {
 		return errors.New("URL must include a host")
-	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("failed to resolve host %q: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return fmt.Errorf("no IPs resolved for host %q", host)
-	}
-	if allowPrivateAudioURLs {
-		return nil
-	}
-	for _, ip := range ips {
-		if isPrivateOrInternalIP(ip) {
-			return fmt.Errorf("URL resolves to private/internal address %s", ip)
-		}
 	}
 	return nil
 }

@@ -85,6 +85,23 @@ func TestDownloadURLToBase64RejectsLoopbackInProduction(t *testing.T) {
 	}
 }
 
+func TestDownloadClientDialRejectsLoopbackResolutionInProduction(t *testing.T) {
+	// No AllowPrivateAudioURLsForTest call: guard is active. This exercises the
+	// fasthttp Dial hook directly so the authoritative connection-time check
+	// rejects loopback DNS resolution before any TCP connection is attempted.
+	conn, err := downloadClient.Dial("localhost:443")
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("expected no connection for loopback dial in production mode")
+	}
+	if err == nil {
+		t.Fatal("expected dial error for loopback resolution in production mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "private/internal address") {
+		t.Fatalf("expected private/internal rejection, got %v", err)
+	}
+}
+
 func TestDownloadURLToBase64RejectsPrivateIPLiteral(t *testing.T) {
 	cases := []string{
 		"https://10.0.0.1/audio.mp3",        // RFC 1918
@@ -101,6 +118,42 @@ func TestDownloadURLToBase64RejectsPrivateIPLiteral(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "private/internal address") {
 				t.Fatalf("expected private/internal rejection for %s, got %v", rawURL, err)
+			}
+		})
+	}
+}
+
+func TestValidateRequestURLRejectsUnsupportedSchemesAndEmptyHosts(t *testing.T) {
+	cases := []struct {
+		name    string
+		rawURL  string
+		wantErr string
+	}{
+		{
+			name:    "unsupported scheme",
+			rawURL:  "ftp://example.com/audio.mp3",
+			wantErr: "unsupported URL scheme",
+		},
+		{
+			name:    "empty host",
+			rawURL:  "https:///audio.mp3",
+			wantErr: "URL must include a host",
+		},
+		{
+			name:    "plaintext http",
+			rawURL:  "http://example.com/audio.mp3",
+			wantErr: "plaintext http",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateRequestURL(tc.rawURL)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.rawURL)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q in error for %s, got %v", tc.wantErr, tc.rawURL, err)
 			}
 		})
 	}
