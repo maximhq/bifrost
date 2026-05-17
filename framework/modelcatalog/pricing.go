@@ -31,6 +31,85 @@ type PricingEntry struct {
 	PricingOptions
 }
 
+// PricingMetadata captures the relevant metadata from a BifrostResponse
+// needed for pricing lookup and tier resolution.
+type PricingMetadata struct {
+	Provider      schemas.ModelProvider
+	OriginalModel string
+	ResolvedModel string
+	RequestType   schemas.RequestType
+	Tier          string
+
+	// Modality-specific dimensions for media/non-token pricing
+	AudioSeconds        *int
+	AudioTextInputChars int
+	AudioTokenDetails   *schemas.TranscriptionUsageInputTokenDetails
+	ImageUsage          *schemas.ImageUsage
+	ImageSize           string
+	ImageQuality        string
+	VideoSeconds        *int
+	OCRProcessedPages   *int
+	OCRIsAnnotated      *bool
+	ContainerIdentifier string
+}
+
+// CalculateCostFromUsage calculates the cost directly from a normalized usage struct, decoupling it from the full response.
+func (mc *ModelCatalog) CalculateCostFromUsage(usage *schemas.BifrostLLMUsage, metadata PricingMetadata, scopes *PricingLookupScopes) float64 {
+	// Guard: Ensure we have at least one billable usage metric
+	if usage == nil &&
+		metadata.AudioSeconds == nil &&
+		metadata.ImageUsage == nil &&
+		metadata.VideoSeconds == nil &&
+		metadata.OCRProcessedPages == nil &&
+		metadata.ContainerIdentifier == "" {
+		return 0
+	}
+	var s PricingLookupScopes
+	if scopes != nil {
+		s = *scopes
+	}
+	if s.Provider == "" {
+		s.Provider = string(metadata.Provider)
+	}
+	// Normalize request type
+	requestType := normalizeStreamRequestType(metadata.RequestType)
+	// Handle custom pricing models like containers
+	lookupModel, lookupResolved := metadata.OriginalModel, metadata.ResolvedModel
+	if metadata.ContainerIdentifier != "" {
+		lookupModel = metadata.ContainerIdentifier
+		lookupResolved = metadata.ContainerIdentifier
+	}
+	// Resolve the pricing configuration
+	pricing := mc.resolvePricing(string(metadata.Provider), lookupModel, lookupResolved, requestType, s)
+	if pricing == nil {
+		return 0
+	}
+	tier := tierFromString(&metadata.Tier)
+	// Route to the appropriate compute function using the decoupled input parameters
+	switch requestType {
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest:
+		return computeTextCost(pricing, usage, tier)
+	case schemas.EmbeddingRequest:
+		return computeEmbeddingCost(pricing, usage, tier)
+	case schemas.RerankRequest:
+		return computeRerankCost(pricing, usage, tier)
+	case schemas.SpeechRequest:
+		return computeSpeechCost(pricing, usage, metadata.AudioSeconds, metadata.AudioTextInputChars, tier)
+	case schemas.TranscriptionRequest:
+		return computeTranscriptionCost(pricing, usage, metadata.AudioSeconds, metadata.AudioTokenDetails, tier)
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
+		return computeImageCost(pricing, metadata.ImageUsage, metadata.ImageSize, metadata.ImageQuality, tier)
+	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
+		return computeVideoCost(pricing, usage, metadata.VideoSeconds, tier)
+	case schemas.OCRRequest:
+		return computeOCRCost(pricing, metadata.OCRProcessedPages, metadata.OCRIsAnnotated)
+	case schemas.ContainerCreateRequest:
+		return computeContainerCreationCost(pricing)
+	default:
+		return 0
+	}
+}
+
 // UnmarshalJSON implements json.Unmarshaler for PricingEntry.
 // It handles the special case where search_context_cost_per_query may arrive as either
 // a plain float64 or a tiered object {"search_context_size_low":…,
