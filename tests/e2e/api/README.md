@@ -89,6 +89,13 @@ them into OSS:
 ./runners/run-newman-api-tests.sh --extra-collection /path/to/enterprise.postman_collection.json
 ```
 
+You can also pass extensions via environment variable:
+
+```bash
+BIFROST_API_EXTRA_COLLECTION=/path/to/enterprise.postman_collection.json \
+  ./runners/run-newman-api-tests.sh
+```
+
 The default OSS run does not load extra collections. Enterprise should pass its
 collection from the enterprise repo, so shared management requests stay in OSS and
 DAC-specific assertions stay out of OSS.

@@ -36,13 +36,18 @@ const normalizeItems = (extension, path) => {
 };
 
 const base = JSON.parse(readFileSync(source, "utf8"));
+if (base.item == null) {
+  base.item = [];
+} else if (!Array.isArray(base.item)) {
+  console.error(`[merge-collections] base collection ${source} has non-array "item"`);
+  process.exit(1);
+}
 let requestCount = 0;
 
 for (const extra of extras) {
   const extension = JSON.parse(readFileSync(extra, "utf8"));
   const items = normalizeItems(extension, extra);
   requestCount += JSON.stringify(items).match(/"request":/g)?.length || 0;
-  base.item = base.item || [];
   base.item.push({
     name: extension.info?.name || extension.name || "External API E2E Extension",
     description: `Loaded from ${extra}. This folder is only present when the API runner receives --extra-collection.`,

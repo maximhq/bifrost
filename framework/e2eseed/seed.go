@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -23,6 +26,8 @@ import (
 // Options controls the shared seed dataset.
 type Options struct {
 	Prefix        string
+	ConfigPath    string
+	EncryptionKey string
 	ConfigDialect string
 	ConfigDSN     string
 	LogsDialect   string
@@ -64,14 +69,18 @@ type Summary struct {
 	GeneratedAt time.Time         `json:"generated_at"`
 }
 
+// seedBaseTime is the per-run anchor timestamp for seeded log rows. We set it
+// to "now" on every seed invocation so the rows land inside the dashboard's
+// default time-range filters (Last hour / Last day) instead of being frozen
+// at a fixed date that the UI would filter out.
+var seedBaseTime = time.Now().UTC()
+
 // DefaultOptions returns defaults for local e2e seeding.
 func DefaultOptions() Options {
 	return Options{
 		Prefix:        "e2e-seed",
 		ConfigDialect: "postgres",
-		ConfigDSN:     "postgres://bifrost:bifrost_password@localhost:5432/bifrost?sslmode=disable",
 		LogsDialect:   "postgres",
-		LogsDSN:       "postgres://bifrost:bifrost_password@localhost:5432/bifrost?sslmode=disable",
 		LogRows:       100000,
 		BatchSize:     1000,
 		OutputEnvPath: "tmp/e2e-seed.env",
@@ -79,16 +88,46 @@ func DefaultOptions() Options {
 }
 
 // NormalizeOptions applies default values to unset options.
-func NormalizeOptions(opts Options) Options {
+func NormalizeOptions(opts Options) (Options, error) {
 	def := DefaultOptions()
 	if opts.Prefix == "" {
 		opts.Prefix = def.Prefix
 	}
+	if opts.ConfigPath != "" {
+		resolved, err := optionsFromConfigFile(opts.ConfigPath)
+		if err != nil {
+			return Options{}, fmt.Errorf("load config path %q: %w", opts.ConfigPath, err)
+		}
+		if opts.EncryptionKey == "" {
+			opts.EncryptionKey = resolved.EncryptionKey
+		}
+		if opts.ConfigDialect == "" && resolved.ConfigDialect != "" {
+			opts.ConfigDialect = resolved.ConfigDialect
+		}
+		if opts.ConfigDSN == "" && resolved.ConfigDSN != "" {
+			opts.ConfigDSN = resolved.ConfigDSN
+		}
+		if opts.LogsDialect == "" && resolved.LogsDialect != "" {
+			opts.LogsDialect = resolved.LogsDialect
+		}
+		if opts.LogsDSN == "" && resolved.LogsDSN != "" {
+			opts.LogsDSN = resolved.LogsDSN
+		}
+	}
 	if opts.ConfigDialect == "" {
 		opts.ConfigDialect = def.ConfigDialect
 	}
+	if opts.EncryptionKey == "" {
+		opts.EncryptionKey = os.Getenv("BIFROST_ENCRYPTION_KEY")
+	}
+	if opts.ConfigDSN == "" {
+		opts.ConfigDSN = "postgres://bifrost:bifrost_password@localhost:5432/bifrost?sslmode=disable"
+	}
 	if opts.LogsDialect == "" {
 		opts.LogsDialect = def.LogsDialect
+	}
+	if opts.LogsDSN == "" {
+		opts.LogsDSN = "postgres://bifrost:bifrost_password@localhost:5432/bifrost?sslmode=disable"
 	}
 	if opts.LogRows <= 0 {
 		opts.LogRows = def.LogRows
@@ -99,7 +138,98 @@ func NormalizeOptions(opts Options) Options {
 	if opts.OutputEnvPath == "" {
 		opts.OutputEnvPath = def.OutputEnvPath
 	}
-	return opts
+	return opts, nil
+}
+
+// InitEncryption initializes Bifrost field encryption for DBs containing encrypted rows.
+func InitEncryption(opts Options) {
+	if opts.EncryptionKey == "" {
+		return
+	}
+	encrypt.Init(opts.EncryptionKey, bifrost.NewDefaultLogger(schemas.LogLevelWarn))
+}
+
+// optionsFromConfigFile extracts config/log store connection settings from a Bifrost config.json.
+func optionsFromConfigFile(path string) (Options, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Options{}, err
+	}
+	var cfg struct {
+		EncryptionKey json.RawMessage `json:"encryption_key"`
+		ConfigStore   storeConfig     `json:"config_store"`
+		LogsStore     storeConfig     `json:"logs_store"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Options{}, err
+	}
+	out := Options{}
+	out.EncryptionKey = rawConfigValue(cfg.EncryptionKey)
+	configDialect, configDSN, err := dsnFromStoreConfig(cfg.ConfigStore)
+	if err != nil {
+		return Options{}, err
+	}
+	out.ConfigDialect = configDialect
+	out.ConfigDSN = configDSN
+	logsDialect, logsDSN, err := dsnFromStoreConfig(cfg.LogsStore)
+	if err != nil {
+		return Options{}, err
+	}
+	out.LogsDialect = logsDialect
+	out.LogsDSN = logsDSN
+	return out, nil
+}
+
+// storeConfig is the subset of config.json needed to locate a DB-backed store.
+type storeConfig struct {
+	Enabled bool                       `json:"enabled"`
+	Type    string                     `json:"type"`
+	Config  map[string]json.RawMessage `json:"config"`
+}
+
+// dsnFromStoreConfig converts a raw store config into the dialect and DSN used by gorm.
+func dsnFromStoreConfig(store storeConfig) (string, string, error) {
+	if !store.Enabled {
+		return "", "", nil
+	}
+	switch store.Type {
+	case "postgres":
+		host := configValue(store.Config, "host")
+		port := configValue(store.Config, "port")
+		user := configValue(store.Config, "user")
+		password := configValue(store.Config, "password")
+		dbName := configValue(store.Config, "db_name")
+		sslMode := configValue(store.Config, "ssl_mode")
+		if sslMode == "" {
+			sslMode = "disable"
+		}
+		return "postgres", fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", url.QueryEscape(user), url.QueryEscape(password), host, port, dbName, sslMode), nil
+	case "sqlite":
+		return "sqlite", configValue(store.Config, "path"), nil
+	default:
+		return "", "", fmt.Errorf("unsupported store type %q", store.Type)
+	}
+}
+
+// configValue returns a raw JSON config value, resolving Bifrost env-var wrappers.
+func configValue(config map[string]json.RawMessage, key string) string {
+	return rawConfigValue(config[key])
+}
+
+// rawConfigValue returns a raw JSON config value, resolving Bifrost env-var wrappers.
+func rawConfigValue(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return schemas.NewEnvVar(text).GetValue()
+	}
+	var env schemas.EnvVar
+	if err := json.Unmarshal(raw, &env); err == nil {
+		return env.GetValue()
+	}
+	return strings.Trim(string(raw), `"`)
 }
 
 // OpenDB opens a supported GORM database.
@@ -122,7 +252,11 @@ func OpenDB(dialect, dsn string) (*gorm.DB, error) {
 
 // SeedBase writes the OSS-owned seed graph.
 func SeedBase(ctx context.Context, configDB, logsDB *gorm.DB, opts Options) (*Summary, error) {
-	opts = NormalizeOptions(opts)
+	opts, err := NormalizeOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	InitEncryption(opts)
 	env := SeedEnv(opts.Prefix)
 	manifest := BuildExpectedManifest(opts.Prefix, opts.LogRows)
 	summary := &Summary{
@@ -262,12 +396,16 @@ func CountKnownTables(ctx context.Context, configDB, logsDB *gorm.DB) (map[strin
 	out := map[string]int64{}
 	for _, table := range []string{"config_providers", "config_keys", "config_models", "governance_customers", "governance_teams", "governance_virtual_keys", "governance_virtual_key_provider_configs", "governance_budgets", "governance_rate_limits", "folders", "prompts", "prompt_versions", "config_mcp_clients"} {
 		var count int64
-		_ = configDB.WithContext(ctx).Table(table).Count(&count).Error
+		if err := configDB.WithContext(ctx).Table(table).Count(&count).Error; err != nil {
+			return nil, fmt.Errorf("count table %s: %w", table, err)
+		}
 		out[table] = count
 	}
 	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs"} {
 		var count int64
-		_ = logsDB.WithContext(ctx).Table(table).Count(&count).Error
+		if err := logsDB.WithContext(ctx).Table(table).Count(&count).Error; err != nil {
+			return nil, fmt.Errorf("count table %s: %w", table, err)
+		}
 		out[table] = count
 	}
 	return out, nil
@@ -278,7 +416,7 @@ func seedConfig(ctx context.Context, db *gorm.DB, opts Options) error {
 	if db == nil {
 		return fmt.Errorf("config db is required")
 	}
-	now := time.Now().UTC()
+	now := seedBaseTime
 	if err := seedProviders(ctx, db, opts.Prefix, now); err != nil {
 		return err
 	}
@@ -409,7 +547,7 @@ func seedLogs(ctx context.Context, db *gorm.DB, opts Options, manifest ExpectedM
 
 // seedLogCompanions writes one MCP log and one async job for log-adjacent APIs.
 func seedLogCompanions(ctx context.Context, db *gorm.DB, prefix string) error {
-	now := time.Now().UTC()
+	now := seedBaseTime
 	vk := prefix + "-vk-user-team"
 	latency := float64(25)
 	cost := 0.001
@@ -424,13 +562,15 @@ func seedLogCompanions(ctx context.Context, db *gorm.DB, prefix string) error {
 
 // buildLog returns one deterministic log row.
 func buildLog(prefix string, shape Shape, index int) logstore.Log {
-	timestamp := time.Now().UTC().Add(-time.Duration(index) * time.Second)
+	timestamp := seedBaseTime.Add(-time.Duration(index) * time.Second)
 	vkName := ""
 	if shape.VirtualKeyID != "" {
 		vkName = "E2E " + shape.VirtualKeyID
 	}
 	latency := float64(100 + index%500)
 	cost := float64(1+index%100) / 100000
+	promptTokens := 10 + index%30
+	completionTokens := 5 + index%20
 	status := "success"
 	if index%17 == 0 {
 		status = "error"
@@ -463,9 +603,9 @@ func buildLog(prefix string, shape Shape, index int) logstore.Log {
 		Status:              status,
 		ContentSummary:      shape.Marker,
 		MetadataParsed:      map[string]any{"seed_prefix": prefix, "shape": shape.Name, "marker": shape.Marker},
-		PromptTokens:        10 + index%30,
-		CompletionTokens:    5 + index%20,
-		TotalTokens:         15 + index%50,
+		PromptTokens:        promptTokens,
+		CompletionTokens:    completionTokens,
+		TotalTokens:         promptTokens + completionTokens,
 		RoutingEnginesUsed:  []string{"governance"},
 		CreatedAt:           timestamp,
 	}
