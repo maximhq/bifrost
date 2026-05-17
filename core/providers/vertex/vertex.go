@@ -585,6 +585,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
+	if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
+		request.Params != nil && request.Params.ServiceTier != nil {
+		if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+			req.Header.Set(VertexServiceTierHeader, v)
+		}
+	}
 	// Skip anthropic-beta from context headers — Anthropic models on Vertex use the
 	// anthropic_beta body field instead, and other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
@@ -904,6 +910,16 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			"Cache-Control": "no-cache",
 		}
 
+		if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) {
+			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
+				if request.Params != nil && request.Params.ServiceTier != nil {
+					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+						headers[VertexServiceTierHeader] = v
+					}
+				}
+			}
+		}
+
 		// If no auth query, use OAuth2 token
 		if authQuery == "" {
 			tokenSource, err := getAuthTokenSource(key)
@@ -1169,6 +1185,13 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
+		if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
+			request.Params != nil && request.Params.ServiceTier != nil {
+			if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+				req.Header.Set(VertexServiceTierHeader, v)
+			}
+		}
+
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 		// If auth query is set, add it to the URL
@@ -1378,6 +1401,16 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		headers := map[string]string{
 			"Accept":        "text/event-stream",
 			"Cache-Control": "no-cache",
+		}
+
+		if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
+				if request.Params != nil && request.Params.ServiceTier != nil {
+					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+						headers[VertexServiceTierHeader] = v
+					}
+				}
+			}
 		}
 
 		// If no auth query, use OAuth2 token
@@ -2518,6 +2551,8 @@ func (provider *VertexProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.
 // stripVertexGeminiUnsupportedFields removes fields that are not supported by Vertex AI's Gemini API.
 // Specifically, it removes the "id" field from function_call and function_response objects in contents.
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
+	// Strip service tier — Vertex uses HTTP headers for this, not the request body.
+	requestBody.ServiceTier = ""
 	for _, content := range requestBody.Contents {
 		for _, part := range content.Parts {
 			// Remove id from function_call
@@ -2568,6 +2603,13 @@ func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 		contentIndex++
 		return true
 	})
+
+	// Strip top-level serviceTier — Vertex uses HTTP headers for this, not the request body.
+	if providerUtils.JSONFieldExists(out, "serviceTier") {
+		if updated, err := providerUtils.DeleteJSONField(out, "serviceTier"); err == nil {
+			out = updated
+		}
+	}
 
 	return out
 }

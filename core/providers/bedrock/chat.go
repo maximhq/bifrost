@@ -286,7 +286,8 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	}
 
 	if response.ServiceTier != nil && response.ServiceTier.Type != "" {
-		bifrostResponse.ServiceTier = &response.ServiceTier.Type
+		tier := mapBedrockServiceTierToBifrost(response.ServiceTier.Type)
+		bifrostResponse.ServiceTier = &tier
 	}
 
 	return bifrostResponse, nil

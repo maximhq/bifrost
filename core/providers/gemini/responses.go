@@ -62,6 +62,11 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		params.ExtraParams["safety_settings"] = request.SafetySettings
 	}
 
+	if request.ServiceTier != "" {
+		mapped := mapGeminiServiceTierToBifrost(request.ServiceTier)
+		params.ServiceTier = &mapped
+	}
+
 	if request.CachedContent != "" {
 		params.ExtraParams["cached_content"] = request.CachedContent
 	}
@@ -102,6 +107,10 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 			if bifrostReq.Params.ToolChoice != nil {
 				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
 			}
+		}
+
+		if bifrostReq.Params.ServiceTier != nil {
+			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
 		}
 	}
 
@@ -162,6 +171,11 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Convert usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
+
+	if response.UsageMetadata != nil && response.UsageMetadata.ServiceTier != "" {
+		tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+		bifrostResp.ServiceTier = &tier
+	}
 
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
@@ -469,6 +483,12 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 	if bifrostResp.Usage != nil {
 		geminiResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Usage)
 	}
+	if bifrostResp.ServiceTier != nil {
+		if geminiResp.UsageMetadata == nil {
+			geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
+		}
+		geminiResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.ServiceTier)
+	}
 
 	return geminiResp
 }
@@ -721,6 +741,12 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			// Convert usage metadata if available
 			if bifrostResp.Response.Usage != nil {
 				streamResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Response.Usage)
+			}
+			if bifrostResp.Response.ServiceTier != nil {
+				if streamResp.UsageMetadata == nil {
+					streamResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
+				}
+				streamResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.Response.ServiceTier)
 			}
 
 			// Derive finish reason from StopReason when present
@@ -1810,6 +1836,10 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		ID:        state.MessageID,
 		CreatedAt: state.CreatedAt,
 		Usage:     bifrostUsage,
+	}
+	if usage != nil && usage.ServiceTier != "" {
+		tier := mapGeminiServiceTierToBifrost(usage.ServiceTier)
+		completedResp.ServiceTier = &tier
 	}
 	if state.Model != nil {
 		completedResp.Model = *state.Model

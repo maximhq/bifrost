@@ -892,14 +892,14 @@ func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPa
 // ---------------------------------------------------------------------------
 
 // tierFromString constructs a serviceTier from an OpenAI service_tier response value.
-func tierFromString(s *string) serviceTier {
+func tierFromString(s *schemas.BifrostServiceTier) serviceTier {
 	if s == nil {
 		return serviceTier{}
 	}
 	switch *s {
-	case "priority":
+	case schemas.BifrostServiceTierPriority:
 		return serviceTier{isPriority: true}
-	case "flex":
+	case schemas.BifrostServiceTierFlex:
 		return serviceTier{isFlex: true}
 	default:
 		return serviceTier{}
