@@ -1699,7 +1699,7 @@
             },
             "provider": {
               "type": "string",
-              "enum": ["", "okta", "entra", "keycloak"],
+              "enum": ["", "okta", "entra", "keycloak", "zitadel", "google"],
               "description": "SCIM/SSO provider type (empty when not configured)"
             },
             "config": {
@@ -1710,6 +1710,20 @@
           "required": ["enabled"],
           "additionalProperties": false,
           "allOf": [
+            {
+              "if": {
+                "properties": { "enabled": { "const": true } },
+                "required": ["enabled"]
+              },
+              "then": {
+                "properties": {
+                  "provider": {
+                    "enum": ["okta", "entra", "keycloak", "zitadel", "google"]
+                  }
+                },
+                "required": ["provider"]
+              }
+            },
             {
               "if": {
                 "properties": {
@@ -1763,6 +1777,48 @@
                         "type": "string",
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
+                      },
+                      "attributeRoleMappings": {
+                        "type": "array",
+                        "description": "Ordered list of attribute -> role mappings (first match wins). Requires an Okta Custom Authorization Server; the free Org Authorization Server does not support claim expressions.",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
+                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
+                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                          },
+                          "required": ["attribute", "value", "role"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeTeamMappings": {
+                        "type": "array",
+                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "team": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "team"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeBusinessUnitMappings": {
+                        "type": "array",
+                        "description": "Attribute -> business-unit mappings (all matches apply).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "business_unit": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "business_unit"],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -1835,6 +1891,48 @@
                         "type": "string",
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
+                      },
+                      "attributeRoleMappings": {
+                        "type": "array",
+                        "description": "Ordered list of attribute -> role mappings (first match wins).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths)" },
+                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
+                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                          },
+                          "required": ["attribute", "value", "role"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeTeamMappings": {
+                        "type": "array",
+                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "team": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "team"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeBusinessUnitMappings": {
+                        "type": "array",
+                        "description": "Attribute -> business-unit mappings (all matches apply).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "business_unit": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "business_unit"],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": ["tenantId", "clientId"],
@@ -1899,23 +1997,44 @@
                       },
                       "attributeRoleMappings": {
                         "type": "array",
-                        "description": "Ordered list of attribute -> role mappings",
+                        "description": "Ordered list of attribute -> role mappings (first match wins).",
                         "items": {
-                          "type": "object"
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
+                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
+                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                          },
+                          "required": ["attribute", "value", "role"],
+                          "additionalProperties": false
                         }
                       },
                       "attributeTeamMappings": {
                         "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply)",
+                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name).",
                         "items": {
-                          "type": "object"
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "team": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "team"],
+                          "additionalProperties": false
                         }
                       },
                       "attributeBusinessUnitMappings": {
                         "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply)",
+                        "description": "Attribute -> business-unit mappings (all matches apply).",
                         "items": {
-                          "type": "object"
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "business_unit": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "business_unit"],
+                          "additionalProperties": false
                         }
                       }
                     },
@@ -1926,6 +2045,249 @@
                       "clientSecret"
                     ],
                     "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  },
+                  "provider": {
+                    "const": "zitadel"
+                  }
+                },
+                "required": ["enabled", "provider"]
+              },
+              "then": {
+                "properties": {
+                  "config": {
+                    "type": "object",
+                    "description": "Zitadel OIDC authentication configuration",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "format": "hostname",
+                        "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
+                        "description": "Zitadel instance domain (e.g., 'my-instance.zitadel.cloud' or 'auth.company.com'). Bare host only - do NOT include the scheme, port, or path."
+                      },
+                      "clientId": {
+                        "type": "string",
+                        "description": "Zitadel application client ID"
+                      },
+                      "clientSecret": {
+                        "type": "string",
+                        "description": "Zitadel client secret (optional, required for confidential clients and token revocation)"
+                      },
+                      "projectId": {
+                        "type": "string",
+                        "description": "Optional Zitadel project ID for project-scoped role claims"
+                      },
+                      "audience": {
+                        "type": "string",
+                        "description": "Access-token audience override (default: clientId)"
+                      },
+                      "serviceAccountClientId": {
+                        "type": "string",
+                        "description": "Service account client ID for Zitadel Management API (required for user provisioning - web apps cannot use client_credentials)"
+                      },
+                      "serviceAccountClientSecret": {
+                        "type": "string",
+                        "description": "Service account client secret for Zitadel Management API"
+                      },
+                      "teamIdsField": {
+                        "type": "string",
+                        "description": "JWT claim field for team/group IDs (default: 'groups')",
+                        "default": "groups"
+                      },
+                      "attributeRoleMappings": {
+                        "type": "array",
+                        "description": "Ordered list of attribute -> role mappings (first match wins).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "role": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "role"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeTeamMappings": {
+                        "type": "array",
+                        "description": "Attribute -> team mappings (all matches apply).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "team": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "team"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeBusinessUnitMappings": {
+                        "type": "array",
+                        "description": "Attribute -> business-unit mappings (all matches apply).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "business_unit": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "business_unit"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["domain", "clientId"],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  },
+                  "provider": {
+                    "const": "google"
+                  }
+                },
+                "required": ["enabled", "provider"]
+              },
+              "then": {
+                "properties": {
+                  "config": {
+                    "type": "object",
+                    "description": "Google Workspace OIDC authentication configuration",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "format": "hostname",
+                        "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
+                        "description": "Google Workspace primary domain (e.g., 'company.com'). Bare host only - do NOT include the scheme, port, or path."
+                      },
+                      "clientId": {
+                        "type": "string",
+                        "description": "Google OAuth2 client ID"
+                      },
+                      "clientSecret": {
+                        "type": "string",
+                        "description": "Google client secret (optional, used for token revocation)"
+                      },
+                      "credentialMode": {
+                        "type": "string",
+                        "enum": ["", "inherit", "env", "file"],
+                        "description": "How Directory API credentials are sourced. 'inherit' uses Application Default Credentials; 'env' uses serviceAccountEnvVar; 'file' uses serviceAccountFile."
+                      },
+                      "serviceAccountEnvVar": {
+                        "type": "string",
+                        "description": "Name of the environment variable containing the service account JSON (used when credentialMode is 'env'). Required for Directory API access without ADC."
+                      },
+                      "serviceAccountFile": {
+                        "type": "string",
+                        "description": "Filesystem path to the service account JSON key file (used when credentialMode is 'file')."
+                      },
+                      "adminEmail": {
+                        "type": "string",
+                        "format": "email",
+                        "description": "Admin email for domain-wide delegation. Required whenever Directory API access is configured."
+                      },
+                      "impersonateServiceAccount": {
+                        "type": "string",
+                        "description": "GCP service account email to impersonate when using ADC (Workload Identity); must have domain-wide delegation configured."
+                      },
+                      "audience": {
+                        "type": "string",
+                        "description": "JWT audience override (default: clientId)"
+                      },
+                      "teamIdsField": {
+                        "type": "string",
+                        "description": "Claim field for team/group IDs (default: 'groups')",
+                        "default": "groups"
+                      },
+                      "attributeRoleMappings": {
+                        "type": "array",
+                        "description": "Ordered list of attribute -> role mappings (first match wins).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "role": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "role"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeTeamMappings": {
+                        "type": "array",
+                        "description": "Attribute -> team mappings (all matches apply).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "team": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "team"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "attributeBusinessUnitMappings": {
+                        "type": "array",
+                        "description": "Attribute -> business-unit mappings (all matches apply).",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "attribute": { "type": "string" },
+                            "value": { "type": "string" },
+                            "business_unit": { "type": "string" }
+                          },
+                          "required": ["attribute", "value", "business_unit"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["domain", "clientId"],
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": { "credentialMode": { "const": "env" } },
+                          "required": ["credentialMode"]
+                        },
+                        "then": {
+                          "required": ["serviceAccountEnvVar"]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": { "credentialMode": { "const": "file" } },
+                          "required": ["credentialMode"]
+                        },
+                        "then": {
+                          "required": ["serviceAccountFile"]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": { "credentialMode": { "enum": ["inherit", "env", "file"] } },
+                          "required": ["credentialMode"]
+                        },
+                        "then": {
+                          "required": ["adminEmail"]
+                        }
+                      }
+                    ]
                   }
                 }
               }
