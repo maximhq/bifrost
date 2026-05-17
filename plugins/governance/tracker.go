@@ -68,10 +68,9 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 
 // UpdateUsage queues a usage update for async processing (main business entry point)
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
-	// Only process successful requests for usage tracking
-	if !update.Success {
-		t.logger.Debug("Request was not successful, skipping usage update")
-		return
+	// allow failed requests with partial usage (e.g. stream cancellations / partial chunks) to update budgets
+	if !update.Success && update.TokensUsed == 0 && update.Cost == 0 {
+		t.logger.Debug("Request was not successful and has no usage, skipping usage update")
 	}
 
 	// Streaming optimization: only process certain updates based on streaming status

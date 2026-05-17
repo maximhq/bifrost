@@ -50,7 +50,7 @@ func TestUsageTracker_UpdateUsage_FailedRequest(t *testing.T) {
 	require.True(t, exists)
 	require.NotNil(t, updatedBudget)
 
-	assert.Equal(t, 0.0, updatedBudget.CurrentUsage, "Failed request should not update budget")
+	assert.Equal(t, 25.5, updatedBudget.CurrentUsage, "Failed request with partial usage should update budget")
 }
 
 // TestUsageTracker_UpdateUsage_VirtualKeyNotFound tests handling of missing VK
