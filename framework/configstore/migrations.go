@@ -161,7 +161,7 @@ type legacyBudgetVirtualKey struct {
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
-// legacyBudgetVirtualKey holds the legacy budget virtual key model.
+// TableName returns the governance_virtual_keys table name for legacyBudgetVirtualKey.
 func (legacyBudgetVirtualKey) TableName() string { return "governance_virtual_keys" }
 
 // legacyBudgetVirtualKeyProviderConfig holds the legacy budget virtual key provider config model.
@@ -170,7 +170,7 @@ type legacyBudgetVirtualKeyProviderConfig struct {
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
-// legacyBudgetVirtualKeyProviderConfig holds the legacy budget virtual key provider config model.
+// TableName returns the governance_virtual_key_provider_configs table name for legacyBudgetVirtualKeyProviderConfig.
 func (legacyBudgetVirtualKeyProviderConfig) TableName() string {
 	return "governance_virtual_key_provider_configs"
 }
@@ -181,7 +181,7 @@ type legacyBudgetTeam struct {
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
-// legacyBudgetTeam holds the legacy budget team model.
+// TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
 // sqliteColumnInfo holds the information about a SQLite column.
@@ -250,20 +250,21 @@ func sqliteTableHasColumn(tx *gorm.DB, tableName, columnName string) (bool, erro
 }
 
 // hasColumn checks if a table has a column with the given name.
-func hasColumn(tx *gorm.DB, table, column string) bool {
+// Returns the introspection error rather than collapsing it to false so callers
+// can distinguish "column missing" from "could not determine".
+func hasColumn(tx *gorm.DB, table, column string) (bool, error) {
 	var count int64
 	var q string
 	switch tx.Dialector.Name() {
 	case "sqlite":
 		q = `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`
 	default:
-		q = `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND
-  column_name = ?`
+		q = `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ? AND table_schema = current_schema()`
 	}
 	if err := tx.Raw(q, table, column).Scan(&count).Error; err != nil {
-		return false
+		return false, err
 	}
-	return count > 0
+	return count > 0, nil
 }
 
 // sqliteDropLegacyBudgetColumn removes the legacy budget_id column from a
@@ -7287,13 +7288,21 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			// Adding columns first
-			if !hasColumn(tx, "governance_budgets", "calendar_aligned") {
+			budgetsHasCol, err := hasColumn(tx, "governance_budgets", "calendar_aligned")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_budgets for calendar_aligned: %w", err)
+			}
+			if !budgetsHasCol {
 				if err := tx.Exec(`ALTER TABLE governance_budgets ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to budgets: %w", err)
 				}
 			}
 			// Adding columns first
-			if !hasColumn(tx, "governance_rate_limits", "calendar_aligned") {
+			rateLimitsHasCol, err := hasColumn(tx, "governance_rate_limits", "calendar_aligned")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_rate_limits for calendar_aligned: %w", err)
+			}
+			if !rateLimitsHasCol {
 				if err := tx.Exec(`ALTER TABLE governance_rate_limits ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to rate_limits: %w", err)
 				}
