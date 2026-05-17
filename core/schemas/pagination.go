@@ -60,4 +60,3 @@ func NewSerialCursor(keyIndex int, cursor string) *SerialCursor {
 		Cursor:   cursor,
 	}
 }
-

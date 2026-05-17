@@ -248,7 +248,7 @@ func TestAgent_StateTransition_AlternatingAutoNonAuto(t *testing.T) {
 					ID:   schemas.Ptr("call-manual-1"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-manual_tool"),
+						Name:      schemas.Ptr("bifrostInternal-manual_tool"),
 						Arguments: "{}",
 					},
 				},
@@ -406,7 +406,7 @@ func TestAgent_StateTransition_AllToolsFilteredOut(t *testing.T) {
 			ID:   schemas.Ptr("call-0"),
 			Type: schemas.Ptr("function"),
 			Function: schemas.ChatAssistantMessageToolCallFunction{
-				Name: schemas.Ptr("bifrostInternal-tool_0"),
+				Name:      schemas.Ptr("bifrostInternal-tool_0"),
 				Arguments: "{}",
 			},
 		},
@@ -414,7 +414,7 @@ func TestAgent_StateTransition_AllToolsFilteredOut(t *testing.T) {
 			ID:   schemas.Ptr("call-1"),
 			Type: schemas.Ptr("function"),
 			Function: schemas.ChatAssistantMessageToolCallFunction{
-				Name: schemas.Ptr("bifrostInternal-tool_1"),
+				Name:      schemas.Ptr("bifrostInternal-tool_1"),
 				Arguments: "{}",
 			},
 		},
@@ -506,7 +506,7 @@ func TestAgent_StateTransition_StateConsistency(t *testing.T) {
 					ID:   schemas.Ptr("call-0"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-stateful_tool_0"),
+						Name:      schemas.Ptr("bifrostInternal-stateful_tool_0"),
 						Arguments: "{}",
 					},
 				},
@@ -516,7 +516,7 @@ func TestAgent_StateTransition_StateConsistency(t *testing.T) {
 					ID:   schemas.Ptr("call-1"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-stateful_tool_1"),
+						Name:      schemas.Ptr("bifrostInternal-stateful_tool_1"),
 						Arguments: "{}",
 					},
 				},

@@ -14,12 +14,12 @@ import (
 type DeferredSpanInfo struct {
 	SpanID              string
 	StartTime           time.Time
-	Tracer              schemas.Tracer          // Reference to tracer for completing the span
-	RequestID           string                  // Request ID for accumulator lookup
-	FirstChunkTime      time.Time               // Timestamp of first chunk (for TTFT calculation)
-	ChunkCount          int                     // Count of received streaming chunks (for AttrTotalChunks)
+	Tracer              schemas.Tracer           // Reference to tracer for completing the span
+	RequestID           string                   // Request ID for accumulator lookup
+	FirstChunkTime      time.Time                // Timestamp of first chunk (for TTFT calculation)
+	ChunkCount          int                      // Count of received streaming chunks (for AttrTotalChunks)
 	AccumulatedResponse *schemas.BifrostResponse // Full accumulated response from streaming chunks
-	mu                  sync.Mutex              // Mutex for thread-safe chunk accumulation
+	mu                  sync.Mutex               // Mutex for thread-safe chunk accumulation
 }
 
 // TraceStore manages traces with thread-safe access and object pooling

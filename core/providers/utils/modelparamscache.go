@@ -13,7 +13,7 @@ const DefaultModelParamsCacheSize = 2048
 // ModelParams holds cached parameters for a model.
 // Add new fields here as more model-level parameters need caching.
 type ModelParams struct {
-	MaxOutputTokens    *int
+	MaxOutputTokens         *int
 	IsVertexMultiRegionOnly *bool // true when model is only available on Vertex multi-region pool endpoints (rep.googleapis.com)
 }
 

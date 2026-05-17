@@ -198,7 +198,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
 		instanceAttrs:             instanceAttrs,
-		pluginSpanFilter: config.PluginSpanFilter,
+		pluginSpanFilter:          config.PluginSpanFilter,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {

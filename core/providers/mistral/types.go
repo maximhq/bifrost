@@ -199,8 +199,8 @@ type MistralOCRUsageInfo struct {
 
 // MistralOCRResponse represents Mistral's OCR API response.
 type MistralOCRResponse struct {
-	Model              string              `json:"model"`
-	Pages              []MistralOCRPage    `json:"pages"`
+	Model              string               `json:"model"`
+	Pages              []MistralOCRPage     `json:"pages"`
 	UsageInfo          *MistralOCRUsageInfo `json:"usage_info,omitempty"`
-	DocumentAnnotation *string             `json:"document_annotation,omitempty"`
+	DocumentAnnotation *string              `json:"document_annotation,omitempty"`
 }

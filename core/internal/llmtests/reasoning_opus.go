@@ -11,13 +11,13 @@ import (
 
 // OpusReasoningTestConfig holds configuration for Opus-specific reasoning tests
 type OpusReasoningTestConfig struct {
-	Provider   schemas.ModelProvider
+	Provider    schemas.ModelProvider
 	Opus45Model string // Opus 4.5 model identifier
 	Opus46Model string // Opus 4.6 model identifier
-	Fallbacks  []schemas.Fallback
-	SkipOpus45 bool   // Skip Opus 4.5 tests
-	SkipOpus46 bool   // Skip Opus 4.6 tests
-	SkipReason string // Reason for skipping
+	Fallbacks   []schemas.Fallback
+	SkipOpus45  bool   // Skip Opus 4.5 tests
+	SkipOpus46  bool   // Skip Opus 4.6 tests
+	SkipReason  string // Reason for skipping
 }
 
 // GetOpusReasoningTestConfigs returns test configurations for Opus reasoning across providers

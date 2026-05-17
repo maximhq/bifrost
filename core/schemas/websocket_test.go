@@ -33,8 +33,8 @@ func TestWebSocketConfig_CheckAndSetDefaults(t *testing.T) {
 
 func TestWebSocketConfig_PreservesExistingValues(t *testing.T) {
 	config := &WebSocketConfig{
-		MaxConnections: 20,
-		TranscriptBufferSize:  123,
+		MaxConnections:       20,
+		TranscriptBufferSize: 123,
 		Pool: &WSPoolConfig{
 			MaxIdlePerKey:                5,
 			MaxTotalConnections:          50,

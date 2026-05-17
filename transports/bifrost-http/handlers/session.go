@@ -209,7 +209,7 @@ func (h *SessionHandler) issueWSTicket(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "WebSocket tickets are not available")
 		return
 	}
-	sessionToken,ok := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string)
+	sessionToken, ok := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string)
 	if !ok {
 		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 		return

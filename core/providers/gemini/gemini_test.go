@@ -951,6 +951,18 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
+			for _, tool := range result.Tools {
+				for _, fd := range tool.FunctionDeclarations {
+					if fd.Parameters == nil && fd.ParametersJSONSchema != nil {
+						raw, err := json.Marshal(fd.ParametersJSONSchema)
+						require.NoError(t, err)
+						var params schemas.ToolFunctionParameters
+						err = json.Unmarshal(raw, &params)
+						require.NoError(t, err)
+						fd.Parameters = gemini.ConvertFunctionParametersToSchema(params)
+					}
+				}
+			}
 			tt.validate(t, result)
 		})
 	}
@@ -988,6 +1000,15 @@ func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
 	fd := result.Tools[0].FunctionDeclarations[0]
+
+	if fd.Parameters == nil && fd.ParametersJSONSchema != nil {
+		raw, err := json.Marshal(fd.ParametersJSONSchema)
+		require.NoError(t, err)
+		var params schemas.ToolFunctionParameters
+		err = json.Unmarshal(raw, &params)
+		require.NoError(t, err)
+		fd.Parameters = gemini.ConvertFunctionParametersToSchema(params)
+	}
 
 	// CoT: PropertyOrdering preserves client's intended field order
 	assert.Equal(t, []string{"chain_of_thought", "answer", "citations"}, fd.Parameters.PropertyOrdering,
@@ -1036,6 +1057,15 @@ func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
 	fd := result.Tools[0].FunctionDeclarations[0]
+
+	if fd.Parameters == nil && fd.ParametersJSONSchema != nil {
+		raw, err := json.Marshal(fd.ParametersJSONSchema)
+		require.NoError(t, err)
+		var params schemas.ToolFunctionParameters
+		err = json.Unmarshal(raw, &params)
+		require.NoError(t, err)
+		fd.Parameters = gemini.ConvertFunctionParametersToSchema(params)
+	}
 
 	// Top-level property ordering
 	assert.Equal(t, []string{"output", "reasoning"}, fd.Parameters.PropertyOrdering)
@@ -2587,6 +2617,18 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 			result, err := gemini.ToGeminiResponsesRequest(tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
+			for _, tool := range result.Tools {
+				for _, fd := range tool.FunctionDeclarations {
+					if fd.Parameters == nil && fd.ParametersJSONSchema != nil {
+						raw, err := json.Marshal(fd.ParametersJSONSchema)
+						require.NoError(t, err)
+						var params schemas.ToolFunctionParameters
+						err = json.Unmarshal(raw, &params)
+						require.NoError(t, err)
+						fd.Parameters = gemini.ConvertFunctionParametersToSchema(params)
+					}
+				}
+			}
 			tt.validate(t, result)
 		})
 	}

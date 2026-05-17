@@ -132,30 +132,30 @@ func (req *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx *sc
 func parseVideoGenerationFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIVideoGenerationRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add prompt field (required)
 	if openaiReq.Prompt == "" {
-		return providerUtils.NewBifrostOperationError("prompt is required",  nil)
+		return providerUtils.NewBifrostOperationError("prompt is required", nil)
 	}
 	if err := writer.WriteField("prompt", openaiReq.Prompt); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write prompt field",  err)
+		return providerUtils.NewBifrostOperationError("failed to write prompt field", err)
 	}
 
 	// Add optional model field
 	if openaiReq.Model != "" {
 		if err := writer.WriteField("model", openaiReq.Model); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write model field",  err)
+			return providerUtils.NewBifrostOperationError("failed to write model field", err)
 		}
 	}
 
 	// Add optional seconds field
 	if openaiReq.Seconds != nil {
 		if err := writer.WriteField("seconds", *openaiReq.Seconds); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write seconds field",  err)
+			return providerUtils.NewBifrostOperationError("failed to write seconds field", err)
 		}
 	}
 
 	// Add optional size field
 	if openaiReq.Size != "" {
 		if err := writer.WriteField("size", openaiReq.Size); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write size field",  err)
+			return providerUtils.NewBifrostOperationError("failed to write size field", err)
 		}
 	}
 
@@ -196,16 +196,16 @@ func parseVideoGenerationFormDataBodyFromRequest(writer *multipart.Writer, opena
 			"Content-Type":        {mimeType},
 		})
 		if err != nil {
-			return providerUtils.NewBifrostOperationError("failed to create form part for input_reference",  err)
+			return providerUtils.NewBifrostOperationError("failed to create form part for input_reference", err)
 		}
 		if _, err := part.Write(openaiReq.InputReference); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write input_reference file data",  err)
+			return providerUtils.NewBifrostOperationError("failed to write input_reference file data", err)
 		}
 	}
 
 	// Close the multipart writer
 	if err := writer.Close(); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to close multipart writer",  err)
+		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
 	return nil

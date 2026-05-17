@@ -2453,7 +2453,7 @@ func (tm *TabManager) buildTabBarString() string {
 	if versionLabel != "" {
 		b.WriteString(bg + "\x1b[36m" + versionLabel)
 	}
-	b.WriteString(reset)	
+	b.WriteString(reset)
 	return b.String()
 }
 

@@ -77,8 +77,8 @@ func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return make(map[string][]schemas.ChatTool)
 }
 
-func (m *MockClientManager) GetPluginPipeline() PluginPipeline                { return nil }
-func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline)    {}
+func (m *MockClientManager) GetPluginPipeline() PluginPipeline             { return nil }
+func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 
 func TestHasToolCallsForChatResponse(t *testing.T) {
 	// Test nil response

@@ -71,6 +71,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// allow failed requests with partial usage (e.g. stream cancellations / partial chunks) to update budgets
 	if !update.Success && update.TokensUsed == 0 && update.Cost == 0 {
 		t.logger.Debug("Request was not successful and has no usage, skipping usage update")
+		return
 	}
 
 	// Streaming optimization: only process certain updates based on streaming status

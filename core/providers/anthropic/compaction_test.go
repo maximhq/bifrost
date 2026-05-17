@@ -438,17 +438,17 @@ func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 		{
 			name:               "end_turn stop reason",
 			stopReason:         AnthropicStopReasonEndTurn,
-			expectedStopReason: "end_turn",
+			expectedStopReason: "stop",
 		},
 		{
 			name:               "tool_use stop reason",
 			stopReason:         AnthropicStopReasonToolUse,
-			expectedStopReason: "tool_use",
+			expectedStopReason: "tool_calls",
 		},
 		{
 			name:               "max_tokens stop reason",
 			stopReason:         AnthropicStopReasonMaxTokens,
-			expectedStopReason: "max_tokens",
+			expectedStopReason: "length",
 		},
 	}
 

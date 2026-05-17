@@ -32,10 +32,10 @@ func TestToolResult_ComplexNestedStructures(t *testing.T) {
 					"level3": map[string]interface{}{
 						"level4": map[string]interface{}{
 							"level5": map[string]interface{}{
-								"data": "deeply nested value",
-								"array": []int{1, 2, 3, 4, 5},
+								"data":    "deeply nested value",
+								"array":   []int{1, 2, 3, 4, 5},
 								"boolean": true,
-								"null": nil,
+								"null":    nil,
 							},
 						},
 					},
@@ -89,7 +89,7 @@ func TestToolResult_MultiPartContent(t *testing.T) {
 			},
 			"metadata_part": map[string]interface{}{
 				"timestamp": "2024-01-01T00:00:00Z",
-				"source": "test",
+				"source":    "test",
 			},
 		}
 

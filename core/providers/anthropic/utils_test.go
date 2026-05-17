@@ -2630,7 +2630,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},
@@ -2658,7 +2658,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},
@@ -2859,8 +2859,8 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 	const minBudget = MinimumReasoningMaxTokens
 
 	cases := []struct {
-		maxTokens    int
-		wantBudget   int
+		maxTokens  int
+		wantBudget int
 	}{
 		{maxTokens: 16000, wantBudget: 15999},
 		{maxTokens: 32000, wantBudget: 31999},

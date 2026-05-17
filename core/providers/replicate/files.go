@@ -30,7 +30,7 @@ func (r *ReplicateFileResponse) ToBifrostFileUploadResponse(providerName schemas
 		Status:         ToBifrostFileStatus(r),
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -65,7 +65,7 @@ func (r *ReplicateFileResponse) ToBifrostFileRetrieveResponse(providerName schem
 		Status:         ToBifrostFileStatus(r),
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 

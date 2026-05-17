@@ -19,12 +19,12 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 	}
 
 	cases := []struct {
-		name         string
-		provider     schemas.ModelProvider
-		input        []schemas.ChatTool
-		wantKeep     int
-		wantDropped  []string
-		assertNotes  string
+		name        string
+		provider    schemas.ModelProvider
+		input       []schemas.ChatTool
+		wantKeep    int
+		wantDropped []string
+		assertNotes string
 	}{
 		{
 			name:     "function tools always survive on any provider",
@@ -41,8 +41,8 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 			assertNotes: "Bedrock has WebSearch=false per Table 20 (AWS user guide beta-header list + Anthropic overview)",
 		},
 		{
-			name:        "bedrock drops web_fetch + code_execution + mcp_toolset",
-			provider:    schemas.Bedrock,
+			name:     "bedrock drops web_fetch + code_execution + mcp_toolset",
+			provider: schemas.Bedrock,
 			input: []schemas.ChatTool{
 				serverTool("web_fetch_20260309", "web_fetch"),
 				serverTool("code_execution_20250825", "code_execution"),

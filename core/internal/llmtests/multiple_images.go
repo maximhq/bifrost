@@ -89,7 +89,7 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 				"provider":          testConfig.Provider,
 				"model":             testConfig.VisionModel,
 				"image_count":       2,
-				"mixed_formats":     testConfig.Scenarios.ImageURL, // URL and base64 only when URL is supported
+				"mixed_formats":     testConfig.Scenarios.ImageURL,                                                                      // URL and base64 only when URL is supported
 				"expected_keywords": []string{"different", "differences", "contrast", "unlike", "comparison", "compare", "both", "two"}, // 🎯 Comparison-specific terms
 			},
 		}

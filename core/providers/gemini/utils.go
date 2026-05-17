@@ -1335,8 +1335,8 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) ([]Tool, error
 	return []Tool{}, nil
 }
 
-// convertFunctionParametersToSchema converts Bifrost function parameters to Gemini Schema
-func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *Schema {
+// ConvertFunctionParametersToSchema converts Bifrost function parameters to Gemini Schema
+func ConvertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *Schema {
 	schema := &Schema{
 		Type: Type(params.Type),
 	}

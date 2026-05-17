@@ -185,8 +185,6 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
 	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
 	schemas.Bedrock: {
-		WebSearch:     true,
-		CodeExecution: true,
 		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
 		// StructuredOutputs: kept true to match pre-existing behavior and the

@@ -357,8 +357,8 @@ func TestReadToolFile_EmptyFileName(t *testing.T) {
 					assert.True(t, strings.Contains(content, "error") ||
 						strings.Contains(content, "required") ||
 						strings.Contains(content, "invalid") ||
-						strings.Contains(content, "found") ||  // Updated to just "found" not "not found"
-						strings.Contains(content, "Available virtual files"),  // Also accept list of available files
+						strings.Contains(content, "found") || // Updated to just "found" not "not found"
+						strings.Contains(content, "Available virtual files"), // Also accept list of available files
 						"Should return error message, got: %s", content)
 				}
 			}

@@ -18,9 +18,9 @@ func TestAgentHelpers_Example_SimpleInProcessAgent(t *testing.T) {
 
 	// Setup: One-liner configuration
 	manager, mocker, ctx := SetupAgentTest(t, AgentTestConfig{
-		InProcessTools:   []string{"echo"},      // Register echo tool
-		AutoExecuteTools: []string{"echo"},      // Allow echo to auto-execute
-		MaxDepth:         5,                     // Max 5 agent iterations
+		InProcessTools:   []string{"echo"}, // Register echo tool
+		AutoExecuteTools: []string{"echo"}, // Allow echo to auto-execute
+		MaxDepth:         5,                // Max 5 agent iterations
 	})
 
 	// Configure LLM behavior

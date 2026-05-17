@@ -174,7 +174,7 @@ func TestConversationHistoryThresholdDifferentValues(t *testing.T) {
 			setup := CreateTestSetupWithConversationThreshold(t, tc.threshold)
 			defer setup.Cleanup()
 
-			ctx := CreateContextWithCacheKey(t, "test-threshold-" + tc.name)
+			ctx := CreateContextWithCacheKey(t, "test-threshold-"+tc.name)
 
 			// Build conversation with specified number of messages
 			var conversation []schemas.ChatMessage

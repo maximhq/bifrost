@@ -301,6 +301,9 @@ func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
 // It supports HTTP, SOCKS5, and environment-based proxy configurations.
 // Returns the configured client or the original client if proxy configuration is invalid.
 func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, logger schemas.Logger) *fasthttp.Client {
+	if logger == nil {
+		logger = getLogger()
+	}
 	if proxyConfig == nil {
 		return client
 	}
@@ -419,6 +422,9 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
+	if logger == nil {
+		logger = getLogger()
+	}
 	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromEnv() && networkConfig.CACertPEM.GetValue() == "" {
 		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.EnvVar)
 		logger.Error(errMsg)

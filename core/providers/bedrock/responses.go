@@ -2551,9 +2551,15 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		// toolResult in the same message — their stop reason is "end_turn",
 		// not "tool_use". Only flag hasToolUse when there is an unmatched
 		// toolUse (i.e. the model is waiting for a client-side tool result).
+		serverToolUseIDs := make(map[string]bool)
+		for _, block := range message.Content {
+			if block.ToolUse != nil && block.ToolUse.Type == "server_tool_use" {
+				serverToolUseIDs[block.ToolUse.ToolUseID] = true
+			}
+		}
 		resolvedToolUseIDs := make(map[string]bool)
 		for _, block := range message.Content {
-			if block.ToolResult != nil {
+			if block.ToolResult != nil && serverToolUseIDs[block.ToolResult.ToolUseID] {
 				resolvedToolUseIDs[block.ToolResult.ToolUseID] = true
 			}
 		}

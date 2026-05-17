@@ -112,9 +112,9 @@ func pluginGet(t *testing.T, lc logCtx, step int) (*pluginResponse, bool) {
 		t.Fatalf("pluginGet decode: %v\nbody=%s", err, truncate(string(body), 300))
 	}
 	logf(t, lc.at(step), "INFO", "plugin_get", map[string]any{
-		"status":  status,
-		"exists":  true,
-		"enabled": p.Enabled,
+		"status":        status,
+		"exists":        true,
+		"enabled":       p.Enabled,
 		"plugin_status": p.Status.Status,
 	})
 	return &p, true
@@ -150,8 +150,8 @@ func pluginCreate(t *testing.T, lc logCtx, step int, enabled bool, config map[st
 		t.Fatalf("pluginCreate decode: %v\nbody=%s", err, truncate(string(body), 500))
 	}
 	logf(t, lc.at(step), "PASS", "plugin_created", map[string]any{
-		"status":        env.Plugin.Status.Status,
-		"enabled":       env.Plugin.Enabled,
+		"status":  env.Plugin.Status.Status,
+		"enabled": env.Plugin.Enabled,
 	})
 	return &env.Plugin
 }

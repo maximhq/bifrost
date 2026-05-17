@@ -176,7 +176,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	}
 
 	s.mu.Lock()
-	
+
 	// Check if key exists and is not expired
 	if existing, ok := s.data[key]; ok {
 		if !isExpired(existing, now) {
@@ -185,7 +185,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 		}
 		// Key exists but is expired, allow overwrite
 	}
-	
+
 	// Key doesn't exist or is expired, set it
 	s.data[key] = entry{
 		value:     value,

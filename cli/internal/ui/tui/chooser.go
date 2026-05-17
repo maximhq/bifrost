@@ -44,9 +44,9 @@ type ChooserConfig struct {
 	Model         string
 	Worktree      string
 	Harnesses     []HarnessOption
-	AfterSession  bool // true when returning from a harness session; blocks input until ready
-	ReservedRows  int              // rows reserved by the tab bar; subtracted from the available height
-	TabBarLine    func() string    // returns the current tab bar content; rendered as the last line
+	AfterSession  bool          // true when returning from a harness session; blocks input until ready
+	ReservedRows  int           // rows reserved by the tab bar; subtracted from the available height
+	TabBarLine    func() string // returns the current tab bar content; rendered as the last line
 	FetchModels   func(ctx context.Context, baseURL, virtualKey string) ([]string, error)
 	Notify        func(message string, isError bool)
 	Input         io.Reader // optional stdin override; when nil, os.Stdin is used

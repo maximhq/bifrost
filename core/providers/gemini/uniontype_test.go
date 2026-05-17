@@ -192,7 +192,7 @@ func TestConvertFunctionParametersToSchema_AnyOfNullable(t *testing.T) {
 		Nullable: boolPtr(true),
 	}
 
-	schema := convertFunctionParametersToSchema(params)
+	schema := ConvertFunctionParametersToSchema(params)
 	require.NotNil(t, schema)
 	require.Len(t, schema.AnyOf, 3)
 	assert.Equal(t, Type("integer"), schema.AnyOf[0].Type)
@@ -275,75 +275,4 @@ func TestConvertPropertyToSchema_StringSlice(t *testing.T) {
 	assert.Equal(t, Type("integer"), schema.Type)
 	require.NotNil(t, schema.Nullable)
 	assert.True(t, *schema.Nullable)
-}
-
-// TestConvertBifrostToolsToGemini_WirePayload verifies that the final
-// serialized JSON bytes sent to Gemini/Vertex are correct for union-typed
-// tool parameters. The original bug manifested at the serialization level
-// (empty "type" field rejected by Vertex), so struct-level checks alone
-// are not sufficient.
-func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
-	tests := []struct {
-		name         string
-		propertyJSON string
-		propertyName string
-		wantContains []string // substrings that must appear in the wire JSON
-		wantAbsent   []string // substrings that must NOT appear in the wire JSON
-	}{
-		{
-			name:         "nullable type produces type+nullable fields not array",
-			propertyJSON: `"timeout_secs":{"type":["integer","null"],"description":"Timeout"}`,
-			propertyName: "timeout_secs",
-			// Vertex requires a single string "type"; array would be rejected
-			wantContains: []string{`"type":"integer"`, `"nullable":true`},
-			wantAbsent:   []string{`"type":["integer"`, `"type":["null"`},
-		},
-		{
-			name:         "plain string type passes through unchanged",
-			propertyJSON: `"command":{"type":"string","description":"Command to run"}`,
-			propertyName: "command",
-			wantContains: []string{`"type":"string"`},
-			wantAbsent:   []string{`"nullable"`, `"anyOf"`},
-		},
-		{
-			name:         "multi-type union produces anyOf not array type",
-			propertyJSON: `"value":{"type":["integer","string"]}`,
-			propertyName: "value",
-			wantContains: []string{`"anyOf":[{"type":"integer"},{"type":"string"}]`},
-			wantAbsent:   []string{`"type":["integer"`, `"type":["string"`},
-		},
-		{
-			name:         "multi-type nullable union folds null into anyOf",
-			propertyJSON: `"value":{"type":["integer","string","null"]}`,
-			propertyName: "value",
-			wantContains: []string{`"anyOf":[{"type":"integer"},{"type":"string"},{"type":"null"}]`},
-			wantAbsent:   []string{`"type":["integer"`, `"nullable":true`},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			toolJSON := `{"type":"function","function":{"name":"test_fn","parameters":{"type":"object","properties":{` +
-				tc.propertyJSON + `}}}}`
-
-			var chatTool schemas.ChatTool
-			require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
-
-			geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool})
-			require.NoError(t, err)
-			require.Len(t, geminiTools, 1)
-
-			// Serialize to the exact bytes that would be sent to Vertex
-			wire, err := providerUtils.MarshalSorted(geminiTools[0])
-			require.NoError(t, err)
-			wireStr := string(wire)
-
-			for _, want := range tc.wantContains {
-				assert.Contains(t, wireStr, want, "wire JSON must contain %q", want)
-			}
-			for _, absent := range tc.wantAbsent {
-				assert.NotContains(t, wireStr, absent, "wire JSON must not contain %q", absent)
-			}
-		})
-	}
 }

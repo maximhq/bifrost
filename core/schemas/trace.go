@@ -8,16 +8,16 @@ import (
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
-	RequestID  string         // Request ID for the trace
-	TraceID    string         // Unique identifier for this trace
-	ParentID   string         // Parent trace ID from incoming W3C traceparent header
-	RootSpan   *Span          // The root span of this trace
-	Spans      []*Span        // All spans in this trace
-	StartTime  time.Time      // When the trace started
-	EndTime    time.Time      // When the trace completed
-	Attributes map[string]any // Additional attributes for the trace
+	RequestID  string           // Request ID for the trace
+	TraceID    string           // Unique identifier for this trace
+	ParentID   string           // Parent trace ID from incoming W3C traceparent header
+	RootSpan   *Span            // The root span of this trace
+	Spans      []*Span          // All spans in this trace
+	StartTime  time.Time        // When the trace started
+	EndTime    time.Time        // When the trace completed
+	Attributes map[string]any   // Additional attributes for the trace
 	PluginLogs []PluginLogEntry // Plugin log entries accumulated during request processing
-	mu         sync.Mutex     // Mutex for thread-safe span operations
+	mu         sync.Mutex       // Mutex for thread-safe span operations
 }
 
 // AddSpan adds a span to the trace in a thread-safe manner
@@ -257,21 +257,21 @@ const (
 	AttrOutputTokens     = "gen_ai.usage.output_tokens"
 	AttrUsageCost        = "gen_ai.usage.cost"
 	// Chat completion usage detail attributes
-	AttrPromptTokenDetailsText        = "gen_ai.usage.prompt_token_details.text_tokens"
-	AttrPromptTokenDetailsAudio       = "gen_ai.usage.prompt_token_details.audio_tokens"
-	AttrPromptTokenDetailsImage       = "gen_ai.usage.prompt_token_details.image_tokens"
+	AttrPromptTokenDetailsText          = "gen_ai.usage.prompt_token_details.text_tokens"
+	AttrPromptTokenDetailsAudio         = "gen_ai.usage.prompt_token_details.audio_tokens"
+	AttrPromptTokenDetailsImage         = "gen_ai.usage.prompt_token_details.image_tokens"
 	AttrPromptTokenDetailsCachedRead    = "gen_ai.usage.prompt_token_details.cached_read_tokens"
 	AttrPromptTokenDetailsCachedWrite   = "gen_ai.usage.prompt_token_details.cached_write_tokens"
 	AttrPromptTokenDetailsCachedWrite5m = "gen_ai.usage.prompt_token_details.cached_write_tokens_5m"
 	AttrPromptTokenDetailsCachedWrite1h = "gen_ai.usage.prompt_token_details.cached_write_tokens_1h"
 	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
-	AttrCompletionTokenDetailsAudio   = "gen_ai.usage.completion_token_details.audio_tokens"
-	AttrCompletionTokenDetailsImage   = "gen_ai.usage.completion_token_details.image_tokens"
-	AttrCompletionTokenDetailsReason  = "gen_ai.usage.completion_token_details.reasoning_tokens"
-	AttrCompletionTokenDetailsAccept  = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
-	AttrCompletionTokenDetailsReject  = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
-	AttrCompletionTokenDetailsCite    = "gen_ai.usage.completion_token_details.citation_tokens"
-	AttrCompletionTokenDetailsSearch  = "gen_ai.usage.completion_token_details.num_search_queries"
+	AttrCompletionTokenDetailsAudio     = "gen_ai.usage.completion_token_details.audio_tokens"
+	AttrCompletionTokenDetailsImage     = "gen_ai.usage.completion_token_details.image_tokens"
+	AttrCompletionTokenDetailsReason    = "gen_ai.usage.completion_token_details.reasoning_tokens"
+	AttrCompletionTokenDetailsAccept    = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
+	AttrCompletionTokenDetailsReject    = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
+	AttrCompletionTokenDetailsCite      = "gen_ai.usage.completion_token_details.citation_tokens"
+	AttrCompletionTokenDetailsSearch    = "gen_ai.usage.completion_token_details.num_search_queries"
 
 	// Error Attributes
 	AttrError     = "gen_ai.error"
@@ -378,19 +378,19 @@ const (
 	AttrInputTokenDetailsAudio = "gen_ai.usage.input_token_details.audio_tokens"
 
 	// Responses API usage detail attributes
-	AttrInputTokenDetailsImage        = "gen_ai.usage.input_token_details.image_tokens"
-	AttrInputTokenDetailsCachedRead   = "gen_ai.usage.input_token_details.cached_read_tokens"
-	AttrInputTokenDetailsCachedWrite  = "gen_ai.usage.input_token_details.cached_write_tokens"
+	AttrInputTokenDetailsImage         = "gen_ai.usage.input_token_details.image_tokens"
+	AttrInputTokenDetailsCachedRead    = "gen_ai.usage.input_token_details.cached_read_tokens"
+	AttrInputTokenDetailsCachedWrite   = "gen_ai.usage.input_token_details.cached_write_tokens"
 	AttrInputTokenDetailsCachedWrite5m = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
 	AttrInputTokenDetailsCachedWrite1h = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
-	AttrOutputTokenDetailsText        = "gen_ai.usage.output_token_details.text_tokens"
-	AttrOutputTokenDetailsAudio       = "gen_ai.usage.output_token_details.audio_tokens"
-	AttrOutputTokenDetailsImage       = "gen_ai.usage.output_token_details.image_tokens"
-	AttrOutputTokenDetailsReason      = "gen_ai.usage.output_token_details.reasoning_tokens"
-	AttrOutputTokenDetailsAccept      = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
-	AttrOutputTokenDetailsReject      = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
-	AttrOutputTokenDetailsCite        = "gen_ai.usage.output_token_details.citation_tokens"
-	AttrOutputTokenDetailsSearch      = "gen_ai.usage.output_token_details.num_search_queries"
+	AttrOutputTokenDetailsText         = "gen_ai.usage.output_token_details.text_tokens"
+	AttrOutputTokenDetailsAudio        = "gen_ai.usage.output_token_details.audio_tokens"
+	AttrOutputTokenDetailsImage        = "gen_ai.usage.output_token_details.image_tokens"
+	AttrOutputTokenDetailsReason       = "gen_ai.usage.output_token_details.reasoning_tokens"
+	AttrOutputTokenDetailsAccept       = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
+	AttrOutputTokenDetailsReject       = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
+	AttrOutputTokenDetailsCite         = "gen_ai.usage.output_token_details.citation_tokens"
+	AttrOutputTokenDetailsSearch       = "gen_ai.usage.output_token_details.num_search_queries"
 
 	// File Operation Attributes
 	AttrFileID             = "gen_ai.file.id"

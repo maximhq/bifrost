@@ -141,9 +141,9 @@ type StreamAccumulator struct {
 	TerminalErrorChunkIndex int
 
 	// Passthrough streaming accumulation
-	PassthroughBody []byte // Accumulated body bytes from passthrough streaming chunks
-	PassthroughStatusCode int // Status code from passthrough response
-	PassthroughHeaders map[string]string // Headers from passthrough response
+	PassthroughBody       []byte            // Accumulated body bytes from passthrough streaming chunks
+	PassthroughStatusCode int               // Status code from passthrough response
+	PassthroughHeaders    map[string]string // Headers from passthrough response
 
 	IsComplete     bool
 	FinalTimestamp time.Time

@@ -219,7 +219,7 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name:       "mv_filter_users",
+		name: "mv_filter_users",
 		selectExpr: "user_id AS id, COALESCE(NULLIF(user_name, ''), user_id) AS name, " +
 			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
 			"COALESCE(virtual_key_id, '') AS virtual_key_id",
@@ -244,7 +244,7 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"routing_rule_id", "routing_rule_name"}:   "mv_filter_routing_rules",
 	{"team_id", "team_name"}:                   "mv_filter_teams",
 	{"customer_id", "customer_name"}:           "mv_filter_customers",
-	{"user_id", "user_name"}:                    "mv_filter_users",
+	{"user_id", "user_name"}:                   "mv_filter_users",
 	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
 }
 
