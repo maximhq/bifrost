@@ -155,33 +155,41 @@ func RunSingleMigration(ctx context.Context, db *gorm.DB, migration *migrator.Mi
 	return m.Migrate()
 }
 
+// legacyBudgetVirtualKey holds the legacy budget virtual key model.
 type legacyBudgetVirtualKey struct {
 	tables.TableVirtualKey
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
+// legacyBudgetVirtualKey holds the legacy budget virtual key model.
 func (legacyBudgetVirtualKey) TableName() string { return "governance_virtual_keys" }
 
+// legacyBudgetVirtualKeyProviderConfig holds the legacy budget virtual key provider config model.
 type legacyBudgetVirtualKeyProviderConfig struct {
 	tables.TableVirtualKeyProviderConfig
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
+// legacyBudgetVirtualKeyProviderConfig holds the legacy budget virtual key provider config model.
 func (legacyBudgetVirtualKeyProviderConfig) TableName() string {
 	return "governance_virtual_key_provider_configs"
 }
 
+// legacyBudgetTeam holds the legacy budget team model.
 type legacyBudgetTeam struct {
 	tables.TableTeam
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
+// legacyBudgetTeam holds the legacy budget team model.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
+// sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
 }
 
+// legacyBudgetColumnModel returns the legacy budget column model for a given table name.
 func legacyBudgetColumnModel(tableName string) (any, error) {
 	switch tableName {
 	case "governance_virtual_keys":
@@ -195,6 +203,7 @@ func legacyBudgetColumnModel(tableName string) (any, error) {
 	}
 }
 
+// currentBudgetOwnerModel returns the current budget owner model for a given table name.
 func currentBudgetOwnerModel(tableName string) (any, error) {
 	switch tableName {
 	case "governance_virtual_keys":
@@ -208,10 +217,12 @@ func currentBudgetOwnerModel(tableName string) (any, error) {
 	}
 }
 
+// quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
 func quoteSQLiteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// sqliteTableColumns returns the column names of a SQLite table.
 func sqliteTableColumns(tx *gorm.DB, tableName string) ([]string, error) {
 	var columns []sqliteColumnInfo
 	query := fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdentifier(tableName))
@@ -226,6 +237,7 @@ func sqliteTableColumns(tx *gorm.DB, tableName string) ([]string, error) {
 	return result, nil
 }
 
+// sqliteTableHasColumn checks if a SQLite table has a column with the given name.
 func sqliteTableHasColumn(tx *gorm.DB, tableName, columnName string) (bool, error) {
 	columns, err := sqliteTableColumns(tx, tableName)
 	if err != nil {
@@ -235,6 +247,23 @@ func sqliteTableHasColumn(tx *gorm.DB, tableName, columnName string) (bool, erro
 		return true, nil
 	}
 	return false, nil
+}
+
+// hasColumn checks if a table has a column with the given name.
+func hasColumn(tx *gorm.DB, table, column string) bool {
+	var count int64
+	var q string
+	switch tx.Dialector.Name() {
+	case "sqlite":
+		q = `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`
+	default:
+		q = `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND
+  column_name = ?`
+	}
+	if err := tx.Raw(q, table, column).Scan(&count).Error; err != nil {
+		return false
+	}
+	return count > 0
 }
 
 // sqliteDropLegacyBudgetColumn removes the legacy budget_id column from a
@@ -7257,16 +7286,15 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 		ID: "migrate_calendar_aligned",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			// Adding columns first
-			if !mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				if err := mig.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+			if !hasColumn(tx, "governance_budgets", "calendar_aligned") {
+				if err := tx.Exec(`ALTER TABLE governance_budgets ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to budgets: %w", err)
 				}
 			}
 			// Adding columns first
-			if !mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
-				if err := mig.AddColumn(&tables.TableRateLimit{}, "calendar_aligned"); err != nil {
+			if !hasColumn(tx, "governance_rate_limits", "calendar_aligned") {
+				if err := tx.Exec(`ALTER TABLE governance_rate_limits ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to rate_limits: %w", err)
 				}
 			}
