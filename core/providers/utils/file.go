@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"testing"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -54,8 +55,12 @@ var allowPrivateAudioURLs bool
 // loopback can drive the download path in tests. Returns a cleanup function
 // the caller MUST defer to restore the guard.
 //
-// This MUST NOT be called from non-test code.
+// Guarded by testing.Testing() so a non-test binary that reaches this function
+// crashes immediately instead of silently flipping the SSRF bypass.
 func AllowPrivateAudioURLsForTest() func() {
+	if !testing.Testing() {
+		panic("utils.AllowPrivateAudioURLsForTest: must not be called outside tests")
+	}
 	allowPrivateAudioURLs = true
 	return func() { allowPrivateAudioURLs = false }
 }
