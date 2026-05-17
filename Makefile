@@ -1552,9 +1552,22 @@ quick-start: ## Quick start with example config and maxim plugin
 	@$(MAKE) dev
 
 # Linting and formatting
-lint: ## Run linter for Go code
+lint: lint-bifrost ## Run linter for Go code
 	@$(ECHO) "$(GREEN)Running golangci-lint...$(NC)"
 	@golangci-lint run ./...
+
+lint-bifrost: ## Run Bifrost-specific custom analyzers (cmd/bifrostlint)
+	@$(ECHO) "$(GREEN)Building bifrostlint...$(NC)"
+	@cd cmd/bifrostlint && GOWORK=off go build -o ../../bin/bifrostlint .
+	@$(ECHO) "$(GREEN)Running bifrostlint analyzers (sqlmatview, sqldialect)...$(NC)"
+	@./bin/bifrostlint ./...
+	@$(ECHO) "$(GREEN)Running bifrostlint exportedtests...$(NC)"
+	@./bin/bifrostlint exportedtests -baseline=cmd/bifrostlint/baseline.txt ./...
+
+lint-bifrost-baseline: ## Regenerate cmd/bifrostlint/baseline.txt for the exportedtests rule
+	@cd cmd/bifrostlint && GOWORK=off go build -o ../../bin/bifrostlint .
+	@./bin/bifrostlint exportedtests -emit-baseline ./... > cmd/bifrostlint/baseline.txt
+	@$(ECHO) "$(GREEN)Wrote cmd/bifrostlint/baseline.txt$(NC)"
 
 fmt: ## Format Go code
 	@$(ECHO) "$(GREEN)Formatting Go code...$(NC)"

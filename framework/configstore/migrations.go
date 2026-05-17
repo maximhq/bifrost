@@ -1591,6 +1591,7 @@ func migrationAddKeyNameColumn(ctx context.Context, db *gorm.DB) error {
 				}
 
 				// Step 3: Add unique index (SQLite compatible)
+				// bifrostlint:ignore sqlconcurrent small config_keys table, runs inside migration tx where CONCURRENTLY is invalid
 				if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_key_name ON config_keys (name)").Error; err != nil {
 					return fmt.Errorf("failed to create unique index on name: %w", err)
 				}
@@ -1732,11 +1733,13 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 				}
 
 				// Create foreign key indexes for better performance
+				// bifrostlint:ignore sqlconcurrent small config table, runs inside migration tx where CONCURRENTLY is invalid
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_budget ON governance_virtual_key_provider_configs (budget_id)").Error; err != nil {
 					// Ignore - index may already exist or column may not exist yet
 				}
 
 				if !migrator.HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_provider_config_rate_limit") {
+					// bifrostlint:ignore sqlconcurrent small config table, runs inside migration tx where CONCURRENTLY is invalid
 					if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_rate_limit ON governance_virtual_key_provider_configs (rate_limit_id)").Error; err != nil {
 						return fmt.Errorf("failed to create rate_limit_id index: %w", err)
 					}
@@ -1944,6 +1947,7 @@ func migrationAddMCPClientIDColumn(ctx context.Context, db *gorm.DB) error {
 				}
 
 				// Create unique index on client_id
+				// bifrostlint:ignore sqlconcurrent small config_mcp_clients table, runs inside migration tx where CONCURRENTLY is invalid
 				if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_client_id ON config_mcp_clients (client_id)").Error; err != nil {
 					return fmt.Errorf("failed to create unique index on client_id: %w", err)
 				}
@@ -3740,6 +3744,7 @@ func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB) error {
 				return fmt.Errorf("failed to create distributed_locks table: %w", err)
 			}
 			// Create index on expires_at for efficient cleanup queries
+			// bifrostlint:ignore sqlconcurrent small distributed_locks table, runs inside migration tx where CONCURRENTLY is invalid
 			createIndexSQL := `CREATE INDEX IF NOT EXISTS idx_distributed_locks_expires_at ON distributed_locks (expires_at)`
 			if err := tx.Exec(createIndexSQL).Error; err != nil {
 				return fmt.Errorf("failed to create expires_at index: %w", err)
@@ -3808,6 +3813,7 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 			}
 			// Create index for budget_id (outside HasColumn to handle reruns where column exists but index doesn't)
 			if !migrator.HasIndex(provider, "idx_provider_budget") {
+				// bifrostlint:ignore sqlconcurrent small config_providers table, runs inside migration tx where CONCURRENTLY is invalid
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_budget ON config_providers (budget_id)").Error; err != nil {
 					return fmt.Errorf("failed to create budget_id index: %w", err)
 				}
@@ -3821,6 +3827,7 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 			}
 			// Create index for rate_limit_id (outside HasColumn to handle reruns where column exists but index doesn't)
 			if !migrator.HasIndex(provider, "idx_provider_rate_limit") {
+				// bifrostlint:ignore sqlconcurrent small config_providers table, runs inside migration tx where CONCURRENTLY is invalid
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_rate_limit ON config_providers (rate_limit_id)").Error; err != nil {
 					return fmt.Errorf("failed to create rate_limit_id index: %w", err)
 				}
