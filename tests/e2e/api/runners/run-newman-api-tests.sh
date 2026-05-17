@@ -86,26 +86,50 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --db-url)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --db-url requires a value${NC}"
+                exit 1
+            fi
             DB_URL="$2"
             shift 2
             ;;
         --logs-db-url)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --logs-db-url requires a value${NC}"
+                exit 1
+            fi
             LOGS_DB_URL="$2"
             shift 2
             ;;
         --config-path)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --config-path requires a value${NC}"
+                exit 1
+            fi
             DB_CONFIG_PATH="$2"
             shift 2
             ;;
         --extra-collection)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --extra-collection requires a path${NC}"
+                exit 1
+            fi
             EXTRA_COLLECTIONS+=("$2")
             shift 2
             ;;
         --seed-env)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --seed-env requires a path${NC}"
+                exit 1
+            fi
             SEED_ENV_PATH="$2"
             shift 2
             ;;
         --expected)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]]; then
+                echo -e "${RED}Error: --expected requires a path${NC}"
+                exit 1
+            fi
             EXPECTED_PATH="$2"
             shift 2
             ;;
@@ -322,6 +346,10 @@ if [ -n "$SEED_ENV_PATH" ]; then
         echo -e "${RED}Error: seed env file not found: $SEED_ENV_PATH${NC}"
         exit 1
     fi
+    if grep -Ev '^[[:space:]]*(#|$|[A-Za-z_][A-Za-z0-9_]*=)' "$SEED_ENV_PATH" >/dev/null; then
+        echo -e "${RED}Error: seed env file contains non-assignment lines: $SEED_ENV_PATH${NC}"
+        exit 1
+    fi
     set -a
     # shellcheck disable=SC1090
     . "$SEED_ENV_PATH"
@@ -350,7 +378,10 @@ for seed_var in \
     e2e_seed_user_tiggings \
     e2e_seed_user_outside \
     e2e_seed_vk_user_team \
-    e2e_seed_vk_outside; do
+    e2e_seed_vk_outside \
+    e2e_seed_enterprise_users \
+    e2e_seed_access_profiles \
+    e2e_seed_access_profile_budgets; do
     add_env_var_if_set "$seed_var"
 done
 

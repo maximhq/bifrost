@@ -24,6 +24,8 @@ func run(ctx context.Context, args []string) error {
 
 	fs := flag.NewFlagSet("e2eseed", flag.ContinueOnError)
 	fs.StringVar(&opts.Prefix, "prefix", opts.Prefix, "stable prefix for all seeded rows")
+	fs.StringVar(&opts.ConfigPath, "config-path", opts.ConfigPath, "optional Bifrost config.json path used to derive DB settings")
+	fs.StringVar(&opts.EncryptionKey, "encryption-key", opts.EncryptionKey, "optional Bifrost encryption key for encrypted config rows")
 	fs.StringVar(&opts.ConfigDialect, "config-db-dialect", opts.ConfigDialect, "config DB dialect: postgres or sqlite")
 	fs.StringVar(&opts.ConfigDSN, "config-db-dsn", opts.ConfigDSN, "config DB DSN")
 	fs.StringVar(&opts.LogsDialect, "logs-db-dialect", opts.LogsDialect, "logs DB dialect: postgres or sqlite")
@@ -37,14 +39,24 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 
-	opts = e2eseed.NormalizeOptions(opts)
+	opts, err := e2eseed.NormalizeOptions(opts)
+	if err != nil {
+		return err
+	}
+	e2eseed.InitEncryption(opts)
 	configDB, err := e2eseed.OpenDB(opts.ConfigDialect, opts.ConfigDSN)
 	if err != nil {
 		return fmt.Errorf("open config DB: %w", err)
 	}
+	if sqlDB, dbErr := configDB.DB(); dbErr == nil {
+		defer sqlDB.Close()
+	}
 	logsDB, err := e2eseed.OpenDB(opts.LogsDialect, opts.LogsDSN)
 	if err != nil {
 		return fmt.Errorf("open logs DB: %w", err)
+	}
+	if sqlDB, dbErr := logsDB.DB(); dbErr == nil {
+		defer sqlDB.Close()
 	}
 
 	summary, err := e2eseed.SeedBase(ctx, configDB, logsDB, opts)
