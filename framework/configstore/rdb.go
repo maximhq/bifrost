@@ -252,7 +252,6 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		WhitelistedRoutes:                     config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
 		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
-		MCPExternalServerURL:                  mcpExternalURLToString(config.MCPExternalServerURL),
 		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
 		HeaderFilterConfig:                    config.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
@@ -515,7 +514,6 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
-		MCPExternalServerURL:                  schemas.NewEnvVar(dbConfig.MCPExternalServerURL),
 		MCPExternalClientURL:                  schemas.NewEnvVar(dbConfig.MCPExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
@@ -1883,6 +1881,17 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 			}
 		}
 
+		// Delete per-user OAuth token + flow rows for this MCP client. Token
+		// rows reference mcp_client_id by the string client_id; nothing
+		// auto-cascades, so we do it explicitly inside the same transaction
+		// to keep cleanup atomic.
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
+			return err
+		}
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+			return err
+		}
+
 		// Delete the client (this will also handle foreign key cascades)
 		return tx.WithContext(ctx).Delete(&existingClient).Error
 	})
@@ -2704,14 +2713,6 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		// Delete all MCP configs associated with the virtual key
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
-			return err
-		}
-		// Delete per-user OAuth pending flows tied to this VK
-		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TablePerUserOAuthPendingFlow{}).Error; err != nil {
-			return err
-		}
-		// Delete per-user OAuth sessions tied to this VK
-		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TablePerUserOAuthSession{}).Error; err != nil {
 			return err
 		}
 		// Delete upstream OAuth user sessions tied to this VK
@@ -4762,25 +4763,15 @@ func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID st
 // GetOauthUserSessionByID retrieves a per-user OAuth session by its ID
 func (s *RDBConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
 	var session tables.TableOauthUserSession
-	result := s.DB().WithContext(ctx).Where("id = ?", id).First(&session)
+	result := s.ScopedDB(ctx).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Where("id = ?", id).First(&session)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get oauth user session: %w", result.Error)
-	}
-	return &session, nil
-}
-
-// GetOauthUserSessionByState retrieves a per-user OAuth session by its state token
-func (s *RDBConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
-	var session tables.TableOauthUserSession
-	result := s.DB().WithContext(ctx).Where("state = ?", state).First(&session)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get oauth user session by state: %w", result.Error)
 	}
 	return &session, nil
 }
@@ -4810,16 +4801,34 @@ func (s *RDBConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state
 	return &session, nil
 }
 
-// GetOauthUserSessionBySessionToken retrieves a per-user OAuth session by its Bifrost session token (hashed lookup)
-func (s *RDBConfigStore) GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error) {
+// GetOauthUserSessionByModeIdentityAndMCPClient returns the single flow row
+// bound to (mode, identity, mcp_client_id). This is the canonical lookup at
+// flow-init time: there's exactly one flow row per binding, and reauth always
+// updates it in place rather than inserting a new one.
+//
+// identity per mode: AuthModeUser=user_id, AuthModeVK=virtual_key_id,
+// AuthModeSession=raw session token (hashed for the lookup column).
+func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserSession, error) {
+	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+		return nil, nil
+	}
+	q := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID)
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		q = q.Where("user_id = ?", identity)
+	case schemas.MCPAuthModeVK:
+		q = q.Where("virtual_key_id = ?", identity)
+	case schemas.MCPAuthModeSession:
+		q = q.Where("session_id = ?", identity)
+	default:
+		return nil, fmt.Errorf("unknown auth mode: %s", mode)
+	}
 	var session tables.TableOauthUserSession
-	tokenHash := encrypt.HashSHA256(sessionToken)
-	result := s.DB().WithContext(ctx).Where("session_token_hash = ?", tokenHash).First(&session)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+	if err := q.First(&session).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get oauth user session by session token: %w", result.Error)
+		return nil, fmt.Errorf("failed to get oauth user session (mode=%s): %w", mode, err)
 	}
 	return &session, nil
 }
@@ -4844,72 +4853,48 @@ func (s *RDBConfigStore) UpdateOauthUserSession(ctx context.Context, session *ta
 
 // ---------- Per-User OAuth Token CRUD ----------
 
-// GetOauthUserTokenBySessionToken retrieves a per-user OAuth token by its Bifrost session token
-// GetOauthUserTokenByIdentity looks up an upstream OAuth token by user identity and MCP client.
-// Priority: userID > virtualKeyID > sessionToken (fallback for anonymous users).
-func (s *RDBConfigStore) GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error) {
-	var token tables.TableOauthUserToken
-	var result *gorm.DB
-
-	if userID != "" {
-		result = s.DB().WithContext(ctx).Where("user_id = ? AND mcp_client_id = ?", userID, mcpClientID).First(&token)
-	} else if virtualKeyID != "" {
-		result = s.DB().WithContext(ctx).Where("virtual_key_id = ? AND mcp_client_id = ?", virtualKeyID, mcpClientID).First(&token)
-	} else if sessionToken != "" {
-		result = s.DB().WithContext(ctx).Where("session_token = ? AND mcp_client_id = ?", sessionToken, mcpClientID).First(&token)
-	} else {
-		return nil, nil
-	}
-
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get oauth user token by identity: %w", result.Error)
-	}
-	return &token, nil
-}
-
-func (s *RDBConfigStore) GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error) {
-	var token tables.TableOauthUserToken
-	tokenHash := encrypt.HashSHA256(sessionToken)
-	result := s.DB().WithContext(ctx).Where("session_token_hash = ?", tokenHash).First(&token)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get oauth user token by session token: %w", result.Error)
-	}
-	return &token, nil
-}
-
-// CreateOauthUserToken creates or replaces a per-user OAuth token.
-// When an identity (VirtualKeyID or UserID) is set, any existing token for the
-// same identity + MCPClientID pair is replaced to keep resolution deterministic.
+// CreateOauthUserToken creates or replaces a per-user OAuth token. Looks up
+// any existing row matching the populated identity column + MCP client and
+// reuses its ID, ensuring the partial-unique index never trips. SessionToken's
+// hash is set in BeforeSave; the upsert lookup uses the hash column to match
+// the unique index. Wrapped in a transaction so SELECT + CREATE/UPDATE is
+// atomic under concurrent same-identity races.
 func (s *RDBConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
-	// Wrap in a transaction so the SELECT + CREATE/UPDATE is atomic, preventing
-	// duplicate tokens when concurrent requests race on the same identity+client pair.
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if token.UserID != nil && *token.UserID != "" {
-			var existing tables.TableOauthUserToken
-			err := dbForUpdate(tx).Where("user_id = ? AND mcp_client_id = ?", *token.UserID, token.MCPClientID).First(&existing).Error
-			if err == nil {
-				token.ID = existing.ID // reuse the row
-				return tx.Save(token).Error
-			}
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("failed to query oauth user token: %w", err)
-			}
-		} else if token.VirtualKeyID != nil && *token.VirtualKeyID != "" {
-			var existing tables.TableOauthUserToken
-			err := dbForUpdate(tx).Where("virtual_key_id = ? AND mcp_client_id = ?", *token.VirtualKeyID, token.MCPClientID).First(&existing).Error
-			if err == nil {
-				token.ID = existing.ID // reuse the row
-				return tx.Save(token).Error
-			}
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("failed to query oauth user token: %w", err)
-			}
+		var existing tables.TableOauthUserToken
+		var lookupErr error
+		switch {
+		case token.UserID != nil && *token.UserID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("user_id = ? AND mcp_client_id = ?", *token.UserID, token.MCPClientID).
+				First(&existing).Error
+		case token.VirtualKeyID != nil && *token.VirtualKeyID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("virtual_key_id = ? AND mcp_client_id = ?", *token.VirtualKeyID, token.MCPClientID).
+				First(&existing).Error
+		case token.SessionID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("session_id = ? AND mcp_client_id = ?", token.SessionID, token.MCPClientID).
+				First(&existing).Error
+		default:
+			lookupErr = gorm.ErrRecordNotFound
+		}
+
+		if lookupErr == nil {
+			token.ID = existing.ID // reuse the row so unique index sees an UPDATE, not INSERT
+			// Preserve the original binding's creation time; the row represents
+			// the (identity, mcp_client) link, not the individual credential, so
+			// a re-auth shouldn't move CreatedAt forward.
+			token.CreatedAt = existing.CreatedAt
+			// Stamp LastRefreshedAt so the dashboard surfaces "refreshed Xm ago"
+			// after a successful re-auth (this path is only hit on upsert, which
+			// always means new credentials replacing old).
+			now := time.Now()
+			token.LastRefreshedAt = &now
+			return tx.Save(token).Error
+		}
+		if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to query oauth user token: %w", lookupErr)
 		}
 
 		if err := tx.Create(token).Error; err != nil {
@@ -4937,305 +4922,180 @@ func (s *RDBConfigStore) DeleteOauthUserToken(ctx context.Context, id string) er
 	return nil
 }
 
-// DeleteOauthUserTokensByMCPClient deletes all per-user OAuth tokens for a specific MCP client
-func (s *RDBConfigStore) DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error {
-	result := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID).Delete(&tables.TableOauthUserToken{})
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete oauth user tokens for mcp client: %w", result.Error)
-	}
-	return nil
-}
-
-// ---------- Per-User OAuth Authorization Server CRUD ----------
-
-// GetPerUserOAuthClientByClientID retrieves a dynamically registered OAuth client by its client_id.
-func (s *RDBConfigStore) GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error) {
-	var client tables.TablePerUserOAuthClient
-	result := s.DB().WithContext(ctx).Where("client_id = ?", clientID).First(&client)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get per-user oauth client: %w", result.Error)
-	}
-	return &client, nil
-}
-
-// CreatePerUserOAuthClient creates a new dynamically registered OAuth client.
-func (s *RDBConfigStore) CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error {
-	result := s.DB().WithContext(ctx).Create(client)
-	if result.Error != nil {
-		return fmt.Errorf("failed to create per-user oauth client: %w", result.Error)
-	}
-	return nil
-}
-
-// GetPerUserOAuthSessionByAccessToken retrieves a Bifrost-issued session by its access token.
-func (s *RDBConfigStore) GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error) {
-	var session tables.TablePerUserOAuthSession
-	tokenHash := encrypt.HashSHA256(accessToken)
-	result := s.DB().WithContext(ctx).Where("access_token_hash = ?", tokenHash).Preload("VirtualKey", func(db *gorm.DB) *gorm.DB {
-		return db.Select("id, name, value, encryption_status")
-	}).First(&session)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get per-user oauth session: %w", result.Error)
-	}
-	return &session, nil
-}
-
-// GetPerUserOAuthSessionByID retrieves a Bifrost-issued session by its ID.
-func (s *RDBConfigStore) GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error) {
-	var session tables.TablePerUserOAuthSession
-	result := s.DB().WithContext(ctx).Where("id = ?", id).First(&session)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get per-user oauth session by id: %w", result.Error)
-	}
-	return &session, nil
-}
-
-// CreatePerUserOAuthSession creates a new Bifrost-issued OAuth session.
-func (s *RDBConfigStore) CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
-	result := s.DB().WithContext(ctx).Create(session)
-	if result.Error != nil {
-		return fmt.Errorf("failed to create per-user oauth session: %w", result.Error)
-	}
-	return nil
-}
-
-// UpdatePerUserOAuthSession updates a Bifrost-issued OAuth session (e.g., to attach user identity).
-func (s *RDBConfigStore) UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
-	result := s.DB().WithContext(ctx).Save(session)
-	if result.Error != nil {
-		return fmt.Errorf("failed to update per-user oauth session: %w", result.Error)
-	}
-	return nil
-}
-
-// DeletePerUserOAuthSession deletes a Bifrost-issued OAuth session by ID.
-func (s *RDBConfigStore) DeletePerUserOAuthSession(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TablePerUserOAuthSession{})
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete per-user oauth session: %w", result.Error)
-	}
-	return nil
-}
-
-// GetPerUserOAuthCodeByCode retrieves an authorization code record.
-func (s *RDBConfigStore) GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
-	var codeRecord tables.TablePerUserOAuthCode
-	codeHash := encrypt.HashSHA256(code)
-	result := s.DB().WithContext(ctx).Where("code_hash = ?", codeHash).First(&codeRecord)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get per-user oauth code: %w", result.Error)
-	}
-	return &codeRecord, nil
-}
-
-// CreatePerUserOAuthCode creates a new authorization code record.
-func (s *RDBConfigStore) CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
-	result := s.DB().WithContext(ctx).Create(code)
-	if result.Error != nil {
-		return fmt.Errorf("failed to create per-user oauth code: %w", result.Error)
-	}
-	return nil
-}
-
-// ClaimPerUserOAuthCode atomically marks an authorization code as used.
-// Returns the code record if successfully claimed, nil if already used or not found.
-func (s *RDBConfigStore) ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
-	codeHash := encrypt.HashSHA256(code)
-	var codeRecord tables.TablePerUserOAuthCode
-	result := s.DB().WithContext(ctx).Where("code_hash = ? AND used = ?", codeHash, false).First(&codeRecord)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to find per-user oauth code: %w", result.Error)
-	}
-	// Atomically mark as used
-	updateResult := s.DB().WithContext(ctx).Model(&tables.TablePerUserOAuthCode{}).
-		Where("id = ? AND used = ?", codeRecord.ID, false).
-		Update("used", true)
-	if updateResult.Error != nil {
-		return nil, fmt.Errorf("failed to claim per-user oauth code: %w", updateResult.Error)
-	}
-	if updateResult.RowsAffected == 0 {
-		return nil, nil // Another request already claimed it
-	}
-	codeRecord.Used = true
-	return &codeRecord, nil
-}
-
-// UpdatePerUserOAuthCode updates an authorization code record (e.g., marking as used).
-func (s *RDBConfigStore) UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
-	result := s.DB().WithContext(ctx).Save(code)
-	if result.Error != nil {
-		return fmt.Errorf("failed to update per-user oauth code: %w", result.Error)
-	}
-	return nil
-}
-
-// ---------- Per-User OAuth Pending Flow CRUD ----------
-
-// GetPerUserOAuthPendingFlow retrieves a pending consent flow by its ID.
-func (s *RDBConfigStore) GetPerUserOAuthPendingFlow(ctx context.Context, id string) (*tables.TablePerUserOAuthPendingFlow, error) {
-	var flow tables.TablePerUserOAuthPendingFlow
-	result := s.DB().WithContext(ctx).Where("id = ?", id).First(&flow)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get per-user oauth pending flow: %w", result.Error)
-	}
-	return &flow, nil
-}
-
-// CreatePerUserOAuthPendingFlow persists a new pending consent flow.
-func (s *RDBConfigStore) CreatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
-	result := s.DB().WithContext(ctx).Create(flow)
-	if result.Error != nil {
-		return fmt.Errorf("failed to create per-user oauth pending flow: %w", result.Error)
-	}
-	return nil
-}
-
-// UpdatePerUserOAuthPendingFlow updates an existing pending consent flow (e.g., after VK step).
-func (s *RDBConfigStore) UpdatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
-	result := s.DB().WithContext(ctx).Save(flow)
-	if result.Error != nil {
-		return fmt.Errorf("failed to update per-user oauth pending flow: %w", result.Error)
-	}
-	return nil
-}
-
-// DeletePerUserOAuthPendingFlow deletes a pending consent flow after it has been submitted.
-func (s *RDBConfigStore) DeletePerUserOAuthPendingFlow(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TablePerUserOAuthPendingFlow{})
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete per-user oauth pending flow: %w", result.Error)
-	}
-	return nil
-}
-
-func (s *RDBConfigStore) ConsumePerUserOAuthPendingFlow(ctx context.Context, id string) (int64, error) {
-	now := time.Now().UTC()
-	result := s.DB().WithContext(ctx).Where("id = ? AND expires_at > ?", id, now).Delete(&tables.TablePerUserOAuthPendingFlow{})
-	if result.Error != nil {
-		return 0, fmt.Errorf("failed to consume per-user oauth pending flow: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		// Distinguish between already-consumed (record gone) and expired (record exists but TTL elapsed).
-		var count int64
-		if err := s.DB().WithContext(ctx).Model(&tables.TablePerUserOAuthPendingFlow{}).Where("id = ?", id).Count(&count).Error; err != nil {
-			return 0, fmt.Errorf("failed to inspect per-user oauth pending flow: %w", err)
-		}
-		if count > 0 {
-			return 0, schemas.ErrPerUserOAuthPendingFlowExpired
-		}
-	}
-	return result.RowsAffected, nil
-}
-
-// FinalizePerUserOAuthConsent atomically consumes a pending flow, creates the session,
-// and creates the authorization code in a single transaction.
-func (s *RDBConfigStore) FinalizePerUserOAuthConsent(ctx context.Context, flowID string, session *tables.TablePerUserOAuthSession, code *tables.TablePerUserOAuthCode) (int64, error) {
-	var rowsAffected int64
-	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 1. Consume the pending flow (atomic idempotency guard).
-		// Also enforce the TTL so an expired flow cannot be finalized even if callers miss the check.
-		now := time.Now().UTC()
-		result := tx.Where("id = ? AND expires_at > ?", flowID, now).Delete(&tables.TablePerUserOAuthPendingFlow{})
-		if result.Error != nil {
-			return fmt.Errorf("failed to consume per-user oauth pending flow: %w", result.Error)
-		}
-		rowsAffected = result.RowsAffected
-		if rowsAffected == 0 {
-			// Distinguish between already-consumed (record gone) and expired (record exists but TTL elapsed).
-			var count int64
-			if err := tx.Model(&tables.TablePerUserOAuthPendingFlow{}).Where("id = ?", flowID).Count(&count).Error; err != nil {
-				return fmt.Errorf("failed to inspect per-user oauth pending flow: %w", err)
-			}
-			if count > 0 {
-				return schemas.ErrPerUserOAuthPendingFlowExpired
-			}
-			// Record gone — consumed by a concurrent request; caller treats as conflict.
-			return nil
-		}
-
-		// 2. Create the Bifrost session.
-		if err := tx.Create(session).Error; err != nil {
-			return fmt.Errorf("failed to create per-user oauth session: %w", err)
-		}
-
-		// 3. Create the authorization code.
-		if err := tx.Create(code).Error; err != nil {
-			return fmt.Errorf("failed to create per-user oauth code: %w", err)
-		}
-
+// DeleteOauthUserSession hard-deletes a single flow row by primary key.
+func (s *RDBConfigStore) DeleteOauthUserSession(ctx context.Context, id string) error {
+	if id == "" {
 		return nil
-	})
-	if err != nil {
-		return 0, err
 	}
-	return rowsAffected, nil
+	if err := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+		return fmt.Errorf("failed to delete oauth user session %s: %w", id, err)
+	}
+	return nil
 }
 
-// GetOauthUserTokensByGatewaySessionID returns all upstream tokens linked to a gateway session ID.
-func (s *RDBConfigStore) GetOauthUserTokensByGatewaySessionID(ctx context.Context, gatewaySessionID string) ([]tables.TableOauthUserToken, error) {
-	if strings.TrimSpace(gatewaySessionID) == "" {
-		return nil, fmt.Errorf("gateway session id is required")
+// DeleteOauthUserSessionsByModeIdentityAndMCPClient hard-deletes any oauth_user_sessions
+// (pending or completed flow) rows matching the given identity column + MCP client.
+// Used by revoke so a subsequent OAuth init for the same identity starts from a clean
+// slate instead of upserting the stale row (session mode) or accumulating dead flow
+// rows over time (vk/user modes, whose flow rows have random server-generated
+// session tokens and therefore never get reused, but linger as 'authorized').
+//
+// identity meaning per mode:
+//   - AuthModeUser:    user_id
+//   - AuthModeVK:      virtual_key_id
+//   - AuthModeSession: raw session token (the store hashes for the lookup column)
+func (s *RDBConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+		return nil
 	}
-	// Find all tokens whose session_token_hash matches any upstream session
-	// linked to this gateway session ID. This supports per-service proxy tokens
-	// (e.g. "flow:<flowID>:<mcpClientID>") where each MCP service gets its own hash.
-	var tokens []tables.TableOauthUserToken
-	subquery := s.DB().Model(&tables.TableOauthUserSession{}).Select("session_token_hash").Where("gateway_session_id = ?", gatewaySessionID)
-	result := s.DB().WithContext(ctx).Where("session_token_hash IN (?)", subquery).Find(&tokens)
+	q := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID)
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		q = q.Where("user_id = ?", identity)
+	case schemas.MCPAuthModeVK:
+		q = q.Where("virtual_key_id = ?", identity)
+	case schemas.MCPAuthModeSession:
+		q = q.Where("session_id = ?", identity)
+	default:
+		return fmt.Errorf("unknown auth mode: %s", mode)
+	}
+	if err := q.Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+		return fmt.Errorf("failed to delete oauth user sessions (mode=%s): %w", mode, err)
+	}
+	return nil
+}
+
+// GetOauthUserTokenByMode looks up an active per-user OAuth token by a single
+// identity dimension. Filters status='active' so orphaned rows never satisfy
+// a lookup. Also constrains on auth_mode so a row whose identity column was
+// accidentally populated by a different mode's write path cannot leak into a
+// mode it doesn't belong to.
+func (s *RDBConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error) {
+	if identity == "" || mcpClientID == "" {
+		return nil, nil
+	}
+	var token tables.TableOauthUserToken
+	var result *gorm.DB
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ? AND status = ?", string(schemas.MCPAuthModeUser), identity, mcpClientID, "active").
+			First(&token)
+	case schemas.MCPAuthModeVK:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ? AND status = ?", string(schemas.MCPAuthModeVK), identity, mcpClientID, "active").
+			First(&token)
+	case schemas.MCPAuthModeSession:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ? AND status = ?", string(schemas.MCPAuthModeSession), identity, mcpClientID, "active").
+			First(&token)
+	default:
+		return nil, fmt.Errorf("unknown auth mode: %s", mode)
+	}
 	if result.Error != nil {
-		return nil, fmt.Errorf("failed to get oauth user tokens by gateway session id: %w", result.Error)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth user token by mode %s: %w", mode, result.Error)
+	}
+	return &token, nil
+}
+
+// MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth' on a single
+// token row. Called by the refresh-failure path when the upstream credential
+// is permanently rejected: the row stays (preserves audit + binding for
+// re-auth), but is filtered from active lookups so the next inference
+// triggers a fresh OAuth flow.
+func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
+	if tokenID == "" {
+		return nil
+	}
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableOauthUserToken{}).
+		Where("id = ?", tokenID).
+		Update("status", "needs_reauth")
+	if result.Error != nil {
+		return fmt.Errorf("failed to mark oauth user token %s needs_reauth: %w", tokenID, result.Error)
+	}
+	return nil
+}
+
+// GetOauthUserTokenByID looks up a single token row by primary key. Returns
+// nil, nil when not found.
+func (s *RDBConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var token tables.TableOauthUserToken
+	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&token).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth user token by id %s: %w", id, err)
+	}
+	return &token, nil
+}
+
+// ListAllOauthUserTokens returns every token row regardless of status. Used by
+// the sessions tab UI, which renders distinct affordances per state; filtering
+// here would only hide rows the user needs to see (especially needs_reauth).
+// Runtime lookups apply their own status='active' filter and don't use this.
+func (s *RDBConfigStore) ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error) {
+	var tokens []tables.TableOauthUserToken
+	if err := s.ScopedDB(ctx).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Order("created_at DESC").
+		Find(&tokens).Error; err != nil {
+		return nil, fmt.Errorf("failed to list all oauth user tokens: %w", err)
 	}
 	return tokens, nil
 }
 
-// TransferOauthUserTokensFromGatewaySession migrates upstream tokens from all flow proxy sessions
-// (identified by gateway_session_id) to the real Bifrost session token, and sets VirtualKeyID/UserID.
-func (s *RDBConfigStore) TransferOauthUserTokensFromGatewaySession(ctx context.Context, gatewaySessionID, realSessionToken, virtualKeyID, userID string) error {
-	if strings.TrimSpace(gatewaySessionID) == "" {
-		return fmt.Errorf("gateway session id is required")
+// ListAllPendingOauthUserSessions returns all pending OAuth flow rows whose
+// expiry is in the future. Companion to ListAllOauthUserTokens.
+func (s *RDBConfigStore) ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error) {
+	var sessions []tables.TableOauthUserSession
+	if err := s.ScopedDB(ctx).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Where("status = ? AND expires_at > ?", "pending", time.Now()).
+		Order("created_at DESC").
+		Find(&sessions).Error; err != nil {
+		return nil, fmt.Errorf("failed to list all pending oauth user sessions: %w", err)
 	}
-	if strings.TrimSpace(realSessionToken) == "" {
-		return fmt.Errorf("real session token is required")
-	}
-	realTokenHash := encrypt.HashSHA256(realSessionToken)
-
-	// Always overwrite both identity columns from the finalized values so stale
-	// identities from a prior flow phase cannot persist and cause GetOauthUserTokenByIdentity
-	// to resolve this token under the wrong identity.
-	updates := map[string]interface{}{
-		"session_token":      realSessionToken,
-		"session_token_hash": realTokenHash,
-		"virtual_key_id":     virtualKeyID,
-		"user_id":            userID,
-	}
-
-	// Update all tokens whose session_token_hash matches any upstream session
-	// linked to this gateway session ID.
-	subquery := s.DB().Model(&tables.TableOauthUserSession{}).Select("session_token_hash").Where("gateway_session_id = ?", gatewaySessionID)
-	result := s.DB().WithContext(ctx).Model(&tables.TableOauthUserToken{}).
-		Where("session_token_hash IN (?)", subquery).
-		Updates(updates)
-	if result.Error != nil {
-		return fmt.Errorf("failed to transfer oauth user tokens from gateway session: %w", result.Error)
-	}
-	s.logger.Debug("[rdb] TransferOauthUserTokensFromGatewaySession done: rows_affected=%d", result.RowsAffected)
-	return nil
+	return sessions, nil
 }
+
+// DeleteExpiredOauthUserSessions hard-deletes pending and claiming OAuth flow
+// rows whose ExpiresAt has passed. Including 'claiming' covers callbacks that
+// died after ClaimOauthUserSessionByState flipped the status — otherwise that
+// row outlives its expiry and any new flow init for the same (mode, identity,
+// mcp_client) binding keeps seeing the dead row.
+func (s *RDBConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error) {
+	result := s.DB().WithContext(ctx).
+		Where("expires_at < ? AND status IN ?", time.Now(), []string{"pending", "claiming"}).
+		Delete(&tables.TableOauthUserSession{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to delete expired oauth user sessions: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// DeleteOrphanedOauthUserTokens hard-deletes token rows that have been in
+// 'orphaned' state longer than olderThan. Skipped silently when olderThan
+// is zero or negative.
+func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-olderThan)
+	result := s.DB().WithContext(ctx).
+		Where("status = ? AND updated_at < ?", "orphaned", cutoff).
+		Delete(&tables.TableOauthUserToken{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to delete orphaned oauth user tokens: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+

@@ -1628,12 +1628,6 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve virtual key")
 		return
 	}
-	// Removing key from in-memory store
-	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
-	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove virtual key: %v", err)
-	}
 	// Deleting key from database
 	if err := h.configStore.DeleteVirtualKey(ctx, vkID); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1643,6 +1637,12 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to delete virtual key: %v", err)
 		SendError(ctx, 500, "Failed to delete virtual key")
 		return
+	}
+	// Removing key from in-memory store
+	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
+	if err != nil {
+		// But we ignore this error because its not
+		logger.Error("failed to remove virtual key: %v", err)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Virtual key deleted successfully",

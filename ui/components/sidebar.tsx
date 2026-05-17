@@ -829,6 +829,13 @@ export default function AppSidebar() {
             description: "Tool Groups",
             hasAccess: hasMCPToolGroupsAccess,
           },
+					{
+						title: "Auth Sessions",
+						url: "/workspace/mcp-sessions",
+						icon: KeyRound,
+						description: "Per-user OAuth sessions",
+						hasAccess: hasMCPGatewayAccess,
+					},
           {
             title: "MCP Settings",
             url: "/workspace/mcp-settings",
