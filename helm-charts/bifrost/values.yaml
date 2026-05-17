@@ -597,7 +597,7 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra, keycloak
+    # Provider: okta, entra, keycloak, zitadel, google
     provider: ""
     config: {}
       # Okta configuration:
@@ -609,6 +609,20 @@ bifrost:
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # # Attribute -> role/team/business-unit mappings (requires Custom Authorization Server;
+      # # the free Org Auth Server does not support claim expressions).
+      # attributeRoleMappings:
+      #   - attribute: "groups"
+      #     value: "bifrost-admins"
+      #     role: "admin"
+      # attributeTeamMappings:
+      #   - attribute: "groups"
+      #     value: "*"            # pass-through: every group becomes a team
+      #     team: ""              # ignored when value is "*"
+      # attributeBusinessUnitMappings:
+      #   - attribute: "department"
+      #     value: "platform"
+      #     business_unit: "Platform"
       #
       # Entra (Azure AD) configuration:
       # tenantId: ""
@@ -620,6 +634,15 @@ bifrost:
       # userIdField: "oid"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # attributeRoleMappings:
+      #   - attribute: "roles"
+      #     value: "BifrostAdmin"
+      #     role: "admin"
+      # attributeTeamMappings:
+      #   - attribute: "groups"
+      #     value: "<group-object-id>"
+      #     team: "platform-team"
+      # attributeBusinessUnitMappings: []
       #
       # Keycloak configuration:
       # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
@@ -630,6 +653,40 @@ bifrost:
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # attributeRoleMappings:
+      #   - attribute: "realm_access.roles"
+      #     value: "bifrost-admin"
+      #     role: "admin"
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      #
+      # Zitadel configuration:
+      # domain: "my-instance.zitadel.cloud"      # no scheme
+      # clientId: ""
+      # clientSecret: ""                          # optional, for confidential clients
+      # projectId: ""                             # optional, for project-scoped role claims
+      # audience: ""
+      # serviceAccountClientId: ""                # required for user provisioning
+      # serviceAccountClientSecret: ""
+      # teamIdsField: "groups"
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      #
+      # Google Workspace configuration:
+      # domain: "company.com"
+      # clientId: ""
+      # clientSecret: ""
+      # credentialMode: "inherit"                 # "inherit" (ADC), "env", or "file"
+      # serviceAccountEnvVar: "GOOGLE_SA_JSON"    # required when credentialMode is "env"
+      # serviceAccountFile: "/etc/bifrost/sa.json" # required when credentialMode is "file"
+      # adminEmail: "admin@company.com"           # required for Directory API (domain-wide delegation)
+      # impersonateServiceAccount: ""             # optional, for Workload Identity
+      # audience: ""
+      # teamIdsField: "groups"
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:

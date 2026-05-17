@@ -1376,6 +1376,22 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
 {{- end }}
 {{- end }}
+{{- if eq $scimValidation.provider "zitadel" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Zitadel. Example: my-instance.zitadel.cloud (no scheme)." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Zitadel." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "google" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Google Workspace. Example: company.com" }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/* Validate cluster config when enabled */}}
