@@ -1532,7 +1532,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		go func() {
 			defer p.wg.Done()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
 		}()
 	}
 
@@ -1732,60 +1732,120 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, pricingScopes *modelcatalog.PricingLookupScopes) {
-	// Determine if request was successful
-	success := (result != nil)
 
-	// Streaming detection
-	isStreaming := bifrost.IsStreamRequestType(requestType)
-
-	if !isStreaming || (isStreaming && isFinalChunk) {
-		var cost float64
-		if p.modelCatalog != nil && result != nil {
-			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
+func (p *GovernancePlugin) postHookWorker(
+	result *schemas.BifrostResponse,
+	err *schemas.BifrostError,
+	provider schemas.ModelProvider,
+	model string,
+	requestType schemas.RequestType,
+	virtualkey string,
+	requestID string,
+	userID string,
+	isFinalChunk bool,
+	pricingScopes *modelcatalog.PricingLookupScopes,
+) {
+	// panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error("panic recovered in governance postHookWorker for requset %s: %v", requestID, r)
 		}
-		tokensUsed := 0
-		if result != nil {
-			switch {
-			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-				tokensUsed = result.TextCompletionResponse.Usage.TotalTokens
-			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-				tokensUsed = result.ChatResponse.Usage.TotalTokens
-			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-				tokensUsed = result.ResponsesResponse.Usage.TotalTokens
-			case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
-				tokensUsed = result.ResponsesStreamResponse.Response.Usage.TotalTokens
-			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-				tokensUsed = result.EmbeddingResponse.Usage.TotalTokens
-			case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
-				tokensUsed = result.SpeechResponse.Usage.TotalTokens
-			case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
-				tokensUsed = result.SpeechStreamResponse.Usage.TotalTokens
-			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil && result.TranscriptionResponse.Usage.TotalTokens != nil:
-				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
-			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
-				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+	}()
+
+	isStreaming := bifrost.IsStreamRequestType(requestType)
+	if isStreaming && !isFinalChunk {
+		return // don't calculate cost until final chunk is received
+	}
+
+	var extractedUsage *schemas.BifrostLLMUsage
+	var resolvedModel string
+
+	if result != nil {
+		resolvedModel = model
+		switch {
+		case result.TextCompletionResponse != nil:
+			extractedUsage = result.TextCompletionResponse.Usage
+		case result.ChatResponse != nil:
+			extractedUsage = result.ChatResponse.Usage
+		case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+			extractedUsage = &schemas.BifrostLLMUsage{
+				PromptTokens:     result.ResponsesResponse.Usage.InputTokens,
+				CompletionTokens: result.ResponsesResponse.Usage.OutputTokens,
+				TotalTokens:      result.ResponsesResponse.Usage.TotalTokens,
+			}
+		case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+			extractedUsage = &schemas.BifrostLLMUsage{
+				PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
+				CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
+				TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+			}
+		case result.EmbeddingResponse != nil:
+			extractedUsage = result.EmbeddingResponse.Usage
+		case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
+			extractedUsage = &schemas.BifrostLLMUsage{
+				PromptTokens:     result.SpeechResponse.Usage.InputTokens,
+				CompletionTokens: result.SpeechResponse.Usage.OutputTokens,
+				TotalTokens:      result.SpeechResponse.Usage.TotalTokens,
+			}
+		case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
+			extractedUsage = &schemas.BifrostLLMUsage{
+				PromptTokens:     result.SpeechStreamResponse.Usage.InputTokens,
+				CompletionTokens: result.SpeechStreamResponse.Usage.OutputTokens,
+				TotalTokens:      result.SpeechStreamResponse.Usage.TotalTokens,
+			}
+		case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+			extractedUsage = &schemas.BifrostLLMUsage{
+				PromptTokens:     *result.TranscriptionResponse.Usage.InputTokens,
+				CompletionTokens: *result.TranscriptionResponse.Usage.OutputTokens,
+				TotalTokens:      *result.TranscriptionResponse.Usage.TotalTokens,
+			}
+		case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil:
+			extractedUsage = &schemas.BifrostLLMUsage{
+				PromptTokens:     *result.TranscriptionStreamResponse.Usage.InputTokens,
+				CompletionTokens: *result.TranscriptionStreamResponse.Usage.OutputTokens,
+				TotalTokens:      *result.TranscriptionStreamResponse.Usage.TotalTokens,
 			}
 		}
-		// Create usage update for tracker (business logic)
-		usageUpdate := &UsageUpdate{
-			VirtualKey:   virtualKey,
-			Provider:     provider,
-			Model:        model,
-			Success:      success,
-			TokensUsed:   int64(tokensUsed),
-			Cost:         cost,
-			RequestID:    requestID,
-			UserID:       userID,
-			IsStreaming:  isStreaming,
-			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0,
+	} else if err != nil && err.ExtraFields.Usage != nil {
+		extractedUsage = err.ExtraFields.Usage
+		resolvedModel = err.ExtraFields.ResolvedModelUsed
+
+		if resolvedModel == "" {
+			resolvedModel = model
+		}
+	}
+
+	if extractedUsage == nil {
+		return
+	}
+
+	var cost float64
+	if p.modelCatalog != nil {
+		metadata := modelcatalog.PricingMetadata{
+			Provider:      provider,
+			OriginalModel: model,
+			ResolvedModel: resolvedModel,
+			RequestType:   requestType,
 		}
 
-		// Queue usage update asynchronously using tracker
-		// UpdateUsage handles empty virtual keys gracefully by only updating provider-level and model-level usage
-		p.tracker.UpdateUsage(p.ctx, usageUpdate)
+		cost = p.modelCatalog.CalculateCostFromUsage(extractedUsage, metadata, pricingScopes)
 	}
+
+	success := (result != nil && err == nil)
+	usageUpdate := &UsageUpdate{
+		VirtualKey:   virtualkey,
+		Provider:     provider,
+		Model:        model,
+		Success:      success,
+		TokensUsed:   int64(extractedUsage.TotalTokens),
+		Cost:         cost,
+		RequestID:    requestID,
+		UserID:       userID,
+		IsStreaming:  isStreaming,
+		IsFinalChunk: isFinalChunk,
+		HasUsageData: extractedUsage.TotalTokens > 0,
+	}
+	p.tracker.UpdateUsage(p.ctx, usageUpdate)
 }
 
 // GetGovernanceStore returns the governance store
