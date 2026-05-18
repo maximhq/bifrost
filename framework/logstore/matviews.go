@@ -1628,7 +1628,6 @@ func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context) ([]strin
 	if err := s.db.WithContext(ctx).Table("mv_filter_models").
 		Distinct("model").
 		Where("model != ''").
-		Limit(defaultFilterDataLimit).
 		Pluck("model", &models).Error; err != nil {
 		return nil, err
 	}
@@ -1641,7 +1640,6 @@ func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context) ([]stri
 	if err := s.db.WithContext(ctx).Table("mv_filter_aliases").
 		Distinct("alias").
 		Where("alias != ''").
-		Limit(defaultFilterDataLimit).
 		Pluck("alias", &aliases).Error; err != nil {
 		return nil, err
 	}
@@ -1654,7 +1652,6 @@ func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context) ([]
 	if err := s.db.WithContext(ctx).Table("mv_filter_stop_reasons").
 		Distinct("stop_reason").
 		Where("stop_reason != ''").
-		Limit(defaultFilterDataLimit).
 		Pluck("stop_reason", &stopReasons).Error; err != nil {
 		return nil, err
 	}
@@ -1680,7 +1677,7 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 	}
 	if err := q.
 		Select("DISTINCT id, name").
-		Limit(defaultFilterDataLimit).
+		Order("name ASC").
 		Find(&results).Error; err != nil {
 		return nil, true, err
 	}
@@ -1695,7 +1692,6 @@ func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context) 
 	if err := s.db.WithContext(ctx).Table("mv_filter_routing_engines").
 		Distinct("routing_engines_used").
 		Where("routing_engines_used != ''").
-		Limit(defaultFilterDataLimit).
 		Pluck("routing_engines_used", &rawValues).Error; err != nil {
 		return nil, err
 	}
