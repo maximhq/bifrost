@@ -1866,8 +1866,8 @@ func convertToolCallToContentBlock(toolCall schemas.ChatAssistantMessageToolCall
 		if err := json.Compact(&buf, []byte(args)); err == nil {
 			input = buf.Bytes()
 		} else {
-			// Preserve original payload instead of silently dropping args.
-			input = json.RawMessage([]byte(args))
+			// invalid json recieved
+			input = json.RawMessage("{}")
 		}
 	}
 
