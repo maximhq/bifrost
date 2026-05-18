@@ -1090,6 +1090,23 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
+		if chunk.Message != nil && chunk.Message.Role != "" {
+			role := chunk.Message.Role
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Role: &role,
+							},
+						},
+					},
+				},
+			}
+			return streamResponse, nil, false
+		}
 		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageStop:
