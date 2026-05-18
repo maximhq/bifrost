@@ -389,6 +389,13 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 		if columnName != "" {
 			// Convert snake_case to space-separated words
 			columnName = strings.ReplaceAll(columnName, "_", " ")
+			// For config_keys.name uniqueness violations, give a more specific error message.
+			// Scope to config_keys specifically (SQLite: "config_keys.name",
+			// PostgreSQL: constraint "idx_key_name") to avoid matching other tables like
+			// governance_teams.name or config_plugins.name.
+			if strings.Contains(errMsg, "config_keys.name") || strings.Contains(errMsg, "idx_key_name") {
+				return fmt.Errorf("API key names must be unique across providers. A key with this name %w. Rename it in the UI or config.json", ErrAlreadyExists)
+			}
 			return fmt.Errorf("a record with this %s %w. Please use a different value", columnName, ErrAlreadyExists)
 		}
 		// Fallback message if we couldn't parse the column name
