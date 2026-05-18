@@ -14,8 +14,8 @@ import (
 // TableKey represents an API key configuration in the database
 type TableKey struct {
 	ID                    uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name                  string         `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
-	ProviderID            uint           `gorm:"index;not null" json:"provider_id"`
+	Name                  string         `gorm:"type:varchar(255);uniqueIndex:idx_key_provider_name;not null" json:"name"`
+	ProviderID            uint           `gorm:"index;not null;uniqueIndex:idx_key_provider_name" json:"provider_id"`
 	Provider              string         `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
 	KeyID                 string         `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
 	Value                 schemas.EnvVar `gorm:"type:text;not null" json:"value"`

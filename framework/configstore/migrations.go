@@ -746,6 +746,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationChangeKeyNameToCompositeUniqueIndex(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7658,6 +7661,89 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_team_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationChangeKeyNameToCompositeUniqueIndex replaces the global unique index
+// idx_key_name on config_keys.name with a composite unique index
+// idx_key_provider_name on (provider_id, name). This allows different providers
+// to have keys with the same name (e.g., each provider can have a "default" key).
+//
+// Locking note: DROP INDEX and CREATE UNIQUE INDEX acquire AccessExclusiveLock
+// on config_keys, blocking all reads and writes. This is acceptable because:
+// 1. The migration runs during server startup, before accepting traffic
+// 2. config_keys is a small configuration table (typically <1K rows)
+// 3. The operation completes in milliseconds
+// For multi-instance deployments, the sequential startup ensures only one
+// node runs migrations at a time. If this becomes a bottleneck, the migration
+// could be split into two steps using CREATE UNIQUE INDEX CONCURRENTLY,
+// which cannot run inside a transaction.
+func migrationChangeKeyNameToCompositeUniqueIndex(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "change_key_name_to_composite_unique_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Only run if the old global index still exists
+			if migrator.HasIndex(&tables.TableKey{}, "idx_key_name") {
+				// Drop the old global unique index on name
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_key_name").Error; err != nil {
+					return fmt.Errorf("failed to drop idx_key_name: %w", err)
+				}
+			}
+
+			// Create the new composite unique index on (provider_id, name) if it doesn't exist
+			if !migrator.HasIndex(&tables.TableKey{}, "idx_key_provider_name") {
+				if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_key_provider_name ON config_keys (provider_id, name)").Error; err != nil {
+					return fmt.Errorf("failed to create idx_key_provider_name: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop the composite index
+			if migrator.HasIndex(&tables.TableKey{}, "idx_key_provider_name") {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_key_provider_name").Error; err != nil {
+					return fmt.Errorf("failed to drop idx_key_provider_name: %w", err)
+				}
+			}
+
+			// Before recreating the old global unique index, check if duplicate
+			// key names exist across providers (which is now allowed by the
+			// composite index). If duplicates exist, creating a UNIQUE index
+			// on (name) alone would fail.
+			if !migrator.HasIndex(&tables.TableKey{}, "idx_key_name") {
+				var duplicateCount int64
+				if err := tx.Raw("SELECT COUNT(*) FROM (SELECT name FROM config_keys GROUP BY name HAVING COUNT(*) > 1) dup").Scan(&duplicateCount).Error; err != nil {
+					return fmt.Errorf("failed to check for duplicate key names: %w", err)
+				}
+
+				if duplicateCount == 0 {
+					// Safe to recreate the unique index — no duplicates
+					if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_key_name ON config_keys (name)").Error; err != nil {
+						return fmt.Errorf("failed to recreate idx_key_name: %w", err)
+					}
+				} else {
+					// Duplicate names exist — create a regular (non-unique) index to
+					// avoid data loss while still providing query performance.
+					if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_key_name ON config_keys (name)").Error; err != nil {
+						return fmt.Errorf("failed to create non-unique idx_key_name: %w", err)
+					}
+					return fmt.Errorf("WARNING: rollback created a non-unique index on config_keys.name because %d key names are duplicated across providers. Manually rename duplicates and recreate the unique index if needed", duplicateCount)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running change_key_name_to_composite_unique_index migration: %s", err.Error())
 	}
 	return nil
 }
