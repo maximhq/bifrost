@@ -2751,17 +2751,29 @@ func (s *RDBLogStore) Flush(ctx context.Context, since time.Time) error {
 	return nil
 }
 
+func (s *RDBLogStore) applyLikeFilter(q *gorm.DB, column, search string) *gorm.DB {
+	pattern := "%" + search + "%"
+	if s.db.Dialector.Name() == "postgres" {
+		return q.Where(fmt.Sprintf("%s ILIKE ?", column), pattern)
+	}
+	return q.Where(fmt.Sprintf("%s LIKE ?", column), pattern)
+}
+
 // GetDistinctModels returns all unique non-empty model values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans.
-func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
-		return s.getDistinctModelsFromMatView(ctx)
+		return s.getDistinctModelsFromMatView(ctx, limit, query)
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var models []string
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	q := s.db.WithContext(ctx).Model(&Log{}).
 		Where("model IS NOT NULL AND model != '' AND timestamp >= ?", cutoff).
-		Distinct("model").Pluck("model", &models).Error
+		Distinct("model")
+	if query != "" {
+		q = s.applyLikeFilter(q, "model", query)
+	}
+	err := q.Order("model ASC").Limit(limit).Pluck("model", &models).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct models: %w", err)
 	}
@@ -2770,15 +2782,19 @@ func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
 
 // GetDistinctAliases returns all unique non-empty alias values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans.
-func (s *RDBLogStore) GetDistinctAliases(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
-		return s.getDistinctAliasesFromMatView(ctx)
+		return s.getDistinctAliasesFromMatView(ctx, limit, query)
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var aliases []string
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	q := s.db.WithContext(ctx).Model(&Log{}).
 		Where("alias IS NOT NULL AND alias != '' AND timestamp >= ?", cutoff).
-		Distinct("alias").Pluck("alias", &aliases).Error
+		Distinct("alias")
+	if query != "" {
+		q = s.applyLikeFilter(q, "alias", query)
+	}
+	err := q.Order("alias ASC").Limit(limit).Pluck("alias", &aliases).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct aliases: %w", err)
 	}
@@ -2805,13 +2821,12 @@ var allowedKeyPairColumns = map[string]struct{}{
 
 // GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
 // idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
-func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
+func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
-		results, served, err := s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol)
+		results, served, err := s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol, limit, query)
 		if served {
 			return results, err
 		}
-		// Pair has no per-dimension matview registered — fall through to raw path.
 	}
 	if _, ok := allowedKeyPairColumns[idCol]; !ok {
 		return nil, fmt.Errorf("invalid id column: %s", idCol)
@@ -2821,10 +2836,13 @@ func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol st
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var results []KeyPairResult
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	q := s.db.WithContext(ctx).Model(&Log{}).
 		Select(fmt.Sprintf("DISTINCT %s as id, %s as name", idCol, nameCol)).
-		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != '' AND timestamp >= ?", idCol, idCol, nameCol, nameCol), cutoff).
-		Find(&results).Error
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != '' AND timestamp >= ?", idCol, idCol, nameCol, nameCol), cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, nameCol, query)
+	}
+	err := q.Order("name ASC").Limit(limit).Find(&results).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
 	}
@@ -2833,15 +2851,19 @@ func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol st
 
 // GetDistinctRoutingEngines returns all unique routing engine values from the comma-separated column.
 // Scoped to recent data to avoid full table scans.
-func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
-		return s.getDistinctRoutingEnginesFromMatView(ctx)
+		return s.getDistinctRoutingEnginesFromMatView(ctx, limit, query)
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var rawValues []string
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	q := s.db.WithContext(ctx).Model(&Log{}).
 		Where("routing_engines_used IS NOT NULL AND routing_engines_used != '' AND timestamp >= ?", cutoff).
-		Distinct("routing_engines_used").Pluck("routing_engines_used", &rawValues).Error
+		Distinct("routing_engines_used")
+	if query != "" {
+		q = s.applyLikeFilter(q, "routing_engines_used", query)
+	}
+	err := q.Pluck("routing_engines_used", &rawValues).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct routing engines: %w", err)
 	}
@@ -2859,20 +2881,28 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 	for engine := range uniqueEngines {
 		engines = append(engines, engine)
 	}
+	sort.Strings(engines)
+	if len(engines) > limit {
+		engines = engines[:limit]
+	}
 	return engines, nil
 }
 
 // GetDistinctStopReasons returns all unique non-empty stop_reason values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans.
-func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
-		return s.getDistinctStopReasonsFromMatView(ctx)
+		return s.getDistinctStopReasonsFromMatView(ctx, limit, query)
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var stopReasons []string
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	q := s.db.WithContext(ctx).Model(&Log{}).
 		Where("stop_reason IS NOT NULL AND stop_reason != '' AND timestamp >= ?", cutoff).
-		Distinct("stop_reason").Pluck("stop_reason", &stopReasons).Error
+		Distinct("stop_reason")
+	if query != "" {
+		q = s.applyLikeFilter(q, "stop_reason", query)
+	}
+	err := q.Order("stop_reason ASC").Limit(limit).Pluck("stop_reason", &stopReasons).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct stop reasons: %w", err)
 	}
@@ -2893,7 +2923,7 @@ const (
 
 // GetDistinctMetadataKeys returns unique metadata keys and their distinct values from recent logs.
 // It scans a bounded number of recent rows to avoid memory bloat on large tables.
-func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error) {
+func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var metadataStrings []string
 	// Guard must match the partial-index predicate so the planner uses the GIN index.
@@ -2949,8 +2979,39 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][
 		}
 	}
 
+	// Apply search filter on both key names and values
+	if query != "" {
+		lowerQ := strings.ToLower(query)
+		filtered := make(map[string]map[string]struct{})
+		for key, vals := range keyValues {
+			if strings.Contains(strings.ToLower(key), lowerQ) {
+				filtered[key] = vals
+			} else {
+				matchedVals := make(map[string]struct{})
+				for v := range vals {
+					if strings.Contains(strings.ToLower(v), lowerQ) {
+						matchedVals[v] = struct{}{}
+					}
+				}
+				if len(matchedVals) > 0 {
+					filtered[key] = matchedVals
+				}
+			}
+		}
+		keyValues = filtered
+	}
+
 	result := make(map[string][]string, len(keyValues))
-	for key, vals := range keyValues {
+	keys := make([]string, 0, len(keyValues))
+	for key := range keyValues {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if limit > 0 && len(keys) > limit {
+		keys = keys[:limit]
+	}
+	for _, key := range keys {
+		vals := keyValues[key]
 		values := make([]string, 0, len(vals))
 		for v := range vals {
 			values = append(values, v)
@@ -3354,42 +3415,49 @@ func (s *RDBLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) err
 
 // GetAvailableToolNames returns all unique tool names from the MCP tool logs.
 // Scoped to recent data to avoid full table scans.
-func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var toolNames []string
-	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).
+	q := s.db.WithContext(ctx).Model(&MCPToolLog{}).
 		Where("tool_name IS NOT NULL AND tool_name != '' AND timestamp >= ?", cutoff).
-		Distinct("tool_name").Pluck("tool_name", &toolNames)
+		Distinct("tool_name")
+	if query != "" {
+		q = s.applyLikeFilter(q, "tool_name", query)
+	}
+	result := q.Limit(limit).Pluck("tool_name", &toolNames)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available tool names: %w", result.Error)
 	}
 	return toolNames, nil
 }
 
-// GetAvailableServerLabels returns all unique server labels from the MCP tool logs.
-// Scoped to recent data to avoid full table scans.
-func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var serverLabels []string
-	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).
+	q := s.db.WithContext(ctx).Model(&MCPToolLog{}).
 		Where("server_label IS NOT NULL AND server_label != '' AND timestamp >= ?", cutoff).
-		Distinct("server_label").Pluck("server_label", &serverLabels)
+		Distinct("server_label")
+	if query != "" {
+		q = s.applyLikeFilter(q, "server_label", query)
+	}
+	result := q.Limit(limit).Pluck("server_label", &serverLabels)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available server labels: %w", result.Error)
 	}
 	return serverLabels, nil
 }
 
-// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs.
-// Scoped to recent data to avoid full table scans.
-func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error) {
+func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var logs []MCPToolLog
-	result := s.db.WithContext(ctx).
+	q := s.db.WithContext(ctx).
 		Model(&MCPToolLog{}).
 		Select("DISTINCT virtual_key_id, virtual_key_name").
-		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != '' AND timestamp >= ?", cutoff).
-		Find(&logs)
+		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "virtual_key_name", query)
+	}
+	result := q.Limit(limit).Find(&logs)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available virtual keys from MCP logs: %w", result.Error)
 	}
