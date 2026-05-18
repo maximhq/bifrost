@@ -817,8 +817,8 @@ curl -X POST http://localhost:8080/v1/embeddings \
 resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Vertex,
     Model:    "text-embedding-004",
-    Input: &schemas.EmbeddingInput{
-        Texts: []string{"text to embed"},
+    Input: []schemas.EmbeddingContent{
+        {{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text to embed")}},
     },
     Params: &schemas.EmbeddingParameters{
         Dimensions: schemas.Ptr(256),

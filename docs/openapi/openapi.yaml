@@ -157,6 +157,8 @@ paths:
     $ref: './paths/inference/rerank.yaml#/rerank'
   /v1/embeddings:
     $ref: './paths/inference/embeddings.yaml#/embeddings'
+  /v1/embeddings/batch:
+    $ref: './paths/inference/embeddings.yaml#/batch-embeddings'
   /v1/audio/speech:
     $ref: './paths/inference/audio.yaml#/speech'
   /v1/audio/transcriptions:
@@ -1078,8 +1080,30 @@ components:
     # ==================== Embeddings ====================
     EmbeddingRequest:
       $ref: './schemas/inference/embeddings.yaml#/EmbeddingRequest'
+    BatchEmbeddingRequest:
+      $ref: './schemas/inference/embeddings.yaml#/BatchEmbeddingRequest'
+    EmbeddingBatchItem:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingBatchItem'
+    EmbeddingItemParams:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingItemParams'
+    EmbeddingInput:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingInput'
+    EmbeddingContent:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingContent'
+    EmbeddingContentPart:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingContentPart'
+    EmbeddingMediaPart:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingMediaPart'
+    EmbeddingVideoConfig:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingVideoConfig'
     EmbeddingResponse:
       $ref: './schemas/inference/embeddings.yaml#/EmbeddingResponse'
+    EmbeddingData:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingData'
+    EmbeddingVideoSegment:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingVideoSegment'
+    EmbeddingsByType:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingsByType'
 
     # ==================== Speech ====================
     SpeechRequest:

@@ -381,6 +381,130 @@ response, err := client.TranscriptionRequest(schemas.NewBifrostContext(context.B
 })
 ```
 
+## Multimodal Embeddings
+
+Bifrost supports multimodal embeddings — generating vector representations that capture text, images, audio, video, and documents together. The `Input` field on `BifrostEmbeddingRequest` is a `[]EmbeddingContent`, where each `EmbeddingContent` is a slice of typed parts.
+
+### Text Embedding (all providers)
+
+Pass a single-part text content. For providers that only need a string you can also pass `"input": "text"` via the HTTP API.
+
+```go
+text := "a golden retriever playing fetch"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Cohere,
+    Model:    "embed-v4.0",
+    Input: []schemas.EmbeddingContent{
+        {{Type: schemas.EmbeddingContentPartTypeText, Text: &text}},
+    },
+    Params: &schemas.EmbeddingParameters{
+        ExtraParams: map[string]interface{}{"input_type": "search_document"},
+    },
+})
+```
+
+### Image + Text Embedding
+
+Cohere `embed-v4.0` accepts a text part and an image part in the same content entry. The image can be a base64 data URI or a direct URL.
+
+```go
+imageURL := "data:image/jpeg;base64,<base64-encoded-jpeg>"
+caption  := "a golden retriever in a park"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Cohere,
+    Model:    "embed-v4.0",
+    Input: []schemas.EmbeddingContent{
+        {
+            {Type: schemas.EmbeddingContentPartTypeText,  Text:  &caption},
+            {Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &imageURL}},
+        },
+    },
+    Params: &schemas.EmbeddingParameters{
+        ExtraParams: map[string]interface{}{"input_type": "image"},
+    },
+})
+```
+
+### Multimodal Embedding
+
+Gemini supports text, image, audio, video, and PDF in the same content entry. Pass each modality as a typed part:
+
+```go
+audioURL := "https://example.com/speech.mp3"
+text     := "transcript of the audio"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-embedding-exp-03-07",
+    Input: []schemas.EmbeddingContent{
+        {
+            {Type: schemas.EmbeddingContentPartTypeText,  Text:  &text},
+            {Type: schemas.EmbeddingContentPartTypeAudio, Audio: &schemas.EmbeddingMediaPart{URL: &audioURL}},
+        },
+    },
+})
+```
+
+For PDFs, use the `file` part type with `MIMEType: "application/pdf"`:
+
+```go
+pdfURL   := "https://example.com/document.pdf"
+pdfMime  := "application/pdf"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-embedding-exp-03-07",
+    Input: []schemas.EmbeddingContent{
+        {
+            {Type: schemas.EmbeddingContentPartTypeFile, File: &schemas.EmbeddingMediaPart{URL: &pdfURL, MIMEType: &pdfMime}},
+        },
+    },
+})
+```
+
+### Image + Text + Video Embedding
+
+`multimodalembedding@001` accepts text, image, and video in a single content entry. Images and videos must be GCS URIs (`gs://`) or base64 data URIs. The response contains a separate `EmbeddingData` per modality.
+
+```go
+imageGCS := "gs://my-bucket/photo.jpg"
+text     := "product photo"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Vertex,
+    Model:    "multimodalembedding@001",
+    Input: []schemas.EmbeddingContent{
+        {
+            {Type: schemas.EmbeddingContentPartTypeText,  Text:  &text},
+            {Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &imageGCS}},
+        },
+    },
+})
+// Response has separate vectors per modality:
+// resp.Data[0].Modality == "text"
+// resp.Data[1].Modality == "image"
+```
+
+For video, add a `Video` part alongside text/image:
+
+```go
+videoGCS := "gs://my-bucket/clip.mp4"
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Vertex,
+    Model:    "multimodalembedding@001",
+    Input: []schemas.EmbeddingContent{
+        {
+            {
+                Type:  schemas.EmbeddingContentPartTypeVideo,
+                Video: &schemas.EmbeddingMediaPart{URL: &videoGCS},
+                VideoConfig: &schemas.EmbeddingVideoConfig{
+                    StartOffsetSec: schemas.Ptr(0),
+                    EndOffsetSec:   schemas.Ptr(30),
+                },
+            },
+        },
+    },
+})
+// resp.Data[].Modality == "video", each entry has a VideoSegment with timestamps
+```
+
 <Info>
 Check the [Supported Providers](/providers/supported-providers/overview) page for more information on multimodal capabilities supported by each provider.
 </Info>

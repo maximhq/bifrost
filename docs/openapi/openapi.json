@@ -1692,7 +1692,7 @@
       "post": {
         "operationId": "createEmbedding",
         "summary": "Create embeddings",
-        "description": "Creates an embedding vector representing the input text.\n",
+        "description": "Creates embedding vectors for one or more inputs. Supports text, image, audio,\nvideo, file, and token inputs depending on the provider.\n\n**Input shorthands (text-only)**\n- Single string: `\"input\": \"hello world\"`\n- Array of strings: `\"input\": [\"hello\", \"world\"]`\n\n**Full multimodal form**\nPass `\"input\"` as an array of EmbeddingContent arrays. Each inner array is a\nlist of typed parts (text / image / audio / video / file / tokens) that together\nproduce one output embedding vector.\n\n**Provider notes**\n- OpenAI / Azure / Groq / Fireworks: text and token inputs only\n- Cohere embed-v4+: text and image inputs; use `embedding_types` extra param for\n  multiple quantisation formats simultaneously\n- Gemini / Vertex Gemini: text, image, audio, video, and file inputs\n- Vertex multimodalembedding@001: text, image, video — single instance per request;\n  returns separate vectors per modality (see `modality` field in response)\n",
         "tags": [
           "Embeddings"
         ],
@@ -1702,6 +1702,72 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/EmbeddingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/embeddings/batch": {
+      "post": {
+        "operationId": "createBatchEmbedding",
+        "summary": "Create batch embeddings",
+        "description": "Creates embeddings for a batch of inputs where each item can carry its own\nparameter overrides (task_type, dimensions, title, etc.).\n\nCurrently supported by Gemini via the `batchEmbedContents` endpoint.\nEach item maps to one `GeminiEmbeddingRequest` within the batch.\n\nItem-level `params` override the top-level defaults for that item only.\nOmit item-level `params` to inherit the batch-level defaults.\n",
+        "tags": [
+          "Embeddings"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchEmbeddingRequest"
               }
             }
           }
@@ -45668,36 +45734,61 @@
         "properties": {
           "model": {
             "type": "string",
-            "description": "Model in provider/model format"
+            "description": "Model in provider/model format (e.g. \"openai/text-embedding-3-small\")"
           },
           "input": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              {
-                "type": "array",
-                "items": {
-                  "type": "integer"
-                }
-              },
-              {
-                "type": "array",
-                "items": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer"
-                  }
-                }
-              }
+            "$ref": "#/components/schemas/EmbeddingInput"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback models in provider/model format"
+          },
+          "encoding_format": {
+            "type": "string",
+            "enum": [
+              "float",
+              "base64"
             ],
-            "description": "Input for embedding - text or token arrays"
+            "description": "Format for embedding output (OpenAI)"
+          },
+          "dimensions": {
+            "type": "integer",
+            "description": "Number of output dimensions"
+          },
+          "task_type": {
+            "type": "string",
+            "description": "Intended downstream task hint. Supported by Gemini and Vertex text embedding models (e.g. RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY).\n"
+          },
+          "title": {
+            "type": "string",
+            "description": "Optional title for the content. Used by Gemini / Vertex when task_type is RETRIEVAL_DOCUMENT to improve retrieval quality.\n"
+          },
+          "auto_truncate": {
+            "type": "boolean",
+            "description": "Automatically truncate long inputs. Supported by Vertex text embedding models (default true) and Vertex Gemini embedding models.\n"
+          }
+        }
+      },
+      "BatchEmbeddingRequest": {
+        "type": "object",
+        "required": [
+          "model",
+          "items"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model in provider/model format"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingBatchItem"
+            },
+            "description": "List of embedding inputs. Each item may carry its own params override; omit item-level params to inherit the top-level defaults.\n"
           },
           "fallbacks": {
             "type": "array",
@@ -45713,7 +45804,183 @@
             ]
           },
           "dimensions": {
+            "type": "integer",
+            "description": "Default output dimensions for all items"
+          },
+          "task_type": {
+            "type": "string",
+            "description": "Default task type for all items"
+          },
+          "title": {
+            "type": "string",
+            "description": "Default title for all items"
+          },
+          "auto_truncate": {
+            "type": "boolean",
+            "description": "Default auto-truncate setting for all items"
+          }
+        }
+      },
+      "EmbeddingBatchItem": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/EmbeddingContent"
+          },
+          "params": {
+            "$ref": "#/components/schemas/EmbeddingItemParams",
+            "description": "Per-item parameter overrides; null inherits batch-level defaults"
+          }
+        }
+      },
+      "EmbeddingItemParams": {
+        "type": "object",
+        "description": "Per-item parameter overrides within a batch request",
+        "properties": {
+          "encoding_format": {
+            "type": "string",
+            "enum": [
+              "float",
+              "base64"
+            ]
+          },
+          "dimensions": {
             "type": "integer"
+          },
+          "task_type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "auto_truncate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EmbeddingInput": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Single text string shorthand"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Multiple text strings shorthand"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingContent"
+            },
+            "description": "Full multimodal form. Each element is one EmbeddingContent (a list of typed parts that together produce one output embedding vector).\n"
+          }
+        ],
+        "description": "Input for embedding. Accepts a single text string, an array of text strings, or the full multimodal form (array of EmbeddingContent). The multimodal form is required for image, audio, video, file, or token inputs.\n"
+      },
+      "EmbeddingContent": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EmbeddingContentPart"
+        },
+        "minItems": 1,
+        "description": "A list of typed content parts that are combined into one embedding vector. Text-only providers (OpenAI, Cohere texts path) accept multiple text parts that are concatenated. Multimodal providers (Gemini, Vertex, Cohere inputs path) accept mixed-modality parts.\n"
+      },
+      "EmbeddingContentPart": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "image",
+              "audio",
+              "file",
+              "video",
+              "tokens"
+            ],
+            "description": "Modality of this content part"
+          },
+          "text": {
+            "type": "string",
+            "description": "Text payload — required when type is \"text\""
+          },
+          "image": {
+            "$ref": "#/components/schemas/EmbeddingMediaPart",
+            "description": "Image payload — required when type is \"image\""
+          },
+          "audio": {
+            "$ref": "#/components/schemas/EmbeddingMediaPart",
+            "description": "Audio payload — required when type is \"audio\""
+          },
+          "file": {
+            "$ref": "#/components/schemas/EmbeddingMediaPart",
+            "description": "File payload — required when type is \"file\""
+          },
+          "video": {
+            "$ref": "#/components/schemas/EmbeddingMediaPart",
+            "description": "Video payload — required when type is \"video\""
+          },
+          "video_config": {
+            "$ref": "#/components/schemas/EmbeddingVideoConfig",
+            "description": "Optional video segment parameters. Only meaningful when type is \"video\" and the provider supports per-segment embeddings (Vertex multimodalembedding@001).\n"
+          },
+          "tokens": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Pre-tokenised integer token IDs — required when type is \"tokens\" (OpenAI only)"
+          }
+        },
+        "description": "Exactly one of text / image / audio / file / video / tokens must be set, matching the declared type.\n"
+      },
+      "EmbeddingMediaPart": {
+        "type": "object",
+        "description": "Media payload for image, audio, file, or video parts. Exactly one of data or url must be provided.\n",
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "Base64-encoded media data, optionally as a data URI (data:<mime>;base64,<data>). Used for inline uploads.\n"
+          },
+          "url": {
+            "type": "string",
+            "description": "URL pointing to the media. For Vertex multimodal embeddings this must be a GCS URI (gs://…). For Gemini this can be any accessible URL.\n"
+          },
+          "mime_type": {
+            "type": "string",
+            "description": "MIME type of the media (e.g. \"image/jpeg\", \"audio/mpeg\", \"video/mp4\"). Optional when the type can be inferred from a data URI or file extension.\n"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Original filename, used as display name in Gemini File API uploads."
+          }
+        }
+      },
+      "EmbeddingVideoConfig": {
+        "type": "object",
+        "description": "Optional video segment parameters for Vertex multimodalembedding@001. Controls which portion of the video is sampled and the interval between per-segment embeddings.\n",
+        "properties": {
+          "start_offset_sec": {
+            "type": "integer",
+            "description": "Start of the sampling window in seconds"
+          },
+          "end_offset_sec": {
+            "type": "integer",
+            "description": "End of the sampling window in seconds"
+          },
+          "interval_sec": {
+            "type": "integer",
+            "description": "Interval between consecutive segment embeddings in seconds (minimum 4). When set, the model returns multiple EmbeddingData entries, one per segment.\n"
           }
         }
       },
@@ -45723,50 +45990,114 @@
           "data": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "index": {
-                  "type": "integer"
-                },
-                "object": {
-                  "type": "string"
-                },
-                "embedding": {
-                  "oneOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "array",
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    {
-                      "type": "array",
-                      "items": {
-                        "type": "array",
-                        "items": {
-                          "type": "number"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
+              "$ref": "#/components/schemas/EmbeddingData"
+            },
+            "description": "List of embedding vectors. For standard providers this has one entry per input content. For Vertex multimodalembedding@001 it may have multiple entries per input (one per modality, plus one per video segment).\n"
           },
           "model": {
             "type": "string"
           },
           "object": {
-            "type": "string"
+            "type": "string",
+            "example": "list"
           },
           "usage": {
             "$ref": "#/components/schemas/BifrostLLMUsage"
           },
           "extra_fields": {
             "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "EmbeddingData": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Position of this embedding in the output list"
+          },
+          "object": {
+            "type": "string",
+            "example": "embedding"
+          },
+          "modality": {
+            "type": "string",
+            "enum": [
+              "text",
+              "image",
+              "video",
+              "audio"
+            ],
+            "description": "Which input modality produced this vector. Only set for providers that return separate vectors per modality (Vertex multimodalembedding@001). Empty for providers that return a single unified vector.\n"
+          },
+          "video_segment": {
+            "$ref": "#/components/schemas/EmbeddingVideoSegment",
+            "description": "Time range of the video segment that produced this embedding. Only present when modality is \"video\" and the provider returned per-segment embeddings.\n"
+          },
+          "embedding": {
+            "$ref": "#/components/schemas/EmbeddingsByType"
+          }
+        }
+      },
+      "EmbeddingVideoSegment": {
+        "type": "object",
+        "description": "Time range of a video segment embedding (Vertex multimodalembedding@001 only)",
+        "properties": {
+          "start_offset_sec": {
+            "type": "integer"
+          },
+          "end_offset_sec": {
+            "type": "integer"
+          }
+        }
+      },
+      "EmbeddingsByType": {
+        "type": "object",
+        "description": "Embedding vectors keyed by numeric type. Typically only one field is populated per response entry. Cohere embed-v4 can return multiple types simultaneously when embedding_types is specified via extra_params.\n",
+        "properties": {
+          "float": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Full-precision float embeddings (default for most providers)"
+          },
+          "int8": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int8"
+            },
+            "description": "Int8 quantised embeddings (Cohere embed-v4)"
+          },
+          "uint8": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "uint8"
+            },
+            "description": "Uint8 quantised embeddings (Cohere embed-v4)"
+          },
+          "binary": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int8"
+            },
+            "description": "Binary embeddings packed as int8 (Cohere embed-v4)"
+          },
+          "ubinary": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "uint8"
+            },
+            "description": "Unsigned binary embeddings packed as uint8 (Cohere embed-v4)"
+          },
+          "base64": {
+            "type": "string",
+            "description": "Base64-encoded float embeddings (OpenAI encoding_format=base64). Clients must decode this string to obtain the float vector.\n"
           }
         }
       },

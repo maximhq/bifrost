@@ -450,11 +450,11 @@ resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.
 # 5. Embeddings
 
 <Note>
-Supports both single text and batch text embeddings via batch requests.
+Supports text and multimodal (text + image) embeddings. Multiple input items are sent as a batch — each item maps to a separate entry in `requests[]`.
 </Note>
 
 **Request Parameters**:
-- `input` → `requests[0].content.parts[0].text` (single text joins arrays with space)
+- `input` → each item in the `[]EmbeddingContent` array maps to a separate `requests[]` entry (batch). Each content's parts map to `content.parts[]`.
 - `dimensions` → `outputDimensionality`
 - Extra task type and title via `extra_params`
 

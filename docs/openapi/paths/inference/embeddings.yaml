@@ -3,7 +3,25 @@ embeddings:
     operationId: createEmbedding
     summary: Create embeddings
     description: |
-      Creates an embedding vector representing the input text.
+      Creates embedding vectors for one or more inputs. Supports text, image, audio,
+      video, file, and token inputs depending on the provider.
+
+      **Input shorthands (text-only)**
+      - Single string: `"input": "hello world"`
+      - Array of strings: `"input": ["hello", "world"]`
+
+      **Full multimodal form**
+      Pass `"input"` as an array of EmbeddingContent arrays. Each inner array is a
+      list of typed parts (text / image / audio / video / file / tokens) that together
+      produce one output embedding vector.
+
+      **Provider notes**
+      - OpenAI / Azure / Groq / Fireworks: text and token inputs only
+      - Cohere embed-v4+: text and image inputs; use `embedding_types` extra param for
+        multiple quantisation formats simultaneously
+      - Gemini / Vertex Gemini: text, image, audio, video, and file inputs
+      - Vertex multimodalembedding@001: text, image, video — single instance per request;
+        returns separate vectors per modality (see `modality` field in response)
     tags:
     - Embeddings
     requestBody:
@@ -12,6 +30,44 @@ embeddings:
         application/json:
           schema:
             $ref: '../../schemas/inference/embeddings.yaml#/EmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/embeddings.yaml#/EmbeddingResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+batch-embeddings:
+  post:
+    operationId: createBatchEmbedding
+    summary: Create batch embeddings
+    description: |
+      Creates embeddings for a batch of inputs where each item can carry its own
+      parameter overrides (task_type, dimensions, title, etc.).
+
+      Currently supported by Gemini via the `batchEmbedContents` endpoint.
+      Each item maps to one `GeminiEmbeddingRequest` within the batch.
+
+      Item-level `params` override the top-level defaults for that item only.
+      Omit item-level `params` to inherit the batch-level defaults.
+    tags:
+    - Embeddings
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/embeddings.yaml#/BatchEmbeddingRequest'
     responses:
       '200':
         description: Successful response
