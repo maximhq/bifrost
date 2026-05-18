@@ -258,6 +258,7 @@ function SearchableCheckboxList({
 	inputRef,
 	testIdPrefix,
 	allowCustom = false,
+	onSearch,
 }: {
 	items: { key: string; label: string }[];
 	isSelected: (key: string) => boolean;
@@ -270,6 +271,7 @@ function SearchableCheckboxList({
 	// stored value equals the displayed string (models, aliases, stop reasons) —
 	// not for ID-backed filters where the visible label is a name.
 	allowCustom?: boolean;
+	onSearch?: (query: string) => void;
 }) {
 	const [query, setQuery] = useState("");
 	const normalized = query.trim().toLowerCase();
@@ -277,6 +279,14 @@ function SearchableCheckboxList({
 	const trimmed = query.trim();
 	const hasExactMatch = trimmed !== "" && items.some((item) => item.label.toLowerCase() === trimmed.toLowerCase());
 	const showAddCustom = allowCustom && trimmed !== "" && !hasExactMatch;
+
+	useEffect(() => {
+		if (!onSearch) return;
+		const timer = setTimeout(() => {
+			onSearch(query.trim());
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [query, onSearch]);
 
 	const commitCustom = () => {
 		if (!showAddCustom) return;
@@ -365,11 +375,12 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 	const hasActive = (filters.stop_reasons || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["stop_reasons"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["stop_reasons"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableStopReasons = filterData?.stop_reasons || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableStopReasons);
@@ -398,6 +409,7 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 					const next = current.includes(reason) ? current.filter((r) => r !== reason) : [...current, reason];
 					onFiltersChange({ ...filters, stop_reasons: next });
 				}}
+				onSearch={setSearchQuery}
 				testIdPrefix="stop-reason-filter"
 			/>
 		</FilterSection>
@@ -478,14 +490,13 @@ function ModelsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 	const hasActive = (filters.models || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["models"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["models"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableModels = filterData?.models || [];
-	// Merge selected-but-unavailable values so user-typed custom models still
-	// render with a checkbox they can untick.
 	const items = useMemo(() => {
 		const seen = new Set(availableModels);
 		const extras = (filters.models || []).filter((m) => !seen.has(m));
@@ -513,6 +524,7 @@ function ModelsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 					const next = current.includes(model) ? current.filter((m) => m !== model) : [...current, model];
 					onFiltersChange({ ...filters, models: next });
 				}}
+				onSearch={setSearchQuery}
 				testIdPrefix="models-filter"
 			/>
 		</FilterSection>
@@ -527,11 +539,12 @@ function AliasesFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const hasActive = (filters.aliases || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["aliases"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["aliases"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableAliases = filterData?.aliases || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableAliases);
@@ -560,6 +573,7 @@ function AliasesFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 					const next = current.includes(alias) ? current.filter((a) => a !== alias) : [...current, alias];
 					onFiltersChange({ ...filters, aliases: next });
 				}}
+				onSearch={setSearchQuery}
 				testIdPrefix="aliases-filter"
 			/>
 		</FilterSection>
@@ -574,11 +588,12 @@ function SelectedKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 	const hasActive = (filters.selected_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["selected_keys"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["selected_keys"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableSelectedKeys = filterData?.selected_keys || [];
 	const nameToIds = useMemo(() => groupByName(availableSelectedKeys), [availableSelectedKeys]);
 
@@ -614,6 +629,7 @@ function SelectedKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				items={dedup(availableSelectedKeys).map((name) => ({ key: name, label: name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
 				testIdPrefix="selected-keys-filter"
 			/>
 		</FilterSection>
@@ -628,11 +644,12 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 	const hasActive = (filters.virtual_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["virtual_keys"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["virtual_keys"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const nameToIds = useMemo(() => groupByName(availableVirtualKeys), [availableVirtualKeys]);
 
@@ -668,6 +685,7 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 				items={dedup(availableVirtualKeys).map((name) => ({ key: name, label: name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
 				testIdPrefix="virtual-keys-filter"
 			/>
 		</FilterSection>
@@ -682,11 +700,12 @@ function RoutingEnginesFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 	const hasActive = (filters.routing_engine_used || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["routing_engines"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["routing_engines"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableRoutingEngines = filterData?.routing_engines || [];
 
 	if (!isUninitialized && !isLoading && availableRoutingEngines.length === 0 && !hasActive && !opened) return null;
@@ -713,6 +732,7 @@ function RoutingEnginesFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 					onFiltersChange({ ...filters, routing_engine_used: next });
 				}}
 				testIdPrefix="routing-engines-filter"
+				onSearch={setSearchQuery}
 			/>
 		</FilterSection>
 	);
@@ -726,11 +746,12 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 	const hasActive = (filters.routing_rule_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["routing_rules"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["routing_rules"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableRoutingRules = filterData?.routing_rules || [];
 	const nameToIds = useMemo(() => groupByName(availableRoutingRules), [availableRoutingRules]);
 
@@ -766,6 +787,7 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				items={dedup(availableRoutingRules).map((name) => ({ key: name, label: name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
 				testIdPrefix="routing-rules-filter"
 			/>
 		</FilterSection>
@@ -866,11 +888,19 @@ function LocalCachingFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const hasActive = !!filters.metadata_filters && Object.keys(filters.metadata_filters).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const [searchQuery, setSearchQuery] = useState("");
+	const [debouncedQuery, setDebouncedQuery] = useState("");
+
+	useEffect(() => {
+		const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
+		return () => clearTimeout(timer);
+	}, [searchQuery]);
+
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetAvailableFilterDataQuery({ dimensions: ["metadata_keys"] }, { skip: !opened && !hasActive });
+	} = useGetAvailableFilterDataQuery({ dimensions: ["metadata_keys"], q: debouncedQuery || undefined }, { skip: !opened && !hasActive });
 	const availableMetadataKeys = filterData?.metadata_keys || {};
 	const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
 
@@ -904,7 +934,17 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 			{isEmpty ? (
 				<div className="text-muted-foreground px-3 py-2 text-xs">No metadata keys</div>
 			) : (
-				entries.map(([metadataKey, values]) => (
+				<>
+					<div className="border-b">
+						<Input
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							placeholder="Search metadata..."
+							className="h-8 border-0 text-xs"
+							data-testid="metadata-search-input"
+						/>
+					</div>
+					{entries.map(([metadataKey, values]) => (
 					<div key={metadataKey} data-testid={`metadata-${metadataKey}-filter-group`}>
 						<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{metadataKey}</div>
 						{values.map((value: string) => (
@@ -945,7 +985,8 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 							/>
 						</div>
 					</div>
-				))
+					))}
+				</>
 			)}
 		</FilterSection>
 	);

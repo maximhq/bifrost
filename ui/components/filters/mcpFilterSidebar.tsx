@@ -220,6 +220,7 @@ function SearchableCheckboxList({
 	placeholder = "Search...",
 	inputRef,
 	allowCustom = false,
+	onSearch,
 }: {
 	items: { key: string; label: string }[];
 	isSelected: (key: string) => boolean;
@@ -229,6 +230,7 @@ function SearchableCheckboxList({
 	// See note in logsFilterSidebar.tsx: opt-in for filters whose stored value
 	// equals the displayed string. Not safe for ID-backed (KeyPair) filters.
 	allowCustom?: boolean;
+	onSearch?: (query: string) => void;
 }) {
 	const [query, setQuery] = useState("");
 	const normalized = query.trim().toLowerCase();
@@ -236,6 +238,14 @@ function SearchableCheckboxList({
 	const trimmed = query.trim();
 	const hasExactMatch = trimmed !== "" && items.some((item) => item.label.toLowerCase() === trimmed.toLowerCase());
 	const showAddCustom = allowCustom && trimmed !== "" && !hasExactMatch;
+
+	useEffect(() => {
+		if (!onSearch) return;
+		const timer = setTimeout(() => {
+			onSearch(query.trim());
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [query, onSearch]);
 
 	const commitCustom = () => {
 		if (!showAddCustom) return;
@@ -316,11 +326,12 @@ function ToolNamesFilter({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	const hasActive = (filters.tool_names || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetMCPLogsFilterDataQuery({ dimensions: ["tool_names"] }, { skip: !opened && !hasActive });
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["tool_names"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableToolNames = filterData?.tool_names || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableToolNames);
@@ -343,6 +354,7 @@ function ToolNamesFilter({ filters, onFiltersChange, defaultOpen }: FilterCompon
 					const next = current.includes(name) ? current.filter((n) => n !== name) : [...current, name];
 					onFiltersChange({ ...filters, tool_names: next });
 				}}
+				onSearch={setSearchQuery}
 			/>
 		</FilterSection>
 	);
@@ -356,11 +368,12 @@ function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const hasActive = (filters.server_labels || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetMCPLogsFilterDataQuery({ dimensions: ["server_labels"] }, { skip: !opened && !hasActive });
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["server_labels"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableServerLabels = filterData?.server_labels || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableServerLabels);
@@ -383,6 +396,7 @@ function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 					const next = current.includes(label) ? current.filter((l) => l !== label) : [...current, label];
 					onFiltersChange({ ...filters, server_labels: next });
 				}}
+				onSearch={setSearchQuery}
 			/>
 		</FilterSection>
 	);
@@ -396,11 +410,12 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 	const hasActive = (filters.virtual_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
 	const {
 		data: filterData,
 		isUninitialized,
 		isLoading,
-	} = useGetMCPLogsFilterDataQuery({ dimensions: ["virtual_keys"] }, { skip: !opened && !hasActive });
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["virtual_keys"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const nameToId = useMemo(() => new Map(availableVirtualKeys.map((key) => [key.name, key.id])), [availableVirtualKeys]);
 
@@ -426,6 +441,7 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 				items={availableVirtualKeys.map((key) => ({ key: key.name, label: key.name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
 			/>
 		</FilterSection>
 	);
