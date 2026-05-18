@@ -208,6 +208,64 @@ func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	assert.Len(t, result["anthropic"].Keys, 1)
 }
 
+func TestUpdateProvidersConfig_CrossProviderSameKeyName(t *testing.T) {
+	// This test verifies that two providers can each have a key with the same name
+	// without one provider's key being overwritten by the other.
+	// This was broken before the fix: the name fallback in UpdateProvidersConfig
+	// used a global lookup ("name = ?") which matched keys across providers,
+	// causing data corruption.
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "openai-uuid-1", Name: "default", Value: *schemas.NewEnvVar("sk-openai-key"), Weight: 1.0},
+			},
+		},
+		"anthropic": {
+			Keys: []schemas.Key{
+				{ID: "anthropic-uuid-1", Name: "default", Value: *schemas.NewEnvVar("sk-anthropic-key"), Weight: 1.0},
+			},
+		},
+	}
+
+	err := store.UpdateProvidersConfig(ctx, providers)
+	require.NoError(t, err, "Should handle duplicate key names across different providers")
+
+	// Verify both providers exist and each has exactly one key
+	result, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+
+	// openai should have its "default" key intact
+	openaiCfg, ok := result["openai"]
+	require.True(t, ok, "openai provider should exist")
+	require.Len(t, openaiCfg.Keys, 1, "openai should have 1 key")
+	assert.Equal(t, "openai-uuid-1", openaiCfg.Keys[0].ID, "openai key ID should be preserved")
+	assert.Equal(t, "default", openaiCfg.Keys[0].Name, "openai key name should be 'default'")
+	assert.Equal(t, "sk-openai-key", openaiCfg.Keys[0].Value.Val, "openai key value should be preserved")
+
+	// anthropic should have its "default" key intact
+	anthropicCfg, ok := result["anthropic"]
+	require.True(t, ok, "anthropic provider should exist")
+	require.Len(t, anthropicCfg.Keys, 1, "anthropic should have 1 key")
+	assert.Equal(t, "anthropic-uuid-1", anthropicCfg.Keys[0].ID, "anthropic key ID should be preserved")
+	assert.Equal(t, "default", anthropicCfg.Keys[0].Name, "anthropic key name should be 'default'")
+	assert.Equal(t, "sk-anthropic-key", anthropicCfg.Keys[0].Value.Val, "anthropic key value should be preserved")
+
+	// Verify the keys are distinct (not the same row) by checking provider association
+	openaiProviderCfg, err := store.GetProviderConfig(ctx, "openai")
+	require.NoError(t, err)
+	anthropicProviderCfg, err := store.GetProviderConfig(ctx, "anthropic")
+	require.NoError(t, err)
+
+	assert.Len(t, openaiProviderCfg.Keys, 1, "openai should still have 1 key")
+	assert.Len(t, anthropicProviderCfg.Keys, 1, "anthropic should still have 1 key")
+	assert.Equal(t, "sk-openai-key", openaiProviderCfg.Keys[0].Value.Val, "openai value not overwritten")
+	assert.Equal(t, "sk-anthropic-key", anthropicProviderCfg.Keys[0].Value.Val, "anthropic value not overwritten")
+}
+
 func TestProviderKeyCRUD(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

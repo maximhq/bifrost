@@ -631,8 +631,11 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					return s.parseGormError(err)
 				}
 			} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-				// KeyID not found, try fallback lookup by Name (handles config reload with new UUID)
-				result = txDB.WithContext(ctx).Where("name = ?", dbKey.Name).First(&existingKey)
+				// KeyID not found, try fallback lookup by Name scoped to this provider
+				// (handles config reload with new UUID). The composite unique index
+				// (provider_id, name) guarantees names are unique per-provider, so we
+				// must scope the lookup to avoid matching a key from a different provider.
+				result = txDB.WithContext(ctx).Where("name = ? AND provider_id = ?", dbKey.Name, dbProvider.ID).First(&existingKey)
 				if result.Error == nil {
 					// Found by name - update existing key, preserve original KeyID
 					dbKey.ID = existingKey.ID                             // Keep the same database ID
