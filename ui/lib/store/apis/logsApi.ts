@@ -311,14 +311,20 @@ export const logsApi = baseApi.injectEndpoints({
 				business_units?: { id: string; name: string }[];
 				metadata_keys?: Record<string, string[]>;
 			},
-			{ dimensions?: string[] } | void
+			{ dimensions?: string[]; q?: string } | void
 		>({
 			query: (arg) => {
 				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
-				if (!dims || dims.length === 0) return "/logs/filterdata";
-				// Sort to keep the cache key stable regardless of caller-side ordering.
-				const sorted = [...dims].sort().join(",");
-				return `/logs/filterdata?dimensions=${encodeURIComponent(sorted)}`;
+				const q = arg && "q" in arg ? arg.q : undefined;
+				const params = new URLSearchParams();
+				if (dims && dims.length > 0) {
+					params.set("dimensions", [...dims].sort().join(","));
+				}
+				if (q) {
+					params.set("q", q);
+				}
+				const qs = params.toString();
+				return qs ? `/logs/filterdata?${qs}` : "/logs/filterdata";
 			},
 			providesTags: ["Logs"],
 		}),
