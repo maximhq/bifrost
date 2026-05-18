@@ -1623,36 +1623,45 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 // getDistinctModelsFromMatView returns unique model names from mv_filter_models.
 // Limit matches the raw-table fallback so callers see the same row cap regardless
 // of which path served the request.
-func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) getDistinctModelsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var models []string
-	if err := s.db.WithContext(ctx).Table("mv_filter_models").
+	q := s.db.WithContext(ctx).Table("mv_filter_models").
 		Distinct("model").
-		Where("model != ''").
-		Pluck("model", &models).Error; err != nil {
+		Where("model != ''")
+	if query != "" {
+		q = q.Where("model ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Order("model ASC").Limit(limit).Pluck("model", &models).Error; err != nil {
 		return nil, err
 	}
 	return models, nil
 }
 
 // getDistinctAliasesFromMatView returns unique alias values from mv_filter_aliases.
-func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) getDistinctAliasesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var aliases []string
-	if err := s.db.WithContext(ctx).Table("mv_filter_aliases").
+	q := s.db.WithContext(ctx).Table("mv_filter_aliases").
 		Distinct("alias").
-		Where("alias != ''").
-		Pluck("alias", &aliases).Error; err != nil {
+		Where("alias != ''")
+	if query != "" {
+		q = q.Where("alias ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Order("alias ASC").Limit(limit).Pluck("alias", &aliases).Error; err != nil {
 		return nil, err
 	}
 	return aliases, nil
 }
 
 // getDistinctStopReasonsFromMatView returns unique stop reasons from mv_filter_stop_reasons.
-func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var stopReasons []string
-	if err := s.db.WithContext(ctx).Table("mv_filter_stop_reasons").
+	q := s.db.WithContext(ctx).Table("mv_filter_stop_reasons").
 		Distinct("stop_reason").
-		Where("stop_reason != ''").
-		Pluck("stop_reason", &stopReasons).Error; err != nil {
+		Where("stop_reason != ''")
+	if query != "" {
+		q = q.Where("stop_reason ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Order("stop_reason ASC").Limit(limit).Pluck("stop_reason", &stopReasons).Error; err != nil {
 		return nil, err
 	}
 	return stopReasons, nil
@@ -1662,22 +1671,23 @@ func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context) ([]
 // (idCol, nameCol) by selecting from the per-dimension matview pre-aggregated
 // for that pair. Returns (nil, false) if no matview is registered for the pair —
 // callers fall back to the raw-table path.
-func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, bool, error) {
+func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, bool, error) {
 	view, ok := filterMatViewKeyPairColumns[[2]string{idCol, nameCol}]
 	if !ok {
 		return nil, false, nil
 	}
 	var results []KeyPairResult
 	q := s.db.WithContext(ctx).Table(view).Where("id != ''")
-	// User matview stores name = id and the view-level WHERE already filters
-	// empty ids; other matviews include name and we additionally guard against
-	// stragglers with empty names.
 	if !(idCol == "user_id" && nameCol == "user_id") {
 		q = q.Where("name != ''")
+	}
+	if query != "" {
+		q = q.Where("name ILIKE ?", "%"+query+"%")
 	}
 	if err := q.
 		Select("DISTINCT id, name").
 		Order("name ASC").
+		Limit(limit).
 		Find(&results).Error; err != nil {
 		return nil, true, err
 	}
@@ -1687,12 +1697,15 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 // getDistinctRoutingEnginesFromMatView returns unique routing engine names by
 // parsing the comma-separated routing_engines_used values from
 // mv_filter_routing_engines.
-func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context) ([]string, error) {
+func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var rawValues []string
-	if err := s.db.WithContext(ctx).Table("mv_filter_routing_engines").
+	q := s.db.WithContext(ctx).Table("mv_filter_routing_engines").
 		Distinct("routing_engines_used").
-		Where("routing_engines_used != ''").
-		Pluck("routing_engines_used", &rawValues).Error; err != nil {
+		Where("routing_engines_used != ''")
+	if query != "" {
+		q = q.Where("routing_engines_used ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Pluck("routing_engines_used", &rawValues).Error; err != nil {
 		return nil, err
 	}
 	seen := make(map[string]struct{})
@@ -1704,7 +1717,11 @@ func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context) 
 			}
 		}
 	}
-	return sortedStringKeys(seen), nil
+	result := sortedStringKeys(seen)
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
