@@ -2214,6 +2214,10 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
+	if req.ServiceTier != nil {
+		mapped := MapAnthropicRequestServiceTierToBifrost(*req.ServiceTier)
+		params.ServiceTier = &mapped
+	}
 
 	// Add truncation parameter if computer tool is being used
 	if provider == schemas.OpenAI && req.Tools != nil {
@@ -2457,7 +2461,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 		// Convert service tier
-		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
+		if bifrostReq.Params.ServiceTier != nil {
+			mapped := MapBifrostServiceTierToAnthropicRequest(*bifrostReq.Params.ServiceTier)
+			anthropicReq.ServiceTier = &mapped
+		}
 
 		if bifrostReq.Params.ExtraParams != nil {
 			anthropicReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
@@ -2742,6 +2749,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		bifrostResp.StopReason = schemas.Ptr(ConvertAnthropicFinishReasonToBifrost(response.StopReason))
 	}
 
+	if response.Usage != nil && response.Usage.ServiceTier != nil {
+		mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+		bifrostResp.ServiceTier = &mapped
+	}
+
 	return bifrostResp
 }
 
@@ -2795,6 +2807,14 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	}
 
 	anthropicResp.Model = bifrostResp.Model
+
+	if bifrostResp.ServiceTier != nil {
+		if anthropicResp.Usage == nil {
+			anthropicResp.Usage = &AnthropicUsage{}
+		}
+		mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
+		anthropicResp.Usage.ServiceTier = &mapped
+	}
 
 	return anthropicResp
 }

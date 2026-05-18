@@ -2312,7 +2312,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 		if bifrostReq.Params.ServiceTier != nil {
 			bedrockReq.ServiceTier = &BedrockServiceTier{
-				Type: *bifrostReq.Params.ServiceTier,
+				Type: mapBifrostServiceTierToBedrock(*bifrostReq.Params.ServiceTier),
 			}
 		}
 	}
@@ -2502,7 +2502,8 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 	}
 
 	if response.ServiceTier != nil && response.ServiceTier.Type != "" {
-		bifrostResp.ServiceTier = &response.ServiceTier.Type
+		tier := mapBedrockServiceTierToBifrost(response.ServiceTier.Type)
+		bifrostResp.ServiceTier = &tier
 	}
 
 	if response.StopReason != "" {

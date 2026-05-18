@@ -74,6 +74,35 @@ func convertBifrostToBedrockStopReason(bifrostReason string) string {
 	return bifrostReason
 }
 
+// mapBifrostServiceTierToBedrock maps a BifrostServiceTier to a BedrockServiceTierType.
+func mapBifrostServiceTierToBedrock(tier schemas.BifrostServiceTier) BedrockServiceTierType {
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		return BedrockServiceTierTypePriority
+	case schemas.BifrostServiceTierFlex:
+		return BedrockServiceTierTypeFlex
+	case schemas.BifrostServiceTierDefault, schemas.BifrostServiceTierAuto:
+		return BedrockServiceTierTypeDefault
+	default:
+		return BedrockServiceTierType(tier)
+	}
+}
+
+// mapBedrockServiceTierToBifrost maps a BedrockServiceTierType to a BifrostServiceTier.
+// "reserved" maps to priority as it represents pre-purchased priority capacity.
+func mapBedrockServiceTierToBifrost(tier BedrockServiceTierType) schemas.BifrostServiceTier {
+	switch tier {
+	case BedrockServiceTierTypePriority:
+		return schemas.BifrostServiceTierPriority
+	case BedrockServiceTierTypeFlex:
+		return schemas.BifrostServiceTierFlex
+	case BedrockServiceTierTypeDefault:
+		return schemas.BifrostServiceTierDefault
+	default:
+		return schemas.BifrostServiceTier(tier)
+	}
+}
+
 // normalizeBedrockFilename normalizes a filename to meet Bedrock's requirements:
 // - Only alphanumeric characters, whitespace, hyphens, parentheses, and square brackets
 // - No more than one consecutive whitespace character
@@ -335,7 +364,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	}
 	if bifrostReq.Params.ServiceTier != nil {
 		bedrockReq.ServiceTier = &BedrockServiceTier{
-			Type: *bifrostReq.Params.ServiceTier,
+			Type: mapBifrostServiceTierToBedrock(*bifrostReq.Params.ServiceTier),
 		}
 	}
 	// Add extra parameters
