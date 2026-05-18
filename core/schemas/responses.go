@@ -71,7 +71,7 @@ type BifrostResponsesResponse struct {
 	FrequencyPenalty   *float64                            `json:"frequency_penalty,omitempty"`
 	Reasoning          *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier   *string                             `json:"safety_identifier"` // Safety identifier
-	ServiceTier        *string                             `json:"service_tier"`
+	ServiceTier        *BifrostServiceTier                 `json:"service_tier"`
 	Status             *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions      *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason         *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
@@ -175,7 +175,17 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	// Response configuration - defaults: standard behavior
 	result.Store = orDefault(resp.Store, true)
 	result.Background = orDefault(resp.Background, false)
-	result.ServiceTier = orDefault(resp.ServiceTier, "auto")
+
+	if resp.ServiceTier != nil {
+		switch *resp.ServiceTier {
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority:
+			result.ServiceTier = resp.ServiceTier
+		default:
+			result.ServiceTier = new(BifrostServiceTierAuto)
+		}
+	} else {
+		result.ServiceTier = new(BifrostServiceTierAuto)
+	}
 	result.Truncation = orDefault(resp.Truncation, "disabled")
 	result.ParallelToolCalls = orDefault(resp.ParallelToolCalls, true)
 
@@ -255,7 +265,7 @@ type ResponsesParameters struct {
 	PromptCacheKey     *string                       `json:"prompt_cache_key,omitempty"`  // Prompt cache key
 	Reasoning          *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
 	SafetyIdentifier   *string                       `json:"safety_identifier,omitempty"` // Safety identifier
-	ServiceTier        *string                       `json:"service_tier,omitempty"`
+	ServiceTier        *BifrostServiceTier           `json:"service_tier,omitempty"`
 	StreamOptions      *ResponsesStreamOptions       `json:"stream_options,omitempty"`
 	Store              *bool                         `json:"store,omitempty"`
 	Temperature        *float64                      `json:"temperature,omitempty"`

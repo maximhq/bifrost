@@ -436,11 +436,12 @@ func TestResponsesAPIComplexParameters(t *testing.T) {
 	ctx := CreateContextWithCacheKey(t, "test-responses-complex-params")
 
 	// Create request with various complex parameters
+	serviceTier := schemas.BifrostServiceTierDefault
 	request := CreateBasicResponsesRequest("Test complex parameters", 0.8, 500)
 	request.Params.TopP = PtrFloat64(0.9)
 	request.Params.Background = &[]bool{true}[0]
 	request.Params.ParallelToolCalls = &[]bool{false}[0]
-	request.Params.ServiceTier = &[]string{"default"}[0]
+	request.Params.ServiceTier = &serviceTier
 	request.Params.Store = &[]bool{true}[0]
 
 	t.Log("Making first Responses request with complex parameters...")
@@ -457,7 +458,7 @@ func TestResponsesAPIComplexParameters(t *testing.T) {
 	request2.Params.TopP = PtrFloat64(0.9)
 	request2.Params.Background = &[]bool{true}[0]
 	request2.Params.ParallelToolCalls = &[]bool{false}[0]
-	request2.Params.ServiceTier = &[]string{"default"}[0]
+	request2.Params.ServiceTier = &serviceTier
 	request2.Params.Store = &[]bool{true}[0]
 
 	t.Log("Making second identical Responses request with complex parameters...")

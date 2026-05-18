@@ -1409,6 +1409,164 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 	}
 }
 
+func TestServiceTierMappingChat(t *testing.T) {
+	tests := []struct {
+		name           string
+		inputTier      *schemas.BifrostServiceTier
+		expectedGemini gemini.ServiceTier
+	}{
+		{
+			name:           "flex maps to flex",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierFlex),
+			expectedGemini: gemini.ServiceTierFlex,
+		},
+		{
+			name:           "priority maps to priority",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierPriority),
+			expectedGemini: gemini.ServiceTierPriority,
+		},
+		{
+			name:           "default maps to standard",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierDefault),
+			expectedGemini: gemini.ServiceTierStandard,
+		},
+		{
+			name:           "auto maps to unspecified",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierAuto),
+			expectedGemini: gemini.ServiceTierUnspecified,
+		},
+		{
+			name:           "nil leaves service tier unset",
+			inputTier:      nil,
+			expectedGemini: gemini.ServiceTier(""),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+				},
+				Params: &schemas.ChatParameters{
+					ServiceTier: tt.inputTier,
+				},
+			}
+			result, err := gemini.ToGeminiChatCompletionRequest(req)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedGemini, result.ServiceTier)
+		})
+	}
+}
+
+func TestServiceTierMappingResponses(t *testing.T) {
+	tests := []struct {
+		name           string
+		inputTier      *schemas.BifrostServiceTier
+		expectedGemini gemini.ServiceTier
+	}{
+		{
+			name:           "flex maps to flex",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierFlex),
+			expectedGemini: gemini.ServiceTierFlex,
+		},
+		{
+			name:           "priority maps to priority",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierPriority),
+			expectedGemini: gemini.ServiceTierPriority,
+		},
+		{
+			name:           "default maps to standard",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierDefault),
+			expectedGemini: gemini.ServiceTierStandard,
+		},
+		{
+			name:           "auto maps to unspecified",
+			inputTier:      schemas.Ptr(schemas.BifrostServiceTierAuto),
+			expectedGemini: gemini.ServiceTierUnspecified,
+		},
+		{
+			name:           "nil leaves service tier unset",
+			inputTier:      nil,
+			expectedGemini: gemini.ServiceTier(""),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+					},
+				},
+				Params: &schemas.ResponsesParameters{
+					ServiceTier: tt.inputTier,
+				},
+			}
+			result, err := gemini.ToGeminiResponsesRequest(req)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedGemini, result.ServiceTier)
+		})
+	}
+}
+
+func TestServiceTierReverseMapping(t *testing.T) {
+	tests := []struct {
+		name         string
+		geminiTier   gemini.ServiceTier
+		expectedTier *schemas.BifrostServiceTier
+	}{
+		{
+			name:         "standard maps to default",
+			geminiTier:   gemini.ServiceTierStandard,
+			expectedTier: schemas.Ptr(schemas.BifrostServiceTierDefault),
+		},
+		{
+			name:         "flex maps to flex",
+			geminiTier:   gemini.ServiceTierFlex,
+			expectedTier: schemas.Ptr(schemas.BifrostServiceTierFlex),
+		},
+		{
+			name:         "priority maps to priority",
+			geminiTier:   gemini.ServiceTierPriority,
+			expectedTier: schemas.Ptr(schemas.BifrostServiceTierPriority),
+		},
+		{
+			name:         "unspecified maps to auto",
+			geminiTier:   gemini.ServiceTierUnspecified,
+			expectedTier: schemas.Ptr(schemas.BifrostServiceTierAuto),
+		},
+		{
+			name:         "empty leaves service tier nil",
+			geminiTier:   gemini.ServiceTier(""),
+			expectedTier: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			geminiReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-2.0-flash",
+				Contents: []gemini.Content{
+					{Role: "user", Parts: []*gemini.Part{{Text: "hello"}}},
+				},
+				ServiceTier: tt.geminiTier,
+			}
+			ctx := &schemas.BifrostContext{}
+			bifrostReq := geminiReq.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params)
+			assert.Equal(t, tt.expectedTier, bifrostReq.Params.ServiceTier)
+		})
+	}
+}
+
 // TestParallelFunctionCallingConversion tests that multiple consecutive tool responses are properly grouped
 func TestParallelFunctionCallingConversion(t *testing.T) {
 	tests := []struct {
