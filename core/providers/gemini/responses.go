@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -387,6 +388,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			// Handle function responses (function call outputs)
 			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput && msg.ResponsesToolMessage != nil {
 				responseMap := make(map[string]any)
+				var functionResponseParts []*FunctionResponsePart
 
 				if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
 					output := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
@@ -395,6 +397,8 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 					} else {
 						responseMap["output"] = output
 					}
+				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+					responseMap, functionResponseParts = buildResponsesFunctionResponsePayloadFromBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks, true, false)
 				}
 				funcName := ""
 				if msg.ResponsesToolMessage.Name != nil && strings.TrimSpace(*msg.ResponsesToolMessage.Name) != "" {
@@ -407,11 +411,11 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				functionResponse := &FunctionResponse{
 					Name:     funcName,
 					Response: json.RawMessage(responseBytes),
+					Parts:    functionResponseParts,
 				}
 				if msg.ResponsesToolMessage.CallID != nil {
 					functionResponse.ID = *msg.ResponsesToolMessage.CallID
 				}
-
 				currentParts = append(currentParts, &Part{
 					FunctionResponse: functionResponse,
 				})
@@ -1403,8 +1407,13 @@ func processGeminiFunctionResponsePart(part *Part, state *GeminiResponsesStreamS
 		responses = append(responses, closeResponses...)
 	}
 
-	// Extract output from function response
-	output := extractFunctionResponseOutput(part.FunctionResponse)
+	outputStruct := convertGeminiFunctionResponseToToolOutput(part.FunctionResponse)
+	if outputStruct == nil {
+		output := ""
+		outputStruct = &schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: &output,
+		}
+	}
 
 	// Create new output item for the function response
 	outputIndex := state.nextOutputIndex()
@@ -1426,9 +1435,7 @@ func processGeminiFunctionResponsePart(part *Part, state *GeminiResponsesStreamS
 		Status: &status,
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{
 			CallID: &responseID,
-			Output: &schemas.ResponsesToolMessageOutputStruct{
-				ResponsesToolCallOutputStr: &output,
-			},
+			Output: outputStruct,
 		},
 	}
 
@@ -1458,9 +1465,7 @@ func processGeminiFunctionResponsePart(part *Part, state *GeminiResponsesStreamS
 			Status: &status,
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{
 				CallID: &responseID,
-				Output: &schemas.ResponsesToolMessageOutputStruct{
-					ResponsesToolCallOutputStr: &output,
-				},
+				Output: outputStruct,
 			},
 		},
 	})
@@ -1473,6 +1478,75 @@ func processGeminiFunctionResponsePart(part *Part, state *GeminiResponsesStreamS
 	}
 
 	return responses
+}
+
+func convertGeminiFunctionResponseToToolOutput(funcResp *FunctionResponse) *schemas.ResponsesToolMessageOutputStruct {
+	if funcResp == nil {
+		return nil
+	}
+
+	output := extractFunctionResponseOutput(funcResp)
+	if len(funcResp.Parts) == 0 {
+		if output == "" {
+			return nil
+		}
+		return &schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: &output,
+		}
+	}
+	if functionResponseHasEmptyResponse(funcResp) {
+		output = ""
+	}
+
+	blocks := make([]schemas.ResponsesMessageContentBlock, 0, len(funcResp.Parts)+1)
+	if output != "" {
+		blocks = append(blocks, schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesInputMessageContentBlockTypeText,
+			Text: schemas.Ptr(output),
+		})
+	}
+
+	for _, part := range funcResp.Parts {
+		if part == nil {
+			continue
+		}
+		switch {
+		case part.InlineData != nil:
+			if block := convertGeminiInlineDataToContentBlock(part.InlineData); block != nil {
+				blocks = append(blocks, *block)
+			}
+		case part.FileData != nil:
+			if block := convertGeminiFileDataToContentBlock(part.FileData); block != nil {
+				blocks = append(blocks, *block)
+			}
+		}
+	}
+
+	if len(blocks) == 0 {
+		if output == "" {
+			return nil
+		}
+		return &schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: &output,
+		}
+	}
+
+	return &schemas.ResponsesToolMessageOutputStruct{
+		ResponsesFunctionToolCallOutputBlocks: blocks,
+	}
+}
+
+func functionResponseHasEmptyResponse(funcResp *FunctionResponse) bool {
+	if funcResp == nil || len(funcResp.Response) == 0 {
+		return true
+	}
+
+	var respMap map[string]json.RawMessage
+	if err := sonic.Unmarshal(funcResp.Response, &respMap); err != nil {
+		return false
+	}
+
+	return len(respMap) == 0
 }
 
 // processGeminiInlineDataPart handles inline data parts
@@ -2015,13 +2089,11 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					}
 				}
 
-				// Convert response to string — extract output field if present
-				responseStr := ""
-				if part.FunctionResponse.Response != nil {
-					if r := providerUtils.GetJSONField(part.FunctionResponse.Response, "output"); r.Exists() {
-						responseStr = r.String()
-					} else {
-						responseStr = string(part.FunctionResponse.Response)
+				outputStruct := convertGeminiFunctionResponseToToolOutput(part.FunctionResponse)
+				if outputStruct == nil {
+					responseStr := ""
+					outputStruct = &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: &responseStr,
 					}
 				}
 
@@ -2029,9 +2101,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID: &responseID,
-						Output: &schemas.ResponsesToolMessageOutputStruct{
-							ResponsesToolCallOutputStr: &responseStr,
-						},
+						Output: outputStruct,
 					},
 				}
 
@@ -2398,16 +2468,20 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 
 			case part.FunctionResponse != nil:
 				// Function response message
-				output := extractFunctionResponseOutput(part.FunctionResponse)
+				outputStruct := convertGeminiFunctionResponseToToolOutput(part.FunctionResponse)
+				if outputStruct == nil {
+					output := ""
+					outputStruct = &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: &output,
+					}
+				}
 
 				msg := schemas.ResponsesMessage{
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID: schemas.Ptr(part.FunctionResponse.ID),
-						Output: &schemas.ResponsesToolMessageOutputStruct{
-							ResponsesToolCallOutputStr: &output,
-						},
+						Output: outputStruct,
 					},
 				}
 
@@ -3150,6 +3224,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				// must be sent in a single message with only functionResponse parts (no text/content parts)
 				if msg.ResponsesToolMessage.CallID != nil {
 					responseMap := make(map[string]any)
+					var functionResponseParts []*FunctionResponsePart
 
 					// Extract output from ResponsesToolMessage.Output
 					if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
@@ -3160,29 +3235,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							responseMap["output"] = output
 						}
 					} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-						// Handle structured output blocks (e.g. from Anthropic Responses API format
-						// where output is an array of content blocks like [{"type":"input_text","text":"..."}])
-						var textParts []string
-						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-							if block.Text != nil && *block.Text != "" {
-								textParts = append(textParts, *block.Text)
-							}
-						}
-						if len(textParts) > 0 {
-							combined := strings.Join(textParts, "\n")
-							if json.Valid([]byte(combined)) {
-								responseMap["output"] = json.RawMessage(combined)
-							} else {
-								responseMap["output"] = combined
-							}
-						} else {
-							// Fallback for non-text blocks (e.g. images, files): marshal the raw blocks
-							// so responseMap["output"] is never left empty when blocks are present
-							rawBlocks, err := providerUtils.MarshalSorted(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
-							if err == nil && len(rawBlocks) > 0 {
-								responseMap["output"] = json.RawMessage(rawBlocks)
-							}
-						}
+						responseMap, functionResponseParts = buildResponsesFunctionResponsePayloadFromBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks, true, true)
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility
 						output := *msg.Content.ContentStr
@@ -3204,12 +3257,14 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 					}
 
 					responseBytes, _ := providerUtils.MarshalSorted(responseMap)
+					functionResponse := &FunctionResponse{
+						Name:     funcName,
+						Response: json.RawMessage(responseBytes),
+						ID:       *msg.ResponsesToolMessage.CallID,
+					}
+					functionResponse.Parts = functionResponseParts
 					part := &Part{
-						FunctionResponse: &FunctionResponse{
-							Name:     funcName,
-							Response: json.RawMessage(responseBytes),
-							ID:       *msg.ResponsesToolMessage.CallID,
-						},
+						FunctionResponse: functionResponse,
 					}
 					pendingFunctionResponseParts = append(pendingFunctionResponseParts, part)
 

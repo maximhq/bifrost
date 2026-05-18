@@ -1873,22 +1873,14 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			// Parse the response content
 			var responseData json.RawMessage
 			var contentStr string
+			var mediaParts []*FunctionResponsePart
 
 			if message.Content != nil {
 				// Extract content string from ContentStr or ContentBlocks
 				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
 					contentStr = *message.Content.ContentStr
 				} else if message.Content.ContentBlocks != nil {
-					// Fallback: try to extract text from content blocks
-					var textParts []string
-					for _, block := range message.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							textParts = append(textParts, *block.Text)
-						}
-					}
-					if len(textParts) > 0 {
-						contentStr = strings.Join(textParts, "\n")
-					}
+					contentStr, _, mediaParts = collectFunctionResponseBlockOutput(message.Content.ContentBlocks, chatContentBlockText, chatContentBlockFunctionResponsePart)
 				}
 			}
 
@@ -1923,12 +1915,14 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 
 			// Add ONLY the functionResponse part (no text part)
 			// This ensures the number of functionResponse parts equals functionCall parts
+			functionResponse := &FunctionResponse{
+				ID:       callID,
+				Name:     functionName,
+				Response: responseData,
+			}
+			functionResponse.Parts = mediaParts
 			pendingToolResponseParts = append(pendingToolResponseParts, &Part{
-				FunctionResponse: &FunctionResponse{
-					ID:       callID,
-					Name:     functionName,
-					Response: responseData,
-				},
+				FunctionResponse: functionResponse,
 			})
 
 			// If this is the last message, flush pending tool responses
@@ -2700,6 +2694,126 @@ func extractSchemaMapFromResponseFormat(responseFormat *interface{}) map[string]
 
 	// Normalize the schema for Gemini compatibility
 	return normalizeSchemaForGemini(schemaMap)
+}
+
+func convertChatContentBlockToGeminiPart(block schemas.ChatContentBlock) *Part {
+	responseBlock := schemas.ResponsesMessageContentBlock{}
+	switch {
+	case block.Text != nil:
+		responseBlock.Type = schemas.ResponsesInputMessageContentBlockTypeText
+		responseBlock.Text = block.Text
+	case block.Refusal != nil:
+		responseBlock.Type = schemas.ResponsesOutputMessageContentTypeRefusal
+		responseBlock.ResponsesOutputMessageContentRefusal = &schemas.ResponsesOutputMessageContentRefusal{
+			Refusal: *block.Refusal,
+		}
+	case block.ImageURLStruct != nil:
+		responseBlock.Type = schemas.ResponsesInputMessageContentBlockTypeImage
+		responseBlock.ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
+			ImageURL: &block.ImageURLStruct.URL,
+			Detail:   block.ImageURLStruct.Detail,
+		}
+	case block.InputAudio != nil:
+		responseBlock.Type = schemas.ResponsesInputMessageContentBlockTypeAudio
+		format := ""
+		if block.InputAudio.Format != nil {
+			format = *block.InputAudio.Format
+		}
+		responseBlock.Audio = &schemas.ResponsesInputMessageContentBlockAudio{
+			Data:   block.InputAudio.Data,
+			Format: format,
+		}
+	case block.File != nil:
+		responseBlock.Type = schemas.ResponsesInputMessageContentBlockTypeFile
+		responseBlock.FileID = block.File.FileID
+		responseBlock.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{
+			FileData: block.File.FileData,
+			FileURL:  block.File.FileURL,
+			Filename: block.File.Filename,
+			FileType: block.File.FileType,
+		}
+	default:
+		return nil
+	}
+
+	part, err := convertContentBlockToGeminiPart(responseBlock)
+	if err != nil {
+		return nil
+	}
+	return part
+}
+
+func convertGeminiPartToFunctionResponsePart(part *Part) *FunctionResponsePart {
+	if part == nil {
+		return nil
+	}
+	if part.InlineData != nil {
+		return &FunctionResponsePart{InlineData: part.InlineData}
+	}
+	if part.FileData != nil {
+		return &FunctionResponsePart{FileData: part.FileData}
+	}
+	return nil
+}
+
+func collectFunctionResponseBlockOutput[T any](blocks []T, blockText func(T) *string, blockPart func(T) *FunctionResponsePart) (string, bool, []*FunctionResponsePart) {
+	var textParts []string
+	var functionResponseParts []*FunctionResponsePart
+	for _, block := range blocks {
+		if text := blockText(block); text != nil && *text != "" {
+			textParts = append(textParts, *text)
+			continue
+		}
+		if functionResponsePart := blockPart(block); functionResponsePart != nil {
+			functionResponseParts = append(functionResponseParts, functionResponsePart)
+		}
+	}
+	if len(textParts) == 0 {
+		return "", false, functionResponseParts
+	}
+	return strings.Join(textParts, "\n"), true, functionResponseParts
+}
+
+func buildResponsesFunctionResponsePayloadFromBlocks(blocks []schemas.ResponsesMessageContentBlock, decodeTextJSON bool, fallbackRawBlocks bool) (map[string]any, []*FunctionResponsePart) {
+	responseMap := make(map[string]any)
+	combined, hasText, functionResponseParts := collectFunctionResponseBlockOutput(blocks, responsesContentBlockText, responsesContentBlockFunctionResponsePart)
+	if hasText {
+		if decodeTextJSON && json.Valid([]byte(combined)) {
+			responseMap["output"] = json.RawMessage(combined)
+		} else {
+			responseMap["output"] = combined
+		}
+	} else if fallbackRawBlocks && len(functionResponseParts) == 0 {
+		rawBlocks, err := providerUtils.MarshalSorted(blocks)
+		if err == nil && len(rawBlocks) > 0 {
+			responseMap["output"] = json.RawMessage(rawBlocks)
+		}
+	}
+	return responseMap, functionResponseParts
+}
+
+func responsesContentBlockText(block schemas.ResponsesMessageContentBlock) *string {
+	return block.Text
+}
+
+func responsesContentBlockFunctionResponsePart(block schemas.ResponsesMessageContentBlock) *FunctionResponsePart {
+	mediaPart, err := convertContentBlockToGeminiPart(block)
+	if err != nil || mediaPart == nil {
+		return nil
+	}
+	return convertGeminiPartToFunctionResponsePart(mediaPart)
+}
+
+func chatContentBlockText(block schemas.ChatContentBlock) *string {
+	return block.Text
+}
+
+func chatContentBlockFunctionResponsePart(block schemas.ChatContentBlock) *FunctionResponsePart {
+	mediaPart := convertChatContentBlockToGeminiPart(block)
+	if mediaPart == nil {
+		return nil
+	}
+	return convertGeminiPartToFunctionResponsePart(mediaPart)
 }
 
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
