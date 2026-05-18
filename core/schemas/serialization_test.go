@@ -839,13 +839,15 @@ func TestResponsesTool_RoundTrip_AnthropicFields(t *testing.T) {
 // forward stray fields from a different shape.
 func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 	t.Run("function_type_clears_custom_and_server_tool_fields", func(t *testing.T) {
+		maxUses := 5
+
 		tool := ChatTool{
 			Type:     ChatToolTypeFunction,
 			Function: &ChatToolFunction{Name: "get_weather"},
 			// Mixed state: server-tool + custom fields also populated.
 			Custom:         &ChatToolCustom{},
 			Name:           "leaked_name",
-			MaxUses:        Ptr(5),
+			MaxUses:        &maxUses,
 			DisplayWidthPx: Ptr(1280),
 			MCPServerName:  "leaked_server",
 		}
@@ -861,13 +863,15 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 	})
 
 	t.Run("custom_type_clears_function_and_server_tool_fields", func(t *testing.T) {
+		maxUses := 5
+
 		tool := ChatTool{
 			Type:   ChatToolTypeCustom,
 			Custom: &ChatToolCustom{Format: &ChatToolCustomFormat{Type: "text"}},
 			Name:   "my_custom",
 			// Leaks
 			Function: &ChatToolFunction{Name: "should_be_stripped"},
-			MaxUses:  Ptr(5),
+			MaxUses:  &maxUses,
 		}
 		data, err := Marshal(tool)
 		require.NoError(t, err)
@@ -882,10 +886,12 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 	})
 
 	t.Run("server_tool_type_clears_function_and_custom", func(t *testing.T) {
+		maxUses := 5
+
 		tool := ChatTool{
 			Type:           "web_search_20260209",
 			Name:           "web_search",
-			MaxUses:        Ptr(5),
+			MaxUses:        &maxUses,
 			AllowedCallers: []string{"direct"},
 			// Leaks
 			Function: &ChatToolFunction{Name: "should_be_stripped"},
