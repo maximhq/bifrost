@@ -51,6 +51,66 @@ func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.
 	}
 }
 
+func TestBifrostResponsesResponseUnmarshalTimestamps(t *testing.T) {
+	t.Run("float created_at is truncated to int", func(t *testing.T) {
+		raw := []byte(`{"object":"response","model":"m","created_at":1716000000.5,"output":[]}`)
+		var r BifrostResponsesResponse
+		if err := Unmarshal(raw, &r); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if r.CreatedAt != 1716000000 {
+			t.Fatalf("expected CreatedAt 1716000000, got %d", r.CreatedAt)
+		}
+		if r.CompletedAt != nil {
+			t.Fatalf("expected CompletedAt nil, got %v", r.CompletedAt)
+		}
+	})
+
+	t.Run("integer created_at is preserved", func(t *testing.T) {
+		raw := []byte(`{"object":"response","model":"m","created_at":1716000000,"output":[]}`)
+		var r BifrostResponsesResponse
+		if err := Unmarshal(raw, &r); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if r.CreatedAt != 1716000000 {
+			t.Fatalf("expected CreatedAt 1716000000, got %d", r.CreatedAt)
+		}
+	})
+
+	t.Run("null completed_at leaves field nil", func(t *testing.T) {
+		raw := []byte(`{"object":"response","model":"m","created_at":1716000000,"completed_at":null,"output":[]}`)
+		var r BifrostResponsesResponse
+		if err := Unmarshal(raw, &r); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if r.CompletedAt != nil {
+			t.Fatalf("expected CompletedAt nil, got %v", r.CompletedAt)
+		}
+	})
+
+	t.Run("absent completed_at leaves field nil", func(t *testing.T) {
+		raw := []byte(`{"object":"response","model":"m","created_at":1716000000,"output":[]}`)
+		var r BifrostResponsesResponse
+		if err := Unmarshal(raw, &r); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if r.CompletedAt != nil {
+			t.Fatalf("expected CompletedAt nil, got %v", r.CompletedAt)
+		}
+	})
+
+	t.Run("float completed_at is truncated to int", func(t *testing.T) {
+		raw := []byte(`{"object":"response","model":"m","created_at":1716000000,"completed_at":1716000099.9,"output":[]}`)
+		var r BifrostResponsesResponse
+		if err := Unmarshal(raw, &r); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if r.CompletedAt == nil || *r.CompletedAt != 1716000099 {
+			t.Fatalf("expected CompletedAt 1716000099, got %v", r.CompletedAt)
+		}
+	})
+}
+
 func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	raw := []byte(`{"id":"msg_123","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"}`)
 
