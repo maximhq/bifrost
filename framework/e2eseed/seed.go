@@ -25,17 +25,17 @@ import (
 
 // Options controls the shared seed dataset.
 type Options struct {
-	Prefix        string
-	ConfigPath    string
-	EncryptionKey string
-	ConfigDialect string
-	ConfigDSN     string
-	LogsDialect   string
-	LogsDSN       string
-	LogRows       int
-	BatchSize     int
-	OutputEnvPath string
-	DryRun        bool
+	Prefix          string
+	ConfigPath      string
+	EncryptionKey   string
+	ConfigDialect   string
+	ConfigDSN       string
+	LogsDialect     string
+	LogsDSN         string
+	LogRowsPerShape int
+	BatchSize       int
+	OutputEnvPath   string
+	DryRun          bool
 }
 
 // Shape describes one DAC ownership combination.
@@ -52,21 +52,22 @@ type Shape struct {
 
 // ExpectedManifest records seeded IDs and expected DAC visibility.
 type ExpectedManifest struct {
-	Prefix   string              `json:"prefix"`
-	Personas map[string]string   `json:"personas"`
-	Shapes   []Shape             `json:"shapes"`
-	LogIDs   map[string][]string `json:"log_ids"`
+	Prefix    string              `json:"prefix"`
+	Personas  map[string]string   `json:"personas"`
+	Shapes    []Shape             `json:"shapes"`
+	LogIDs    map[string][]string `json:"log_ids"`
+	MCPLogIDs map[string][]string `json:"mcp_log_ids"`
 }
 
 // Summary is returned after a seed run.
 type Summary struct {
-	Prefix      string            `json:"prefix"`
-	LogRows     int               `json:"log_rows"`
-	SeedEnv     map[string]string `json:"seed_env"`
-	Expected    ExpectedManifest  `json:"expected"`
-	TableCounts map[string]int64  `json:"table_counts"`
-	DryRun      bool              `json:"dry_run"`
-	GeneratedAt time.Time         `json:"generated_at"`
+	Prefix          string            `json:"prefix"`
+	LogRowsPerShape int               `json:"log_rows_per_shape"`
+	SeedEnv         map[string]string `json:"seed_env"`
+	Expected        ExpectedManifest  `json:"expected"`
+	TableCounts     map[string]int64  `json:"table_counts"`
+	DryRun          bool              `json:"dry_run"`
+	GeneratedAt     time.Time         `json:"generated_at"`
 }
 
 // seedBaseTime is the per-run anchor timestamp for seeded log rows. We set it
@@ -78,12 +79,12 @@ var seedBaseTime = time.Now().UTC()
 // DefaultOptions returns defaults for local e2e seeding.
 func DefaultOptions() Options {
 	return Options{
-		Prefix:        "e2e-seed",
-		ConfigDialect: "postgres",
-		LogsDialect:   "postgres",
-		LogRows:       100000,
-		BatchSize:     1000,
-		OutputEnvPath: "tmp/e2e-seed.env",
+		Prefix:          "e2e-seed",
+		ConfigDialect:   "postgres",
+		LogsDialect:     "postgres",
+		LogRowsPerShape: 30,
+		BatchSize:       1000,
+		OutputEnvPath:   "tmp/e2e-seed.env",
 	}
 }
 
@@ -129,8 +130,8 @@ func NormalizeOptions(opts Options) (Options, error) {
 	if opts.LogsDSN == "" {
 		opts.LogsDSN = "postgres://bifrost:bifrost_password@localhost:5432/bifrost?sslmode=disable"
 	}
-	if opts.LogRows <= 0 {
-		opts.LogRows = def.LogRows
+	if opts.LogRowsPerShape <= 0 {
+		opts.LogRowsPerShape = def.LogRowsPerShape
 	}
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = def.BatchSize
@@ -258,15 +259,15 @@ func SeedBase(ctx context.Context, configDB, logsDB *gorm.DB, opts Options) (*Su
 	}
 	InitEncryption(opts)
 	env := SeedEnv(opts.Prefix)
-	manifest := BuildExpectedManifest(opts.Prefix, opts.LogRows)
+	manifest := BuildExpectedManifest(opts.Prefix, opts.LogRowsPerShape)
 	summary := &Summary{
-		Prefix:      opts.Prefix,
-		LogRows:     opts.LogRows,
-		SeedEnv:     env,
-		Expected:    manifest,
-		TableCounts: map[string]int64{},
-		DryRun:      opts.DryRun,
-		GeneratedAt: time.Now().UTC(),
+		Prefix:          opts.Prefix,
+		LogRowsPerShape: opts.LogRowsPerShape,
+		SeedEnv:         env,
+		Expected:        manifest,
+		TableCounts:     map[string]int64{},
+		DryRun:          opts.DryRun,
+		GeneratedAt:     time.Now().UTC(),
 	}
 	if opts.DryRun {
 		return summary, nil
@@ -305,6 +306,22 @@ func SeedEnv(prefix string) map[string]string {
 }
 
 // BuildShapes returns the DAC ownership matrix.
+//
+// The set is built by enumerating all 15 non-empty subsets of the four DAC
+// dimensions {VirtualKey, UserID, TeamID, BusinessUnitID}, all flavoured with
+// tiggings-side values so the tiggings-flavoured personas see them, plus
+// three appended shapes for negative coverage:
+//   - user-not-in-tiggings: outside user + BU (cross-team isolation)
+//   - outside-team-virtual-key: outside user + team + BU + VK
+//   - legacy-unowned: no DAC dimensions (fail-closed for non-admin)
+//
+// CustomerID is set together with BusinessUnitID when the B dimension is
+// present; the two columns are conceptually paired in the seeded dataset.
+//
+// The VirtualKey value for each tiggings shape is teamVK when the team
+// dimension is present without a user, so the team-only VK ownership path
+// (governance_virtual_keys.team_id) gets exercised. Every other VK-bearing
+// shape uses userVK so the user-attached VK ownership path is exercised too.
 func BuildShapes(prefix string) []Shape {
 	tiggingsUser := prefix + "-user-tiggings"
 	outsideUser := prefix + "-user-outside"
@@ -317,28 +334,145 @@ func BuildShapes(prefix string) []Shape {
 	userVK := prefix + "-vk-user-team"
 	teamVK := prefix + "-vk-team-only"
 	outsideVK := prefix + "-vk-outside"
-	return []Shape{
-		{Name: "user-in-tiggings", UserID: tiggingsUser, CustomerID: tiggingsCustomer, BusinessUnitID: tiggingsBU, Marker: prefix + "-shape-user-in-tiggings", VisibleTo: []string{"own_reader_tiggings", "team_reader_tiggings", "all_data_admin"}},
-		{Name: "user-not-in-tiggings", UserID: outsideUser, CustomerID: outsideCustomer, BusinessUnitID: outsideBU, Marker: prefix + "-shape-user-not-in-tiggings", VisibleTo: []string{"own_reader_outside", "team_reader_outside", "all_data_admin"}},
-		{Name: "only-user", UserID: tiggingsUser, Marker: prefix + "-shape-only-user", VisibleTo: []string{"own_reader_tiggings", "team_reader_tiggings", "all_data_admin"}},
-		{Name: "only-team", TeamID: tiggingsTeam, CustomerID: tiggingsCustomer, BusinessUnitID: tiggingsBU, Marker: prefix + "-shape-only-team", VisibleTo: []string{"team_reader_tiggings", "all_data_admin", "vk_team_owned"}},
-		{Name: "only-virtual-key", VirtualKeyID: userVK, Marker: prefix + "-shape-only-vk", VisibleTo: []string{"own_reader_tiggings", "team_reader_tiggings", "all_data_admin", "vk_user_owned"}},
-		{Name: "user-team", UserID: tiggingsUser, TeamID: tiggingsTeam, CustomerID: tiggingsCustomer, BusinessUnitID: tiggingsBU, Marker: prefix + "-shape-user-team", VisibleTo: []string{"own_reader_tiggings", "team_reader_tiggings", "all_data_admin"}},
-		{Name: "user-virtual-key", UserID: tiggingsUser, VirtualKeyID: userVK, Marker: prefix + "-shape-user-vk", VisibleTo: []string{"own_reader_tiggings", "team_reader_tiggings", "all_data_admin", "vk_user_owned"}},
-		{Name: "team-virtual-key", TeamID: tiggingsTeam, CustomerID: tiggingsCustomer, BusinessUnitID: tiggingsBU, VirtualKeyID: teamVK, Marker: prefix + "-shape-team-vk", VisibleTo: []string{"team_reader_tiggings", "all_data_admin", "vk_team_owned"}},
-		{Name: "user-team-virtual-key", UserID: tiggingsUser, TeamID: tiggingsTeam, CustomerID: tiggingsCustomer, BusinessUnitID: tiggingsBU, VirtualKeyID: userVK, Marker: prefix + "-shape-user-team-vk", VisibleTo: []string{"own_reader_tiggings", "team_reader_tiggings", "all_data_admin", "vk_user_owned"}},
-		{Name: "outside-team-virtual-key", UserID: outsideUser, TeamID: outsideTeam, CustomerID: outsideCustomer, BusinessUnitID: outsideBU, VirtualKeyID: outsideVK, Marker: prefix + "-shape-outside-team-vk", VisibleTo: []string{"own_reader_outside", "team_reader_outside", "all_data_admin"}},
-		{Name: "legacy-unowned", Marker: prefix + "-shape-legacy-unowned", VisibleTo: []string{"all_data_admin"}},
+
+	shapes := make([]Shape, 0, 18)
+	for mask := 1; mask <= 15; mask++ {
+		hasVK := mask&0x1 != 0
+		hasU := mask&0x2 != 0
+		hasT := mask&0x4 != 0
+		hasB := mask&0x8 != 0
+
+		shape := Shape{Name: shapeNameFromDims(hasVK, hasU, hasT, hasB)}
+		if hasVK {
+			if hasT && !hasU {
+				shape.VirtualKeyID = teamVK
+			} else {
+				shape.VirtualKeyID = userVK
+			}
+		}
+		if hasU {
+			shape.UserID = tiggingsUser
+		}
+		if hasT {
+			shape.TeamID = tiggingsTeam
+		}
+		if hasB {
+			shape.BusinessUnitID = tiggingsBU
+			shape.CustomerID = tiggingsCustomer
+		}
+		shape.Marker = prefix + "-shape-" + shape.Name
+		shape.VisibleTo = computeVisibleTo(shape, tiggingsUser, outsideUser, tiggingsTeam, outsideTeam, userVK, teamVK, outsideVK)
+		shapes = append(shapes, shape)
 	}
+
+	shapes = append(shapes,
+		Shape{
+			Name:           "user-not-in-tiggings",
+			UserID:         outsideUser,
+			CustomerID:     outsideCustomer,
+			BusinessUnitID: outsideBU,
+			Marker:         prefix + "-shape-user-not-in-tiggings",
+			VisibleTo:      []string{"all_data_admin", "own_reader_outside", "team_reader_outside"},
+		},
+		Shape{
+			Name:           "outside-team-virtual-key",
+			UserID:         outsideUser,
+			TeamID:         outsideTeam,
+			CustomerID:     outsideCustomer,
+			BusinessUnitID: outsideBU,
+			VirtualKeyID:   outsideVK,
+			Marker:         prefix + "-shape-outside-team-vk",
+			VisibleTo:      []string{"all_data_admin", "own_reader_outside", "team_reader_outside"},
+		},
+		Shape{
+			Name:      "legacy-unowned",
+			Marker:    prefix + "-shape-legacy-unowned",
+			VisibleTo: []string{"all_data_admin"},
+		},
+	)
+	return shapes
 }
 
-// BuildExpectedManifest returns the expected DAC visibility document.
-func BuildExpectedManifest(prefix string, logRows int) ExpectedManifest {
+// shapeNameFromDims returns a deterministic kebab-case name for the given
+// dimension presence flags. Single-dimension shapes are prefixed with "only-"
+// so the matrix reads naturally in the manifest.
+func shapeNameFromDims(hasVK, hasU, hasT, hasB bool) string {
+	var parts []string
+	if hasVK {
+		parts = append(parts, "virtual-key")
+	}
+	if hasU {
+		parts = append(parts, "user")
+	}
+	if hasT {
+		parts = append(parts, "team")
+	}
+	if hasB {
+		parts = append(parts, "business-unit")
+	}
+	if len(parts) == 1 {
+		return "only-" + parts[0]
+	}
+	return strings.Join(parts, "-")
+}
+
+// computeVisibleTo returns the sorted set of personas that can see rows of the
+// given shape, derived directly from the shape's DAC dimensions and the
+// well-known seeded principal/VK values.
+func computeVisibleTo(s Shape, tigU, outU, tigT, outT, userVK, teamVK, outVK string) []string {
+	set := map[string]struct{}{"all_data_admin": {}}
+
+	switch s.UserID {
+	case tigU:
+		set["own_reader_tiggings"] = struct{}{}
+		set["team_reader_tiggings"] = struct{}{}
+	case outU:
+		set["own_reader_outside"] = struct{}{}
+		set["team_reader_outside"] = struct{}{}
+	}
+
+	switch s.TeamID {
+	case tigT:
+		set["team_reader_tiggings"] = struct{}{}
+	case outT:
+		set["team_reader_outside"] = struct{}{}
+	}
+
+	switch s.VirtualKeyID {
+	case userVK:
+		set["vk_user_owned"] = struct{}{}
+		set["own_reader_tiggings"] = struct{}{}
+		set["team_reader_tiggings"] = struct{}{}
+	case teamVK:
+		set["vk_team_owned"] = struct{}{}
+		set["team_reader_tiggings"] = struct{}{}
+	case outVK:
+		set["own_reader_outside"] = struct{}{}
+		set["team_reader_outside"] = struct{}{}
+	}
+
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// BuildExpectedManifest returns the expected DAC visibility document. Each
+// shape gets logRowsPerShape contiguous log IDs and an equal number of MCP
+// log IDs so visibility tests can assert exact set membership for either
+// table.
+func BuildExpectedManifest(prefix string, logRowsPerShape int) ExpectedManifest {
 	shapes := BuildShapes(prefix)
 	logIDs := make(map[string][]string, len(shapes))
-	for i := 0; i < logRows; i++ {
-		shape := shapes[i%len(shapes)]
-		logIDs[shape.Name] = append(logIDs[shape.Name], fmt.Sprintf("%s-log-%06d", prefix, i))
+	mcpLogIDs := make(map[string][]string, len(shapes))
+	for shapeIdx, shape := range shapes {
+		for j := 0; j < logRowsPerShape; j++ {
+			i := shapeIdx*logRowsPerShape + j
+			logIDs[shape.Name] = append(logIDs[shape.Name], fmt.Sprintf("%s-log-%06d", prefix, i))
+			mcpLogIDs[shape.Name] = append(mcpLogIDs[shape.Name], fmt.Sprintf("%s-mcp-log-%06d", prefix, i))
+		}
 	}
 	return ExpectedManifest{
 		Prefix: prefix,
@@ -351,8 +485,9 @@ func BuildExpectedManifest(prefix string, logRows int) ExpectedManifest {
 			"vk_user_owned":        prefix + "-vk-user-team",
 			"vk_team_owned":        prefix + "-vk-team-only",
 		},
-		Shapes: shapes,
-		LogIDs: logIDs,
+		Shapes:    shapes,
+		LogIDs:    logIDs,
+		MCPLogIDs: mcpLogIDs,
 	}
 }
 
@@ -520,21 +655,25 @@ func seedMCP(ctx context.Context, db *gorm.DB, prefix string, now time.Time) err
 	return db.WithContext(ctx).Where("client_id = ?", client.ClientID).Assign(client).FirstOrCreate(&client).Error
 }
 
-// seedLogs writes the DAC matrix logs.
+// seedLogs writes the DAC matrix LLM logs. Each shape gets exactly
+// opts.LogRowsPerShape rows, so admin sees len(shapes) * LogRowsPerShape
+// total.
 func seedLogs(ctx context.Context, db *gorm.DB, opts Options, manifest ExpectedManifest) error {
 	if db == nil {
 		return fmt.Errorf("logs db is required")
 	}
 	shapes := manifest.Shapes
 	batch := make([]logstore.Log, 0, opts.BatchSize)
-	for i := 0; i < opts.LogRows; i++ {
-		shape := shapes[i%len(shapes)]
-		batch = append(batch, buildLog(opts.Prefix, shape, i))
-		if len(batch) == opts.BatchSize {
-			if err := db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&batch).Error; err != nil {
-				return err
+	for shapeIdx, shape := range shapes {
+		for j := 0; j < opts.LogRowsPerShape; j++ {
+			i := shapeIdx*opts.LogRowsPerShape + j
+			batch = append(batch, buildLog(opts.Prefix, shape, i))
+			if len(batch) == opts.BatchSize {
+				if err := db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&batch).Error; err != nil {
+					return err
+				}
+				batch = batch[:0]
 			}
-			batch = batch[:0]
 		}
 	}
 	if len(batch) > 0 {
@@ -542,22 +681,83 @@ func seedLogs(ctx context.Context, db *gorm.DB, opts Options, manifest ExpectedM
 			return err
 		}
 	}
-	return seedLogCompanions(ctx, db, opts.Prefix)
-}
-
-// seedLogCompanions writes one MCP log and one async job for log-adjacent APIs.
-func seedLogCompanions(ctx context.Context, db *gorm.DB, prefix string) error {
-	now := seedBaseTime
-	vk := prefix + "-vk-user-team"
-	latency := float64(25)
-	cost := 0.001
-	mcp := logstore.MCPToolLog{ID: prefix + "-mcp-log", RequestID: prefix + "-request", Timestamp: now, ToolName: "e2e-tool", ServerLabel: "e2e-mcp", VirtualKeyID: &vk, VirtualKeyName: ptr("E2E User Team VK"), ArgumentsParsed: map[string]any{"seed": prefix}, ResultParsed: map[string]any{"ok": true}, Latency: &latency, Cost: &cost, Status: "success", MetadataParsed: map[string]any{"seed_prefix": prefix}}
-	if err := db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&mcp).Error; err != nil {
+	if err := seedMCPLogs(ctx, db, opts, manifest); err != nil {
 		return err
 	}
+	return seedAsyncJobCompanion(ctx, db, opts.Prefix)
+}
+
+// seedMCPLogs writes the DAC matrix MCP tool logs in the same shape and
+// volume as the LLM logs so MCP visibility tests can assert against the
+// expected.mcp_log_ids manifest the same way the LLM tests do.
+func seedMCPLogs(ctx context.Context, db *gorm.DB, opts Options, manifest ExpectedManifest) error {
+	shapes := manifest.Shapes
+	batch := make([]logstore.MCPToolLog, 0, opts.BatchSize)
+	for shapeIdx, shape := range shapes {
+		for j := 0; j < opts.LogRowsPerShape; j++ {
+			i := shapeIdx*opts.LogRowsPerShape + j
+			batch = append(batch, buildMCPLog(opts.Prefix, shape, i))
+			if len(batch) == opts.BatchSize {
+				if err := db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&batch).Error; err != nil {
+					return err
+				}
+				batch = batch[:0]
+			}
+		}
+	}
+	if len(batch) > 0 {
+		if err := db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&batch).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedAsyncJobCompanion writes one async-job row tied to the seeded user VK
+// so the /api/async-jobs CRUD coverage has a deterministic fixture to read.
+func seedAsyncJobCompanion(ctx context.Context, db *gorm.DB, prefix string) error {
+	now := seedBaseTime
+	vk := prefix + "-vk-user-team"
 	completed := now
 	job := logstore.AsyncJob{ID: prefix + "-async-job", Status: schemas.AsyncJobStatusCompleted, RequestType: schemas.ChatCompletionRequest, Response: `{}`, StatusCode: 200, VirtualKeyID: &vk, ResultTTL: 3600, CreatedAt: now, CompletedAt: &completed}
 	return db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&job).Error
+}
+
+// buildMCPLog returns one deterministic MCP tool log row mirroring the DAC
+// dimensions of the shape so the same persona/visibility logic that drives
+// LLM log tests applies here.
+func buildMCPLog(prefix string, shape Shape, index int) logstore.MCPToolLog {
+	timestamp := seedBaseTime.Add(-time.Duration(index) * time.Second)
+	vkName := ""
+	if shape.VirtualKeyID != "" {
+		vkName = "E2E " + shape.VirtualKeyID
+	}
+	latency := float64(20 + index%200)
+	cost := float64(1+index%50) / 100000
+	status := "success"
+	if index%19 == 0 {
+		status = "error"
+	}
+	return logstore.MCPToolLog{
+		ID:              fmt.Sprintf("%s-mcp-log-%06d", prefix, index),
+		RequestID:       fmt.Sprintf("%s-mcp-req-%06d", prefix, index),
+		Timestamp:       timestamp,
+		ToolName:        "e2e-tool",
+		ServerLabel:     "e2e-mcp",
+		VirtualKeyID:    emptyPtr(shape.VirtualKeyID),
+		VirtualKeyName:  emptyPtr(vkName),
+		UserID:          emptyPtr(shape.UserID),
+		TeamID:          emptyPtr(shape.TeamID),
+		CustomerID:      emptyPtr(shape.CustomerID),
+		BusinessUnitID:  emptyPtr(shape.BusinessUnitID),
+		ArgumentsParsed: map[string]any{"seed_prefix": prefix, "shape": shape.Name, "marker": shape.Marker, "index": index},
+		ResultParsed:    map[string]any{"ok": true},
+		Latency:         &latency,
+		Cost:            &cost,
+		Status:          status,
+		MetadataParsed:  map[string]any{"seed_prefix": prefix, "shape": shape.Name, "marker": shape.Marker},
+		CreatedAt:       timestamp,
+	}
 }
 
 // buildLog returns one deterministic log row.

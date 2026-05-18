@@ -30,7 +30,7 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&opts.ConfigDSN, "config-db-dsn", opts.ConfigDSN, "config DB DSN")
 	fs.StringVar(&opts.LogsDialect, "logs-db-dialect", opts.LogsDialect, "logs DB dialect: postgres or sqlite")
 	fs.StringVar(&opts.LogsDSN, "logs-db-dsn", opts.LogsDSN, "logs DB DSN")
-	fs.IntVar(&opts.LogRows, "logs", opts.LogRows, "number of log rows to seed")
+	fs.IntVar(&opts.LogRowsPerShape, "logs-per-shape", opts.LogRowsPerShape, "number of log rows to seed per DAC ownership shape (applied to both logs and mcp_tool_logs)")
 	fs.IntVar(&opts.BatchSize, "batch-size", opts.BatchSize, "log insert batch size")
 	fs.StringVar(&opts.OutputEnvPath, "output-env", opts.OutputEnvPath, "path for generated environment values")
 	fs.StringVar(&summaryPath, "summary", "", "optional JSON summary path")
@@ -68,6 +68,6 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	fmt.Printf("seeded OSS API e2e data prefix=%s logs=%d env=%s\n", summary.Prefix, summary.LogRows, opts.OutputEnvPath)
+	fmt.Printf("seeded OSS API e2e data prefix=%s logs_per_shape=%d shapes=%d env=%s\n", summary.Prefix, summary.LogRowsPerShape, len(summary.Expected.Shapes), opts.OutputEnvPath)
 	return nil
 }

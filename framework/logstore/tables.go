@@ -794,6 +794,10 @@ type MCPToolLog struct {
 	ServerLabel    string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
 	VirtualKeyID   *string   `gorm:"type:varchar(255);index:idx_mcp_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	UserID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_user_id" json:"user_id"`
+	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
+	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
+	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
 	Arguments      string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool arguments
 	Result         string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool result
 	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.BifrostError
