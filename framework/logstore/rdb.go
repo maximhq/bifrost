@@ -41,8 +41,6 @@ const (
 	defaultMaxRankingsLimit = 100
 	// defaultFilterDataCutoffDays limits GetDistinct* filter-data queries to recent data.
 	defaultFilterDataCutoffDays = 30
-	// defaultFilterDataLimit caps the number of distinct values returned by filter-data queries.
-	defaultFilterDataLimit = 500
 )
 
 // RDBLogStore represents a log store that uses a SQLite database.
@@ -2763,7 +2761,7 @@ func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
 	var models []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
 		Where("model IS NOT NULL AND model != '' AND timestamp >= ?", cutoff).
-		Distinct("model").Limit(defaultFilterDataLimit).Pluck("model", &models).Error
+		Distinct("model").Pluck("model", &models).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct models: %w", err)
 	}
@@ -2780,7 +2778,7 @@ func (s *RDBLogStore) GetDistinctAliases(ctx context.Context) ([]string, error) 
 	var aliases []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
 		Where("alias IS NOT NULL AND alias != '' AND timestamp >= ?", cutoff).
-		Distinct("alias").Limit(defaultFilterDataLimit).Pluck("alias", &aliases).Error
+		Distinct("alias").Pluck("alias", &aliases).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct aliases: %w", err)
 	}
@@ -2826,7 +2824,6 @@ func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol st
 	err := s.db.WithContext(ctx).Model(&Log{}).
 		Select(fmt.Sprintf("DISTINCT %s as id, %s as name", idCol, nameCol)).
 		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != '' AND timestamp >= ?", idCol, idCol, nameCol, nameCol), cutoff).
-		Limit(defaultFilterDataLimit).
 		Find(&results).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
@@ -2844,7 +2841,7 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 	var rawValues []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
 		Where("routing_engines_used IS NOT NULL AND routing_engines_used != '' AND timestamp >= ?", cutoff).
-		Distinct("routing_engines_used").Limit(defaultFilterDataLimit).Pluck("routing_engines_used", &rawValues).Error
+		Distinct("routing_engines_used").Pluck("routing_engines_used", &rawValues).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct routing engines: %w", err)
 	}
@@ -2875,7 +2872,7 @@ func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context) ([]string, err
 	var stopReasons []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
 		Where("stop_reason IS NOT NULL AND stop_reason != '' AND timestamp >= ?", cutoff).
-		Distinct("stop_reason").Limit(defaultFilterDataLimit).Pluck("stop_reason", &stopReasons).Error
+		Distinct("stop_reason").Pluck("stop_reason", &stopReasons).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct stop reasons: %w", err)
 	}
@@ -3362,7 +3359,7 @@ func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context) ([]string, erro
 	var toolNames []string
 	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).
 		Where("tool_name IS NOT NULL AND tool_name != '' AND timestamp >= ?", cutoff).
-		Distinct("tool_name").Limit(defaultFilterDataLimit).Pluck("tool_name", &toolNames)
+		Distinct("tool_name").Pluck("tool_name", &toolNames)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available tool names: %w", result.Error)
 	}
@@ -3376,7 +3373,7 @@ func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context) ([]string, e
 	var serverLabels []string
 	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).
 		Where("server_label IS NOT NULL AND server_label != '' AND timestamp >= ?", cutoff).
-		Distinct("server_label").Limit(defaultFilterDataLimit).Pluck("server_label", &serverLabels)
+		Distinct("server_label").Pluck("server_label", &serverLabels)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available server labels: %w", result.Error)
 	}
@@ -3392,7 +3389,6 @@ func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPTool
 		Model(&MCPToolLog{}).
 		Select("DISTINCT virtual_key_id, virtual_key_name").
 		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != '' AND timestamp >= ?", cutoff).
-		Limit(defaultFilterDataLimit).
 		Find(&logs)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available virtual keys from MCP logs: %w", result.Error)
