@@ -205,10 +205,11 @@ type TableVirtualKey struct {
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
-	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
-	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	// Foreign key relationships (mutually exclusive: TeamID, CustomerID, or AccessProfileID)
+	TeamID          *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID      *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	AccessProfileID *uint   `gorm:"index" json:"access_profile_id,omitempty"`
+	RateLimitID     *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
@@ -243,13 +244,22 @@ func (vk *TableVirtualKey) IsActiveValue() bool {
 	return *vk.IsActive
 }
 
-// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
-// a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
-// value before writing to the database.
+// BeforeSave is a GORM hook that enforces mutual exclusion among team, customer, and
+// access profile attachments, computes a SHA-256 hash of the plaintext value for indexed
+// lookups, and encrypts the virtual key value before writing to the database.
 func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
-	// Enforce mutual exclusion: VK can belong to either Team OR Customer, not both
-	if vk.TeamID != nil && vk.CustomerID != nil {
-		return fmt.Errorf("virtual key cannot belong to both team and customer")
+	entityCount := 0
+	if vk.TeamID != nil {
+		entityCount++
+	}
+	if vk.CustomerID != nil {
+		entityCount++
+	}
+	if vk.AccessProfileID != nil && *vk.AccessProfileID > 0 {
+		entityCount++
+	}
+	if entityCount > 1 {
+		return fmt.Errorf("virtual key can only be attached to one of: team, customer, or access profile")
 	}
 
 	// Hash must be computed before encryption (from plaintext value)

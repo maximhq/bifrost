@@ -20,6 +20,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	AccessProfileID                    uint // When set, return VKs attached to this access profile template
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
 	Export                             bool   // When true, skip default pagination limits (caller controls limit)

@@ -2281,6 +2281,8 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
 	} else if params.TeamID != "" {
 		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	} else if params.AccessProfileID > 0 {
+		baseQuery = baseQuery.Where("access_profile_id = ?", params.AccessProfileID)
 	}
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
