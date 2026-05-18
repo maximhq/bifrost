@@ -31,8 +31,8 @@ func getPlugin() (schemas.LLMPlugin, error) {
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	plugin, err := Init(&Config{
-		APIKey:    os.Getenv("MAXIM_API_KEY"),
-		LogRepoID: os.Getenv("MAXIM_LOG_REPO_ID"),
+		APIKey:    *schemas.NewEnvVar("env.MAXIM_API_KEY"),
+		LogRepoID: *schemas.NewEnvVar("env.MAXIM_LOG_REPO_ID"),
 	}, logger)
 	if err != nil {
 		return nil, err
@@ -208,24 +208,24 @@ func TestPluginInitialization(t *testing.T) {
 		{
 			name: "Valid config with both fields",
 			config: Config{
-				APIKey:    "test-api-key",
-				LogRepoID: "test-repo-id",
+				APIKey:    *schemas.NewEnvVar("test-api-key"),
+				LogRepoID: *schemas.NewEnvVar("test-repo-id"),
 			},
 			expectError: false,
 		},
 		{
 			name: "Valid config with only API key",
 			config: Config{
-				APIKey:    "test-api-key",
-				LogRepoID: "",
+				APIKey:    *schemas.NewEnvVar("test-api-key"),
+				LogRepoID: *schemas.NewEnvVar(""),
 			},
 			expectError: false,
 		},
 		{
 			name: "Invalid config - missing API key",
 			config: Config{
-				APIKey:    "",
-				LogRepoID: "test-repo-id",
+				APIKey:    *schemas.NewEnvVar(""),
+				LogRepoID: *schemas.NewEnvVar("test-repo-id"),
 			},
 			expectError: true,
 		},
@@ -242,7 +242,7 @@ func TestPluginInitialization(t *testing.T) {
 			} else {
 				// For valid configs, we can't test actual initialization without real API key
 				// Just test the validation logic
-				if tt.config.APIKey == "" {
+				if tt.config.APIKey.GetValue() == "" {
 					t.Skip("Skipping valid config test - would need real Maxim API key")
 				}
 			}

@@ -1,20 +1,20 @@
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { maximFormSchema, type MaximFormSchema } from "@/lib/types/schemas";
+import { maximFormSchema, normalizeEnvVar, type MaximFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Eye, EyeOff, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 
 interface MaximFormFragmentProps {
 	initialConfig?: {
 		enabled?: boolean;
-		api_key?: string;
-		log_repo_id?: string;
+		api_key?: string | { value?: string; env_var?: string; from_env?: boolean };
+		log_repo_id?: string | { value?: string; env_var?: string; from_env?: boolean };
 	};
 	onSave: (config: MaximFormSchema) => Promise<void>;
 	onDelete?: () => void;
@@ -24,7 +24,6 @@ interface MaximFormFragmentProps {
 
 export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting = false, isLoading = false }: MaximFormFragmentProps) {
 	const hasMaximAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
-	const [showApiKey, setShowApiKey] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
 
 	const form = useForm<MaximFormSchema, any, MaximFormSchema>({
@@ -34,8 +33,8 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 		defaultValues: {
 			enabled: initialConfig?.enabled ?? true,
 			maxim_config: {
-				api_key: initialConfig?.api_key ?? "",
-				log_repo_id: initialConfig?.log_repo_id ?? "",
+				api_key: normalizeEnvVar(initialConfig?.api_key),
+				log_repo_id: normalizeEnvVar(initialConfig?.log_repo_id),
 			},
 		},
 	});
@@ -50,8 +49,8 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 		form.reset({
 			enabled: initialConfig?.enabled ?? true,
 			maxim_config: {
-				api_key: initialConfig?.api_key ?? "",
-				log_repo_id: initialConfig?.log_repo_id ?? "",
+				api_key: normalizeEnvVar(initialConfig?.api_key),
+				log_repo_id: normalizeEnvVar(initialConfig?.log_repo_id),
 			},
 		});
 	}, [form, initialConfig]);
@@ -68,25 +67,14 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								<FormItem>
 									<FormLabel>API Key</FormLabel>
 									<FormControl>
-										<div className="relative">
-											<Input
-												type={showApiKey ? "text" : "password"}
-												placeholder="Enter your Maxim API key"
-												disabled={!hasMaximAccess}
-												{...field}
-												className="pr-10"
-											/>
-											<Button
-												type="button"
-												variant="ghost"
-												size="sm"
-												className="absolute top-0 right-0 h-full px-3 py-2 hover:bg-transparent"
-												onClick={() => setShowApiKey(!showApiKey)}
-												disabled={!hasMaximAccess}
-											>
-												{showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-											</Button>
-										</div>
+										<EnvVarInput
+											placeholder="Enter your Maxim API key or env.MAXIM_API_KEY"
+											disabled={!hasMaximAccess}
+											maskNonEnvValue
+											data-testid="maxim-api-key-input"
+											value={field.value}
+											onChange={field.onChange}
+										/>
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -100,7 +88,13 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								<FormItem>
 									<FormLabel>Log Repository ID (Optional)</FormLabel>
 									<FormControl>
-										<Input placeholder="Enter log repository ID" disabled={!hasMaximAccess} {...field} value={field.value ?? ""} />
+										<EnvVarInput
+											placeholder="Enter log repository ID or env.MAXIM_LOG_REPO_ID"
+											disabled={!hasMaximAccess}
+											data-testid="maxim-log-repo-id-input"
+											value={field.value}
+											onChange={field.onChange}
+										/>
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -148,8 +142,8 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								form.reset({
 									enabled: initialConfig?.enabled ?? true,
 									maxim_config: {
-										api_key: initialConfig?.api_key ?? "",
-										log_repo_id: initialConfig?.log_repo_id ?? "",
+										api_key: normalizeEnvVar(initialConfig?.api_key),
+										log_repo_id: normalizeEnvVar(initialConfig?.log_repo_id),
 									},
 								});
 							}}

@@ -295,7 +295,12 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		Order:     request.Order,
 	}); err != nil {
 		logger.Error("failed to create plugin: %v", err)
-		SendError(ctx, 500, "Failed to create plugin")
+		var envErr *configstoreTables.ErrUnresolvedEnvVars
+		if errors.As(err, &envErr) {
+			SendError(ctx, fasthttp.StatusBadRequest, envErr.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to create plugin")
 		return
 	}
 
@@ -426,7 +431,12 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		Order:     request.Order,
 	}); err != nil {
 		logger.Error("failed to update plugin: %v", err)
-		SendError(ctx, 500, "Failed to update plugin")
+		var envErr *configstoreTables.ErrUnresolvedEnvVars
+		if errors.As(err, &envErr) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to update plugin")
 		return
 	}
 	plugin, err = h.configStore.GetPlugin(ctx, name)
@@ -436,7 +446,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		logger.Error("failed to get plugin: %v", err)
-		SendError(ctx, 500, "Failed to retrieve plugin")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to retrieve plugin")
 		return
 	}
 	// We reload the plugin if its enabled, otherwise we stop it

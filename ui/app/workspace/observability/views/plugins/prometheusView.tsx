@@ -1,18 +1,24 @@
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
-import { PrometheusFormSchema } from "@/lib/types/schemas";
+import { isEnvVarSet, PrometheusFormSchema } from "@/lib/types/schemas";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { PrometheusFormFragment } from "../../fragments/prometheusFormFragment";
 
+interface EnvVar {
+	value?: string;
+	env_var?: string;
+	from_env?: boolean;
+}
+
 interface PushGatewayConfig {
 	enabled?: boolean;
-	push_gateway_url?: string;
+	push_gateway_url?: string | EnvVar;
 	job_name?: string;
 	instance_id?: string;
 	push_interval?: number;
 	basic_auth?: {
-		username?: string;
-		password?: string;
+		username?: string | EnvVar;
+		password?: string | EnvVar;
 	};
 }
 
@@ -53,7 +59,7 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 				push_interval: config.prometheus_config.push_interval,
 			};
 
-			if (config.prometheus_config.basic_auth_username?.trim() && config.prometheus_config.basic_auth_password?.trim()) {
+			if (isEnvVarSet(config.prometheus_config.basic_auth_username) && isEnvVarSet(config.prometheus_config.basic_auth_password)) {
 				pushGatewayConfig.basic_auth = {
 					username: config.prometheus_config.basic_auth_username,
 					password: config.prometheus_config.basic_auth_password,

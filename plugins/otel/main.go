@@ -61,7 +61,7 @@ type PluginSpanFilter struct {
 
 type Config struct {
 	ServiceName  string            `json:"service_name"`
-	CollectorURL string            `json:"collector_url"`
+	CollectorURL schemas.EnvVar    `json:"collector_url"` // supports env.VAR_NAME
 	Headers      map[string]string `json:"headers"`
 	TraceType    TraceType         `json:"trace_type"`
 	Protocol     Protocol          `json:"protocol"`
@@ -69,8 +69,8 @@ type Config struct {
 	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
 	// Metrics push configuration
-	MetricsEnabled      bool   `json:"metrics_enabled"`
-	MetricsEndpoint     string `json:"metrics_endpoint"`
+	MetricsEnabled      bool           `json:"metrics_enabled"`
+	MetricsEndpoint     schemas.EnvVar `json:"metrics_endpoint"` // supports env.VAR_NAME
 	MetricsPushInterval int    `json:"metrics_push_interval"` // in seconds, default 15
 
 	// PluginSpanFilter is the DB-stored fallback when otel_plugin_span_filter is absent in config.json.
@@ -133,6 +133,9 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
+	if config.CollectorURL.GetValue() == "" {
+		return nil, fmt.Errorf("collector_url is required")
+	}
 	logger = _logger
 	if pricingManager == nil {
 		logger.Warn("otel plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
@@ -187,10 +190,11 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	if nodeName := firstNonEmpty(os.Getenv("MY_NODE_NAME"), os.Getenv("NODE_NAME")); nodeName != "" {
 		instanceAttrs = append(instanceAttrs, kvStr("k8s.node.name", nodeName))
 	}
+	collectorURL := config.CollectorURL.GetValue()
 	// Preparing the plugin
 	p := &OtelPlugin{
 		serviceName:               config.ServiceName,
-		url:                       config.CollectorURL,
+		url:                       collectorURL,
 		traceType:                 config.TraceType,
 		headers:                   config.Headers,
 		protocol:                  config.Protocol,
@@ -198,17 +202,17 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
 		instanceAttrs:             instanceAttrs,
-		pluginSpanFilter: config.PluginSpanFilter,
+		pluginSpanFilter:          config.PluginSpanFilter,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
-		p.client, err = NewOtelClientGRPC(config.CollectorURL, config.Headers, config.TLSCACert, config.Insecure)
+		p.client, err = NewOtelClientGRPC(collectorURL, config.Headers, config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if config.Protocol == ProtocolHTTP {
-		p.client, err = NewOtelClientHTTP(config.CollectorURL, config.Headers, config.TLSCACert, config.Insecure)
+		p.client, err = NewOtelClientHTTP(collectorURL, config.Headers, config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
@@ -219,7 +223,8 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 
 	// Initialize metrics exporter if enabled
 	if config.MetricsEnabled {
-		if config.MetricsEndpoint == "" {
+		metricsEndpoint := config.MetricsEndpoint.GetValue()
+		if metricsEndpoint == "" {
 			return nil, fmt.Errorf("metrics_endpoint is required when metrics_enabled is true")
 		}
 		pushInterval := config.MetricsPushInterval
@@ -230,7 +235,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		}
 		metricsConfig := &MetricsConfig{
 			ServiceName:  config.ServiceName,
-			Endpoint:     config.MetricsEndpoint,
+			Endpoint:     metricsEndpoint,
 			Headers:      config.Headers,
 			Protocol:     config.Protocol,
 			TLSCACert:    config.TLSCACert,
@@ -245,7 +250,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			}
 			return nil, fmt.Errorf("failed to initialize metrics exporter: %w", err)
 		}
-		logger.Info("OTEL metrics push enabled, pushing to %s every %d seconds", config.MetricsEndpoint, pushInterval)
+		logger.Info("OTEL metrics push enabled, pushing to %s every %d seconds", metricsEndpoint, pushInterval)
 	}
 
 	return p, nil
@@ -295,7 +300,7 @@ func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
 		otelConfig = *config
 	}
 	// Validating fields
-	if otelConfig.CollectorURL == "" {
+	if otelConfig.CollectorURL.GetValue() == "" {
 		return nil, fmt.Errorf("collector url is required")
 	}
 	if otelConfig.TraceType == "" {

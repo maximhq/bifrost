@@ -1,12 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { otelFormSchema, type OtelFormSchema } from "@/lib/types/schemas";
+import { normalizeEnvVar, otelFormSchema, type OtelFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Trash2 } from "lucide-react";
@@ -17,7 +18,7 @@ interface OtelFormFragmentProps {
 	currentConfig?: {
 		enabled?: boolean;
 		service_name?: string;
-		collector_url?: string;
+		collector_url?: string | { value?: string; env_var?: string; from_env?: boolean };
 		headers?: Record<string, string>;
 		trace_type?: "genai_extension" | "vercel" | "open_inference";
 		protocol?: "http" | "grpc";
@@ -26,7 +27,7 @@ interface OtelFormFragmentProps {
 		insecure?: boolean;
 		// Metrics push configuration
 		metrics_enabled?: boolean;
-		metrics_endpoint?: string;
+		metrics_endpoint?: string | { value?: string; env_var?: string; from_env?: boolean };
 		metrics_push_interval?: number;
 	};
 	onSave: (config: OtelFormSchema) => Promise<void>;
@@ -52,14 +53,14 @@ export function OtelFormFragment({
 			enabled: initialConfig?.enabled ?? true,
 			otel_config: {
 				service_name: initialConfig?.service_name ?? "bifrost",
-				collector_url: initialConfig?.collector_url ?? "",
+				collector_url: normalizeEnvVar(initialConfig?.collector_url),
 				headers: initialConfig?.headers ?? {},
 				trace_type: initialConfig?.trace_type ?? "genai_extension",
 				protocol: initialConfig?.protocol ?? "http",
 				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 				insecure: initialConfig?.insecure ?? true,
 				metrics_enabled: initialConfig?.metrics_enabled ?? false,
-				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
+				metrics_endpoint: normalizeEnvVar(initialConfig?.metrics_endpoint),
 				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
 			},
 		},
@@ -96,14 +97,14 @@ export function OtelFormFragment({
 			enabled: initialConfig?.enabled ?? true,
 			otel_config: {
 				service_name: initialConfig?.service_name ?? "bifrost",
-				collector_url: initialConfig?.collector_url || "",
+				collector_url: normalizeEnvVar(initialConfig?.collector_url),
 				headers: initialConfig?.headers || {},
 				trace_type: initialConfig?.trace_type || "genai_extension",
 				protocol: initialConfig?.protocol || "http",
 				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 				insecure: initialConfig?.insecure ?? true,
 				metrics_enabled: initialConfig?.metrics_enabled ?? false,
-				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
+				metrics_endpoint: normalizeEnvVar(initialConfig?.metrics_endpoint),
 				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
 			},
 		});
@@ -149,14 +150,16 @@ export function OtelFormFragment({
 										<code>{form.watch("otel_config.protocol") === "http" ? "http(s)://<host>:<port>/v1/traces" : "<host>:<port>"}</code>
 									</div>
 									<FormControl>
-										<Input
+										<EnvVarInput
 											placeholder={
 												form.watch("otel_config.protocol") === "http"
 													? "https://otel-collector.example.com:4318/v1/traces"
 													: "otel-collector.example.com:4317"
 											}
 											disabled={!hasOtelAccess}
-											{...field}
+											data-testid="otel-collector-url-input"
+											value={field.value}
+											onChange={field.onChange}
 										/>
 									</FormControl>
 									<FormMessage />
@@ -171,6 +174,7 @@ export function OtelFormFragment({
 									<FormControl>
 										<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} />
 									</FormControl>
+									<FormDescription>Header values support <code>env.VAR_NAME</code> to source from environment variables.</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -330,12 +334,14 @@ export function OtelFormFragment({
 											<code>{form.watch("otel_config.protocol") === "http" ? "http(s)://<host>:<port>/v1/metrics" : "<host>:<port>"}</code>
 										</div>
 										<FormControl>
-											<Input
+											<EnvVarInput
 												placeholder={
 													form.watch("otel_config.protocol") === "http" ? "https://otel-collector:4318/v1/metrics" : "otel-collector:4317"
 												}
 												disabled={!hasOtelAccess}
-												{...field}
+												data-testid="otel-metrics-endpoint-input"
+												value={field.value}
+												onChange={field.onChange}
 											/>
 										</FormControl>
 										<FormMessage />
@@ -410,14 +416,14 @@ export function OtelFormFragment({
 									enabled: initialConfig?.enabled ?? true,
 									otel_config: {
 										service_name: initialConfig?.service_name ?? "bifrost",
-										collector_url: initialConfig?.collector_url ?? "",
+										collector_url: normalizeEnvVar(initialConfig?.collector_url),
 										headers: initialConfig?.headers ?? {},
 										trace_type: initialConfig?.trace_type ?? "genai_extension",
 										protocol: initialConfig?.protocol ?? "http",
 										tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 										insecure: initialConfig?.insecure ?? true,
 										metrics_enabled: initialConfig?.metrics_enabled ?? false,
-										metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
+										metrics_endpoint: normalizeEnvVar(initialConfig?.metrics_endpoint),
 										metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
 									},
 								});
