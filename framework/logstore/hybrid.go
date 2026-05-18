@@ -594,28 +594,28 @@ func (h *HybridLogStore) IsLogEntryPresent(ctx context.Context, id string) (bool
 	return h.inner.IsLogEntryPresent(ctx, id)
 }
 
-func (h *HybridLogStore) GetDistinctAliases(ctx context.Context) ([]string, error) {
-	return h.inner.GetDistinctAliases(ctx)
+func (h *HybridLogStore) GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctAliases(ctx, limit, query)
 }
 
-func (h *HybridLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
-	return h.inner.GetDistinctModels(ctx)
+func (h *HybridLogStore) GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctModels(ctx, limit, query)
 }
 
-func (h *HybridLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
-	return h.inner.GetDistinctKeyPairs(ctx, idCol, nameCol)
+func (h *HybridLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	return h.inner.GetDistinctKeyPairs(ctx, idCol, nameCol, limit, query)
 }
 
-func (h *HybridLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, error) {
-	return h.inner.GetDistinctRoutingEngines(ctx)
+func (h *HybridLogStore) GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctRoutingEngines(ctx, limit, query)
 }
 
-func (h *HybridLogStore) GetDistinctStopReasons(ctx context.Context) ([]string, error) {
-	return h.inner.GetDistinctStopReasons(ctx)
+func (h *HybridLogStore) GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctStopReasons(ctx, limit, query)
 }
 
-func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error) {
-	return h.inner.GetDistinctMetadataKeys(ctx)
+func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
+	return h.inner.GetDistinctMetadataKeys(ctx, limit, query)
 }
 
 // MCP Tool Log analytics methods are delegated directly. Detail/write paths
@@ -1020,16 +1020,16 @@ func (h *HybridLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) 
 	return h.inner.FlushMCPToolLogs(ctx, since)
 }
 
-func (h *HybridLogStore) GetAvailableToolNames(ctx context.Context) ([]string, error) {
-	return h.inner.GetAvailableToolNames(ctx)
+func (h *HybridLogStore) GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetAvailableToolNames(ctx, limit, query)
 }
 
-func (h *HybridLogStore) GetAvailableServerLabels(ctx context.Context) ([]string, error) {
-	return h.inner.GetAvailableServerLabels(ctx)
+func (h *HybridLogStore) GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetAvailableServerLabels(ctx, limit, query)
 }
 
-func (h *HybridLogStore) GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error) {
-	return h.inner.GetAvailableMCPVirtualKeys(ctx)
+func (h *HybridLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
+	return h.inner.GetAvailableMCPVirtualKeys(ctx, limit, query)
 }
 
 // Async Job methods — delegated directly.
