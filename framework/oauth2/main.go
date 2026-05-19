@@ -487,7 +487,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	resolvedClientID := schemas.NewEnvVar(clientID).GetValue()
 
 	// Build authorize URL with PKCE (using dynamically registered or user-provided client_id)
-	authURL := p.buildAuthorizeURLWithPKCE(
+	authURL, err := p.buildAuthorizeURLWithPKCE(
 		authorizeURL,
 		resolvedClientID,
 		config.RedirectURI,
@@ -495,6 +495,9 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		codeChallenge,
 		scopes,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build authorize URL: %w", err)
+	}
 
 	logger.Debug("OAuth flow initiated successfully: oauth_config_id: %s, client_id: %s", oauthConfigID, resolvedClientID)
 
@@ -591,9 +594,19 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	return nil
 }
 
-// buildAuthorizeURLWithPKCE constructs the OAuth authorization URL with PKCE parameters
-func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redirectURI, state, codeChallenge string, scopes []string) string {
-	params := url.Values{}
+// buildAuthorizeURLWithPKCE constructs the OAuth authorization URL with PKCE parameters.
+// Existing query parameters are preserved so providers can require fixed params
+// such as Notion's owner=user or Google's access_type=offline.
+func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redirectURI, state, codeChallenge string, scopes []string) (string, error) {
+	parsedURL, err := url.Parse(authorizeURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid authorize_url %q: %w", authorizeURL, err)
+	}
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return "", fmt.Errorf("invalid authorize_url %q: must be an absolute URL", authorizeURL)
+	}
+
+	params := parsedURL.Query()
 	params.Set("response_type", "code")
 	params.Set("client_id", clientID)
 	params.Set("redirect_uri", redirectURI)
@@ -604,7 +617,8 @@ func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redir
 		params.Set("scope", strings.Join(scopes, " "))
 	}
 
-	return authorizeURL + "?" + params.Encode()
+	parsedURL.RawQuery = params.Encode()
+	return parsedURL.String(), nil
 }
 
 // exchangeCodeForTokens exchanges authorization code for access/refresh tokens
@@ -898,7 +912,7 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	}
 
 	// Build authorize URL with PKCE
-	authURL := p.buildAuthorizeURLWithPKCE(
+	authURL, err := p.buildAuthorizeURLWithPKCE(
 		templateConfig.AuthorizeURL,
 		templateConfig.GetResolvedClientID(),
 		redirectURI,
@@ -906,6 +920,9 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		codeChallenge,
 		scopes,
 	)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to build authorize URL: %w", err)
+	}
 
 	logger.Debug("Per-user OAuth flow initiated: session_id=%s, mcp_client_id=%s", sessionID, mcpClientID)
 
