@@ -910,7 +910,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			"Cache-Control": "no-cache",
 		}
 
-		if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) {
+		if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
 				if request.Params != nil && request.Params.ServiceTier != nil {
 					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
@@ -1015,7 +1015,6 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-
 		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
@@ -1043,6 +1042,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+		} else {
+			req.Header.Del(anthropic.AnthropicBetaHeader)
+		}
 
 		// Getting oauth2 token
 		tokenSource, err := getAuthTokenSource(key)
