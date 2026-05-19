@@ -739,10 +739,10 @@ func (c *safeCapture) recordAttempt(r *http.Request) int {
 	c.attemptNum++
 	return c.attemptNum
 }
-func (c *safeCapture) Auth() string     { c.mu.Lock(); defer c.mu.Unlock(); return c.auth }
-func (c *safeCapture) Host() string     { c.mu.Lock(); defer c.mu.Unlock(); return c.host }
-func (c *safeCapture) Path() string     { c.mu.Lock(); defer c.mu.Unlock(); return c.path }
-func (c *safeCapture) Sentinel() bool   { c.mu.Lock(); defer c.mu.Unlock(); return c.sentinel }
+func (c *safeCapture) Auth() string   { c.mu.Lock(); defer c.mu.Unlock(); return c.auth }
+func (c *safeCapture) Host() string   { c.mu.Lock(); defer c.mu.Unlock(); return c.host }
+func (c *safeCapture) Path() string   { c.mu.Lock(); defer c.mu.Unlock(); return c.path }
+func (c *safeCapture) Sentinel() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.sentinel }
 func (c *safeCapture) AuthSeen() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -4860,4 +4860,253 @@ func TestStreamingChunkProviderIsAliasNotBase(t *testing.T) {
 	if chunkCount == 0 {
 		t.Fatal("no chat-response chunks observed; cannot verify provider attribution")
 	}
+}
+
+// TestStreamFallback_PrimaryReturns503_FallsOverToFallback verifies that the
+// streaming entry point's fallback path actually fires when the primary provider
+// returns an HTTP-level 503 (status check before any SSE chunk is emitted) and,
+// as a separate subtest, when the primary returns 200 with the first SSE chunk
+// being a Bifrost-shaped error (the path that CheckFirstStreamChunkForError
+// exists to handle). Both subtests must end up calling the fallback server and
+// returning fallback chunks to the caller. If either subtest fails, the bug is
+// in core (handleStreamRequest / shouldTryFallbacks / tryStreamRequest) rather
+// than in any caller's plugin or runtime config.
+func TestStreamFallback_PrimaryReturns503_FallsOverToFallback(t *testing.T) {
+	// Minimal OpenAI-compatible SSE response used by every fallback server.
+	const fallbackSSE = "data: {\"id\":\"chatcmpl-fb\",\"object\":\"chat.completion.chunk\"," +
+		"\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"," +
+		"\"content\":\"hello-from-fallback\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-fb\",\"object\":\"chat.completion.chunk\"," +
+		"\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{}," +
+		"\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3," +
+		"\"completion_tokens\":1,\"total_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n"
+
+	// drainStream collects both content text from chunks and any terminal stream
+	// error so each subtest can assert content == fallback and err == nil.
+	drainStream := func(t *testing.T, ch chan *schemas.BifrostStreamChunk) (string, *schemas.BifrostError) {
+		t.Helper()
+		var content strings.Builder
+		var streamErr *schemas.BifrostError
+		for chunk := range ch {
+			if chunk.BifrostError != nil {
+				streamErr = chunk.BifrostError
+				continue
+			}
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			for _, c := range chunk.BifrostChatResponse.Choices {
+				if c.ChatStreamResponseChoice != nil && c.ChatStreamResponseChoice.Delta != nil && c.ChatStreamResponseChoice.Delta.Content != nil {
+					content.WriteString(*c.ChatStreamResponseChoice.Delta.Content)
+				}
+			}
+		}
+		return content.String(), streamErr
+	}
+
+	t.Run("HTTPLevel503", func(t *testing.T) {
+		// Primary returns HTTP 503 immediately. ParseOpenAIError will surface this as
+		// a *BifrostError to the worker, which routes via req.Err -> tryStreamRequest
+		// -> handleStreamRequest -> shouldTryFallbacks (true) -> fallback attempt.
+		var primaryHits, fallbackHits atomic.Int32
+		primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			primaryHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream 503","type":"server_error"}}`))
+		}))
+		defer primaryServer.Close()
+
+		fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fallbackHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(fallbackSSE))
+		}))
+		defer fallbackServer.Close()
+
+		// Two distinct OpenAI-dialect providers: a plugin sets BaseProviderType so the
+		// alias names ("primary503" / "fallback-good") route through the openai queue
+		// while keeping their own base URLs. This mirrors the per-org fallback chain
+		// shape that production uses (PLATFORM-44).
+		const primaryAlias = schemas.ModelProvider("primary503")
+		const fallbackAlias = schemas.ModelProvider("fallback-good")
+
+		account := NewMockAccount()
+
+		plugin := &perAliasOpenAIDialectPlugin{
+			byAlias: map[schemas.ModelProvider]aliasRoute{
+				primaryAlias:  {key: "sk-primary", baseURL: primaryServer.URL},
+				fallbackAlias: {key: "sk-fallback", baseURL: fallbackServer.URL},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: primaryAlias,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+			Fallbacks: []schemas.Fallback{
+				{Provider: fallbackAlias, Model: "gpt-4o-mini"},
+			},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionStreamRequest returned error before stream — fallback never engaged: %+v", bifrostErr)
+		}
+		if ch == nil {
+			t.Fatal("expected non-nil stream channel from fallback")
+		}
+
+		got, streamErr := drainStream(t, ch)
+		if streamErr != nil {
+			t.Fatalf("stream returned terminal error instead of fallback content: %+v", streamErr)
+		}
+		if got != "hello-from-fallback" {
+			t.Errorf("stream content: got %q, want %q (primary 503 should have triggered fallback)", got, "hello-from-fallback")
+		}
+		if primaryHits.Load() == 0 {
+			t.Error("primary server was never hit")
+		}
+		if fallbackHits.Load() == 0 {
+			t.Error("fallback server was never hit — fallback path did not fire on HTTP 503")
+		}
+	})
+
+	t.Run("SSEEmbedded503AsFirstChunk", func(t *testing.T) {
+		// Primary returns 200 OK, then the first SSE event is a Bifrost-shaped error
+		// payload. Bifrost's HandleOpenAIChatCompletionStreaming parses non-data lines
+		// it cannot decode as chat.completion.chunk into a streaming error chunk, and
+		// CheckFirstStreamChunkForError converts it to a synchronous *BifrostError so
+		// fallbacks can run. We use OpenAI's "error" SSE shape which the provider
+		// recognises and emits as a stream error.
+		var primaryHits, fallbackHits atomic.Int32
+		primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			primaryHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			// First (and only) data event is an OpenAI-style error payload.
+			_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"sse-embedded 503\",\"type\":\"server_error\",\"code\":\"503\"}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}))
+		defer primaryServer.Close()
+
+		fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fallbackHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(fallbackSSE))
+		}))
+		defer fallbackServer.Close()
+
+		const primaryAlias = schemas.ModelProvider("primary-sse-err")
+		const fallbackAlias = schemas.ModelProvider("fallback-good-sse")
+
+		account := NewMockAccount()
+		plugin := &perAliasOpenAIDialectPlugin{
+			byAlias: map[schemas.ModelProvider]aliasRoute{
+				primaryAlias:  {key: "sk-primary", baseURL: primaryServer.URL},
+				fallbackAlias: {key: "sk-fallback", baseURL: fallbackServer.URL},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: primaryAlias,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+			Fallbacks: []schemas.Fallback{
+				{Provider: fallbackAlias, Model: "gpt-4o-mini"},
+			},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionStreamRequest returned error before stream — fallback never engaged: %+v", bifrostErr)
+		}
+		if ch == nil {
+			t.Fatal("expected non-nil stream channel from fallback")
+		}
+
+		got, streamErr := drainStream(t, ch)
+		if streamErr != nil {
+			t.Fatalf("stream returned terminal error instead of fallback content: %+v", streamErr)
+		}
+		if got != "hello-from-fallback" {
+			t.Errorf("stream content: got %q, want %q (SSE-embedded error should have triggered fallback)", got, "hello-from-fallback")
+		}
+		if primaryHits.Load() == 0 {
+			t.Error("primary server was never hit")
+		}
+		if fallbackHits.Load() == 0 {
+			t.Error("fallback server was never hit — fallback path did not fire on SSE-embedded error")
+		}
+	})
+}
+
+// aliasRoute describes how a single provider-alias should be routed: which API
+// key to inject and which upstream base URL to send the request to. Used by
+// perAliasOpenAIDialectPlugin to support primary→fallback test setups where
+// the primary and fallback are distinct named OpenAI-dialect providers.
+type aliasRoute struct {
+	key     string
+	baseURL string
+}
+
+// perAliasOpenAIDialectPlugin sets BaseProviderType=openai for any request whose
+// provider matches one of the registered aliases, then injects the alias's API
+// key and base URL via ProviderOverride. This is the minimum machinery needed
+// to point primary and fallback at different httptest servers without adding
+// either to the static account config (which would make the test exercise a
+// different code path than the production "dynamically configurable provider"
+// fallback fix).
+type perAliasOpenAIDialectPlugin struct {
+	byAlias map[schemas.ModelProvider]aliasRoute
+}
+
+func (p *perAliasOpenAIDialectPlugin) GetName() string { return "per-alias-openai-dialect-test-plugin" }
+func (p *perAliasOpenAIDialectPlugin) Cleanup() error  { return nil }
+
+func (p *perAliasOpenAIDialectPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	provider, _, _ := req.GetRequestFields()
+	route, ok := p.byAlias[provider]
+	if !ok {
+		return req, nil, nil
+	}
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(route.key)})
+	req.UpdateProviderBaseURL(route.baseURL)
+	req.UpdateBaseProviderType(schemas.OpenAI)
+	return req, nil, nil
+}
+
+func (p *perAliasOpenAIDialectPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
 }

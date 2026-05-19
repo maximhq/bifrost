@@ -109,6 +109,23 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
+func providerNetworkOverrideFromContext(ctx context.Context) *schemas.ProviderNetworkConfigOverride {
+	if ctx == nil {
+		return nil
+	}
+	override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride)
+	if !ok || override == nil {
+		return nil
+	}
+	return override.NetworkConfig
+}
+
+// EffectiveNetworkConfigFromContext applies request-scoped network overrides to
+// a provider NetworkConfig. Nil override fields leave the provider config intact.
+func EffectiveNetworkConfigFromContext(ctx context.Context, base schemas.NetworkConfig) schemas.NetworkConfig {
+	return schemas.ApplyProviderNetworkConfigOverride(base, providerNetworkOverrideFromContext(ctx))
+}
+
 // makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.
@@ -577,18 +594,10 @@ func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]stri
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
 func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
-	for key, value := range extraHeaders {
-		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
-		if skipHeaders != nil {
-			if slices.Contains(skipHeaders, key) {
-				continue
-			}
-		}
-		// Only set the header if it doesn't already exist to avoid overwriting important headers
-		if len(req.Header.Peek(canonicalKey)) == 0 {
-			req.Header.Set(canonicalKey, value)
-		}
+	if override := providerNetworkOverrideFromContext(ctx); override != nil && override.ExtraHeaders != nil {
+		setExtraHeadersMap(req, override.ExtraHeaders, skipHeaders)
 	}
+	setExtraHeadersMap(req, extraHeaders, skipHeaders)
 	// Give priority to extra headers in the context
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
@@ -602,6 +611,21 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 					req.Header.Add(k, v)
 				}
 			}
+		}
+	}
+}
+
+func setExtraHeadersMap(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
+	for key, value := range extraHeaders {
+		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
+		if skipHeaders != nil {
+			if slices.Contains(skipHeaders, key) {
+				continue
+			}
+		}
+		// Only set the header if it doesn't already exist to avoid overwriting important headers.
+		if len(req.Header.Peek(canonicalKey)) == 0 {
+			req.Header.Set(canonicalKey, value)
 		}
 	}
 }
@@ -2127,6 +2151,10 @@ const DefaultStreamIdleTimeout = 60 * time.Second
 func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int) {
 	if existing, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && existing > 0 {
 		return // already set from upstream (transport/header), respect it
+	}
+	if override := providerNetworkOverrideFromContext(ctx); override != nil && override.StreamIdleTimeoutInSeconds != nil && *override.StreamIdleTimeoutInSeconds > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Duration(*override.StreamIdleTimeoutInSeconds)*time.Second)
+		return
 	}
 	if configSeconds > 0 {
 		ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Duration(configSeconds)*time.Second)

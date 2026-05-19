@@ -3973,7 +3973,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 // alias-based request whose base queue is being replaced by UpdateProvider misses
 // the replacement and incorrectly fails with "provider is shutting down".
 func resolveQueueProviderKey(providerKey schemas.ModelProvider, override *schemas.ProviderOverride) schemas.ModelProvider {
-	if override != nil && override.BaseProviderType != "" && !slices.Contains(schemas.StandardProviders, providerKey) {
+	if override != nil && override.BaseProviderType != "" && !IsStandardProvider(providerKey) {
 		return override.BaseProviderType
 	}
 	return providerKey
@@ -4029,6 +4029,9 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, over
 		baseConfig := &schemas.ProviderConfig{
 			NetworkConfig:            schemas.DefaultNetworkConfig,
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}
+		if override != nil && override.NetworkConfig != nil {
+			baseConfig.NetworkConfig = schemas.ApplyProviderNetworkConfigOverride(baseConfig.NetworkConfig, override.NetworkConfig)
 		}
 		switch {
 		case slices.Contains(dynamicallyConfigurableProviders, providerKey):
@@ -5249,8 +5252,10 @@ func executeRequestWithRetries[T any](
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
 	lastWasRateLimit := false
+	effectiveConfig := *config
+	effectiveConfig.NetworkConfig = providerUtils.EffectiveNetworkConfigFromContext(ctx, config.NetworkConfig)
 
-	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
+	for attempts = 0; attempts <= effectiveConfig.NetworkConfig.MaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
@@ -5328,10 +5333,10 @@ func executeRequestWithRetries[T any](
 					retryMsg += ", type=" + *bifrostError.Type
 				}
 			}
-			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
+			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, effectiveConfig.NetworkConfig.MaxRetries, model, retryMsg)
 
 			// Calculate and apply backoff
-			backoff := calculateBackoff(attempts-1, config)
+			backoff := calculateBackoff(attempts-1, &effectiveConfig)
 			logger.Debug("sleeping for %s before retry", backoff)
 
 			time.Sleep(backoff)
@@ -7048,25 +7053,6 @@ func (bifrost *Bifrost) getBifrostRequest() *schemas.BifrostRequest {
 func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
 	resetBifrostRequest(req)
 	bifrost.bifrostRequestPool.Put(req)
-}
-
-// resetMCPRequest resets a BifrostMCPRequest instance for reuse
-func resetMCPRequest(req *schemas.BifrostMCPRequest) {
-	req.RequestType = ""
-	req.ChatAssistantMessageToolCall = nil
-	req.ResponsesToolMessage = nil
-}
-
-// getMCPRequest gets a BifrostMCPRequest from the pool
-func (bifrost *Bifrost) getMCPRequest() *schemas.BifrostMCPRequest {
-	req := bifrost.mcpRequestPool.Get().(*schemas.BifrostMCPRequest)
-	return req
-}
-
-// releaseMCPRequest returns a BifrostMCPRequest to the pool
-func (bifrost *Bifrost) releaseMCPRequest(req *schemas.BifrostMCPRequest) {
-	resetMCPRequest(req)
-	bifrost.mcpRequestPool.Put(req)
 }
 
 // getOverrideKey returns the explicit API key from a ProviderOverride stored in ctx,

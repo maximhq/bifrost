@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 )
 
@@ -330,6 +331,9 @@ type ProviderOverride struct {
 	// config entry is needed for the alias. Per-request credentials and URL are
 	// supplied via Key and BaseURL.
 	BaseProviderType ModelProvider `json:"base_provider_type,omitempty"`
+	// NetworkConfig carries request-scoped network overrides. Nil fields inherit the
+	// provider's configured NetworkConfig after defaults have been applied.
+	NetworkConfig *ProviderNetworkConfigOverride `json:"network_config,omitempty"`
 }
 
 // RoutingEngine constants
@@ -890,6 +894,13 @@ func (br *BifrostRequest) Clone() BifrostRequest {
 	clone := *br
 	if br.ProviderOverride != nil {
 		ovr := *br.ProviderOverride // copies BaseURL and BaseProviderType by value
+		if br.ProviderOverride.NetworkConfig != nil {
+			networkOverride := *br.ProviderOverride.NetworkConfig
+			if br.ProviderOverride.NetworkConfig.ExtraHeaders != nil {
+				networkOverride.ExtraHeaders = maps.Clone(br.ProviderOverride.NetworkConfig.ExtraHeaders)
+			}
+			ovr.NetworkConfig = &networkOverride
+		}
 		clone.ProviderOverride = &ovr
 	}
 	switch {
@@ -1079,6 +1090,18 @@ func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
 		br.ProviderOverride = &ProviderOverride{}
 	}
 	br.ProviderOverride.BaseURL = baseURL
+}
+
+// UpdateProviderNetworkConfig sets request-scoped network config overrides.
+// Fields left nil inherit the provider's configured NetworkConfig.
+func (br *BifrostRequest) UpdateProviderNetworkConfig(networkConfig ProviderNetworkConfigOverride) {
+	if br == nil {
+		return
+	}
+	if br.ProviderOverride == nil {
+		br.ProviderOverride = &ProviderOverride{}
+	}
+	br.ProviderOverride.NetworkConfig = &networkConfig
 }
 
 // UpdateBaseProviderType sets the API dialect for this request when the provider name

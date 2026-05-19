@@ -65,6 +65,50 @@ type NetworkConfig struct {
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 }
 
+// ProviderNetworkConfigOverride contains request-scoped NetworkConfig fields.
+// Pointer fields distinguish "not configured" from an explicit zero value so
+// omitted override fields can inherit the provider's defaults.
+type ProviderNetworkConfigOverride struct {
+	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
+	DefaultRequestTimeoutInSeconds *int              `json:"default_request_timeout_in_seconds,omitempty"`
+	MaxRetries                     *int              `json:"max_retries,omitempty"`
+	RetryBackoffInitial            *time.Duration    `json:"retry_backoff_initial,omitempty"`
+	RetryBackoffMax                *time.Duration    `json:"retry_backoff_max,omitempty"`
+	StreamIdleTimeoutInSeconds     *int              `json:"stream_idle_timeout_in_seconds,omitempty"`
+}
+
+// ApplyProviderNetworkConfigOverride returns base with request-scoped overrides
+// applied. Omitted fields keep the provider's configured values.
+func ApplyProviderNetworkConfigOverride(base NetworkConfig, override *ProviderNetworkConfigOverride) NetworkConfig {
+	if override == nil {
+		return base
+	}
+	if override.ExtraHeaders != nil {
+		merged := maps.Clone(base.ExtraHeaders)
+		if merged == nil {
+			merged = map[string]string{}
+		}
+		maps.Copy(merged, override.ExtraHeaders)
+		base.ExtraHeaders = merged
+	}
+	if override.DefaultRequestTimeoutInSeconds != nil && *override.DefaultRequestTimeoutInSeconds > 0 {
+		base.DefaultRequestTimeoutInSeconds = *override.DefaultRequestTimeoutInSeconds
+	}
+	if override.MaxRetries != nil && *override.MaxRetries >= 0 {
+		base.MaxRetries = *override.MaxRetries
+	}
+	if override.RetryBackoffInitial != nil && *override.RetryBackoffInitial > 0 {
+		base.RetryBackoffInitial = *override.RetryBackoffInitial
+	}
+	if override.RetryBackoffMax != nil && *override.RetryBackoffMax > 0 {
+		base.RetryBackoffMax = *override.RetryBackoffMax
+	}
+	if override.StreamIdleTimeoutInSeconds != nil && *override.StreamIdleTimeoutInSeconds > 0 {
+		base.StreamIdleTimeoutInSeconds = *override.StreamIdleTimeoutInSeconds
+	}
+	return base
+}
+
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
 //
 // RetryBackoffInitial and RetryBackoffMax accept two formats:
@@ -258,8 +302,6 @@ type ProxyConfig struct {
 	Password  *EnvVar   `json:"password"`    // Password for proxy authentication (supports env.*)
 	CACertPEM *EnvVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
-
-
 
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
