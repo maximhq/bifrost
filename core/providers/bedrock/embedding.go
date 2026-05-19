@@ -193,7 +193,7 @@ func (r *BedrockCohereEmbeddingResponse) ToBifrostEmbeddingResponse() (*schemas.
 			Float   [][]float32 `json:"float"`
 			Base64  []string    `json:"base64"`
 			Int8    [][]int8    `json:"int8"`
-			Uint8   [][]int32   `json:"uint8"` // int32 avoids []byte→base64 JSON issue
+			Uint8   [][]int32   `json:"uint8"`  // int32 avoids []byte→base64 JSON issue
 			Binary  [][]int8    `json:"binary"`
 			Ubinary [][]int32   `json:"ubinary"` // int32 avoids []byte→base64 JSON issue
 		}
