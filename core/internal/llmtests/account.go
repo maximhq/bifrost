@@ -176,6 +176,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Perplexity,
 		schemas.Cerebras,
 		schemas.DeepSeek,
+		schemas.Cloudflare,
 		schemas.Gemini,
 		schemas.OpenRouter,
 		schemas.HuggingFace,
@@ -483,6 +484,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.WAFER_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Cloudflare:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.CLOUDFLARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -832,6 +842,25 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Wafer:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Cloudflare:
+		// Workers AI's OpenAI-compat URL embeds the account id, so the test
+		// account composes BaseURL from CLOUDFLARE_ACCOUNT_ID. The cloudflare
+		// provider constructor refuses to start with an empty BaseURL — when
+		// the env var is unset, NewCloudflareProvider returns an error and the
+		// gated TestCloudflare in cloudflare_test.go skips before reaching here.
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai/v1", os.Getenv("CLOUDFLARE_ACCOUNT_ID")),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
