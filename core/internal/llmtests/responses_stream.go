@@ -38,7 +38,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			Model:    testConfig.ChatModel,
 			Input:    messages,
 			Params: &schemas.ResponsesParameters{
-				MaxOutputTokens: bifrost.Ptr(150),
+				MaxOutputTokens: bifrost.Ptr(300),
 			},
 			Fallbacks: testConfig.Fallbacks,
 		}
@@ -362,7 +362,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    testConfig.ChatModel,
 				Input:    messages,
 				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(150),
+					MaxOutputTokens: bifrost.Ptr(300),
 					Tools:           []schemas.ResponsesTool{*tool},
 				},
 				Fallbacks: testConfig.Fallbacks,
@@ -689,7 +689,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			Model:    testConfig.ChatModel,
 			Input:    messages,
 			Params: &schemas.ResponsesParameters{
-				MaxOutputTokens: bifrost.Ptr(50),
+				MaxOutputTokens: bifrost.Ptr(500),
 			},
 			Fallbacks: testConfig.Fallbacks,
 		}
