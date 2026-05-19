@@ -1476,6 +1476,11 @@ type GeminiEmbeddingResponse struct {
 	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
 }
 
+// GeminiEmbedContentResponse is the wire format for a single :embedContent response.
+type GeminiEmbedContentResponse struct {
+	Embedding GeminiEmbedding `json:"embedding"`
+}
+
 // GeminiEmbedding represents a single embedding in the response
 type GeminiEmbedding struct {
 	Values     []float64                   `json:"values"`
