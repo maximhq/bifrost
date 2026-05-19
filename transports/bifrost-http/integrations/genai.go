@@ -232,6 +232,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return nil, errors.New("invalid batch create request type")
 		},
 		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+			if ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
+				return gemini.ToGeminiEmbedContentResponse(resp), nil
+			}
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
 		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
