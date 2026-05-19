@@ -2415,6 +2415,10 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
+	// Skip drain + ReleaseResponse if the stream was already closed (e.g. by SetupStreamCancellation); fasthttp.ReleaseResponse would re-Close and nil-deref the TCP conn — leaking to GC is the intentional trade-off, so keep the defer below this check.
+	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
@@ -2422,11 +2426,6 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		// Always release the response to prevent leaks, even after a panic
 		fasthttp.ReleaseResponse(resp)
 	}()
-	// First we will check if the connection is already closed
-	// In that case we won't drain the body stream, as it is already closed
-	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
-		return
-	}
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
@@ -2438,6 +2437,12 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			if err := closer.Close(); err != nil {
 				getLogger().Warn("failed to close streaming response body: %v", err)
 			}
+			ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+		} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+			if err := wce.CloseWithError(ctx.Err()); err != nil {
+				getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
+			}
+			ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 		}
 	}
 }
