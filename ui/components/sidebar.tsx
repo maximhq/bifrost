@@ -181,7 +181,7 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 
 const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
 
-const TIME_FILTER_PAGES = new Set([
+const TimeFilterPages = new Set([
   "/workspace/dashboard",
   "/workspace/logs",
   "/workspace/mcp-logs",
@@ -469,8 +469,8 @@ const SidebarItemView = ({
             const baseHref = getSidebarItemHref(subItem);
             const subItemHref = (() => {
               if (
-                TIME_FILTER_PAGES.has(subItem.url) &&
-                TIME_FILTER_PAGES.has(pathname)
+                TimeFilterPages.has(subItem.url) &&
+                TimeFilterPages.has(pathname)
               ) {
                 const currentParams = new URLSearchParams(search);
                 const startTime = currentParams.get("start_time");
