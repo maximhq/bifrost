@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -56,6 +57,67 @@ func TestDetermineEmbeddingModelType(t *testing.T) {
 			assert.Equal(t, tc.wantType, modelType)
 		})
 	}
+}
+
+func TestToBedrockTitanEmbeddingRequest_ImageOnly(t *testing.T) {
+	inputImage := "iVBORw0KGgoAAAANSUhEUgAA"
+
+	req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{},
+		Params: &schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{
+				"inputImage": inputImage,
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	assert.Equal(t, "", req.InputText)
+	require.NotNil(t, req.ExtraParams)
+	assert.Equal(t, inputImage, req.ExtraParams["inputImage"])
+
+	// Confirm the wire format does not include "inputText" (proving omitempty works)
+	wireBytes, marshalErr := json.Marshal(req)
+	require.NoError(t, marshalErr)
+	assert.NotContains(t, string(wireBytes), `"inputText"`)
+}
+
+func TestToBedrockTitanEmbeddingRequest_RejectsNoInput(t *testing.T) {
+	req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, req)
+	assert.Contains(t, err.Error(), "no input text or image provided")
+}
+
+func TestToBedrockTitanEmbeddingRequest_TextAndImage(t *testing.T) {
+	inputText := "multimodal query"
+	inputImage := "iVBORw0KGgoAAAANSUhEUgAA"
+
+	req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{
+			Text: &inputText,
+		},
+		Params: &schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{
+				"inputImage": inputImage,
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	assert.Equal(t, inputText, req.InputText)
+	require.NotNil(t, req.ExtraParams)
+	assert.Equal(t, inputImage, req.ExtraParams["inputImage"])
+
+	// Both text and image should appear in the wire format
+	wireBytes, marshalErr := json.Marshal(req)
+	require.NoError(t, marshalErr)
+	assert.Contains(t, string(wireBytes), `"inputText"`)
 }
 
 func TestToBedrockTitanEmbeddingRequestPreservesInputImageExtraParam(t *testing.T) {
