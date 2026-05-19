@@ -337,7 +337,7 @@ EXPECTED BEHAVIORS SUMMARY
    - Both fields are included in key hash for change detection
 
 5. PROVIDER-SPECIFIC CONFIGS:
-   - Azure: Endpoint, APIVersion, Deployments in AzureKeyConfig
+   - Azure: Endpoint, Deployments in AzureKeyConfig
    - Bedrock: Region, AuthCredentials, Deployments in BedrockKeyConfig
    - Vertex: ProjectID, Region, AuthCredentials, Deployments in VertexKeyConfig
    - All fields including Deployments maps affect key hash and must sync correctly
@@ -2494,7 +2494,6 @@ func TestGenerateKeyHash(t *testing.T) {
 	}
 
 	// AzureKeyConfig should produce different hash
-	apiVersion := "2024-10-21"
 	key6 := schemas.Key{
 		ID:     "key-1",
 		Name:   "test-key",
@@ -2502,8 +2501,7 @@ func TestGenerateKeyHash(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://my-azure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar(apiVersion),
+			Endpoint: *schemas.NewEnvVar("https://my-azure.openai.azure.com"),
 		},
 	}
 
@@ -2524,8 +2522,7 @@ func TestGenerateKeyHash(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Different endpoint
-			APIVersion: schemas.NewEnvVar(apiVersion),
+			Endpoint: *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Different endpoint
 		},
 	}
 
@@ -3190,8 +3187,7 @@ func TestKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		Value:  *schemas.NewEnvVar("sk-123"),
 		Weight: 1,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3497,8 +3493,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3512,8 +3507,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		// Models: nil (removed)
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3547,8 +3541,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.0, // Changed from 1.5
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3566,8 +3559,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4"}, // gpt-3.5-turbo removed
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -3585,8 +3577,7 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://different.openai.azure.com"), // Changed
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://different.openai.azure.com"), // Changed
 		},
 	}
 
@@ -3596,24 +3587,6 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 		t.Error("Expected different hash when Azure endpoint is changed")
 	}
 
-	// Azure APIVersion removed
-	keyNoAPIVersion := schemas.Key{
-		ID:     "key-1",
-		Name:   "test-key",
-		Value:  *schemas.NewEnvVar("sk-123"),
-		Models: []string{"gpt-4", "gpt-3.5-turbo"},
-		Weight: 1.5,
-		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			// APIVersion: nil (removed)
-		},
-	}
-
-	hashNoAPIVersion, _ := configstore.GenerateKeyHash(keyNoAPIVersion)
-
-	if originalHash == hashNoAPIVersion {
-		t.Error("Expected different hash when Azure APIVersion is removed")
-	}
 }
 
 // TestProviderHashComparison_PartialFieldChanges tests partial changes within nested structs
@@ -5006,8 +4979,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Weight:  1,
 			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -5018,8 +4990,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Weight:  1,
 			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -5041,8 +5012,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Weight:  1,
 			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -5053,8 +5023,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Weight:  1,
 			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Changed!
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
+				Endpoint: *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Changed!
 			},
 		}
 
@@ -5065,41 +5034,6 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			t.Error("Expected different hash when Azure endpoint changes")
 		}
 		t.Log("✓ Different Azure endpoint produces different hash - update triggered")
-	})
-
-	// === Scenario 3: Azure config in DB + different APIVersion in file -> hash differs ===
-	t.Run("DifferentAPIVersion_UpdateTriggered", func(t *testing.T) {
-		dbKey := schemas.Key{
-			ID:      "key-1",
-			Name:    "azure-key",
-			Value:   *schemas.NewEnvVar("azure-api-key-123"),
-			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
-			},
-		}
-
-		fileKey := schemas.Key{
-			ID:      "key-1",
-			Name:    "azure-key",
-			Value:   *schemas.NewEnvVar("azure-api-key-123"),
-			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-10-21"), // Changed!
-			},
-		}
-
-		dbHash, _ := configstore.GenerateKeyHash(dbKey)
-		fileHash, _ := configstore.GenerateKeyHash(fileKey)
-
-		if dbHash == fileHash {
-			t.Error("Expected different hash when Azure APIVersion changes")
-		}
-		t.Log("✓ Different Azure APIVersion produces different hash - update triggered")
 	})
 
 	// === Scenario 4: Azure config in DB + different Deployments map in file -> hash differs ===
@@ -5153,8 +5087,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -5176,8 +5109,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"),
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -5199,40 +5131,6 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 		t.Log("✓ Azure config removed produces different hash - update triggered")
 	})
 
-	// === Scenario 7: APIVersion nil vs set -> hash differs ===
-	t.Run("APIVersionNilVsSet_UpdateTriggered", func(t *testing.T) {
-		dbKey := schemas.Key{
-			ID:      "key-1",
-			Name:    "azure-key",
-			Value:   *schemas.NewEnvVar("azure-api-key-123"),
-			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				// APIVersion is nil (will use default)
-			},
-		}
-
-		fileKey := schemas.Key{
-			ID:      "key-1",
-			Name:    "azure-key",
-			Value:   *schemas.NewEnvVar("azure-api-key-123"),
-			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-02-01"), // Explicitly set
-			},
-		}
-
-		dbHash, _ := configstore.GenerateKeyHash(dbKey)
-		fileHash, _ := configstore.GenerateKeyHash(fileKey)
-
-		if dbHash == fileHash {
-			t.Error("Expected different hash when APIVersion goes from nil to set")
-		}
-		t.Log("✓ APIVersion nil vs set produces different hash - update triggered")
-	})
 }
 
 // TestKeyHashComparison_BedrockConfigSyncScenarios tests full lifecycle for Bedrock key configs
@@ -5616,8 +5514,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Weight:  1,
 		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -5651,8 +5548,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Weight:  1,
 		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar("2024-02-01"),
+			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
 	}
 
@@ -5684,8 +5580,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Weight:  1,
 				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
 			},
 		},
@@ -5721,8 +5616,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Weight:  1,
 				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
+					Endpoint: *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
 				},
 			},
 		},
@@ -5810,9 +5704,6 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 	if finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://new-azure.openai.azure.com" {
 		t.Errorf("Expected updated Azure endpoint, got %s", finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue())
-	}
-	if finalConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue() != "2024-10-21" {
-		t.Errorf("Expected updated APIVersion, got %s", finalConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue())
 	}
 	if len(finalConfig.Keys[0].Aliases) != 2 {
 		t.Errorf("Expected 2 deployments, got %d", len(finalConfig.Keys[0].Aliases))
@@ -6103,8 +5994,7 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 				Weight:  1,
 				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
 			},
 		},
@@ -6239,8 +6129,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Weight:  1,
 				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
 			},
 		},
@@ -6268,8 +6157,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Weight:  1,
 				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
-					APIVersion: schemas.NewEnvVar("2024-02-01"),                        // Same
+					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
 				},
 			},
 		},
@@ -6416,8 +6304,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Value:  *schemas.NewEnvVar("azure-api-key-123"),
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://old-azure.openai.azure.com"),
-					APIVersion: schemas.NewEnvVar("2024-02-01"),
+					Endpoint: *schemas.NewEnvVar("https://old-azure.openai.azure.com"),
 				},
 			},
 		},
@@ -6434,7 +6321,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 		"azure": dbConfig,
 	}
 
-	// File has CHANGED Azure config (new endpoint, new API version)
+	// File has CHANGED Azure config (new endpoint)
 	fileConfig := configstore.ProviderConfig{
 		Keys: []schemas.Key{
 			{
@@ -6444,8 +6331,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Weight:  1,
 				Aliases: schemas.KeyAliases{"gpt-4o": "gpt-4o-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
+					Endpoint: *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
 				},
 			},
 		},
@@ -6477,9 +6363,6 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	}
 	if updatedConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://NEW-azure.openai.azure.com" {
 		t.Errorf("Expected new Azure endpoint, got %v", updatedConfig.Keys[0].AzureKeyConfig.Endpoint)
-	}
-	if updatedConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue() != "2024-10-21" {
-		t.Errorf("Expected new API version, got %v", *updatedConfig.Keys[0].AzureKeyConfig.APIVersion)
 	}
 	if !updatedConfig.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be updated to true")
@@ -13763,10 +13646,8 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 
 	// Test case 2: AzureKeyConfig
 	t.Run("AzureKeyConfig_GORMRoundTrip", func(t *testing.T) {
-		apiVersion := "2024-02-01"
 		azureConfig := &schemas.AzureKeyConfig{
-			Endpoint:   *schemas.NewEnvVar("https://myresource.openai.azure.com"),
-			APIVersion: schemas.NewEnvVar(apiVersion),
+			Endpoint: *schemas.NewEnvVar("https://myresource.openai.azure.com"),
 		}
 
 		keyToSave := tables.TableKey{

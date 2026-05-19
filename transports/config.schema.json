@@ -2404,10 +2404,6 @@
                   "type": "string",
                   "description": "Azure endpoint (can use env. prefix)"
                 },
-                "api_version": {
-                  "type": "string",
-                  "description": "Azure API version"
-                },
                 "client_id": {
                   "type": "string",
                   "description": "Azure client ID for Entra authentication (can use env. prefix)"

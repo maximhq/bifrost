@@ -175,7 +175,6 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 
 	if key.AzureKeyConfig != nil {
 		dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-		dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 	}
 
 	if key.VertexKeyConfig != nil {
@@ -698,8 +697,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			// Handle Azure config
 			if key.AzureKeyConfig != nil {
 				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
-			}
+				}
 
 			// Handle Vertex config
 			if key.VertexKeyConfig != nil {
@@ -927,7 +925,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 		}
 
 		// Handle Vertex config
@@ -1066,7 +1063,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 		}
 		// Handle Vertex config
 		if key.VertexKeyConfig != nil {

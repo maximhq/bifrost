@@ -469,11 +469,6 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
 			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			if key.AzureKeyConfig.APIVersion != nil && key.AzureKeyConfig.APIVersion.IsFromEnv() {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion.Redacted()
-			} else {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
-			}
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
 			}
