@@ -50,6 +50,9 @@ type LogStore interface {
 	GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error)
 	// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
 	GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error)
+	// GetNodeUsageSince returns cumulative cost, successful request count, and token usage
+	// for a specific cluster node from a given timestamp onwards.
+	GetNodeUsageSince(ctx context.Context, nodeID string, since time.Time) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
 	Flush(ctx context.Context, since time.Time) error
