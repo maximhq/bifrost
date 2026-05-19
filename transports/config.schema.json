@@ -1715,10 +1715,40 @@
     },
     "access_profiles": {
       "$ref": "#/$defs/access_profiles"
+    },
+    "feature_flags": {
+      "$ref": "#/$defs/feature_flags_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "feature_flags_config": {
+      "type": "object",
+      "description": "Boot-time overrides for feature flags. Flags themselves are declared in code via featureflags.Register; this block only sets initial values. Anything set here is rendered as locked in the UI - operators must edit the config (or Helm values) to change it.",
+      "properties": {
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "description": "Boolean value or a string: either 'env.NAME' for env-var indirection, or a literal boolean (true / false / 1 / 0 / yes / no / on / off, case-insensitive).",
+                "oneOf": [
+                  { "type": "boolean" },
+                  {
+                    "type": "string",
+                    "pattern": "^(env\\.[A-Za-z_][A-Za-z0-9_]*|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[01]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff])$"
+                  }
+                ]
+              }
+            },
+            "required": ["enabled"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "routing_target": {
       "type": "object",
       "description": "A single weighted routing target within a rule. All fields except weight are optional; omitting provider or model means use the incoming request value. Weights across all targets in a rule must sum to 1.",

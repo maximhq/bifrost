@@ -429,6 +429,10 @@ func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *go
 	return fn(nil)
 }
 
+func (m *MockConfigStore) ScopedDB(ctx context.Context) *gorm.DB {
+	return m.DB()
+}
+
 func (m *MockConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
 	return nil, nil
 }
@@ -884,6 +888,15 @@ func (m *MockConfigStore) UpdateFrameworkConfig(ctx context.Context, config *tab
 
 func (m *MockConfigStore) GetFrameworkConfig(ctx context.Context) (*tables.TableFrameworkConfig, error) {
 	return m.frameworkConfig, nil
+}
+
+// Feature flags
+func (m *MockConfigStore) ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error {
+	return nil
 }
 
 // Vector store config
@@ -1363,7 +1376,7 @@ func (m *MockConfigStore) GetPromptByID(ctx context.Context, id string) (*tables
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
+func (m *MockConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt, tx ...*gorm.DB) error {
 	return nil
 }
 

@@ -1251,6 +1251,21 @@ false
 {{- $_ := set $config "websocket" $ws }}
 {{- end }}
 {{- end }}
+{{- if .Values.bifrost.featureFlags }}
+{{- $flags := dict }}
+{{- range $name, $cfg := .Values.bifrost.featureFlags }}
+{{- if not (kindIs "map" $cfg) }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s must be an object with an 'enabled' field." $name) }}
+{{- end }}
+{{- if not (hasKey $cfg "enabled") }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s.enabled is required." $name) }}
+{{- end }}
+{{- $_ := set $flags $name (dict "enabled" $cfg.enabled) }}
+{{- end }}
+{{- if $flags }}
+{{- $_ := set $config "feature_flags" (dict "flags" $flags) }}
+{{- end }}
+{{- end }}
 {{- $config | toJson }}
 {{- end }}
 
