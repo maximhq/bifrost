@@ -374,7 +374,7 @@ type ConfigStore interface {
 	// Prompt Repository - Prompts
 	GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error)
 	GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error)
-	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt, tx ...*gorm.DB) error
 	UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
 	DeletePrompt(ctx context.Context, id string) error
 
@@ -396,6 +396,12 @@ type ConfigStore interface {
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
+
+	// ScopedDB returns the underlying DB bound to ctx with any
+	// QueryScope on ctx pre-applied. Use this in read paths that
+	// should respect caller-driven row visibility; use DB().WithContext(ctx)
+	// for writes and internal lookups that must bypass scoping.
+	ScopedDB(ctx context.Context) *gorm.DB
 
 	// RunMigration opens a throwaway *gorm.DB against the same
 	// backing database, invokes fn with it, and closes the connection. Use
