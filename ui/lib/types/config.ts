@@ -463,6 +463,7 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	auth_token?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface CompatConfig {

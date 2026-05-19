@@ -755,6 +755,41 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
   if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddClientConfigMetadataColumn(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrationAddClientConfigMetadataColumn adds the metadata_json column to
+// config_client. The column stores a JSON blob of UI/admin preferences (e.g.
+// onboarding_dismissed) and is deliberately not part of the ClientConfig API
+// struct, so config.json sync cannot overwrite it.
+func migrationAddClientConfigMetadataColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_client_config_metadata_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "metadata_json") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "metadata_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableClientConfig{}, "metadata_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
 	return nil
 }
 

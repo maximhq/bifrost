@@ -93,6 +93,9 @@ type ConfigStore interface {
 	// Client config CRUD
 	UpdateClientConfig(ctx context.Context, config *ClientConfig) error
 	GetClientConfig(ctx context.Context) (*ClientConfig, error)
+	// Client config metadata (UI/admin preferences blob — bypasses config.json sync)
+	GetClientMetadata(ctx context.Context) (map[string]any, error)
+	UpdateClientMetadata(ctx context.Context, patch map[string]any) error
 
 	// Framework config CRUD
 	UpdateFrameworkConfig(ctx context.Context, config *tables.TableFrameworkConfig) error
