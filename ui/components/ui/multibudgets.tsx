@@ -6,6 +6,7 @@ import { Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 
 export interface BudgetLineEntry {
+	id?: string;
 	max_limit?: number;
 	reset_duration: string;
 }
@@ -97,7 +98,7 @@ export default function MultiBudgetLines({
 							<div className="flex-1">
 								<NumberAndSelect
 									id={`${testId}-${index}`}
-                                    dataTestId={`${testId}-amount-${index}`}
+									dataTestId={`${testId}-amount-${index}`}
 									labelClassName="font-normal"
 									label="Maximum Spend (USD)"
 									value={line.max_limit}

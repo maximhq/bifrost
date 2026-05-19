@@ -41,6 +41,7 @@ import {
 	useGetAllKeysQuery,
 	useGetMCPClientsQuery,
 	useGetProvidersQuery,
+	useRotateVirtualKeyMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
@@ -81,6 +82,7 @@ const providerConfigSchema = z.object({
 	budgets: z
 		.array(
 			z.object({
+				id: z.string().optional(),
 				max_limit: z.number().nonnegative().optional(),
 				reset_duration: z.string().optional(),
 			}),
@@ -120,6 +122,7 @@ const formSchema = z
 		budgets: z
 			.array(
 				z.object({
+					id: z.string().optional(),
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string(),
 				}),
@@ -155,6 +158,12 @@ const formSchema = z
 	);
 
 type FormData = z.infer<typeof formSchema>;
+type BudgetComparisonEntry = {
+	id?: string;
+	max_limit?: number;
+	reset_duration?: string;
+	current_usage?: number;
+};
 
 type VirtualKeyType = {
 	label: string;
@@ -163,7 +172,15 @@ type VirtualKeyType = {
 	provider: string;
 };
 
-export default function VirtualKeySheet({ virtualKey, teams, customers, defaultTeamId, defaultAccessProfileId, onSave, onCancel }: VirtualKeySheetProps) {
+export default function VirtualKeySheet({
+	virtualKey,
+	teams,
+	customers,
+	defaultTeamId,
+	defaultAccessProfileId,
+	onSave,
+	onCancel,
+}: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
@@ -195,11 +212,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const { data: keysData, error: keysError } = useGetAllKeysQuery();
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
+	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
 	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
 	const { data: accessProfilesData } = useGetAccessProfilesQuery({ limit: 100 });
 	const accessProfiles = accessProfilesData?.access_profiles ?? [];
 	const mcpClientsData = mcpClientsResponse?.clients || [];
-	const isLoading = isCreating || isUpdating;
+	const isLoading = isCreating || isUpdating || isRotating;
 
 	const availableKeys = keysData || [];
 	const availableProviders = providersData || [];
@@ -218,6 +236,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					allowed_models: config.allowed_models,
 					key_ids: config.allow_all_keys ? ["*"] : config.keys?.map((key) => key.key_id) || [],
 					budgets: config.budgets?.map((b) => ({
+						id: b.id,
 						max_limit: b.max_limit,
 						reset_duration: b.reset_duration,
 					})),
@@ -236,12 +255,17 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					mcp_client_name: config.mcp_client?.name || "",
 					tools_to_execute: config.tools_to_execute || [],
 				})) || [],
-			entityType: virtualKey?.team_id ? "team"
-				: virtualKey?.customer_id ? "customer"
-				: virtualKey?.access_profile_id ? "access_profile"
-				: !isEditing && defaultTeamId ? "team"
-				: !isEditing && defaultAccessProfileId ? "access_profile"
-				: "none",
+			entityType: virtualKey?.team_id
+				? "team"
+				: virtualKey?.customer_id
+					? "customer"
+					: virtualKey?.access_profile_id
+						? "access_profile"
+						: !isEditing && defaultTeamId
+							? "team"
+							: !isEditing && defaultAccessProfileId
+								? "access_profile"
+								: "none",
 			teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
 			customerId: virtualKey?.customer_id || "",
 			accessProfileId: virtualKey?.access_profile_id
@@ -252,7 +276,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 			isActive: virtualKey?.is_active ?? true,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
-					? virtualKey.budgets.map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration ?? "1M" }))
+					? virtualKey.budgets.map((b) => ({ id: b.id, max_limit: b.max_limit, reset_duration: b.reset_duration ?? "1M" }))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -330,7 +354,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 		watchedBudgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration || "1M"));
 	const hasAnyAlignableRateLimit =
 		(watchedTokenMaxLimit !== undefined && watchedTokenMaxLimit !== null && supportsCalendarAlignment(watchedTokenResetDuration || "1h")) ||
-		(watchedRequestMaxLimit !== undefined && watchedRequestMaxLimit !== null && supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
+		(watchedRequestMaxLimit !== undefined &&
+			watchedRequestMaxLimit !== null &&
+			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
 	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
 
 	// Handle adding a new provider configuration
@@ -400,6 +426,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const [pendingAccessProfileId, setPendingAccessProfileId] = useState<string | null>(null);
 	const [showReassignTypeWarning, setShowReassignTypeWarning] = useState(false);
 	const [pendingEntityType, setPendingEntityType] = useState<"team" | "customer" | "access_profile" | "none" | null>(null);
+	const [showRotateWarning, setShowRotateWarning] = useState(false);
+	const [showBudgetResetPrompt, setShowBudgetResetPrompt] = useState(false);
+	const [pendingBudgetResetData, setPendingBudgetResetData] = useState<FormData | null>(null);
+	const [pendingBudgetUsageWarning, setPendingBudgetUsageWarning] = useState<string | null>(null);
 
 	const currentAssignmentLabel = useMemo(() => {
 		if (!isEditing) return null;
@@ -442,7 +472,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const normalizeProviderConfigs = (configs: typeof providerConfigs, existingConfigs?: VirtualKey["provider_configs"]): any[] => {
 		return configs.map((config) => ({
 			...config,
-			budgets: config.budgets?.filter((b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined),
+			budgets: config.budgets?.filter((b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined),
 			weight: config.weight ?? null,
 			rate_limit: (() => {
 				const hasTokenMaxLimit = config.rate_limit?.token_max_limit !== undefined;
@@ -466,8 +496,171 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 		}));
 	};
 
-	// Handle form submission
-	const onSubmit = async (data: FormData) => {
+	const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
+		(budgets || [])
+			.filter((budget) => budget.max_limit !== undefined)
+			.map((budget) => `${budget.id ?? ""}:${budget.max_limit}:${budget.reset_duration ?? ""}`)
+			.sort()
+			.join("|");
+
+	const parseResetDurationMs = (duration?: string) => {
+		if (!duration) return null;
+		const match = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d|w|M|Y)$/);
+		if (!match) return null;
+		const amount = Number(match[1]);
+		const unit = match[2];
+		const multipliers: Record<string, number> = {
+			ms: 1,
+			s: 1000,
+			m: 60 * 1000,
+			h: 60 * 60 * 1000,
+			d: 24 * 60 * 60 * 1000,
+			w: 7 * 24 * 60 * 60 * 1000,
+			M: 30 * 24 * 60 * 60 * 1000,
+			Y: 365 * 24 * 60 * 60 * 1000,
+		};
+		return amount * multipliers[unit];
+	};
+
+	const formatBudgetAmount = (value: number) =>
+		new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
+
+	const findBudgetUsageWarning = (
+		currentBudgets: BudgetComparisonEntry[] | undefined,
+		existingBudgets: BudgetComparisonEntry[] | undefined,
+		scopeLabel: string,
+	) => {
+		const current = (currentBudgets || [])
+			.filter((budget): budget is BudgetComparisonEntry & { max_limit: number; reset_duration: string } => {
+				return budget.max_limit !== undefined && !!budget.reset_duration;
+			})
+			.sort((left, right) => (parseResetDurationMs(left.reset_duration) ?? 0) - (parseResetDurationMs(right.reset_duration) ?? 0));
+		const existingByID = new Map((existingBudgets || []).filter((budget) => budget.id).map((budget) => [budget.id, budget]));
+		const existingByDuration = new Map((existingBudgets || []).map((budget) => [budget.reset_duration, budget]));
+		const reconciled: BudgetComparisonEntry[] = [];
+
+		for (const budget of current) {
+			const existing = budget.id ? existingByID.get(budget.id) : existingByDuration.get(budget.reset_duration);
+			if (existing) {
+				const configChanged = existing.max_limit !== budget.max_limit || existing.reset_duration !== budget.reset_duration;
+				const usage = existing.current_usage ?? 0;
+				if (configChanged && usage >= budget.max_limit) {
+					return `${scopeLabel} ${budget.reset_duration} budget has ${formatBudgetAmount(usage)} usage, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+				}
+				reconciled.push({ ...budget, current_usage: usage });
+				continue;
+			}
+
+			const targetDuration = parseResetDurationMs(budget.reset_duration);
+			const closestShorter = reconciled.reduce<BudgetComparisonEntry | null>((closest, candidate) => {
+				const candidateDuration = parseResetDurationMs(candidate.reset_duration);
+				const closestDuration = parseResetDurationMs(closest?.reset_duration);
+				if (targetDuration === null || candidateDuration === null || candidateDuration >= targetDuration) {
+					return closest;
+				}
+				if (closest === null || closestDuration === null || candidateDuration > closestDuration) {
+					return candidate;
+				}
+				return closest;
+			}, null);
+			const inheritedUsage = closestShorter?.current_usage ?? 0;
+			if (inheritedUsage >= budget.max_limit) {
+				return `${scopeLabel} ${budget.reset_duration} budget will inherit ${formatBudgetAmount(inheritedUsage)} from the ${closestShorter?.reset_duration} budget, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+			}
+			reconciled.push({ ...budget, current_usage: inheritedUsage });
+		}
+
+		return null;
+	};
+
+	const getBudgetUsageWarning = (data: FormData) => {
+		if (!isEditing || !virtualKey || isManagedByProfile) {
+			return null;
+		}
+
+		const vkWarning = findBudgetUsageWarning(data.budgets, virtualKey.budgets, "Virtual key");
+		if (vkWarning) {
+			return vkWarning;
+		}
+
+		const existingProviderConfigs = new Map<string, NonNullable<VirtualKey["provider_configs"]>[number]>();
+		(virtualKey.provider_configs || []).forEach((config) => {
+			existingProviderConfigs.set(String(config.id ?? config.provider), config);
+		});
+		for (const config of data.providerConfigs || []) {
+			const existingConfig = existingProviderConfigs.get(String(config.id ?? config.provider));
+			const providerLabel = ProviderLabels[config.provider as ProviderName] ?? config.provider;
+			const warning = findBudgetUsageWarning(config.budgets, existingConfig?.budgets, `${providerLabel} provider`);
+			if (warning) {
+				return warning;
+			}
+		}
+
+		return null;
+	};
+
+	const hasBudgetResetRelevantChanges = (data: FormData) => {
+		if (!isEditing || !virtualKey || isManagedByProfile) {
+			return false;
+		}
+
+		const currentBudgets = (data.budgets || []).filter(
+			(budget): budget is { id?: string; max_limit: number; reset_duration: string } => budget.max_limit !== undefined,
+		);
+		const existingBudgets = virtualKey.budgets || [];
+		const hasBudgetFields =
+			currentBudgets.length > 0 ||
+			existingBudgets.length > 0 ||
+			(data.providerConfigs || []).some((config) => (config.budgets || []).some((budget) => budget.max_limit !== undefined)) ||
+			(virtualKey.provider_configs || []).some((config) => (config.budgets || []).length > 0);
+
+		if (budgetSignature(currentBudgets) !== budgetSignature(existingBudgets)) {
+			return true;
+		}
+
+		if (hasBudgetFields && data.budgetCalendarAligned !== (virtualKey.calendar_aligned ?? false)) {
+			return true;
+		}
+
+		const existingProviderConfigs = new Map<string, NonNullable<VirtualKey["provider_configs"]>[number]>();
+		(virtualKey.provider_configs || []).forEach((config) => {
+			existingProviderConfigs.set(String(config.id ?? config.provider), config);
+		});
+
+		const currentProviderConfigs = new Map<string, NonNullable<FormData["providerConfigs"]>[number]>();
+		(data.providerConfigs || []).forEach((config) => {
+			currentProviderConfigs.set(String(config.id ?? config.provider), config);
+		});
+
+		const providerConfigKeys = new Set([...existingProviderConfigs.keys(), ...currentProviderConfigs.keys()]);
+		for (const key of providerConfigKeys) {
+			const currentSignature = budgetSignature(currentProviderConfigs.get(key)?.budgets);
+			const existingSignature = budgetSignature(existingProviderConfigs.get(key)?.budgets);
+			if (currentSignature !== existingSignature) {
+				return true;
+			}
+		}
+
+		return false;
+	};
+
+	const handleRotateVirtualKey = async () => {
+		if (!virtualKey) return;
+		if (!hasUpdateAccess) {
+			toast.error("You don't have permission to perform this action");
+			return;
+		}
+		try {
+			await rotateVirtualKey(virtualKey.id).unwrap();
+			toast.success("Virtual key rotated successfully");
+			setShowRotateWarning(false);
+			onSave();
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
+	const submitVirtualKeyForm = async (data: FormData, resetBudgetUsage = false) => {
 		if (!canSubmit) {
 			toast.error("You don't have permission to perform this action");
 			return;
@@ -500,14 +693,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					mcp_configs: data.mcpConfigs,
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
 					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
-					access_profile_id: data.entityType === "access_profile" && data.accessProfileId && data.accessProfileId.trim() !== "" ? Number(data.accessProfileId) : undefined,
+					access_profile_id:
+						data.entityType === "access_profile" && data.accessProfileId && data.accessProfileId.trim() !== ""
+							? Number(data.accessProfileId)
+							: undefined,
 					is_active: data.isActive,
 					calendar_aligned: data.budgetCalendarAligned,
+					reset_budget_usage: resetBudgetUsage,
 				};
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
 				);
 				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
 				if (validBudgets.length > 0) {
@@ -543,7 +740,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					mcp_configs: data.mcpConfigs,
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
 					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
-					access_profile_id: data.entityType === "access_profile" && data.accessProfileId && data.accessProfileId.trim() !== "" ? Number(data.accessProfileId) : undefined,
+					access_profile_id:
+						data.entityType === "access_profile" && data.accessProfileId && data.accessProfileId.trim() !== ""
+							? Number(data.accessProfileId)
+							: undefined,
 					is_active: data.isActive,
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
@@ -551,7 +751,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
 				);
 				if (validBudgets.length > 0) {
 					createData.budgets = validBudgets;
@@ -577,6 +777,27 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
+	};
+
+	// Handle form submission
+	const onSubmit = async (data: FormData) => {
+		if (hasBudgetResetRelevantChanges(data)) {
+			setPendingBudgetResetData(data);
+			setPendingBudgetUsageWarning(getBudgetUsageWarning(data));
+			setShowBudgetResetPrompt(true);
+			return;
+		}
+
+		await submitVirtualKeyForm(data, false);
+	};
+
+	const handleBudgetResetChoice = async (resetBudgetUsage: boolean) => {
+		if (!pendingBudgetResetData) return;
+		const data = pendingBudgetResetData;
+		setPendingBudgetResetData(null);
+		setPendingBudgetUsageWarning(null);
+		setShowBudgetResetPrompt(false);
+		await submitVirtualKeyForm(data, resetBudgetUsage);
 	};
 
 	return (
@@ -1011,6 +1232,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																	lines={
 																		config.budgets && config.budgets.length > 0
 																			? config.budgets.map((b) => ({
+																					id: b.id,
 																					max_limit: b.max_limit,
 																					reset_duration: b.reset_duration || "1M",
 																				}))
@@ -1021,6 +1243,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																		updatedConfigs[index] = {
 																			...updatedConfigs[index],
 																			budgets: lines.map((l) => ({
+																				id: l.id,
 																				max_limit: l.max_limit,
 																				reset_duration: l.reset_duration,
 																			})),
@@ -1339,98 +1562,102 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										</AlertDialogContent>
 									</AlertDialog>
 
-								<AlertDialog
-									open={showReassignAPWarning}
-									onOpenChange={(open) => {
-										setShowReassignAPWarning(open);
-										if (!open) {
-											setPendingAccessProfileId(null);
-										}
-									}}
-								>
-									<AlertDialogContent>
-										<AlertDialogHeader>
-											<AlertDialogTitle>Reassign to a different access profile?</AlertDialogTitle>
-											<AlertDialogDescription>
-												This key is currently assigned to another access profile. Reassigning it will move budget tracking to this access profile — future requests through this key will count against this profile's budget, not the previous one.
-											</AlertDialogDescription>
-										</AlertDialogHeader>
-										<AlertDialogFooter>
-											<AlertDialogCancel data-testid="reassign-ap-cancel" onClick={() => setPendingAccessProfileId(null)}>
-												Cancel
-											</AlertDialogCancel>
-											<AlertDialogAction
-												data-testid="reassign-ap-confirm"
-												onClick={() => {
-													if (pendingAccessProfileId !== null) {
-														form.setValue("accessProfileId", pendingAccessProfileId, { shouldDirty: true });
-													}
-													setPendingAccessProfileId(null);
-													setShowReassignAPWarning(false);
-												}}
-											>
-												Reassign
-											</AlertDialogAction>
-										</AlertDialogFooter>
-									</AlertDialogContent>
-								</AlertDialog>
-
-								{/* Cross-type assignment warning */}
-								<AlertDialog
-									open={showReassignTypeWarning}
-									onOpenChange={(open) => {
-										if (!open) setPendingEntityType(null);
-										setShowReassignTypeWarning(open);
-									}}
-								>
-									<AlertDialogContent>
-										<AlertDialogHeader>
-											<AlertDialogTitle>Change assignment?</AlertDialogTitle>
-											<AlertDialogDescription>
-												This key is currently assigned to {currentAssignmentLabel}. Changing the assignment type will move budget
-												tracking — future requests will count against the new entity, not the previous one.
-											</AlertDialogDescription>
-										</AlertDialogHeader>
-										<AlertDialogFooter>
-											<AlertDialogCancel data-testid="reassign-type-cancel" onClick={() => setPendingEntityType(null)}>
-												Cancel
-											</AlertDialogCancel>
-											<AlertDialogAction
-												data-testid="reassign-type-confirm"
-												onClick={async () => {
-													if (pendingEntityType) {
-														form.setValue("entityType", pendingEntityType, { shouldDirty: true });
-														if (pendingEntityType === "team" && teams?.length > 0) {
-															form.setValue("teamId", teams[0].id, { shouldDirty: true, shouldValidate: true });
-															form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-															form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
-														} else if (pendingEntityType === "customer" && customers?.length > 0) {
-															form.setValue("customerId", customers[0].id, { shouldDirty: true, shouldValidate: true });
-															form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
-															form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
-														} else if (pendingEntityType === "access_profile") {
-															const apId = accessProfiles?.length > 0
-																? String(accessProfiles[0].id)
-																: virtualKey?.access_profile_id ? String(virtualKey.access_profile_id) : "";
-															form.setValue("accessProfileId", apId, { shouldDirty: true, shouldValidate: true });
-															form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
-															form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-														} else {
-															form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
-															form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-															form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+									<AlertDialog
+										open={showReassignAPWarning}
+										onOpenChange={(open) => {
+											setShowReassignAPWarning(open);
+											if (!open) {
+												setPendingAccessProfileId(null);
+											}
+										}}
+									>
+										<AlertDialogContent>
+											<AlertDialogHeader>
+												<AlertDialogTitle>Reassign to a different access profile?</AlertDialogTitle>
+												<AlertDialogDescription>
+													This key is currently assigned to another access profile. Reassigning it will move budget tracking to this access
+													profile — future requests through this key will count against this profile's budget, not the previous one.
+												</AlertDialogDescription>
+											</AlertDialogHeader>
+											<AlertDialogFooter>
+												<AlertDialogCancel data-testid="reassign-ap-cancel" onClick={() => setPendingAccessProfileId(null)}>
+													Cancel
+												</AlertDialogCancel>
+												<AlertDialogAction
+													data-testid="reassign-ap-confirm"
+													onClick={() => {
+														if (pendingAccessProfileId !== null) {
+															form.setValue("accessProfileId", pendingAccessProfileId, { shouldDirty: true });
 														}
-														await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
-													}
-													setPendingEntityType(null);
-													setShowReassignTypeWarning(false);
-												}}
-											>
-												Change Assignment
-											</AlertDialogAction>
-										</AlertDialogFooter>
-									</AlertDialogContent>
-								</AlertDialog>
+														setPendingAccessProfileId(null);
+														setShowReassignAPWarning(false);
+													}}
+												>
+													Reassign
+												</AlertDialogAction>
+											</AlertDialogFooter>
+										</AlertDialogContent>
+									</AlertDialog>
+
+									{/* Cross-type assignment warning */}
+									<AlertDialog
+										open={showReassignTypeWarning}
+										onOpenChange={(open) => {
+											if (!open) setPendingEntityType(null);
+											setShowReassignTypeWarning(open);
+										}}
+									>
+										<AlertDialogContent>
+											<AlertDialogHeader>
+												<AlertDialogTitle>Change assignment?</AlertDialogTitle>
+												<AlertDialogDescription>
+													This key is currently assigned to {currentAssignmentLabel}. Changing the assignment type will move budget tracking
+													— future requests will count against the new entity, not the previous one.
+												</AlertDialogDescription>
+											</AlertDialogHeader>
+											<AlertDialogFooter>
+												<AlertDialogCancel data-testid="reassign-type-cancel" onClick={() => setPendingEntityType(null)}>
+													Cancel
+												</AlertDialogCancel>
+												<AlertDialogAction
+													data-testid="reassign-type-confirm"
+													onClick={async () => {
+														if (pendingEntityType) {
+															form.setValue("entityType", pendingEntityType, { shouldDirty: true });
+															if (pendingEntityType === "team" && teams?.length > 0) {
+																form.setValue("teamId", teams[0].id, { shouldDirty: true, shouldValidate: true });
+																form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
+																form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+															} else if (pendingEntityType === "customer" && customers?.length > 0) {
+																form.setValue("customerId", customers[0].id, { shouldDirty: true, shouldValidate: true });
+																form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
+																form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+															} else if (pendingEntityType === "access_profile") {
+																const apId =
+																	accessProfiles?.length > 0
+																		? String(accessProfiles[0].id)
+																		: virtualKey?.access_profile_id
+																			? String(virtualKey.access_profile_id)
+																			: "";
+																form.setValue("accessProfileId", apId, { shouldDirty: true, shouldValidate: true });
+																form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
+																form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
+															} else {
+																form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
+																form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
+																form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+															}
+															await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
+														}
+														setPendingEntityType(null);
+														setShowReassignTypeWarning(false);
+													}}
+												>
+													Change Assignment
+												</AlertDialogAction>
+											</AlertDialogFooter>
+										</AlertDialogContent>
+									</AlertDialog>
 								</div>
 								{/* Rate Limiting Configuration */}
 								<div className="space-y-4">
@@ -1502,8 +1729,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 												Align to calendar cycle
 											</Label>
 											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
-												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
-												date. Applies to durations of a day or longer.
+												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+												Applies to durations of a day or longer.
 											</p>
 										</div>
 										<Switch
@@ -1524,8 +1751,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 											<AlertDialogDescription>
 												Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
 												token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
-												reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot
-												be undone, but calendar alignment can be turned off later. This will take effect when you save.
+												reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
+												undone, but calendar alignment can be turned off later. This will take effect when you save.
 											</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
@@ -1542,7 +1769,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										</AlertDialogFooter>
 									</AlertDialogContent>
 								</AlertDialog>
-								{(teams?.length > 0 || customers?.length > 0 || accessProfiles?.length > 0 || !!virtualKey?.access_profile_id || !!defaultAccessProfileId) && (
+								{(teams?.length > 0 ||
+									customers?.length > 0 ||
+									accessProfiles?.length > 0 ||
+									!!virtualKey?.access_profile_id ||
+									!!defaultAccessProfileId) && (
 									<>
 										<DottedSeparator className="my-6" />
 
@@ -1562,15 +1793,20 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																	{ value: "none", label: "No Assignment" },
 																	...(teams?.length > 0 ? [{ value: "team", label: "Assign to Team" }] : []),
 																	...(customers?.length > 0 ? [{ value: "customer", label: "Assign to Customer" }] : []),
-																	...(accessProfiles?.length > 0 || virtualKey?.access_profile_id || defaultAccessProfileId ? [{ value: "access_profile", label: "Assign to Access Profile" }] : []),
+																	...(accessProfiles?.length > 0 || virtualKey?.access_profile_id || defaultAccessProfileId
+																		? [{ value: "access_profile", label: "Assign to Access Profile" }]
+																		: []),
 																]}
 																value={field.value}
 																onValueChange={async (value) => {
 																	const val = value ?? "none";
-																	const originalType = virtualKey?.team_id ? "team"
-																		: virtualKey?.customer_id ? "customer"
-																		: virtualKey?.access_profile_id ? "access_profile"
-																		: "none";
+																	const originalType = virtualKey?.team_id
+																		? "team"
+																		: virtualKey?.customer_id
+																			? "customer"
+																			: virtualKey?.access_profile_id
+																				? "access_profile"
+																				: "none";
 																	if (isEditing && currentAssignmentLabel && val !== "none" && val !== originalType) {
 																		setPendingEntityType(val as "team" | "customer" | "access_profile");
 																		setShowReassignTypeWarning(true);
@@ -1588,9 +1824,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																		form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
 																		await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
 																	} else if (val === "access_profile") {
-																		const apId = accessProfiles?.length > 0
-																			? String(accessProfiles[0].id)
-																			: virtualKey?.access_profile_id ? String(virtualKey.access_profile_id) : "";
+																		const apId =
+																			accessProfiles?.length > 0
+																				? String(accessProfiles[0].id)
+																				: virtualKey?.access_profile_id
+																					? String(virtualKey.access_profile_id)
+																					: "";
 																		form.setValue("accessProfileId", apId, { shouldDirty: true, shouldValidate: true });
 																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
 																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
@@ -1668,42 +1907,85 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 													/>
 												)}
 
-											{form.watch("entityType") === "access_profile" && (accessProfiles?.length > 0 || virtualKey?.access_profile_id || defaultAccessProfileId) && (
-												<FormField
-													control={form.control}
-													name="accessProfileId"
-													render={({ field }) => (
-														<FormItem>
-															<FormLabel className="font-normal">Select Access Profile</FormLabel>
-															<ComboboxSelect
-																data-testid="access-profile-selector"
-																options={accessProfiles.map((ap) => ({ value: String(ap.id), label: ap.name }))}
-																value={field.value || null}
-																onValueChange={(val) => {
-																	const newVal = val ?? "";
-																	if (isEditing && virtualKey?.access_profile_id && newVal && newVal !== String(virtualKey.access_profile_id)) {
-																		setPendingAccessProfileId(newVal);
-																		setShowReassignAPWarning(true);
-																	} else {
-																		field.onChange(newVal);
-																	}
-																}}
-																placeholder="Select an access profile"
-																disabled={isAPLocked}
-																emptyMessage="No access profiles found."
-																className="h-9"
-															/>
-															<FormMessage />
-														</FormItem>
+												{form.watch("entityType") === "access_profile" &&
+													(accessProfiles?.length > 0 || virtualKey?.access_profile_id || defaultAccessProfileId) && (
+														<FormField
+															control={form.control}
+															name="accessProfileId"
+															render={({ field }) => (
+																<FormItem>
+																	<FormLabel className="font-normal">Select Access Profile</FormLabel>
+																	<ComboboxSelect
+																		data-testid="access-profile-selector"
+																		options={accessProfiles.map((ap) => ({ value: String(ap.id), label: ap.name }))}
+																		value={field.value || null}
+																		onValueChange={(val) => {
+																			const newVal = val ?? "";
+																			if (
+																				isEditing &&
+																				virtualKey?.access_profile_id &&
+																				newVal &&
+																				newVal !== String(virtualKey.access_profile_id)
+																			) {
+																				setPendingAccessProfileId(newVal);
+																				setShowReassignAPWarning(true);
+																			} else {
+																				field.onChange(newVal);
+																			}
+																		}}
+																		placeholder="Select an access profile"
+																		disabled={isAPLocked}
+																		emptyMessage="No access profiles found."
+																		className="h-9"
+																	/>
+																	<FormMessage />
+																</FormItem>
+															)}
+														/>
 													)}
-												/>
-											)}
 											</div>
 										</div>
 									</>
 								)}
 							</fieldset>
 						</div>
+						<AlertDialog open={showRotateWarning} onOpenChange={setShowRotateWarning}>
+							<AlertDialogContent>
+								<AlertDialogHeader>
+									<AlertDialogTitle>Rotate virtual key?</AlertDialogTitle>
+									<AlertDialogDescription>
+										This will replace the secret value for &quot;{virtualKey?.name}&quot;. The key ID, budgets, rate limits, provider
+										permissions, MCP access, and assignments stay the same. The previous key value will stop working immediately.
+									</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel data-testid="vk-rotate-cancel-btn">Cancel</AlertDialogCancel>
+									<AlertDialogAction onClick={handleRotateVirtualKey} disabled={isRotating} data-testid="vk-rotate-confirm-btn">
+										{isRotating ? "Rotating..." : "Rotate Key"}
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
+						<AlertDialog open={showBudgetResetPrompt} onOpenChange={setShowBudgetResetPrompt}>
+							<AlertDialogContent data-testid="vk-budget-reset-dialog">
+								<AlertDialogHeader>
+									<AlertDialogTitle>{pendingBudgetUsageWarning ? "Preserve over-limit usage?" : "Reset budget usage?"}</AlertDialogTitle>
+									<AlertDialogDescription>
+										{pendingBudgetUsageWarning
+											? `${pendingBudgetUsageWarning} You can preserve usage anyway, or reset usage to 0.`
+											: "You changed a budget amount, reset frequency, or calendar alignment. Reset current budget usage to 0, or preserve the existing usage counters."}
+									</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel onClick={() => handleBudgetResetChoice(false)} data-testid="vk-budget-reset-preserve-btn">
+										{pendingBudgetUsageWarning ? "Preserve Anyway" : "Preserve Usage"}
+									</AlertDialogCancel>
+									<AlertDialogAction onClick={() => handleBudgetResetChoice(true)} data-testid="vk-budget-reset-confirm-btn">
+										Reset Usage
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
 						{isEditing && virtualKey?.config_hash && (
 							<div className="px-8">
 								<ConfigSyncAlert className="mt-2" />
@@ -1711,34 +1993,50 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 						)}
 						{/* Form Footer */}
 						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
-							<div className="flex justify-end gap-2">
-								<Button type="button" variant="outline" onClick={handleClose} data-testid="vk-cancel-btn">
-									Cancel
-								</Button>
-								<TooltipProvider>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span className="inline-block">
-												<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
-													{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
-												</Button>
-											</span>
-										</TooltipTrigger>
-										{(isLoading || !form.formState.isDirty || !canSubmit) && (
-											<TooltipContent>
-												<p>
-													{!canSubmit
-														? "You don't have permission to perform this action"
-														: isLoading
-															? "Saving..."
-															: !form.formState.isDirty
-																? "No changes made"
-																: ""}
-												</p>
-											</TooltipContent>
-										)}
-									</Tooltip>
-								</TooltipProvider>
+							<div className="flex items-center justify-between gap-2">
+								{isEditing ? (
+									<Button
+										type="button"
+										variant="outline"
+										onClick={() => setShowRotateWarning(true)}
+										disabled={!hasUpdateAccess || isRotating}
+										data-testid="vk-rotate-btn"
+									>
+										<RotateCcw className="h-4 w-4" />
+										{isRotating ? "Rotating..." : "Rotate Key"}
+									</Button>
+								) : (
+									<span />
+								)}
+								<div className="flex justify-end gap-2">
+									<Button type="button" variant="outline" onClick={handleClose} data-testid="vk-cancel-btn">
+										Cancel
+									</Button>
+									<TooltipProvider>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<span className="inline-block">
+													<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
+														{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+													</Button>
+												</span>
+											</TooltipTrigger>
+											{(isLoading || !form.formState.isDirty || !canSubmit) && (
+												<TooltipContent>
+													<p>
+														{!canSubmit
+															? "You don't have permission to perform this action"
+															: isLoading
+																? "Saving..."
+																: !form.formState.isDirty
+																	? "No changes made"
+																	: ""}
+													</p>
+												</TooltipContent>
+											)}
+										</Tooltip>
+									</TooltipProvider>
+								</div>
 							</div>
 						</div>
 					</form>

@@ -177,6 +177,17 @@ export interface UpdateVirtualKeyRequest {
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	reset_budget_usage?: boolean;
+}
+
+export interface BulkRotateVirtualKeysRequest {
+	ids: string[];
+}
+
+export interface BulkRotateVirtualKeysResponse {
+	message: string;
+	virtual_keys: VirtualKey[];
+	errors?: Record<string, string>;
 }
 
 export interface CreateTeamRequest {
@@ -208,6 +219,7 @@ export interface UpdateCustomerRequest {
 }
 
 export interface CreateBudgetRequest {
+	id?: string;
 	max_limit: number; // In dollars
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 }

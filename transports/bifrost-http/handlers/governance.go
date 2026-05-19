@@ -118,13 +118,14 @@ type UpdateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
-	TeamID          *string                 `json:"team_id,omitempty"`
-	CustomerID      *string                 `json:"customer_id,omitempty"`
-	AccessProfileID *uint                   `json:"access_profile_id,omitempty"`
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
-	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	TeamID           *string                 `json:"team_id,omitempty"`
+	CustomerID       *string                 `json:"customer_id,omitempty"`
+	AccessProfileID  *uint                   `json:"access_profile_id,omitempty"`
+	Budgets          []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
+	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	IsActive         *bool                   `json:"is_active,omitempty"`
+	CalendarAligned  *bool                   `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ResetBudgetUsage *bool                   `json:"reset_budget_usage,omitempty"`
 }
 
 type BulkRotateVirtualKeysRequest struct {
@@ -133,6 +134,7 @@ type BulkRotateVirtualKeysRequest struct {
 
 // CreateBudgetRequest represents the request body for creating a budget
 type CreateBudgetRequest struct {
+	ID            string  `json:"id,omitempty"`
 	MaxLimit      float64 `json:"max_limit" validate:"required"`      // Maximum budget in dollars
 	ResetDuration string  `json:"reset_duration" validate:"required"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 }
@@ -211,6 +213,99 @@ func budgetLastReset(calendarAligned bool, resetDuration string) time.Time {
 		return configstoreTables.GetCalendarPeriodStart(resetDuration, time.Now())
 	}
 	return time.Now()
+}
+
+func resetBudgetUsageIfRequested(budget *configstoreTables.TableBudget, reset bool, calendarAligned bool) {
+	if !reset {
+		return
+	}
+	budget.CurrentUsage = 0
+	budget.LastReset = budgetLastReset(calendarAligned, budget.ResetDuration)
+}
+
+func compareBudgetRequestDurations(left, right CreateBudgetRequest) bool {
+	leftDuration, leftErr := configstoreTables.ParseDuration(left.ResetDuration)
+	rightDuration, rightErr := configstoreTables.ParseDuration(right.ResetDuration)
+	if leftErr == nil && rightErr == nil && leftDuration != rightDuration {
+		return leftDuration < rightDuration
+	}
+	return left.ResetDuration < right.ResetDuration
+}
+
+func inheritUsageFromClosestShorterBudget(budget *configstoreTables.TableBudget, existing []configstoreTables.TableBudget, reset bool) {
+	if reset {
+		return
+	}
+	targetDuration, err := configstoreTables.ParseDuration(budget.ResetDuration)
+	if err != nil {
+		return
+	}
+
+	var closest *configstoreTables.TableBudget
+	var closestDuration time.Duration
+	for i := range existing {
+		candidate := &existing[i]
+		candidateDuration, err := configstoreTables.ParseDuration(candidate.ResetDuration)
+		if err != nil || candidateDuration >= targetDuration {
+			continue
+		}
+		if closest == nil || candidateDuration > closestDuration {
+			closest = candidate
+			closestDuration = candidateDuration
+		}
+	}
+	if closest == nil {
+		return
+	}
+	budget.CurrentUsage = closest.CurrentUsage
+}
+
+// buildBudgetLookup builds ID- and duration-keyed maps of existing budgets for
+// the reconciliation pass. Rows whose ID is explicitly claimed by an
+// ID-specified entry in requests are omitted from byDuration so a
+// duration-only entry that sorts earlier cannot steal the row reserved for an
+// ID-based rename (e.g. payload [{new 1d}, {ID:X→1w}] against existing
+// {ID:X, "1d"}).
+func buildBudgetLookup(existing []configstoreTables.TableBudget, requests []CreateBudgetRequest) (map[string]configstoreTables.TableBudget, map[string]configstoreTables.TableBudget) {
+	claimedIDs := make(map[string]struct{}, len(requests))
+	for _, r := range requests {
+		if r.ID != "" {
+			claimedIDs[r.ID] = struct{}{}
+		}
+	}
+	byID := make(map[string]configstoreTables.TableBudget, len(existing))
+	byDuration := make(map[string]configstoreTables.TableBudget, len(existing))
+	for _, budget := range existing {
+		if budget.ID != "" {
+			byID[budget.ID] = budget
+		}
+		if _, claimed := claimedIDs[budget.ID]; claimed {
+			continue
+		}
+		byDuration[budget.ResetDuration] = budget
+	}
+	return byID, byDuration
+}
+
+func findExistingBudget(request CreateBudgetRequest, byID map[string]configstoreTables.TableBudget, byDuration map[string]configstoreTables.TableBudget) (configstoreTables.TableBudget, bool, error) {
+	if request.ID != "" {
+		existing, found := byID[request.ID]
+		if !found {
+			return configstoreTables.TableBudget{}, false, &badRequestError{err: fmt.Errorf("budget %s does not belong to this entity", request.ID)}
+		}
+		// Consume the matched row from both maps so a later iteration cannot
+		// reuse it (e.g. renaming an existing budget by ID while the same
+		// payload adds a new budget with the old duration).
+		delete(byID, existing.ID)
+		delete(byDuration, existing.ResetDuration)
+		return existing, true, nil
+	}
+	existing, found := byDuration[request.ResetDuration]
+	if found {
+		delete(byID, existing.ID)
+		delete(byDuration, existing.ResetDuration)
+	}
+	return existing, found, nil
 }
 
 func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
@@ -861,7 +956,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			seenDurations := make(map[string]bool)
 			requestBudgets := append([]CreateBudgetRequest(nil), req.Budgets...)
 			sort.Slice(requestBudgets, func(i, j int) bool {
-				return requestBudgets[i].ResetDuration < requestBudgets[j].ResetDuration
+				return compareBudgetRequestDurations(requestBudgets[i], requestBudgets[j])
 			})
 			for _, b := range requestBudgets {
 				if b.MaxLimit < 0 {
@@ -876,19 +971,19 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				seenDurations[b.ResetDuration] = true
 			}
 
-			// Build map of existing budgets by reset_duration for matching
-			existingByDuration := make(map[string]configstoreTables.TableBudget)
-			for _, existing := range vk.Budgets {
-				existingByDuration[existing.ResetDuration] = existing
-			}
-
-			// Reconcile: preserve existing budgets where possible, create new ones where needed
+			existingByID, existingByDuration := buildBudgetLookup(vk.Budgets, requestBudgets)
+			resetBudgetUsage := req.ResetBudgetUsage != nil && *req.ResetBudgetUsage
 			var reconciledBudgets []configstoreTables.TableBudget
 			matchedIDs := make(map[string]bool)
 			for _, b := range requestBudgets {
-				if existing, found := existingByDuration[b.ResetDuration]; found {
-					// Budget with same duration exists — update max_limit, preserve usage
+				existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
+				if err != nil {
+					return err
+				}
+				if found {
 					existing.MaxLimit = b.MaxLimit
+					existing.ResetDuration = b.ResetDuration
+					resetBudgetUsageIfRequested(&existing, resetBudgetUsage, vk.CalendarAligned)
 					if err := validateBudget(&existing); err != nil {
 						return err
 					}
@@ -907,6 +1002,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						CurrentUsage:  0,
 						VirtualKeyID:  &vk.ID,
 					}
+					inheritUsageFromClosestShorterBudget(&budget, vk.Budgets, resetBudgetUsage)
 					if err := validateBudget(&budget); err != nil {
 						return err
 					}
@@ -1085,7 +1181,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						seenDurations := make(map[string]bool)
 						pcBudgets := append([]CreateBudgetRequest(nil), pc.Budgets...)
 						sort.Slice(pcBudgets, func(i, j int) bool {
-							return pcBudgets[i].ResetDuration < pcBudgets[j].ResetDuration
+							return compareBudgetRequestDurations(pcBudgets[i], pcBudgets[j])
 						})
 						for _, b := range pcBudgets {
 							if seenDurations[b.ResetDuration] {
@@ -1149,7 +1245,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						seenDurations := make(map[string]bool)
 						pcBudgets := append([]CreateBudgetRequest(nil), pc.Budgets...)
 						sort.Slice(pcBudgets, func(i, j int) bool {
-							return pcBudgets[i].ResetDuration < pcBudgets[j].ResetDuration
+							return compareBudgetRequestDurations(pcBudgets[i], pcBudgets[j])
 						})
 						for _, b := range pcBudgets {
 							if b.MaxLimit < 0 {
@@ -1164,25 +1260,26 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							seenDurations[b.ResetDuration] = true
 						}
 
-						// Build map of existing budgets by reset_duration for matching
-						pcExistingByDuration := make(map[string]configstoreTables.TableBudget)
 						sort.Slice(existing.Budgets, func(i, j int) bool {
 							if existing.Budgets[i].ResetDuration == existing.Budgets[j].ResetDuration {
 								return existing.Budgets[i].ID < existing.Budgets[j].ID
 							}
 							return existing.Budgets[i].ResetDuration < existing.Budgets[j].ResetDuration
 						})
-						for _, eb := range existing.Budgets {
-							pcExistingByDuration[eb.ResetDuration] = eb
-						}
 
-						// Reconcile: preserve existing budgets where possible
+						pcExistingByID, pcExistingByDuration := buildBudgetLookup(existing.Budgets, pcBudgets)
+						resetBudgetUsage := req.ResetBudgetUsage != nil && *req.ResetBudgetUsage
 						var pcReconciledBudgets []configstoreTables.TableBudget
 						pcMatchedIDs := make(map[string]bool)
 						for _, b := range pcBudgets {
-							if eb, found := pcExistingByDuration[b.ResetDuration]; found {
-								// Budget with same duration exists — update max_limit, preserve usage
+							eb, found, err := findExistingBudget(b, pcExistingByID, pcExistingByDuration)
+							if err != nil {
+								return err
+							}
+							if found {
 								eb.MaxLimit = b.MaxLimit
+								eb.ResetDuration = b.ResetDuration
+								resetBudgetUsageIfRequested(&eb, resetBudgetUsage, vk.CalendarAligned)
 								if err := validateBudget(&eb); err != nil {
 									return err
 								}
@@ -1201,6 +1298,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 									CurrentUsage:     0,
 									ProviderConfigID: &existing.ID,
 								}
+								inheritUsageFromClosestShorterBudget(&budget, existing.Budgets, resetBudgetUsage)
 								if err := validateBudget(&budget); err != nil {
 									return err
 								}
