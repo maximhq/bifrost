@@ -2295,7 +2295,27 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 
 	// Do not update the current usage of the rate limit, as it will be updated by the usage tracker.
 	// But update if max limit or reset duration changes.
-	if existingVKValue, exists := gs.virtualKeys.Load(vk.Value); exists && existingVKValue != nil {
+	existingVKKey := vk.Value
+	existingVKValue, exists := gs.virtualKeys.Load(vk.Value)
+	if exists && existingVKValue != nil {
+		if existingVK, ok := existingVKValue.(*configstoreTables.TableVirtualKey); !ok || existingVK == nil || existingVK.ID != vk.ID {
+			exists = false
+			existingVKValue = nil
+		}
+	}
+	if !exists || existingVKValue == nil {
+		gs.virtualKeys.Range(func(key, value interface{}) bool {
+			existingVK, ok := value.(*configstoreTables.TableVirtualKey)
+			if !ok || existingVK == nil || existingVK.ID != vk.ID {
+				return true
+			}
+			existingVKKey, _ = key.(string)
+			existingVKValue = value
+			exists = true
+			return false
+		})
+	}
+	if exists && existingVKValue != nil {
 		existingVK, ok := existingVKValue.(*configstoreTables.TableVirtualKey)
 		if !ok || existingVK == nil {
 			return // Nothing to update
@@ -2438,6 +2458,9 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 					}
 				}
 			}
+		}
+		if existingVKKey != "" && existingVKKey != vk.Value {
+			gs.virtualKeys.Delete(existingVKKey)
 		}
 		gs.virtualKeys.Store(vk.Value, &clone)
 	} else {
