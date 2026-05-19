@@ -23,6 +23,7 @@ function sortProviders(a: ModelProvider, b: ModelProvider) {
 export interface ModelResponse {
 	name: string;
 	provider: string;
+	description?: string;
 	accessible_by_keys?: string[];
 }
 

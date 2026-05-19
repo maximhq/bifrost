@@ -332,6 +332,7 @@ export interface ModelConfig {
 	id: string;
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
+	description?: string;
 	budget_id?: string;
 	rate_limit_id?: string;
 	// Populated relationships
@@ -345,6 +346,7 @@ export interface ModelConfig {
 export interface CreateModelConfigRequest {
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
+	description?: string;
 	budget?: CreateBudgetRequest;
 	rate_limit?: CreateRateLimitRequest;
 }
@@ -352,6 +354,7 @@ export interface CreateModelConfigRequest {
 export interface UpdateModelConfigRequest {
 	model_name?: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
+	description?: string;
 	budget?: UpdateBudgetRequest;
 	rate_limit?: UpdateRateLimitRequest;
 }

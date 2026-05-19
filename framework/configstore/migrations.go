@@ -746,6 +746,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelConfigDescriptionColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7658,6 +7661,36 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_team_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigDescriptionColumn adds the description column to governance_model_configs
+// so operators can attach human-readable notes to individual models for display in provisioning UIs.
+func migrationAddModelConfigDescriptionColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_description_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableModelConfig{}, "description") {
+				if err := mig.AddColumn(&tables.TableModelConfig{}, "Description"); err != nil {
+					return fmt.Errorf("failed to add description column to governance_model_configs: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableModelConfig{}, "description") {
+				return mig.DropColumn(&tables.TableModelConfig{}, "description")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_config_description_column migration: %s", err.Error())
 	}
 	return nil
 }

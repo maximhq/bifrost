@@ -1075,6 +1075,7 @@ func GenerateModelConfigHash(m tables.TableModelConfig) (string, error) {
 	writeHashField(hash, "provider", derefStr(m.Provider))
 	writeHashField(hash, "budget_id", derefStr(m.BudgetID))
 	writeHashField(hash, "rate_limit_id", derefStr(m.RateLimitID))
+	writeHashField(hash, "description", derefStr(m.Description))
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

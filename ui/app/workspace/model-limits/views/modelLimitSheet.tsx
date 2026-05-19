@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -34,6 +35,7 @@ interface ModelLimitSheetProps {
 const formSchema = z.object({
 	modelName: z.string().min(1, "Model name is required"),
 	provider: z.string().optional(),
+	description: z.string().optional(),
 	budgetMaxLimit: z.number().nonnegative().optional(),
 	budgetResetDuration: z.string().optional(),
 	tokenMaxLimit: z.number().int().nonnegative().optional(),
@@ -94,6 +96,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		defaultValues: {
 			modelName: modelConfig?.model_name || "",
 			provider: modelConfig?.provider || "",
+			description: modelConfig?.description || "",
 			budgetMaxLimit: modelConfig?.budget?.max_limit ?? undefined,
 			budgetResetDuration: modelConfig?.budget?.reset_duration || "1M",
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
@@ -121,6 +124,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			form.reset({
 				modelName: modelConfig.model_name || "",
 				provider: modelConfig.provider || "",
+				description: modelConfig.description || "",
 				budgetMaxLimit: modelConfig.budget?.max_limit ?? undefined,
 				budgetResetDuration: modelConfig.budget?.reset_duration || "1M",
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
@@ -144,6 +148,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 		try {
 			const provider = data.provider && data.provider.trim() !== "" ? data.provider : undefined;
+			const description = data.description && data.description.trim() !== "" ? data.description.trim() : undefined;
 
 			if (isEditing && modelConfig) {
 				const hadBudget = !!modelConfig.budget;
@@ -188,6 +193,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					data: {
 						model_name: data.modelName,
 						provider: provider,
+						description: description,
 						budget: budgetPayload,
 						rate_limit: rateLimitPayload,
 					},
@@ -197,6 +203,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				await createModelConfig({
 					model_name: data.modelName,
 					provider,
+					description,
 					budget:
 						data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null
 							? {
@@ -309,6 +316,26 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 													disabled={isEditing}
 												/>
 											</div>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Description */}
+							<FormField
+								control={form.control}
+								name="description"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Description</FormLabel>
+										<FormControl>
+											<Textarea
+												{...field}
+												placeholder="Describe intended usage for this model (shown to staff when provisioning API keys)"
+												className="min-h-[80px] resize-none"
+												data-testid="model-limit-description"
+											/>
 										</FormControl>
 										<FormMessage />
 									</FormItem>

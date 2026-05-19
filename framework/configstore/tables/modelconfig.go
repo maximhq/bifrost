@@ -15,6 +15,7 @@ type TableModelConfig struct {
 	Provider    *string `gorm:"type:varchar(50);uniqueIndex:idx_model_provider" json:"provider,omitempty"` // Optional provider, nullable
 	BudgetID    *string `gorm:"type:varchar(255);index:idx_model_config_budget" json:"budget_id,omitempty"`
 	RateLimitID *string `gorm:"type:varchar(255);index:idx_model_config_rate_limit" json:"rate_limit_id,omitempty"`
+	Description *string `gorm:"type:text" json:"description,omitempty"` // Custom description shown to API key provisioning UIs
 
 	// Relationships
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`

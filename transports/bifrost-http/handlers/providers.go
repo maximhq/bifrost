@@ -584,6 +584,7 @@ func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 type ModelResponse struct {
 	Name             string   `json:"name"`
 	Provider         string   `json:"provider"`
+	Description      *string  `json:"description,omitempty"`
 	AccessibleByKeys []string `json:"accessible_by_keys,omitempty"`
 }
 
@@ -597,6 +598,7 @@ type ListModelsResponse struct {
 type ModelDetailsResponse struct {
 	Name             string                `json:"name"`
 	Provider         string                `json:"provider"`
+	Description      *string               `json:"description,omitempty"`
 	ContextLength    *int                  `json:"context_length,omitempty"`
 	MaxInputTokens   *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens  *int                  `json:"max_output_tokens,omitempty"`
@@ -625,6 +627,7 @@ type modelListQuery struct {
 type listedModel struct {
 	Name             string
 	Provider         schemas.ModelProvider
+	Description      *string
 	AccessibleByKeys []string
 }
 
@@ -652,8 +655,9 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	responseModels := make([]ModelResponse, 0, len(allModels))
 	for _, model := range allModels {
 		entry := ModelResponse{
-			Name:     model.Name,
-			Provider: string(model.Provider),
+			Name:        model.Name,
+			Provider:    string(model.Provider),
+			Description: model.Description,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			entry.AccessibleByKeys = model.AccessibleByKeys
@@ -701,8 +705,9 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 	responseModels := make([]ModelDetailsResponse, 0, len(allModels))
 	for _, model := range allModels {
 		details := ModelDetailsResponse{
-			Name:     model.Name,
-			Provider: string(model.Provider),
+			Name:        model.Name,
+			Provider:    string(model.Provider),
+			Description: model.Description,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			details.AccessibleByKeys = model.AccessibleByKeys
@@ -801,9 +806,38 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 		})
 	}
 
+	// Build a lookup map of model descriptions from governance model configs.
+	// Key is "provider:model_name" (provider may be empty for provider-agnostic configs).
+	descriptionByModel := map[string]*string{}
+	if h.dbStore != nil {
+		if modelConfigs, err := h.dbStore.GetModelConfigs(context.Background()); err == nil {
+			for i := range modelConfigs {
+				mc := &modelConfigs[i]
+				if mc.Description == nil {
+					continue
+				}
+				providerKey := ""
+				if mc.Provider != nil {
+					providerKey = strings.ToLower(*mc.Provider)
+				}
+				descriptionByModel[providerKey+":"+mc.ModelName] = mc.Description
+			}
+		}
+	}
+
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
-		models = append(models, h.listManagementModelsForProvider(provider, query)...)
+		listed := h.listManagementModelsForProvider(provider, query)
+		for i := range listed {
+			providerKey := strings.ToLower(string(listed[i].Provider))
+			// Provider-scoped config takes precedence over provider-agnostic config.
+			if desc, ok := descriptionByModel[providerKey+":"+listed[i].Name]; ok {
+				listed[i].Description = desc
+			} else if desc, ok := descriptionByModel[":"+listed[i].Name]; ok {
+				listed[i].Description = desc
+			}
+		}
+		models = append(models, listed...)
 	}
 
 	total := len(models)

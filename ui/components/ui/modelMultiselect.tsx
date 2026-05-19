@@ -56,6 +56,7 @@ interface ModelOption {
 	label: string;
 	value: string;
 	provider?: string;
+	description?: string;
 }
 
 const ALL_MODELS_OPTION: ModelOption = { label: "All Models", value: "*" };
@@ -159,6 +160,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							label: model.name,
 							value: model.name,
 							provider: model.provider,
+							description: model.description,
 						}));
 						callback([...prefix, ...options]);
 					})
@@ -242,6 +244,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				label: model.name,
 				value: model.name,
 				provider: model.provider,
+				description: model.description,
 			})) || []),
 		];
 	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
@@ -317,7 +320,12 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 								optionProps.isSelected && "bg-accent dark:!bg-card",
 							)}
 						>
-							<span className="grow truncate text-sm">{optionProps.data.label}</span>
+							<span className="flex min-w-0 grow flex-col">
+								<span className="truncate text-sm">{optionProps.data.label}</span>
+								{optionProps.data.description && (
+									<span className="text-muted-foreground truncate text-xs">{optionProps.data.description}</span>
+								)}
+							</span>
 						</Option>
 					);
 				},

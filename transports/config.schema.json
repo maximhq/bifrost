@@ -692,6 +692,10 @@
               "rate_limit_id": {
                 "type": "string",
                 "description": "Rate limit ID to associate with this model"
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable description of this model, surfaced in provisioning UIs to help staff understand intended usage"
               }
             },
             "required": ["id", "model_name"],

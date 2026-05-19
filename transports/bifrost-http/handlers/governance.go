@@ -260,18 +260,20 @@ type UpdateCustomerRequest struct {
 
 // CreateModelConfigRequest represents the request body for creating a model config
 type CreateModelConfigRequest struct {
-	ModelName string                  `json:"model_name" validate:"required"`
-	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means all providers
-	Budget    *CreateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName   string                  `json:"model_name" validate:"required"`
+	Provider    *string                 `json:"provider,omitempty"` // Optional provider, nil means all providers
+	Description *string                 `json:"description,omitempty"`
+	Budget      *CreateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit   *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
 // UpdateModelConfigRequest represents the request body for updating a model config
 type UpdateModelConfigRequest struct {
-	ModelName *string                 `json:"model_name,omitempty"`
-	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means no change
-	Budget    *UpdateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName   *string                 `json:"model_name,omitempty"`
+	Provider    *string                 `json:"provider,omitempty"` // Optional provider, nil means no change
+	Description *string                 `json:"description,omitempty"`
+	Budget      *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit   *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
 // UpdateProviderGovernanceRequest represents the request body for updating provider governance
@@ -2538,11 +2540,12 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 	var mc configstoreTables.TableModelConfig
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		mc = configstoreTables.TableModelConfig{
-			ID:        uuid.NewString(),
-			ModelName: req.ModelName,
-			Provider:  req.Provider,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			ID:          uuid.NewString(),
+			ModelName:   req.ModelName,
+			Provider:    req.Provider,
+			Description: req.Description,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		// Create budget if provided
 		if req.Budget != nil {
@@ -2631,6 +2634,9 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		// Update provider if provided in request
 		if req.Provider != nil {
 			mc.Provider = req.Provider
+		}
+		if req.Description != nil {
+			mc.Description = req.Description
 		}
 		// Handle budget updates
 		if req.Budget != nil {
