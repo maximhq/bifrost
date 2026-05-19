@@ -84,10 +84,14 @@ export function getMessage(log?: LogEntry) {
 		return "";
 	}
 	if (log?.input_history && log.input_history.length > 0) {
-		return getMessageFromContent(log.input_history[log.input_history.length - 1].content);
+		const lastInput = log.input_history[log.input_history.length - 1];
+		return getMessageFromContent(lastInput?.content);
 	} else if (log?.responses_input_history && log.responses_input_history.length > 0) {
 		let lastMessage = log.responses_input_history[log.responses_input_history.length - 1];
-		let lastMessageContent = lastMessage.content;
+		let lastMessageContent = lastMessage?.content;
+		if (!lastMessage) {
+			return "";
+		}
 		if (typeof lastMessageContent === "string") {
 			return lastMessageContent;
 		}

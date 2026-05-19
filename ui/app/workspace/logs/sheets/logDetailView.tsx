@@ -2169,6 +2169,7 @@ export function LogDetailView({
               <div className="bg-card rounded-sm border p-5">
                 {(visibleRoles.size < allRoles.length
                   ? log.input_history?.filter((m) => {
+                      if (!m) return false;
                       const mainRole = ((m.role as string) ||
                         "user") as MessageRole;
                       const hasReasoning = !!extractChatReasoning(m);
@@ -2177,7 +2178,7 @@ export function LogDetailView({
                         (hasReasoning && visibleRoles.has("reasoning"))
                       );
                     })
-                  : log.input_history
+                  : log.input_history?.filter(Boolean)
                 )?.flatMap((message, index) => {
                   const role = ((message.role as string) ||
                     "user") as MessageRole;
