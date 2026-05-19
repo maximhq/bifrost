@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -54,6 +55,67 @@ func TestApplyLargePayloadRequestBodyWithModelNormalization(t *testing.T) {
 	}
 	if !strings.Contains(body, `"model":"gpt-5"`) {
 		t.Fatalf("expected normalized model in body, got: %s", body)
+	}
+}
+
+func TestSetExtraHeaders_AppliesProviderOverrideAndSkipsCaseInsensitive(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		NetworkConfig: &schemas.ProviderNetworkConfigOverride{
+			ExtraHeaders: map[string]string{
+				"Authorization": "Bearer override",
+				"X-Tenant":      "override",
+			},
+		},
+	})
+
+	req := &fasthttp.Request{}
+	SetExtraHeaders(ctx, req, map[string]string{
+		"authorization": "Bearer static",
+		"X-Tenant":      "static",
+		"X-Static":      "yes",
+	}, []string{"authorization"})
+
+	if got := string(req.Header.Peek("Authorization")); got != "" {
+		t.Fatalf("Authorization header = %q, want skipped", got)
+	}
+	if got := string(req.Header.Peek("X-Tenant")); got != "override" {
+		t.Fatalf("X-Tenant header = %q, want provider override", got)
+	}
+	if got := string(req.Header.Peek("X-Static")); got != "yes" {
+		t.Fatalf("X-Static header = %q, want static header", got)
+	}
+}
+
+func TestSetExtraHeadersHTTP_AppliesProviderOverrideAndSkipsCaseInsensitive(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		NetworkConfig: &schemas.ProviderNetworkConfigOverride{
+			ExtraHeaders: map[string]string{
+				"Authorization": "Bearer override",
+				"X-Tenant":      "override",
+			},
+		},
+	})
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest failed: %v", err)
+	}
+	SetExtraHeadersHTTP(ctx, req, map[string]string{
+		"authorization": "Bearer static",
+		"X-Tenant":      "static",
+		"X-Static":      "yes",
+	}, []string{"authorization"})
+
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization header = %q, want skipped", got)
+	}
+	if got := req.Header.Get("X-Tenant"); got != "override" {
+		t.Fatalf("X-Tenant header = %q, want provider override", got)
+	}
+	if got := req.Header.Get("X-Static"); got != "yes" {
+		t.Fatalf("X-Static header = %q, want static header", got)
 	}
 }
 

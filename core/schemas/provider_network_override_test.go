@@ -1,6 +1,8 @@
 package schemas
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,5 +60,50 @@ func TestBifrostRequestClone_ProviderNetworkConfigOverrideHeadersAreIndependent(
 
 	if req.ProviderOverride.NetworkConfig.ExtraHeaders["x-tenant"] != "org1" {
 		t.Fatalf("original ProviderOverride.NetworkConfig.ExtraHeaders was mutated: %+v", req.ProviderOverride.NetworkConfig.ExtraHeaders)
+	}
+}
+
+func TestBifrostRequestClone_CachedContentRequestsAreIndependentlyCovered(t *testing.T) {
+	reqType := reflect.TypeOf(BifrostRequest{})
+	covered := 0
+
+	for i := 0; i < reqType.NumField(); i++ {
+		field := reqType.Field(i)
+		if !strings.HasPrefix(field.Name, "CachedContent") || !strings.HasSuffix(field.Name, "Request") {
+			continue
+		}
+		if field.Type.Kind() != reflect.Pointer || field.Type.Elem().Kind() != reflect.Struct {
+			t.Fatalf("%s has unexpected type %s", field.Name, field.Type)
+		}
+		covered++
+
+		t.Run(field.Name, func(t *testing.T) {
+			requestValue := reflect.New(field.Type.Elem())
+			if providerField := requestValue.Elem().FieldByName("Provider"); providerField.IsValid() && providerField.CanSet() {
+				providerField.Set(reflect.ValueOf(Gemini))
+			}
+
+			req := &BifrostRequest{}
+			reflect.ValueOf(req).Elem().FieldByName(field.Name).Set(requestValue)
+
+			clone := req.Clone()
+			cloneValue := reflect.ValueOf(&clone).Elem().FieldByName(field.Name)
+			if cloneValue.IsNil() {
+				t.Fatalf("clone field %s is nil", field.Name)
+			}
+			if cloneValue.Pointer() == requestValue.Pointer() {
+				t.Fatalf("clone field %s shares the original inner request pointer; update BifrostRequest.Clone", field.Name)
+			}
+
+			clone.SetProvider(Vertex)
+			gotProvider, _, _ := req.GetRequestFields()
+			if gotProvider != Gemini {
+				t.Fatalf("original provider = %s, want %s", gotProvider, Gemini)
+			}
+		})
+	}
+
+	if covered == 0 {
+		t.Fatal("expected at least one CachedContent*Request field on BifrostRequest")
 	}
 }

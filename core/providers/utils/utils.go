@@ -601,7 +601,7 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 	// Give priority to extra headers in the context
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
-			if skipHeaders != nil && slices.Contains(skipHeaders, strings.ToLower(k)) {
+			if shouldSkipHeader(textproto.CanonicalMIMEHeaderKey(k), skipHeaders) {
 				continue
 			}
 			for i, v := range values {
@@ -618,16 +618,23 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 func setExtraHeadersMap(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
-		if skipHeaders != nil {
-			if slices.Contains(skipHeaders, key) {
-				continue
-			}
+		if shouldSkipHeader(canonicalKey, skipHeaders) {
+			continue
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers.
 		if len(req.Header.Peek(canonicalKey)) == 0 {
 			req.Header.Set(canonicalKey, value)
 		}
 	}
+}
+
+func shouldSkipHeader(canonicalKey string, skipHeaders []string) bool {
+	for _, skipHeader := range skipHeaders {
+		if strings.EqualFold(skipHeader, canonicalKey) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
@@ -1243,23 +1250,15 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
 func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
-	for key, value := range extraHeaders {
-		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
-		if skipHeaders != nil {
-			if slices.Contains(skipHeaders, key) {
-				continue
-			}
-		}
-		// Only set the header if it doesn't already exist to avoid overwriting important headers
-		if req.Header.Get(canonicalKey) == "" {
-			req.Header.Set(canonicalKey, value)
-		}
+	if override := providerNetworkOverrideFromContext(ctx); override != nil && override.ExtraHeaders != nil {
+		setExtraHeadersHTTPMap(req, override.ExtraHeaders, skipHeaders)
 	}
+	setExtraHeadersHTTPMap(req, extraHeaders, skipHeaders)
 
 	// Give priority to extra headers in the context
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
-			if skipHeaders != nil && slices.Contains(skipHeaders, strings.ToLower(k)) {
+			if shouldSkipHeader(textproto.CanonicalMIMEHeaderKey(k), skipHeaders) {
 				continue
 			}
 			for i, v := range values {
@@ -1269,6 +1268,19 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 					req.Header.Add(k, v)
 				}
 			}
+		}
+	}
+}
+
+func setExtraHeadersHTTPMap(req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
+	for key, value := range extraHeaders {
+		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
+		if shouldSkipHeader(canonicalKey, skipHeaders) {
+			continue
+		}
+		// Only set the header if it doesn't already exist to avoid overwriting important headers.
+		if req.Header.Get(canonicalKey) == "" {
+			req.Header.Set(canonicalKey, value)
 		}
 	}
 }
